@@ -668,7 +668,8 @@ class App:
             scale=cfg.hint.scale, on_change=self._save_hint,
             dot_corner=self._dot_corner,
             dot_at=self._dot_beside
-            if getattr(cfg.hint, "follow_dot", True) else None)
+            if getattr(cfg.hint, "follow_dot", True) else None,
+            compact=getattr(cfg.hint, "compact", False))
             if cfg.hint.enabled else overlay_mod.HintCard.off())
         # And the second reading's card (review.py): one proposal, three
         # buttons, a clock. Off by config, and off by construction until a
@@ -2063,10 +2064,12 @@ class App:
         # field it loads into is hotkey.
         write_key = NESTED_HOTKEYS.get(field, field)
         self._save( {write_key: key})
-        message = (f"{field} is now '{key}'" if key
-                   else f"{field} is off")
+        message = config_mod.rebound_sentence(field, key)
         self._say(message)
-        log.info("%s (saved to %s)", message, self.config_path.name)
+        # The log keeps the file's own name for the line; the sentence
+        # above it is the one the person was shown.
+        log.info("%s (%s, saved to %s)", message, field,
+                 self.config_path.name)
         return message
 
     def set_option(self, name: str, value) -> str:
@@ -2085,7 +2088,14 @@ class App:
         one writer, and the reply says it applies at the next start —
         which is the truth, rather than a control that lies about having
         done something.
+
+        What it SAYS is settings.saved_sentence: the row's own label in
+        the words the screen shows it in, never the dotted path — this
+        reply is read by a person, on the desk and on the dashboard
+        both.
         """
+        import settings as settings_mod
+
         name = (name or "").strip()
         if not name:
             raise ValueError("no setting was named")
@@ -2102,7 +2112,9 @@ class App:
             message = ("Windows will start DeskIT when you sign in" if on
                        else "DeskIT no longer starts with Windows")
             if paths.DEVELOPER:
-                message = "setup.autostart saved — the checkout starts from its own shortcut"
+                message = (f'"{settings_mod.label_for("setup.autostart")}"'
+                           " — saved; the checkout starts from its own "
+                           "shortcut")
             self._say(message)
             log.info("%s", message)
             return message
@@ -2128,10 +2140,9 @@ class App:
             if section == "privacy":
                 privacy.configure(fresh)
             live = True
-        message = (f"{name} saved" if live
-                   else f"{name} saved — it applies the next time it starts")
+        message = settings_mod.saved_sentence(name, live=live)
         self._say(message)
-        log.info("%s", message)
+        log.info("%s (%s)", message, name)
         return message
 
     def _tour_ended(self, reason: str) -> None:
@@ -3314,7 +3325,8 @@ class App:
                 scale=hcfg.scale, on_change=self._save_hint,
                 dot_corner=self._dot_corner,
                 dot_at=self._dot_beside
-                if getattr(hcfg, "follow_dot", True) else None)
+                if getattr(hcfg, "follow_dot", True) else None,
+                compact=getattr(hcfg, "compact", False))
                 if hcfg.enabled else overlay_mod.HintCard.off())
             old.stop()
             self.hint = new

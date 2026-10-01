@@ -26,41 +26,50 @@ from __future__ import annotations
 HOLD = "hold"
 LATCHED = "latched"
 
-# action -> what to call it on the card. Hebrew, because the card is read
-# at a glance mid-sentence by someone dictating Hebrew, and a glance is
-# not the moment to translate.
+# The cap the first row of a held card shows: what letting go of the key
+# does is itself a "key" on this card.
+RELEASE = "Release"
+FOOTER = "Don't show this again"
+
+# action -> what to call it on the card. ENGLISH since 2026-10-01, on the
+# owner's word ("I want everything to be in English here, and right to
+# left, left to right, changed accordingly"); it was Hebrew, on the
+# argument that a glance mid-sentence is not the moment to translate. The
+# names are the Keys place's own (config.HOTKEY_FIELDS) without "(tap)",
+# so the card and the keyboard call a key the same thing.
 LABELS: dict[str, str] = {
-    "visual_qa": "שאלה על המסך",
-    "capture": "צילום מסך",
-    "record": "הקלטת וידאו",
-    "photo": "מצלמה",
-    "translate": "תרגום",
-    "punctuate": "פיסוק",
-    "correct": "למד מילה שטעה בה",
-    "lookup": "חיפוש מילה",
-    "screens": "מסכים כבויים",
-    "notify_dismiss": "סגור התראה",
-    "problem_report": "דווח על תקלה",
-    "shelf": "המדף",
+    "visual_qa": "Ask the screen",
+    "capture": "Screenshot",
+    "record": "Record the screen",
+    "photo": "Photo from the camera",
+    "translate": "Translate",
+    "punctuate": "Punctuate",
+    "correct": "Teach it a word",
+    "lookup": "Look up",
+    "screens": "Screens off",
+    "notify_dismiss": "Dismiss the notification",
+    "problem_report": "Report a problem",
+    "shelf": "Open the shelf",
 }
 
 # The reason a text key is greyed rather than simply missing. Short enough
 # to sit on one row; it is the same fact main._allowed logs at length.
-NEEDS_A_HAND = "צריך יד פנויה"
+NEEDS_A_HAND = "needs a free hand"
 
 # THE CARD IS THREE GROUPS, since 2026-09-19: what the dictation itself
 # answers to, the keys that look at the screen, and everything else. One
 # flat list of every live key was the owner's "this design is terrible
 # too" — twelve rows with nothing to say which three matter while a hand
-# is on the hotkey. The groups are named here, in the card's own Hebrew,
-# and the painters (skin\hint.py, overlay._hint_paint) only draw them.
-GROUP_DICTATION = "הכתבה"
-GROUP_SCREEN = "מסך"
-GROUP_OTHER = "עוד"
+# is on the hotkey. The groups are named here, and the painters
+# (skin\hint.py, overlay._hint_paint) only draw them. "Other" and not
+# "More": More is what the small card's button says (skin\hint.py).
+GROUP_DICTATION = "Dictation"
+GROUP_SCREEN = "Screen"
+GROUP_OTHER = "Other"
 # Which feature keys are "the screen": the four that take a picture or
 # ask about one. The rest of main._SCREEN_ACTIONS (screens off, dismiss
 # a notification, the shelf) fire mid-hold too but are not about the
-# screen, so they sit with the text keys under "more".
+# screen, so they sit with the text keys under "Other".
 SCREEN_KEYS = frozenset({"visual_qa", "capture", "record", "photo"})
 
 _PRETTY = {
@@ -166,12 +175,12 @@ def card_for(cfg, state: str, screen_actions=frozenset()) -> dict | None:
     top: list[tuple[str, str, bool]] = []
     if latched:
         if latch:
-            top.append((latch, "סיים ותמלל", True))
+            top.append((latch, "Finish and transcribe", True))
     else:
-        top.append(("שחרר", "הטקסט נדבק איפה שהסמן", True))
+        top.append((RELEASE, "Paste at the cursor", True))
         if latch:
-            top.append((latch, "נעילה — אפשר לעזוב ולדבר", True))
-    top.append(("Esc", "ביטול, בלי להדביק כלום", True))
+            top.append((latch, "Lock it: let go, keep talking", True))
+    top.append(("Esc", "Cancel, paste nothing", True))
 
     live, refused = [], []
     screen, other_live, other_refused = [], [], []
@@ -198,13 +207,13 @@ def card_for(cfg, state: str, screen_actions=frozenset()) -> dict | None:
     return {
         "state": state,
         "dot": "locked" if latched else "recording",
-        "title": "נעול" if latched else "מקליט",
-        "sub": ("דבר כמה שאתה רוצה" if latched
-                else f"עוד מחזיק את {held}"),
-        "section": ("כל המקשים פעילים" if latched
-                    else "עובד גם באמצע ההקלטה"),
+        "title": "Locked" if latched else "Recording",
+        "sub": ("talk as long as you like" if latched
+                else f"holding {held}"),
+        "section": ("Every key works" if latched
+                    else "Works mid-recording"),
         "rows": top,
         "keys": live + refused,
         "groups": groups,
-        "footer": "אל תציג את זה יותר",
+        "footer": FOOTER,
     }

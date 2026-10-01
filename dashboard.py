@@ -2557,7 +2557,8 @@ class Dashboard:
         prompt; the list itself stays."""
         if self.running:
             self._ask("option", then=lambda r: self._announce(
-                r, "saved"), name="vocab.enabled", value=bool(on))
+                r, settings_mod.saved_sentence("vocab.enabled")),
+                name="vocab.enabled", value=bool(on))
             return
         try:
             config_mod.save({"vocab.enabled": bool(on)})
@@ -2565,7 +2566,7 @@ class Dashboard:
             self._note(str(e))
             self.parts["words_use"].set(not on)
             return
-        self._note("vocab.enabled saved — it applies the next time it starts")
+        self._note(settings_mod.saved_sentence("vocab.enabled", live=False))
 
     def _words_search_soon(self, text: str) -> None:
         if self._words_search_after is not None:
@@ -8563,7 +8564,8 @@ class Dashboard:
             value = _parse(raw, setting.kind)
         except ValueError:
             self._paint_setting(setting.path, current)
-            self._note(f"{setting.path}: {raw.strip()!r} is not "
+            self._note(f'"{settings_mod.label_for(setting.path)}": '
+                       f"{raw.strip()!r} is not "
                        f"a{'n' if setting.kind == 'int' else ''} "
                        f"{setting.kind}")
             return
@@ -8598,8 +8600,7 @@ class Dashboard:
             autostart.apply(bool(value))
         self.parts["values"][setting.path] = value
         self._paint_setting(setting.path, value)
-        self._note(f"{setting.path} saved — it applies the next time it "
-                   "starts")
+        self._note(settings_mod.saved_sentence(setting.path, live=False))
 
     def _setting_answered(self, setting, value, reply) -> None:
         if reply is None:           # it stopped between the poll and the click
@@ -8612,7 +8613,8 @@ class Dashboard:
             return
         self.parts["values"][setting.path] = value
         self._paint_setting(setting.path, value)
-        self._note(reply.get("message") or f"{setting.path} saved")
+        self._note(reply.get("message")
+                   or settings_mod.saved_sentence(setting.path))
 
     def _paint_setting(self, path: str, value) -> None:
         """Every control that shows `path` set to `value`, without any of
@@ -9018,8 +9020,9 @@ class Dashboard:
         next launch.
         """
         if self.running:
-            self._ask("rebind", then=lambda r: self._announce(r, "saved"),
-                      field=field, key=key)
+            self._ask("rebind", then=lambda r: self._announce(
+                r, config_mod.rebound_sentence(field, key)),
+                field=field, key=key)
             return
         try:
             current = config_mod.load_layered()
@@ -9031,8 +9034,7 @@ class Dashboard:
                                                            key))
             write_key = NESTED_HOTKEYS.get(field, field)
             config_mod.save({write_key: key})
-            self._note(f"{field} is now '{key}'" if key
-                       else f"{field} is off")
+            self._note(config_mod.rebound_sentence(field, key))
             self._refresh(None)
         except Exception as e:
             self._note(str(e))

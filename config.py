@@ -102,6 +102,10 @@ class HintConfig:
     x: int = -100000
     y: int = -100000
     scale: float = 1.0
+    # The small card (2026-10-01): one press of − past the smallest size
+    # shows only the dictation's own keys, with "All keys" to see the rest
+    # for that one dictation. Written by the card, like the scale.
+    compact: bool = False
     # Did the file say "dot"? load() answers it with `follows_dot` and
     # keeps the answer, because `corner` above cannot: by then the word
     # has been resolved into a real corner and a card that FOLLOWS the
@@ -1462,6 +1466,25 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
+def hotkey_label(field: str) -> str:
+    """What the Keys screen calls `field` — the name a MESSAGE about that
+    key uses too. The file's own word for the line (`capture_hotkey`) is
+    the developer's; the person who moved the key read "Screenshot (tap)"
+    on the row he was pressing. Same rule as settings.saved_sentence,
+    and the same owner's complaint of 2026-10-01 behind it."""
+    for name, label in HOTKEY_FIELDS:
+        if name == field:
+            return label
+    return field
+
+
+def rebound_sentence(field: str, key: str) -> str:
+    """What a person is told when one key moved — or was turned off."""
+    label = hotkey_label(field)
+    name = label if label != field else "that key"
+    return f'"{name}" is now {key}' if key else f'"{name}" is off'
+
+
 # The keys that may carry modifiers ("ctrl+f6"). Only the taps: they are
 # pressed and released in an instant, which is the only thing a chord can
 # describe. A chord on the hold hotkey would mean keeping ctrl down for
@@ -1780,6 +1803,7 @@ def build(data: dict) -> Config:
             x=int(hint.get("x", HintConfig.x)),
             y=int(hint.get("y", HintConfig.y)),
             scale=float(hint.get("scale", HintConfig.scale)),
+            compact=bool(hint.get("compact", HintConfig.compact)),
         ),
         setup=SetupConfig(
             done=bool(setup.get("done", SetupConfig.done)),
@@ -2653,7 +2677,7 @@ def set_values(path: Path, updates: dict[str, object], *,
 #: hides them. Kept in step with the table in chapter 3.4.
 STATE_KEYS: frozenset[str] = frozenset({
     "dot.x", "dot.y",
-    "hint.x", "hint.y", "hint.scale",
+    "hint.x", "hint.y", "hint.scale", "hint.compact",
     "notify.x", "notify.y",
     "problems.x", "problems.y", "problems.card_x", "problems.card_y",
     "shelf.x", "shelf.y", "shelf.scale",
