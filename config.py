@@ -102,8 +102,8 @@ class HintConfig:
     x: int = -100000
     y: int = -100000
     scale: float = 1.0
-    # The small card (2026-10-01): one press of − past the smallest size
-    # shows only the dictation's own keys, with "All keys" to see the rest
+    # The small card (2026-10-01): its corner dragged past the smallest
+    # size shows only the dictation's own keys, with "All keys" to see the rest
     # for that one dictation. Written by the card, like the scale.
     compact: bool = False
     # Did the file say "dot"? load() answers it with `follows_dot` and
