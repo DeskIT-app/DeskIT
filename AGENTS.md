@@ -583,7 +583,11 @@ exactly what classic did.
   sidecar; joined, it differs from `raw` on 15-30 of 50 clips, and the
   difference is exactly what those stages removed. So: `raw` -> `text`
   measures vocab + repair + punctuation, and `words` -> `raw` measures
-  the cleanup. Example: the polite words that appear at the end of
+  the cleanup. The `OK` line in `transcripts.log` is that same `raw`,
+  logged before any stage runs ("this file is the recovery path", says
+  main.py) — it is NOT what was pasted either: on 2026-09-24 at 23:01 it
+  read "את ה." where the paste said "את ה-Dev.". The paste is the
+  sidecar's `text` (and a `POLISHED` line when the repair changed it). Example: the polite words that appear at the end of
   sentences unbidden ("בבקשה", "טוב") are present in `raw` in 2 of 79
   pairs and were ADDED by the repair pass in **0 of 79** — so that bug is
   the fine-tune's (the stages above `raw` only ever remove words), not
