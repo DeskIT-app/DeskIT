@@ -509,6 +509,24 @@ exactly what classic did.
   transcript and then stops. Verified over the 50 stored `raw`/`text` pairs
   in `recent\`: 49 legitimate repairs still pass, 1 rejected, and it is the
   known truncation.
+- **...nor a swap: 75% similar leaves a quarter of the words to the
+  model.** Between 2026-09-24 and 2026-10-01 the repair pass pasted "ה-Dev"
+  over "הנדאוף", "מדסקית" and a bare "dev", "ה-push" over "לדחוף",
+  "keyboard" over "kicard" and "שמאלי" over "ימני", every one inside
+  `_is_safe` — mostly the glossary (every learned pair, as instructions)
+  applied far past its heard form. `polish._keep_what_was_said` checks
+  each substitution on its own: it stays when he TAUGHT it (a pair's heard
+  form in the span) or when it is the same word in another spelling or
+  script (a consonant skeleton both scripts map into), and goes back to
+  the decoder's words otherwise; added and dropped words always go back.
+  Measured 2026-10-02 by hand label: 16/16 good repairs kept, 15/16 harms
+  put back; held out on his 164 review verdicts, every rejected change it
+  would block was a real harm. **Do not "fix" it into a confidence gate**
+  — that was built and measured on 2026-08-17 and made both models worse
+  (the note in `polish.py`); the sound test is what keeps exactly the
+  confidently-wrong-but-sound-alike fixes that one blocked. What it lets
+  through on purpose is a sound-alike swap of meaning ("סליחה" ->
+  "שיחה"): telling those apart is the model's job, from context.
 - **`raw` and `text` in `recent\*.json` are a free before/after of the
   whole text pipeline, and they settle stage arguments outright.** `raw` is
   the decoder's output, `text` is what was pasted. Example: the polite

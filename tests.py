@@ -4997,6 +4997,157 @@ def test_polish_rejects_an_empty_reply() -> None:
     assert not ok
 
 
+# ---- the second guarantee: the same word, never another one ----
+
+#: Shaped like the owner's own glossary on 2026-10-02: the pairs that drove
+#: the over-application ("ה" and "הדסקי dev" both meaning "ה-Dev") and the
+#: ones that are plainly right ("סלאש קליר" -> "slash clear").
+_HIS_GLOSSARY = [("ה", "ה-Dev"), ("הדסקי dev", "ה-Dev"), ("האשף", "ה-Dev"),
+                 ("פוש", "ה-push"), ("הפוש", "ה-push"),
+                 ("סלאש קליר", "slash clear")]
+
+
+def _span_kept(said: str, got: str, glossary=()) -> bool:
+    import polish as polish_mod
+    ok, _ = polish_mod._justified(polish_mod.words(said),
+                                  polish_mod.words(got), list(glossary))
+    return ok
+
+
+def test_the_repair_keeps_a_word_that_sounds_like_what_was_heard() -> None:
+    """The class the pass exists for, with NO glossary at all: a misheard
+    word replaced by one that sounds like it, in either script. The
+    confidence veto of 2026-08-17 failed exactly here — it blocked these —
+    so the second guarantee must never touch one of them."""
+    for said, got in [("מקללת", "מקלדת"), ("לסירקה", "לסריקה"),
+                      ("קירוב", "קירור"), ("יכלת", "יכולת"),
+                      ("הדב", "הדבר"), ("גירסה", "גרסה"), ("מס", "מסך"),
+                      ("סלאש קליר", "slash clear"), ("סדש קליר", "slash clear"),
+                      ("ארצ'יב", "archive"), ("מהדב", "מה-Dev"),
+                      ("פולסקרין", "full screen"), ("גיטאהאב", "GitHub"),
+                      ("ריפרש", "refresh"), ("xpogo", "Expo Go"),
+                      ("hint.anabled", "hint.enabled")]:
+        assert _span_kept(said, got), f"lost a real repair: {said} -> {got}"
+
+
+def test_the_repair_puts_back_a_word_that_sounds_like_nothing_said() -> None:
+    """Every one of these was pasted between 2026-09-24 and 2026-10-01 and
+    every one passed _is_safe. Right became left in an instruction about
+    a key; the app's own name, a handoff and a verb became "ה-Dev" or
+    "ה-push" because the glossary said so for some OTHER heard form."""
+    for said, got in [("ימני", "שמאלי"), ("הנדאוף", "ה-Dev"),
+                      ("ה-Desk It", "ה-Dev"), ("מדסקית", "מה-Dev"),
+                      ("לדחוף", "ה-push"), ("kicard", "keyboard"),
+                      ("דסקיט מאסטר", "dev master"),
+                      ("דסקית מאסטר", "אפליקציית master"),
+                      ("הרצ'יב", "ה-releases"), ("dev", "ה-Dev")]:
+        assert not _span_kept(said, got, _HIS_GLOSSARY), \
+            f"kept a word he never said: {said} -> {got}"
+
+
+def test_a_taught_pair_stays_even_where_it_does_not_sound_alike() -> None:
+    """The glossary is his: a pair he taught stands where its heard form
+    is in the span, Hebrew prefix letters allowed on either side as
+    vocab.apply allows them. The same swap untaught goes back."""
+    assert not _span_kept("כאשר הרצתי", "אתה יכול")
+    assert _span_kept("כאשר הרצתי", "אתה יכול", [("כאשר הרצתי", "אתה יכול")])
+    assert _span_kept("הדסקי dev", "ה-Dev", _HIS_GLOSSARY)
+    assert _span_kept("דסקי dev", "ה-Dev", _HIS_GLOSSARY), \
+        "a prefix missing from what was said is still the taught form"
+    assert _span_kept("ודסקית", "וה-Dev", [("דסקית", "ה-Dev")]), \
+        "a prefix in front of what was said is still the taught form"
+    # ...but only its own heard form licenses it: "האשף" -> "ה-Dev" does
+    # not license the app's name, and a lone "ה" licenses nothing longer
+    assert not _span_kept("דסקיט", "ה-Dev", _HIS_GLOSSARY)
+    assert not _span_kept("הנדאוף", "ה-Dev", _HIS_GLOSSARY)
+
+
+def test_the_repair_puts_back_only_the_bad_span_and_keeps_the_rest() -> None:
+    """Span by span: one bad swap costs that swap, not the repair that
+    came with it. Punctuation stays where it was; a reorder is undone
+    whole; an added word leaves with its space; a dropped word comes back
+    in its place."""
+    import polish as polish_mod
+    fix = polish_mod._keep_what_was_said
+
+    out, undone = fix("אני אצרף לך את הסשן הנדאוף פה. ביצעתי סלאש קליר באמצע.",
+                      "אני אצרף לך את הסשן ה-Dev פה. ביצעתי slash clear באמצע.",
+                      _HIS_GLOSSARY)
+    assert out == "אני אצרף לך את הסשן הנדאוף פה. ביצעתי slash clear באמצע.", out
+    assert [u[:2] for u in undone] == [("הנדאוף", "ה-Dev")], undone
+    out, undone = fix("לחץ על קונטרול ימני ואז תבחר.",
+                      "לחץ על קונטרול שמאלי ואז תבחר.", [])
+    assert out == "לחץ על קונטרול ימני ואז תבחר.", out
+    assert undone[0][2] == "a word that sounds like nothing said", undone
+    out, _ = fix("תשים אתר מחדש את זה עכשיו", "תשים את זה מחדש עכשיו", [])
+    assert out == "תשים אתר מחדש את זה עכשיו", out
+    out, _ = fix("אני רוצה את זה ואת זה גם", "אני רוצה את זה ואת זה גם בבקשה", [])
+    assert out == "אני רוצה את זה ואת זה גם", out
+    out, _ = fix("ואז עוד מילה אחרונה", "ואז עוד אחרונה", [])
+    assert out == "ואז עוד מילה אחרונה", out
+    # a reply with nothing to put back is returned as the model wrote it
+    out, undone = fix("וגם מקללת מסתירה את השדה", "וגם מקלדת מסתירה את השדה", [])
+    assert (out, undone) == ("וגם מקלדת מסתירה את השדה", []), (out, undone)
+
+
+def test_polish_puts_back_a_swap_and_keeps_the_words_out_of_app_log() -> None:
+    """Through Polisher.polish, the one door every repair goes through
+    (before the paste, a stretch while he speaks, the local model's card):
+    the bad swap goes back, the good one stands, app.log gets a count and
+    transcripts.log one POLISH-UNDONE line per span with the words (D8).
+    A reply whose every change goes back is no repair at all."""
+    import logging
+
+    import polish as polish_mod
+
+    marker = "סימן-7c1e"
+    app_lines: list[str] = []
+    tx_lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def __init__(self, sink):
+            super().__init__()
+            self.sink = sink
+
+        def emit(self, record):
+            self.sink.append(record.getMessage())
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
+        cfg.polish, when="always", min_chars=1, max_wait_s=5))
+    pol = polish_mod.Polisher(cfg, _tmp_vocab())
+    # Long enough that _is_safe passes the reply first (3 of 14 words
+    # change): the second guarantee only ever sees what the first let by.
+    head = "היום בבוקר ביצעתי"
+    tail = f"במחשב של העבודה ואז {marker} לחצתי על קונטרול"
+    said = f"{head} סלאש קליר {tail} ימני"
+    seen: list = []
+    app_log, tx_log = logging.getLogger("app"), logging.getLogger("transcripts")
+    ca, ct = _Catch(app_lines), _Catch(tx_lines)
+    levels = (app_log.level, tx_log.level)
+    app_log.setLevel(logging.INFO)
+    tx_log.setLevel(logging.INFO)
+    app_log.addHandler(ca)
+    tx_log.addHandler(ct)
+    try:
+        pol._backends = lambda t, kinds=None: iter(
+            [_SideBackend("groq", f"{head} slash clear {tail} שמאלי", seen)])
+        assert pol.polish(said) == (f"{head} slash clear {tail} ימני", "groq")
+        pol._backends = lambda t, kinds=None: iter(
+            [_SideBackend("groq", f"{head} סלאש קליר {tail} שמאלי", seen)])
+        assert pol.polish(said) == (said, None), \
+            "a reply whose every change went back is not a repair"
+    finally:
+        app_log.removeHandler(ca)
+        tx_log.removeHandler(ct)
+        app_log.setLevel(levels[0])
+        tx_log.setLevel(levels[1])
+    assert any("1 substitution(s) put back" in l for l in app_lines), app_lines
+    assert not any(marker in l or "ימני" in l for l in app_lines), app_lines
+    undone = [l for l in tx_lines if l.startswith("POLISH-UNDONE | groq")]
+    assert len(undone) == 2 and all("ימני || שמאלי" in l for l in undone), tx_lines
+
+
 def test_polish_only_wakes_up_for_a_known_mistake() -> None:
     """`when = "known"` is what keeps an idle Ollama (76 s cold) from being
     woken on a dictation with nothing to repair."""

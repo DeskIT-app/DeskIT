@@ -41,6 +41,50 @@ transcript simply goes through untouched, exactly as it would if this
 module were switched off. Failing closed is the only acceptable failure
 mode for something that stands this close to a person's words.
 
+A SECOND GUARANTEE, PER WORD: A REPAIR MAY CHANGE HOW A WORD IS SPELLED,
+NEVER WHICH WORD WAS SAID (`_keep_what_was_said`, 2026-10-02).
+
+`_is_safe` judges the reply as a whole, and a whole that is 75% the same
+still leaves a quarter of the words to the model. That budget was spent
+on the speaker's own words: over the repairs in recent\ on 2026-09-24 and
+2026-10-01, the model wrote "ה-Dev" over "הנדאוף" (handoff), "מדסקית",
+"ה-Desk It" and a bare "dev"; "ה-push" over the verb "לדחוף"; "keyboard"
+over "kicard" (key card); "שמאלי" over "ימני" — right became left, in an
+instruction about which key to press. Every one passed `_is_safe`. Most
+of them were the glossary (vocab.glossary, every learned pair) applied
+far past its heard form: told that a lone "ה" means "ה-Dev", a language
+model writes "ה-Dev" wherever the app's name might be.
+
+So every substitution is checked on its own, after `_is_safe`, and stays
+only when (1) the speaker taught exactly it — a learned pair whose heard
+form is in the span, Hebrew prefix letters allowed either side as
+vocab.apply allows them — or (2) it is the SAME WORD in another spelling
+or script: every word out sounds like a word in, and every word in left
+a sound in the words out, judged on a consonant skeleton both scripts map
+into (`_skeleton`: "מהדב" and "מה-Dev" are both m-d-b; "ימני" is m-n and
+"שמאלי" s-m-l). A Hebrew prefix bolted onto a word the decoder heard
+without one never stays, and neither does an added or a dropped word —
+the prompt forbids both already. What does not stay is put back to the
+decoder's words, span by span; the rest of the repair stands.
+
+This keeps exactly the class the pass exists for: מקללת/מקלדת, לסירקה/
+לסריקה, קירוב/קירור sound alike, and so do "סלאש קליר"/"slash clear" and
+"ארצ'יב"/"archive". Measured 2026-10-02 against hand labels on 65 repairs
+from those two windows: 16 of 16 good repairs kept, 15 of 16 harmful ones
+put back (the one missed made a garble worse, "ימיחודי" -> "ימימייחודי");
+21 of 21 documented sound-alike repairs kept with NO glossary. Held out,
+against the owner's own 164 second-reading verdicts: of the 94 changes he
+rejected, the 43 this would put back are all real harms ("ה-Dev" over
+"היא" / "הסמל" / "המאסטר", "אותי" -> "אותך", "Ask user question" ->
+"slash clear", deletions of words he said); of the 70 he accepted it keeps
+59 with his glossary, and 5 of the other 11 were him UNDOING the app's own
+"ה-Dev" — the damage this stops at the source. What it deliberately lets
+through: a sound-alike swap with a different meaning ("סליחה" -> "שיחה").
+That is precisely the judgment the model is here to make from context,
+and no rule on sounds can make it instead. The confidence veto below
+failed for the opposite reason: it blocked the sound-alike fixes, and
+this keeps them.
+
 --------------------------------------------------------------------------
 WHERE IT RUNS: IN FRONT OF THE PASTE FOR THE CLOUD, BEHIND IT FOR THE
 LOCAL MODEL (the owner's decision, 2026-09-19)
@@ -130,11 +174,14 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 import threading
 import time
 
 from transcribers.base import RateLimitError, TranscriptionError
-from vocab import words
+# _WORD and _PREFIX are vocab's own: the guard below must agree with the
+# learner about what a word is and which letters may be glued on in front.
+from vocab import _PREFIX, _WORD, words
 
 log = logging.getLogger("app")
 #: Where a rejected reply's words go (D8: app.log counts, this file keeps
@@ -246,6 +293,11 @@ def _prompt(glossary: list[tuple[str, str]]) -> str:
 # that its confidence cannot gate anything. Removed rather than shipped
 # switched off — a knob that only harms whoever turns it on is worse than
 # no knob.
+#
+# The job it wanted done IS done since 2026-10-02, by sound instead of by
+# confidence: `_keep_what_was_said` keeps exactly the swaps this veto
+# blocked (a confidently wrong word replaced by one that sounds like it)
+# and puts back the ones that sound like nothing the speaker said.
 
 
 def _tail_loss(a: list[str], b: list[str]) -> int:
@@ -309,6 +361,222 @@ def _is_safe(original: str, candidate: str) -> tuple[bool, str]:
         return False, (f"only {ratio:.0%} of the words survived (need "
                        f"{MIN_SIMILARITY:.0%}) — reads as a rewrite")
     return True, ""
+
+
+# ---- the second guarantee: the same word, never another one ----
+#
+# The module docstring has the why and the numbers. What follows is the
+# test itself: a consonant skeleton both scripts map into, and the rule
+# that every word out sounds like a word in and the other way round.
+
+#: A word is covered when this share of its consonants turns up on the
+#: other side. Measured 2026-10-02: 0.6 keeps "הדב" -> "הדבר" (d-b inside
+#: d-b-r) and "מס" -> "מסך", which 0.75 loses, and still puts back
+#: "הנדאוף" -> "ה-Dev" (n-d-p against d-b) and "ימני" -> "שמאלי".
+SOUND_COVER = 0.6
+#: Latin to Latin is a matter of spelling, not of hearing: at most this
+#: share of the letters may change ("hint.anabled" -> "hint.enabled"
+#: stays, "kicard" -> "keyboard" does not) unless the consonants agree.
+LATIN_EDIT = 0.4
+
+_PREFIX_LETTERS = _PREFIX.strip("[]")
+_HYPHENED = re.compile(rf"^[{_PREFIX_LETTERS}]{{1,3}}[-־](.+)$")
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+_HEBREW_LETTER = re.compile(r"[א-ת]")
+
+# One class per sound a Hebrew ear keeps apart. The vowel letters drop out
+# on both sides (א ה ו י ע; a e i o u y), and the pairs that turn into each
+# other between the scripts collapse: p/f/פ, b/v/w/ב, s/sh/ס/ש/צ, k/c/q/
+# ח/כ/ק. A geresh keeps its own sound (ג' j, ז' zh, צ' ch) and so does a
+# doubled vav (w).
+_HEB_SOUND = {
+    "א": "", "ב": "b", "ג": "g", "ד": "d", "ה": "", "ו": "", "ז": "z",
+    "ח": "k", "ט": "t", "י": "", "כ": "k", "ך": "k", "ל": "l", "מ": "m",
+    "ם": "m", "נ": "n", "ן": "n", "ס": "s", "ע": "", "פ": "p", "ף": "p",
+    "צ": "s", "ץ": "s", "ק": "k", "ר": "r", "ש": "s", "ת": "t",
+}
+_GERESH_SOUND = {"ג": "g", "ז": "z", "צ": "c", "ץ": "c"}
+_LATIN_PAIRS = {"ph": "p", "sh": "s", "ch": "c", "th": "t", "ck": "k",
+                "qu": "k"}
+_LATIN_SOUND = {"f": "p", "v": "b", "w": "b", "q": "k", "x": "ks",
+                "j": "g"}
+
+
+def _skeleton(word: str) -> str:
+    """The word's consonants, one class per sound, doubles merged.
+
+    "סלאש" and "slash" are both s-l-s, "מהדב" and "מה-Dev" both m-d-b,
+    "ארצ'יב" and "archive" both r-c-b; "ימני" is m-n and "שמאלי" s-m-l."""
+    w = word.lower()
+    out = []
+    i = 0
+    while i < len(w):
+        ch, nxt = w[i], w[i + 1:i + 2]
+        if ch in _HEB_SOUND:
+            if nxt in ("'", "׳") and ch in _GERESH_SOUND:
+                out.append(_GERESH_SOUND[ch])
+                i += 2
+                continue
+            if ch == "ו" and nxt == "ו":
+                out.append("b")
+                i += 2
+                continue
+            out.append(_HEB_SOUND[ch])
+        elif "a" <= ch <= "z":
+            if w[i:i + 2] in _LATIN_PAIRS:
+                out.append(_LATIN_PAIRS[w[i:i + 2]])
+                i += 2
+                continue
+            if ch == "c":
+                out.append("s" if nxt in ("e", "i", "y") else "k")
+            elif ch not in "aeiouy":
+                out.append(_LATIN_SOUND.get(ch, ch))
+        elif ch.isdigit():
+            out.append(ch)
+        i += 1
+    return re.sub(r"(.)\1+", r"\1", "".join(out))
+
+
+def _common(a: str, b: str) -> int:
+    """Length of the longest common subsequence of two skeletons."""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    for x in a:
+        cur = [0]
+        for j, y in enumerate(b):
+            cur.append(prev[j] + 1 if x == y else max(prev[j + 1], cur[-1]))
+        prev = cur
+    return prev[-1]
+
+
+def _edits(a: str, b: str) -> int:
+    """Levenshtein distance, for Latin-to-Latin spelling."""
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def _same_stem(a: str, b: str) -> bool:
+    """One word give or take Hebrew prefix letters (and a hyphen after
+    them) on either side — vocab.apply's own allowance, both ways."""
+    if a == b:
+        return True
+    long_, short = (a, b) if len(a) > len(b) else (b, a)
+    head = long_[:len(long_) - len(short)]
+    return (len(short) >= 2 and long_.endswith(short) and len(head) <= 4
+            and all(c in _PREFIX_LETTERS or c in "-־" for c in head)
+            and any(c in _PREFIX_LETTERS for c in head))
+
+
+def _runs_in(span: list[str], phrase: list[str]) -> bool:
+    n = len(phrase)
+    return any(_same_stem(span[i], phrase[0]) and span[i + 1:i + n] == phrase[1:]
+               for i in range(len(span) - n + 1))
+
+
+def _taught(said: list[str], got: list[str], glossary) -> bool:
+    """The speaker taught exactly this substitution: a learned pair's heard
+    form is in what was said and its meant form is in what came back."""
+    s = [w.lower() for w in said]
+    g = [w.lower() for w in got]
+    for heard, meant in glossary:
+        h = [w.lower() for w in words(heard)]
+        m = [w.lower() for w in words(meant)]
+        if h and m and _runs_in(g, m) and _runs_in(s, h):
+            return True
+    return False
+
+
+def _covered(word: str, pool: list[str], pool_skeleton: str) -> bool:
+    sounds = _skeleton(word)
+    if not sounds:
+        return True                 # a bare article or conjunction letter
+    best = max([_common(sounds, _skeleton(p)) for p in pool]
+               + [_common(sounds, pool_skeleton)])
+    return best / len(sounds) >= SOUND_COVER
+
+
+def _justified(said: list[str], got: list[str], glossary) -> tuple[bool, str]:
+    """Whether one substituted span may stay, and why not when it may not.
+    The reasons are fixed phrases — they go to transcripts.log beside the
+    words, and app.log only ever gets a count."""
+    if not said:
+        return False, "added a word nobody said"
+    if not got:
+        return False, "dropped a word that was said"
+    if _taught(said, got, glossary):
+        return True, "taught"
+    lowered = [w.lower() for w in said]
+    for word in got:
+        m = _HYPHENED.match(word.lower())
+        if m and m.group(1) in lowered:
+            return False, "a prefix on a word heard without one"
+    if all(_LATIN_LETTER.search(w) and not _HEBREW_LETTER.search(w)
+           for w in said + got):
+        a, b = " ".join(said).lower(), " ".join(got).lower()
+        if (_skeleton(a) == _skeleton(b)
+                or _edits(a, b) / max(len(a), len(b)) <= LATIN_EDIT):
+            return True, "the same English word"
+        return False, "a different English word"
+    said_sounds = "".join(_skeleton(w) for w in said)
+    got_sounds = "".join(_skeleton(w) for w in got)
+    if not all(_covered(w, said, said_sounds) for w in got):
+        return False, "a word that sounds like nothing said"
+    if not all(_covered(w, got, got_sounds) for w in said):
+        return False, "a said word that left no sound behind"
+    return True, "the same sounds"
+
+
+def _keep_what_was_said(text: str, candidate: str,
+                        glossary) -> tuple[str, list[tuple[str, str, str]]]:
+    """The candidate, with every substitution `_justified` refuses put
+    back to the words of `text`. Returns (repaired, undone), where undone
+    is one (said, model_wrote, why) per span put back.
+
+    Span by span on purpose: one bad swap in a reply that also fixed
+    "סלאש קליר" to "slash clear" costs that swap, not the whole repair.
+    Putting back the decoder's own words is always safe — it moves the
+    text toward what was heard, never away from it."""
+    said = list(_WORD.finditer(text))
+    got = list(_WORD.finditer(candidate))
+    ops = difflib.SequenceMatcher(None, [m.group().lower() for m in said],
+                                  [m.group().lower() for m in got],
+                                  autojunk=False).get_opcodes()
+    patches = []
+    undone = []
+    for tag, i1, i2, j1, j2 in ops:
+        if tag == "equal":
+            continue
+        before = [m.group() for m in said[i1:i2]]
+        after = [m.group() for m in got[j1:j2]]
+        ok, why = _justified(before, after, glossary)
+        if ok:
+            continue
+        undone.append((" ".join(before), " ".join(after), why))
+        back = text[said[i1].start():said[i2 - 1].end()] if before else ""
+        if after:
+            start, end = got[j1].start(), got[j2 - 1].end()
+            if not back:            # an added word: its space goes with it
+                if start > 0 and candidate[start - 1] == " ":
+                    start -= 1
+                elif end < len(candidate) and candidate[end] == " ":
+                    end += 1
+            patches.append((start, end, back))
+        elif j1 < len(got):         # a dropped word: back in its place
+            patches.append((got[j1].start(), got[j1].start(), back + " "))
+        elif got:
+            patches.append((got[-1].end(), got[-1].end(), " " + back))
+        else:
+            patches.append((0, len(candidate), back))
+    repaired = candidate
+    for start, end, back in sorted(patches, reverse=True):
+        repaired = repaired[:start] + back + repaired[end:]
+    return re.sub(r" {2,}", " ", repaired).strip(), undone
 
 
 class Polisher:
@@ -559,6 +827,22 @@ class Polisher:
                 transcript_log.info("POLISH-REJECTED | %s | %s | %s",
                                     backend.name, why, wanted[:300])
                 return text, None
+            # The second guarantee, per word (module docstring): a swap
+            # that is not the same word in another spelling, and that he
+            # never taught, goes back to the words that were heard. The
+            # glossary is the one this reply was asked with.
+            candidate, undone = _keep_what_was_said(
+                text, candidate, self._vocab.glossary())
+            if undone:
+                # D8 again: app.log counts them, transcripts.log keeps the
+                # words — one line per span, so a week of these is the
+                # census the next decision about this pass is made on.
+                log.info("polish from %s: %d substitution(s) put back to "
+                         "the words that were heard", backend.name,
+                         len(undone))
+                for before, after, why in undone:
+                    transcript_log.info("POLISH-UNDONE | %s | %s || %s | %s",
+                                        backend.name, before, after, why)
             if candidate.strip() == text.strip():
                 return text, None          # nothing to say about a no-op
             return candidate.strip(), backend.name
