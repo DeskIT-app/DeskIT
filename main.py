@@ -2140,7 +2140,7 @@ class App:
             if section == "privacy":
                 privacy.configure(fresh)
             live = True
-        message = settings_mod.saved_sentence(name, live=live)
+        message = settings_mod.saved_sentence(name, value, live=live)
         self._say(message)
         log.info("%s (%s)", message, name)
         return message

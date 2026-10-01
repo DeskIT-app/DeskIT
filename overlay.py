@@ -1530,15 +1530,16 @@ class HintCard:
         self._changed(scale=round(self.scale, 3))
 
     def sized(self, scale: float, compact: bool) -> None:
-        """A press of − or +: the size and whether it is the small card,
-        as skin.hint.step answered. Only what changed is written."""
+        """A corner drag's drop: the size and whether it is the small card,
+        as skin.hint.fit answered. Only what changed is written, and an
+        "All keys" ends there — the size was just chosen."""
         fields = {}
+        self._peek = False
         if round(float(scale), 3) != round(self.scale, 3):
             self.scale = float(scale)
             fields["scale"] = round(self.scale, 3)
         if bool(compact) != self.compact:
             self.compact = bool(compact)
-            self._peek = False
             fields["compact"] = self.compact
         if fields:
             self._changed(**fields)
@@ -4446,7 +4447,7 @@ def _hint_paint(canvas, card: dict, scale: float = 1.0,
 
     `scale` is honoured but cannot be CHANGED from here: this window is
     click-through, for the same reason the dot is, and skin\\hint.py is
-    where the − and + live. A size chosen there still comes back here,
+    where the corner grip lives. A size chosen there still comes back here,
     because it is saved in config.toml rather than held in a window.
     """
     s = max(0.6, min(1.4, float(scale)))

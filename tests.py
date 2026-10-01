@@ -20622,11 +20622,11 @@ def test_a_failed_save_never_reaches_the_keyboard_thread() -> None:
     assert (card.x, card.y) == (10, 20)
 
 
-def test_the_card_takes_the_mouse_in_five_places_and_nowhere_else() -> None:
-    """The drag strip, the X, − and +, and the box. Everything else
-    answers HTTRANSPARENT, so a click aimed at the close button of a
-    maximised window underneath still reaches it — the trap the status dot
-    paid for once already."""
+def test_the_card_takes_the_mouse_in_a_few_places_and_nowhere_else() -> None:
+    """The drag strip, the X, the box and the size grip in the corner.
+    Everything else answers HTTRANSPARENT, so a click aimed at the close
+    button of a maximised window underneath still reaches it — the trap
+    the status dot paid for once already."""
     try:
         from skin import glass as skin_glass, hint as skin_hint
     except Exception:
@@ -20666,15 +20666,27 @@ def test_the_card_takes_the_mouse_in_five_places_and_nowhere_else() -> None:
             == skin_glass.HTTRANSPARENT
         # left to right since 2026-10-01: the box at the left edge
         assert fy[0] < pad + skin_hint.PAD * scale, fy
-    # −, + and the X sit in a row, left to right, not on top of each other,
-    # the X in the corner and a clear gap from + so a size press is not a
-    # close
+    # The X in the top-right corner, alone since − and + went (2026-10-01,
+    # "instead of plus and minus, the corner — like any app's window");
+    # the size grip in the bottom-right corner, answering the code Windows
+    # draws the diagonal resize cursor for, and touching nothing else that
+    # takes a click — in the small card's foot either.
     boxes = skin_hint.regions(card, 1.0)
-    assert boxes[skin_hint.SMALLER][2] <= boxes[skin_hint.BIGGER][0], boxes
-    assert boxes[skin_hint.BIGGER][2] < boxes[skin_hint.CLOSE][0], boxes
-    assert boxes[skin_hint.CLOSE][0] - boxes[skin_hint.BIGGER][2] >= 10
-    width, _h = skin_hint.measure(card, 1.0)
-    assert boxes[skin_hint.CLOSE][2] == skin_hint.SHADOW + width - skin_hint.PAD
+    width, height = skin_hint.measure(card, 1.0)
+    edge = skin_hint.SHADOW
+    assert set(boxes) == {skin_hint.CLOSE, skin_hint.DISMISS,
+                          skin_hint.GRIP_HIT, skin_hint.DRAG}, boxes
+    assert boxes[skin_hint.CLOSE][2] == edge + width - skin_hint.PAD
+    gx0, gy0, gx1, gy1 = boxes[skin_hint.GRIP_HIT]
+    assert (gx1, gy1) == (edge + width, edge + height), boxes
+    assert gx1 - gx0 >= skin_hint.GRIP_MIN and gy1 - gy0 >= skin_hint.GRIP_MIN
+    assert skin_hint.hit_test(card, 1.0, gx1 - 2, gy1 - 2) == (
+        skin_glass.HTBOTTOMRIGHT, skin_hint.GRIP_HIT)
+    for scale in (0.8, 1.0, 1.4):
+        for view in (skin_hint.COMPACT, skin_hint.PEEK):
+            small = skin_hint.regions(card, scale, view)
+            g, m = small[skin_hint.GRIP_HIT], small[skin_hint.MORE]
+            assert m[2] < g[0] or m[3] < g[1], (scale, view, g, m)
 
 
 def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
@@ -20693,21 +20705,50 @@ def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
     # was 0.6 on 2026-09-24) is drawn at the card's smallest, not refused.
     assert skin_hint.clamp_scale(config_mod.HINT_SCALE_MIN) == \
         skin_hint.SCALE_MIN
-    # ...and the first + from there is a press that changes the size on
-    # screen: stepped from the 0.8 he sees, not the 0.6 in the file
-    lo, hi, inc = skin_hint.SCALE_MIN, skin_hint.SCALE_MAX, skin_hint.STEP
-    assert skin_hint.step(0.6, False, 1) == (round(lo + inc, 3), False)
-    assert skin_hint.step(1.2, False, -1) == (1.1, False)
-    assert skin_hint.step(hi, False, 1) == (hi, False)
-    # The ladder's bottom rung is the small card (2026-10-01, his ask: "I
-    # want to make it smaller still — maybe only the most important ones
-    # when I shrink it"): − at the smallest size is the small card, − on
-    # the small card does nothing more, + leaves it at the size it had.
-    assert skin_hint.step(0.6, False, -1) == (lo, True)
-    assert skin_hint.step(lo, False, -1) == (lo, True)
-    assert skin_hint.step(lo, True, -1) == (lo, True)
-    assert skin_hint.step(lo, True, 1) == (lo, False)
-    assert skin_hint.step(1.2, True, 1) == (1.2, False)
+
+
+
+def test_dragging_the_corner_asks_for_the_size_nearest_the_pointer() -> None:
+    """The corner drag (2026-10-01): `fit` reads where the corner is asked
+    to be along the card's own diagonal, lands on a multiple of
+    RESIZE_STEP inside 0.8 .. 1.4, and below the full card at 0.8 snaps to
+    the small card — halfway between the two, not at the first pixel."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    lo, hi = skin_hint.SCALE_MIN, skin_hint.SCALE_MAX
+    card = hint_mod.card_for(_hint_cfg(), hint_mod.HOLD,
+                             main_mod._SCREEN_ACTIONS)
+    fw, fh = skin_hint.measure(card, 1.0)
+    # the corner held exactly where a scale's card would end is that scale
+    for scale in (0.8, 0.9, 1.0, 1.2, 1.4):
+        assert skin_hint.fit(card, fw * scale, fh * scale) == (scale, False)
+    # a sideways tug moves it along the diagonal, by a step at a time
+    s, small = skin_hint.fit(card, fw * 1.1 + 3, fh * 1.1 - 3)
+    assert not small and abs(s - 1.1) < 1e-9, s
+    s, _small = skin_hint.fit(card, fw * 1.031, fh * 1.031)
+    assert abs(s / skin_hint.RESIZE_STEP - round(s / skin_hint.RESIZE_STEP)) \
+        < 1e-6, s
+    # past either end it stops at the end
+    assert skin_hint.fit(card, fw * 3, fh * 3) == (hi, False)
+    # smaller than the full card at 0.8: the small card, or the full card
+    # at 0.8, whichever the corner is nearer
+    cw, ch = skin_hint.measure(card, lo, skin_hint.COMPACT)
+    mw, mh = skin_hint.measure(card, lo)
+    assert skin_hint.fit(card, cw, ch) == (lo, True)
+    assert skin_hint.fit(card, 10, 10) == (lo, True)
+    assert skin_hint.fit(card, cw + (mw - cw) * 0.3,
+                         ch + (mh - ch) * 0.3) == (lo, True)
+    assert skin_hint.fit(card, cw + (mw - cw) * 0.7,
+                         ch + (mh - ch) * 0.7) == (lo, False)
+    # the preview's size is the full card's times the scale, without a
+    # layout (a layout at a new scale renders every string again)
+    assert skin_hint.guess(card, 1.2, False) == (round(fw * 1.2),
+                                                 round(fh * 1.2))
+    assert skin_hint.guess(card, 1.2, True) == (cw, ch)
 
 
 def test_the_key_card_is_readable_at_its_smallest_and_not_half_a_screen(
@@ -20889,7 +20930,7 @@ def test_the_hint_card_keeps_the_small_card_and_peeks_for_one_dictation(
     assert card.view == "full"
     card.more()
     assert card.view == "full" and writes == [], "the full card folds nothing"
-    card.sized(0.8, True)                   # − at the smallest size
+    card.sized(0.8, True)                   # the corner dragged past 0.8
     assert card.view == "compact" and writes == [{"compact": True}], writes
     card.more()
     assert card.view == "peek" and len(writes) == 1, "a peek is not saved"
@@ -20902,7 +20943,7 @@ def test_the_hint_card_keeps_the_small_card_and_peeks_for_one_dictation(
         gone()
         assert card.view == "compact", gone.__name__
     writes.clear()
-    card.sized(0.8, False)                  # + on the small card
+    card.sized(0.8, False)                  # ...and dragged bigger again
     assert card.view == "full" and writes == [{"compact": False}], writes
     writes.clear()
     card.sized(0.9, False)
@@ -20914,6 +20955,63 @@ def test_the_hint_card_keeps_the_small_card_and_peeks_for_one_dictation(
     assert "hint.compact" in config_mod.STATE_KEYS
     assert config_mod.HintConfig().compact is False
     assert _hint_cfg().hint.compact is False
+
+
+def test_a_glass_window_takes_its_corner_and_resizes_in_place() -> None:
+    """skin\\glass's half of the corner drag. A press where the hit test
+    answered HTBOTTOMRIGHT goes to `gripped` (screen coordinates) and NOT
+    to DefWindowProc, whose modal sizing loop would stall this thread; the
+    window says it is `gripping` until the button comes up. And resize()
+    gives the same window — the same handle, so the capture survives — a
+    new size that the next present() puts on screen. The drag itself needs
+    a real mouse (AGENTS.md); everything around it is here."""
+    try:
+        from skin import glass as skin_glass
+    except Exception:
+        return
+    import ctypes
+    import ctypes.wintypes
+    from PIL import Image
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                    ctypes.c_size_t, ctypes.c_ssize_t]
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+    user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    pressed = []
+    glass = skin_glass.Glass(40, 50, 120, 80, gpu=False,
+                             hit=lambda x, y: skin_glass.HTBOTTOMRIGHT,
+                             gripped=lambda x, y: pressed.append((x, y)))
+    try:
+        glass.present(Image.new("RGBA", (120, 80), (10, 20, 30, 200)))
+        lparam = (155 & 0xFFFF) | ((125 & 0xFFFF) << 16)
+        user32.SendMessageW(glass.hwnd, skin_glass.WM_NCLBUTTONDOWN,
+                            skin_glass.HTBOTTOMRIGHT, lparam)
+        assert pressed == [(155, 125)], pressed
+        assert glass.gripping
+        user32.SendMessageW(glass.hwnd, skin_glass.WM_LBUTTONUP, 0, 0)
+        assert not glass.gripping
+        # a press on anything else is not a grip (HTCLIENT: a caption
+        # press would start Windows' own move loop, which waits for a hand)
+        user32.SendMessageW(glass.hwnd, skin_glass.WM_NCLBUTTONDOWN,
+                            skin_glass.HTCLIENT, lparam)
+        assert pressed == [(155, 125)] and not glass.gripping, pressed
+        hwnd = glass.hwnd
+        glass.resize(200, 140)
+        assert glass.hwnd == hwnd and (glass.width, glass.height) == (200, 140)
+        assert glass.present(Image.new("RGBA", (200, 140), (10, 20, 30, 200)))
+        rect = ctypes.wintypes.RECT()
+        user32.GetWindowRect(glass.hwnd, ctypes.byref(rect))
+        assert (rect.right - rect.left, rect.bottom - rect.top) == (200, 140)
+        glass.resize(90, 60)
+        assert glass.present(Image.new("RGBA", (90, 60), (10, 20, 30, 200)))
+        user32.GetWindowRect(glass.hwnd, ctypes.byref(rect))
+        assert (rect.right - rect.left, rect.bottom - rect.top) == (90, 60)
+        glass.gripping = True
+        glass.let_go()
+        assert not glass.gripping
+    finally:
+        glass.close()
 
 
 def test_the_key_card_is_english_left_to_right_and_smooth() -> None:
@@ -23014,6 +23112,35 @@ def test_no_message_about_a_setting_calls_it_what_the_file_calls_it() -> None:
         assert "next time" in settings_mod.saved_sentence(path, live=False)
         assert "next time" not in settings_mod.saved_sentence(path)
 
+    # A switch answers WHICH WAY it went: his two screenshots of
+    # 2026-10-01 are the same sentence, one taken after turning the key
+    # card off and one after turning it back on.
+    here = Path(__file__).resolve().parent
+    sections = settings_mod.read(here / "defaults.toml")
+    switches = menus = 0
+    for path in settings_mod.friendly_paths():
+        setting = settings_mod.find(sections, path)
+        if setting is None:
+            continue
+        if settings_mod.kind_of(setting.value) == "bool":
+            on = settings_mod.saved_sentence(path, True)
+            off = settings_mod.saved_sentence(path, False)
+            assert on.endswith("is now on"), on
+            assert off.endswith("is now off"), off
+            want = (f'"{settings_mod.label_for(path)}" will be off '
+                    "the next time it starts")
+            later = settings_mod.saved_sentence(path, False, live=False)
+            assert later == want, later
+            switches += 1
+            continue
+        row = settings_mod._row_for(path)
+        if row is not None and len(row.names) > 1:
+            said = {settings_mod.saved_sentence(path, choice)
+                    for choice, _name in row.names}
+            assert len(said) == len(row.names), (path, said)
+            menus += 1
+    assert switches > 10 and menus > 3, (switches, menus)
+
     # A measurement no tab draws has no name a person would know, so its
     # message carries none — rather than falling back to the path, which
     # is the bug itself.
@@ -23027,7 +23154,6 @@ def test_no_message_about_a_setting_calls_it_what_the_file_calls_it() -> None:
         off = config_mod.rebound_sentence(field, "")
         assert field not in off and label in off, off
 
-    here = Path(__file__).resolve().parent
     for name in ("dashboard.py", "main.py"):
         source = (here / name).read_text(encoding="utf-8")
         for shape in ("{setting.path} saved", "{name} saved",
@@ -23101,7 +23227,8 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
             asked.append((command, args))
             if then is not None:
                 then({"ok": True, "message":
-                      settings_mod.saved_sentence(args["name"])})
+                      settings_mod.saved_sentence(args["name"],
+                                                  args["value"])})
 
         def never(*_a, **_k):
             raise AssertionError("the dashboard wrote the file itself")
