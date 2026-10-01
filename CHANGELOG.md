@@ -14,7 +14,7 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 
 ## 1.0.5
 
-Settings tells me what I changed in the words I had just read. I turned a switch off and on again and the message at the bottom of the window said "hint.enabled saved" — the name of a line in a file I have never opened, for the row I was looking at. Every one of those messages now says the row back to me: "Show the key card while a key is held" — saved, and it tells me the same way whether the change is live or waiting for the next start. Moving a key says "Screenshot (tap)" is now ctrl+f11 rather than capture_hotkey, and when I type something a row cannot take, it is the row's own name that says so.
+Settings tells me what I changed, in the words I had just read. I turned a switch off and on again and the message at the bottom of the window said "hint.enabled saved" — the name of a line in a file I have never opened, for the row I was looking at — and it said exactly that both times, so it never told me which way the switch had gone. Now it says the row back to me and where it landed: "Show the key card while a key is held" is now off, or will be off the next time it starts when the change has to wait for one. A menu says the choice I picked, a number says itself, and moving a key says "Screenshot (tap)" is now ctrl+f11 rather than capture_hotkey. When I type something a row cannot take, it is the row's own name that says so.
 
 ## 1.0.4
 
