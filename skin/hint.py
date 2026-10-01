@@ -10,7 +10,8 @@ WHAT IT LOOKS LIKE, SINCE 2026-10-01. A LAMPLIGHT card — face.py's plate,
 the same shadow, surface and rim as the boot card — read LEFT TO RIGHT and
 in ENGLISH (his word: "everything in English here, and right to left, left
 to right, changed accordingly"): the state bead, the title and its sub on
-the left of ONE head line, − + and the X at its right, and the keys in
+the left of ONE head line, the X at its right, a size grip in the
+bottom-right corner like any window's, and the keys in
 their three groups (hint.py names them) in TWO COLUMNS — the dictation and
 the screen on the left, "Other" on the right. Every key cap is one width,
 so each column reads as a column, and the card is exactly as wide as its
@@ -24,12 +25,15 @@ tall at 1.0 and 913 at 1.4; at the 0.6 he had pressed it down to, a label
 was 8 px. Two columns halve the height, the text is 12 pt (16 px at 1.0,
 12.8 at 0.8), and nothing is reserved for words that are not there.
 
-THE SMALL CARD (2026-10-01). He wanted it smaller still, and smaller TEXT
-is the one thing that cannot be the answer — so the step below the
-smallest size is FEWER ROWS: − at 0.8 shows only the dictation's own keys
-(release, lock, Esc), with "All keys" at the foot to see the rest for that
-one dictation ("Fewer keys" folds it again). + leaves the small card. The
-ladder is `step()`; the card keeps `compact` in state.json like its scale.
+THE SMALL CARD AND THE CORNER (2026-10-01). He wanted it smaller still,
+and smaller TEXT is the one thing that cannot be the answer — so below
+the smallest size is FEWER ROWS: only the dictation's own keys (release,
+lock, Esc), with "All keys" at the foot to see the rest for that one
+dictation ("Fewer keys" folds it again). The size is set by dragging the
+card's bottom-right corner — his second ask that day, "instead of plus and
+minus, like any app's window" — and dragging it smaller than the full card
+at 0.8 lands on the small card (`fit`). The card keeps `compact` in
+state.json like its scale; `run()` has the drag.
 
 THE TEXT IS FREETYPE, NOT GDI (2026-10-01). "My screen is 2K, it should
 not look blurry, and the round strokes look pixelated" — measured: GDI's
@@ -64,8 +68,9 @@ glass.present(), which needs neither.
   would be spending the one resource the dictation is waiting for.
 
 * **It takes the mouse in a few small rectangles and nowhere else.** The
-  strip along the top drags it, − and + resize it, × closes it, the box
-  at the bottom ticks, "All keys" / "Fewer keys" folds it, and every
+  strip along the top drags it, the grip in its corner resizes it, ×
+  closes it, the box at the bottom ticks, "All keys" / "Fewer keys"
+  folds it, and every
   other pixel answers HTTRANSPARENT — so a click aimed at the close button
   of a maximised window underneath still lands on the close button. That
   is the trap the status dot paid for once already, and the reason this
@@ -89,7 +94,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .face import disc, plate, rule, shape
 from .glass import (Glass, primary_screen, virtual_screen, work_area,
-                    HTTRANSPARENT, HTCLIENT, HTCAPTION)
+                    cursor, primary_button_down,
+                    HTTRANSPARENT, HTCLIENT, HTCAPTION, HTBOTTOMRIGHT)
 from .palette import (BG, LINE, FG, KEY_BG, KEY_EDGE, LINE_HI, DOT_STATES,
                       ACCENT, ACCENT_ON, ACCENT_TEXT, rgb)
 
@@ -117,15 +123,16 @@ SHADOW = 26               # room around the card for its own shadow
 FACE_A = 216              # the face's alpha. boot.py uses 252; this is glass
 BLUR = 11                 # px, the frost behind it
 DOT_ROOM = 46             # the status dot's own corner, which is not ours
-STEP = 0.1                # what one press of − or + is worth
 # The card's own range sits INSIDE config.py's (0.6 .. 1.4, which the
 # review and notify cards share): 0.8 is the smallest size at which a
 # label is still 12.8 px. A 0.6 saved by the card before 2026-09-24 is
-# drawn at 0.8, not refused. Below 0.8 is the small card (`step`).
+# drawn at 0.8, not refused. Below 0.8 is the small card (`fit`).
 SCALE_MIN, SCALE_MAX = 0.8, 1.4
-BTN = 20                  # the ×, − and + squares
-BTN_GAP = 4               # between − and +
-CLOSE_GAP = 12            # between + and ×, so a size press is not a close
+BTN = 20                  # the × square
+GRIP = 14                 # the size grip: this square in the bottom-right
+GRIP_MIN = 12             # corner, never smaller than this many pixels
+RESIZE_STEP = 0.02        # a corner drag lands on a multiple of this scale
+PREVIEW_HOLD_S = 0.12     # the pointer still this long: draw it sharp
 
 PT_TITLE = 14.0
 PT_SUB = 10.5
@@ -155,8 +162,8 @@ DOTS = {name: rgb(DOT_STATES[name][0])
 
 # What a hit landed on, for the click handler. Kept as strings rather than
 # rectangles on the instance so `regions()` can be tested without a window.
-CLOSE, SMALLER, BIGGER, DISMISS, MORE, DRAG = (
-    "close", "smaller", "bigger", "dismiss", "more", "drag")
+CLOSE, DISMISS, MORE, GRIP_HIT, DRAG = (
+    "close", "dismiss", "more", "grip", "drag")
 
 # The three ways the card can be laid out. FULL: every key, nothing to
 # fold. COMPACT: the small card, the dictation's rows and "All keys".
@@ -295,24 +302,37 @@ def clamp_scale(scale: float) -> float:
     return max(SCALE_MIN, min(SCALE_MAX, round(float(scale), 3)))
 
 
-def step(scale: float, compact: bool, by: int) -> tuple[float, bool]:
-    """One press of − (by < 0) or + (by > 0): the size it leaves.
+def fit(card: dict, want_w: float, want_h: float) -> tuple[float, bool]:
+    """The size a corner drag asks for: (scale, small card?).
 
-    The ladder is the small card, then 0.8 .. 1.4. − at the smallest size
-    is the small card, which is as small as it goes; + on the small card
-    is every key again at the size it had. Stepped from the size ON SCREEN,
-    not the one saved: a 0.6 from before 2026-09-24 is drawn at 0.8, and
-    0.6 + 0.1 would be a press of + that changes nothing."""
-    now = clamp_scale(scale)
-    if by < 0:
-        if compact:
-            return now, True
-        if now > SCALE_MIN:
-            return clamp_scale(now - STEP), False
-        return now, True
+    The card keeps its proportions, so the drag is read along its
+    diagonal — the scale whose card is nearest (want_w, want_h) — and
+    lands on a multiple of RESIZE_STEP inside 0.8 .. 1.4. Smaller than the
+    full card at 0.8 is the small card, which has one size: the drag
+    snaps to whichever of the two it is nearer, along the line between
+    them, so the switch happens halfway and not at the first pixel."""
+    fw, fh = measure(card, 1.0, FULL)
+    s = (want_w * fw + want_h * fh) / float(fw * fw + fh * fh)
+    if s >= SCALE_MIN:
+        q = round(round(s / RESIZE_STEP) * RESIZE_STEP, 3)
+        return min(SCALE_MAX, max(SCALE_MIN, q)), False
+    cw, ch = measure(card, SCALE_MIN, COMPACT)
+    mw, mh = measure(card, SCALE_MIN, FULL)
+    dx, dy = mw - cw, mh - ch
+    t = ((want_w - cw) * dx + (want_h - ch) * dy) / float(dx * dx + dy * dy
+                                                         or 1)
+    return SCALE_MIN, t < 0.5
+
+
+def guess(card: dict, scale: float, compact: bool) -> tuple[int, int]:
+    """The card's size at (scale, compact) WITHOUT laying it out — the
+    full card at 1.0 times the scale, or the small card as measured. What
+    a drag's preview frame is sized by: measuring a new scale renders
+    every string again, which is the cost the preview is there to skip."""
     if compact:
-        return now, False
-    return clamp_scale(now + STEP), False
+        return measure(card, SCALE_MIN, COMPACT)
+    fw, fh = measure(card, 1.0, FULL)
+    return int(round(fw * scale)), int(round(fh * scale))
 
 
 def _groups(card: dict) -> list:
@@ -408,8 +428,7 @@ class _Layout:
         rows_w = sum(widths) + COL_GAP * s * (len(widths) - 1)
         title = _text(card.get("title", ""), PT_TITLE * s, weight=W_STRONG)
         sub = _text(card.get("sub", ""), PT_SUB * s)
-        buttons = (BTN * 3 + BTN_GAP + CLOSE_GAP) * s
-        head_w = 16 * s + title.width + 10 * s + sub.width + 18 * s + buttons
+        head_w = 16 * s + title.width + 10 * s + sub.width + 18 * s + BTN * s
         foot = _text(card.get("footer", ""), PT_FOOT * s)
         self.toggle = TOGGLE.get(view)
         toggle_w = 0.0
@@ -444,18 +463,20 @@ class _Layout:
         line_mid = y0 + pad + HEAD_H * s / 2 - 2 * s
         top = line_mid - BTN * s / 2
         close = (right - BTN * s, top, right, top + BTN * s)
-        bigger = (close[0] - CLOSE_GAP * s - BTN * s, top,
-                  close[0] - CLOSE_GAP * s, top + BTN * s)
-        smaller = (bigger[0] - BTN_GAP * s - BTN * s, top,
-                   bigger[0] - BTN_GAP * s, top + BTN * s)
         fy = y0 + self.height - (FOOT_H + PAD - 4) * s
         # the box and its words, not the whole row: the row is as wide as
         # the card, and the rest of it is the window behind
         dismiss = (left - 6, fy, left + (BOX + 8) * s + foot.width + 6 * s,
                    fy + FOOT_H * s - 4)
         drag = (x0, y0, x0 + self.width, y0 + (PAD + HEAD_H) * s)
-        self.boxes = {CLOSE: close, SMALLER: smaller, BIGGER: bigger,
-                      DISMISS: dismiss, DRAG: drag}
+        # The size grip, in the card's own bottom-right corner — inside the
+        # padding, below and right of anything that takes a click (a test
+        # holds that it never meets "All keys").
+        g = max(GRIP_MIN, GRIP * s)
+        grip = (x0 + self.width - g, y0 + self.height - g,
+                x0 + self.width, y0 + self.height)
+        self.boxes = {CLOSE: close, DISMISS: dismiss, GRIP_HIT: grip,
+                      DRAG: drag}
         if self.toggle:
             cy = fy + (FOOT_H * s - 4) / 2
             self.boxes[MORE] = (right - toggle_w, cy - 11 * s, right,
@@ -486,7 +507,8 @@ def measure(card: dict, scale: float = 1.0,
 
 def regions(card: dict, scale: float = 1.0, view: str = FULL) -> dict:
     """The rectangles that take the mouse, window-relative: the drag
-    strip, ×, − and +, the box, and in the small card the fold button.
+    strip, ×, the box, the size grip, and in the small card the fold
+    button.
 
     Returned as data so a test can check that they are inside the card,
     do not overlap, and move with the scale — none of which needs a
@@ -506,9 +528,13 @@ def hit_test(card: dict, scale: float, x: int, y: int, view: str = FULL):
     is what lets a click go through to the window underneath.
     """
     boxes = regions(card, scale, view)
-    for name in (CLOSE, SMALLER, BIGGER, DISMISS, MORE):
+    for name in (CLOSE, DISMISS, MORE):
         if name in boxes and _in(boxes[name], x, y):
             return HTCLIENT, name
+    if _in(boxes[GRIP_HIT], x, y):
+        # Windows draws the diagonal resize cursor for this answer by
+        # itself; the press is skin\glass's (`gripped`), not DefWindowProc's
+        return HTBOTTOMRIGHT, GRIP_HIT
     if _in(boxes[DRAG], x, y):
         return HTCAPTION, DRAG
     return HTTRANSPARENT, None
@@ -531,12 +557,31 @@ def _frost(x: int, y: int, width: int, height: int):
 def _rrect(img, box, radius, fill=None, outline=None, width=1):
     """A rounded rectangle composited OVER the picture — antialiased, and
     a layer rather than a draw, because ImageDraw's fill replaces pixels,
-    which on a translucent face punches a hole."""
-    img.alpha_composite(shape(img.size, box, radius, fill, outline, width))
+    which on a translucent face punches a hole. The layer is the shape's
+    own patch, not the whole window: twenty-odd caps each compositing a
+    window-sized layer was a third of a repaint (measured 2026-10-01)."""
+    x0 = max(0, int(math.floor(box[0])) - 2)
+    y0 = max(0, int(math.floor(box[1])) - 2)
+    x1 = min(img.width, int(math.ceil(box[2])) + 3)
+    y1 = min(img.height, int(math.ceil(box[3])) + 3)
+    if x1 <= x0 or y1 <= y0:
+        return
+    local = (box[0] - x0, box[1] - y0, box[2] - x0, box[3] - y0)
+    img.alpha_composite(shape((x1 - x0, y1 - y0), local, radius, fill,
+                              outline, width), (x0, y0))
 
 
 def _rule(img, x0, x1, y, colour):
-    img.alpha_composite(rule(img.size, x0, x1, y, colour))
+    """A hairline, on its own three-row patch for the same reason."""
+    if x1 <= x0:
+        return
+    left, top = max(0, int(math.floor(x0))), max(0, int(round(y)) - 1)
+    w = min(img.width, int(math.ceil(x1)) + 2) - left
+    h = min(img.height, top + 3) - top
+    if w <= 0 or h <= 0:
+        return
+    img.alpha_composite(rule((w, h), x0 - left, x1 - left, y - top, colour),
+                        (left, top))
 
 
 def _strokes(img, segments, colour, width) -> None:
@@ -607,7 +652,7 @@ def paint(card: dict, backdrop=None, scale: float = 1.0,
                                       int(round(cy + ink.cap / 2 - ink.base))))
 
     # -- the head, ONE line: the state bead, the title and what it means on
-    # the left; −, + and × on the right; the whole strip is the handle.
+    # the left; × on the right; the whole strip is the handle.
     mid = lay.line_mid
     bead = DOTS.get(card.get("dot"), DOTS["ready"])
     bx, br = left + 5 * s, 4.5 * s
@@ -619,19 +664,21 @@ def paint(card: dict, backdrop=None, scale: float = 1.0,
     put(sub, left + 16 * s + title.width + 10 * s, mid)
 
     ink = rgb(FG) + (215,)
-    for name in (SMALLER, BIGGER, CLOSE):
-        bx0, by0, bx1, by1 = boxes[name]
-        _rrect(img, (bx0, by0, bx1, by1), 5 * s, fill=rgb(BG) + (110,),
-               outline=rgb(LINE_HI) + (150,))
-        cx, cy, arm = (bx0 + bx1) / 2, (by0 + by1) / 2, 4.5 * s
-        if name == CLOSE:
-            lines = [(cx - arm, cy - arm, cx + arm, cy + arm),
-                     (cx - arm, cy + arm, cx + arm, cy - arm)]
-        elif name == SMALLER:
-            lines = [(cx - arm, cy, cx + arm, cy)]
-        else:
-            lines = [(cx - arm, cy, cx + arm, cy), (cx, cy - arm, cx, cy + arm)]
-        _strokes(img, lines, ink, 1.6 * s)
+    bx0, by0, bx1, by1 = boxes[CLOSE]
+    _rrect(img, (bx0, by0, bx1, by1), 5 * s, fill=rgb(BG) + (110,),
+           outline=rgb(LINE_HI) + (150,))
+    cx, cy, arm = (bx0 + bx1) / 2, (by0 + by1) / 2, 4.5 * s
+    _strokes(img, [(cx - arm, cy - arm, cx + arm, cy + arm),
+                   (cx - arm, cy + arm, cx + arm, cy - arm)], ink, 1.6 * s)
+
+    # -- the size grip: two short diagonals in the bottom-right corner, the
+    # mark every window's corner has carried. Inside the corner's curve:
+    # the outer one stops 6 px in from both edges, where the radius has
+    # long since turned.
+    gx, gy = x0 + lay.width - 6 * s, y0 + lay.height - 6 * s
+    grip_ink = INK_DIM + (190,)
+    _strokes(img, [(gx - 9 * s, gy, gx, gy - 9 * s),
+                   (gx - 4.5 * s, gy, gx, gy - 4.5 * s)], grip_ink, 1.4 * s)
 
     y = y0 + (PAD + HEAD_H) * s
     _rule(img, x0 + pad, right, y, line + (150,))
@@ -720,18 +767,33 @@ def run(hint_card) -> None:
     reimplemented here.
 
     The window is built when a card becomes due and destroyed when it goes
-    away, because its size depends on how many keys are live, on their
-    words, on the scale and on the view. That is a few milliseconds once
-    per hesitated dictation, against keeping a layered window alive for a
-    panel that is usually not on screen.
+    away; while it is up, a new size is the same window resized in place
+    (Glass.resize). That is a few milliseconds once per hesitated
+    dictation, against keeping a layered window alive for a panel that is
+    usually not on screen.
+
+    THE CORNER DRAG (2026-10-01, his ask: "instead of plus and minus, the
+    corner — drag it bigger and smaller, like any app's window"). A press
+    on the grip is skin\\glass's (`gripped`, the mouse captured); until the
+    button comes up the loop reads the pointer every tick, asks `fit` what
+    size it is asking for and shows a PREVIEW — the last sharp picture of
+    that view stretched to the size `guess` gives, a few milliseconds —
+    because a real repaint at a size never drawn before is 70-280 ms
+    (measured: the plate's shadow, and every string set again at the new
+    size). Once the pointer has rested PREVIEW_HOLD_S the size is drawn
+    sharp; at the drop it is saved (HintCard.sized), and the card's
+    top-left was written where it stood when the drag began, so the card
+    stays put the way a window does when its corner is dragged.
     """
     import overlay
+    from PIL import Image as _Image
 
     glass = None
     shown = None                   # the card currently painted
     pending = None                 # the card waiting for its delay
     due = None
     redraw = False
+    drag = None                    # the corner drag in progress, or None
     hint_card._alive.set()
 
     def view():
@@ -739,6 +801,8 @@ def run(hint_card) -> None:
 
     def take_down():
         nonlocal glass, shown
+        if drag is not None:
+            end_drag()             # the key let go mid-drag: keep the size
         if glass is not None:
             glass.close()
             glass = None
@@ -768,12 +832,7 @@ def run(hint_card) -> None:
         nonlocal redraw, pending, due
         _code, what = hit_test(shown or pending, hint_card.scale, x, y,
                                view())
-        if what in (SMALLER, BIGGER):
-            scale, compact = step(hint_card.scale,
-                                  getattr(hint_card, "compact", False),
-                                  -1 if what == SMALLER else 1)
-            hint_card.sized(scale, compact)
-        elif what == MORE:
+        if what == MORE:
             hint_card.more()        # the small card's "All keys" / "Fewer"
         elif what == DISMISS:
             hint_card.tick()        # ticks or unticks; never closes
@@ -785,6 +844,100 @@ def run(hint_card) -> None:
             take_down()
             return
         redraw = True
+
+    def sharp(card, scale, compact):
+        """The card drawn for real at (scale, compact), on the frost the
+        drag grabbed once when it began."""
+        v = COMPACT if compact else FULL
+        s = SCALE_MIN if compact else clamp_scale(scale)
+        w, h = measure(card, s, v)
+        win_w, win_h = w + SHADOW * 2, h + SHADOW * 2
+        frost = drag.get("frost") if drag else None
+        back = None
+        if frost is not None and frost.width >= win_w \
+                and frost.height >= win_h:
+            back = frost.crop((0, 0, win_w, win_h))
+        return paint(card, back, s, ticked=hint_card.ticked, view=v)
+
+    def show(picture):
+        glass.resize(picture.width, picture.height)
+        glass.move(*drag["at"])
+        glass.present(picture)
+
+    def on_grip(sx, sy):
+        """A press on the size grip (the mouse is captured by now)."""
+        nonlocal drag
+        card = shown
+        if glass is None or card is None:
+            if glass is not None:
+                glass.let_go()
+            return
+        wx, wy = glass.where()
+        compact = view() == COMPACT
+        s0 = SCALE_MIN if compact else clamp_scale(hint_card.scale)
+        w0, h0 = measure(card, s0, view())
+        # The top-left is where the card stays while its corner moves, and
+        # after: written now, so the card no longer re-centres on the dot
+        # with every size it passes through.
+        hint_card.placed(wx + SHADOW, wy + SHADOW)
+        big_w, big_h = guess(card, SCALE_MAX, False)
+        drag = {
+            "at": (wx, wy),
+            "grab": (wx + SHADOW + w0 - sx, wy + SHADOW + h0 - sy),
+            "target": (s0, compact),
+            "since": time.monotonic(),
+            "sharp": True,
+            "pictures": {compact: picture[0]} if picture[0] else {},
+            "frost": _frost(wx, wy, big_w + SHADOW * 2 + 8,
+                            big_h + SHADOW * 2 + 8),
+        }
+
+    def drag_tick():
+        """One look at the pointer during a corner drag."""
+        card = shown
+        if glass is None or card is None:
+            end_drag()
+            return
+        if not glass.gripping or not primary_button_down():
+            end_drag()              # the drop
+            return
+        px, py = cursor()
+        wx, wy = drag["at"]
+        want_w = px + drag["grab"][0] - (wx + SHADOW)
+        want_h = py + drag["grab"][1] - (wy + SHADOW)
+        target = fit(card, want_w, want_h)
+        now = time.monotonic()
+        if target != drag["target"]:
+            drag["target"], drag["since"], drag["sharp"] = target, now, False
+            scale, compact = target
+            src = drag["pictures"].get(compact)
+            if src is None:
+                src = sharp(card, scale, compact)
+                drag["pictures"][compact] = src
+            w, h = guess(card, scale, compact)
+            show(src.resize((w + SHADOW * 2, h + SHADOW * 2),
+                            _Image.BILINEAR))
+        elif not drag["sharp"] and now - drag["since"] >= PREVIEW_HOLD_S:
+            scale, compact = target
+            img = sharp(card, scale, compact)
+            drag["pictures"][compact] = img
+            drag["sharp"] = True
+            show(img)
+
+    def end_drag():
+        """The drop: the size it reached is the card's, saved; the normal
+        path draws it sharp in place on the next tick."""
+        nonlocal drag, redraw
+        done, drag = drag, None
+        if done is None:
+            return
+        if glass is not None:
+            glass.let_go()
+        scale, compact = done["target"]
+        hint_card.sized(scale, compact)
+        redraw = True
+
+    picture = [None]               # the last sharp picture put up
 
     def put_up(card):
         nonlocal glass, shown
@@ -798,19 +951,25 @@ def run(hint_card) -> None:
         x, y = hint_card.origin(win_w, win_h, primary_screen(), SHADOW,
                                 virtual_screen(), work_area())
         if glass is not None and (glass.width, glass.height) != (win_w, win_h):
-            take_down()
+            try:
+                glass.resize(win_w, win_h)      # the same window, in place
+            except Exception:
+                _log.debug("skin: hint glass would not resize", exc_info=True)
+                take_down()
         if glass is None:
             # gpu=False: the picture is Pillow's and static, so a GPU
             # surface would be a readback for nothing — and a GL context
             # a copy without skia cannot build
             glass = Glass(x, y, win_w, win_h, gpu=False, hit=on_hit,
-                          moved=on_move, clicked=on_click)
+                          moved=on_move, clicked=on_click, gripped=on_grip)
             glass.show()
         else:
             glass.move(x, y)
-        glass.present(paint(card, _frost(x, y, win_w, win_h), s,
-                            ticked=hint_card.ticked, view=view()))
+        img = paint(card, _frost(x, y, win_w, win_h), s,
+                    ticked=hint_card.ticked, view=view())
+        glass.present(img)
         glass.raise_()
+        picture[0] = img
         shown = card
 
     try:
@@ -839,17 +998,22 @@ def run(hint_card) -> None:
                 pass
             if hint_card._closing.is_set():
                 break
-            if pending is not None and (
+            if drag is not None:
+                drag_tick()
+            # A card that changed under a drag waits for the drop: drawing
+            # it at the old size would fight the corner under the pointer.
+            if drag is None and pending is not None and (
                     (shown is None and due is not None
                      and time.monotonic() >= due) or changed or redraw):
                 redraw = False
                 put_up(pending)
             if glass is not None:
                 glass.pump()
-            # Nothing moves on this card, so the loop only has to be quick
-            # enough that the delay lands on time, a click feels immediate,
-            # and a release takes it down without a visible lag.
-            time.sleep(0.02)
+            # Nothing moves on this card but a corner being dragged, so the
+            # loop only has to be quick enough that the delay lands on time,
+            # a click feels immediate, a release takes it down without a
+            # visible lag — and a drag's preview keeps up with the pointer.
+            time.sleep(0.012 if drag is not None else 0.02)
     except Exception:
         _log.info("skin hint card stopped early", exc_info=True)
     finally:
@@ -858,4 +1022,4 @@ def run(hint_card) -> None:
 
 
 __all__ = ["paint", "draw", "measure", "regions", "hit_test", "clamp_scale",
-           "split", "step", "run", "FULL", "COMPACT", "PEEK"]
+           "split", "fit", "guess", "run", "FULL", "COMPACT", "PEEK"]
