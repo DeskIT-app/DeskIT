@@ -22,9 +22,10 @@ goes through the same redactor as the log). Enter keeps it; Esc cancels.
 
 ![The report box](../img/09-report-card.png)
 
-The dashboard's **Problems** place lists your reports, opens each one's folder
-(`%LOCALAPPDATA%\DeskIT\problems\<id>\`), and has the same box for a report written at the
-desk.
+The desk has the same box, on **Report a problem** at the top of the home page. Every
+report is kept on this PC in its own folder
+(`%LOCALAPPDATA%\DeskIT\problems\<id>\`) — the line you typed and each piece that came
+with it — so you can open it, read it, or send it on yourself.
 
 Nothing leaves this PC unless you turn on **Send to the developer** on the box. The first
 time, the consent card beside the dot asks (Settings > Privacy withdraws it later). With the
@@ -36,11 +37,10 @@ instead of **Keep on this PC**: the report is filed here as always, and a window
 the files and the exact row — "This is everything that leaves your PC. Nothing else." —
 and two buttons, **Send** and **Keep on this PC**. Closing the window is keeping.
 
-From the hotkey box the same Preview opens on the desk's **Problems** place; a report you
-did not answer there keeps a **Preview & send** button on its row. A sent report's row says
-"waiting to send" until it went (the app sends when it is online; **Send now** hurries it),
-then "sent to the developer"; one the server refused says why. Every copy is idempotent:
-sending the same report twice cannot make two.
+From the hotkey box the same Preview opens on the desk, over whatever page is up — so
+nothing is ever sent without that window having been in front of you first. After
+**Send**, the app sends it the next time it is online and nothing more is asked of you.
+Sending the same report twice cannot make two of it.
 
 ## Telling us
 

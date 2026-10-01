@@ -286,8 +286,11 @@ words on a 56 px bar:
   opens here and it does not need scrolling.
 - **Corrections** — every proposal the second reading is waiting on,
   and the words it has already learned, side by side.
-- **Problems** — what you reported, the questions the weekly routine
-  asked back, and the branches it left to publish.
+- (**Problems** was here until 2026-10-01: what you reported, the
+  questions the weekly routine asked back, and the branches it left to
+  publish. All three were the owner's and none of them was a user's,
+  so the place left the desk and the master app grew screens of its
+  own — `dev\master`, MASTER.md §8. Five places now, four doors.)
 - **Said** — `transcripts.log` read back, with the search and the six
   filters, twenty-five rows at a time.
 - **Keys** — every binding, lit on a picture of a keyboard.
@@ -366,13 +369,13 @@ waiting, so the page could read *"Six things want an answer."* over
 true, in the two biggest lines on the screen. Then ONE card holding the
 merged pile: unread notifications (Go there / ×), second-reading
 proposals (the sentence with the changed word on a gold-soft pill, the
-reason under it, Yes / No), open problems (Fixed / Close), and the weekly
-routine's questions (Answer / Later) — newest first, whatever kind they
-are, **the newest three and no more**, in a card exactly as tall as its
+reason under it, Yes / No), a consent whose words changed, the account
+lock, an update, the hardware — newest first, whatever kind they are,
+**the newest three and no more**, in a card exactly as tall as its
 rows, and under it one faint line about finishes being held until their
 session goes quiet.
 
-Then **the band of doors**: five tiles across the whole width, one per
+Then **the band of doors**: four tiles across the whole width, one per
 place, each with what that place is holding at this moment — *5
 corrections waiting*, *1 problems open*, *23 said today*, *16 keys to
 press*, *7 tabs of settings*. The whole tile is the way in, because a
@@ -566,7 +569,7 @@ and delay. Anything else is written all the same and the reply says so:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ ⌐  Home  Corrections  Problems  Said  Keys  Settings                 │
+│ ⌐  Home  Corrections  Said  Keys  Settings                           │
 │    ────       ● Listening 4h 40m [☾ Screens off] [ Pause ] [ Stop ]  │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
@@ -2508,10 +2511,11 @@ screen by then, and a drag is not a click away.
   X closes the panel and nothing else — the same door as the key and
   `Esc` — and it lights on hover like its two neighbours.
 - **Waiting for you** — the same merged pile the window's Waiting place
-  draws, from the same four stores: unread notifications, second-reading
-  proposals, open problems, the weekly routine's questions. Newest first,
-  whatever kind, each row with the two answers it needs on the row
-  (Dismiss / Open · No / Keep · Close / Open · Later / Answer). Capped at
+  draws: unread notifications, second-reading proposals, and the
+  reports you have open. Newest first, whatever kind, each row with the
+  two answers it needs on the row (Dismiss / Open · No / Keep ·
+  Close / Open). The routine's questions were a fourth source until
+  2026-10-01 (MASTER.md §8). Capped at
   `[shelf] rows` (5), and "+N more" opens the window.
 - **What you said last**, with **Copy**.
 - **Screens off / on**, the same toggle as `ctrl+alt+n`.
@@ -3010,6 +3014,17 @@ its own thread, dragged and remembered the same way.
 ## Report a problem (`ctrl+alt+r`)
 
 The owner's own bug list, and one typed line is all it asks for.
+
+> **Since 2026-10-01, only the FILING half of this chapter is on the
+> desk** (MASTER.md §8). The key, the button on Home, the card and the
+> preview of everything that would leave this PC are exactly as
+> described below. Reading the reports BACK is not — the Problems
+> place, its rows with Fixed / Reopen / ✕, and `problems.md` are in
+> the master app now (`dev\master`, the Reports screen), which reads
+> the same `problems.json` and other people's from `problems\inbox`.
+> Everything below about the store, what is attached, the thumbnails
+> and the measurements still holds; the sentences that say "the pile"
+> or "the Waiting place" are about where it WAS.
 
 Something is wrong — the list on **Said** shows yesterday's count, a
 dictation comes back with a tail nobody said — and by the time it is
@@ -3637,7 +3652,7 @@ What happens to a correction:
   correction could be a slip of the finger in the box.
 - **The recording is kept** (last 50, in `recent\`) with your correction
   attached, which turns "it got this wrong" into a test case — see
-  `--benchmark` below.
+  `dev\measure.py --benchmark` below.
 
 `python main.py --vocab` prints everything learned and the exact hotword
 list being fed to the decoder.
@@ -3933,7 +3948,7 @@ knob.
 ### Proving it actually helps
 
 ```bash
-.venv\Scripts\python.exe main.py --benchmark
+.venv\Scripts\python.exe dev\measure.py --benchmark
 ```
 
 Replays every recording you have corrected, with the vocabulary on and off,
@@ -4343,7 +4358,7 @@ for `מבשרים`, all of which the local model got right.
 | `[vocab] terms` | your stack | hand-written seeds, ranked ahead of anything learned |
 | `[vocab] max_terms` | `40` | cap on the hotword list; faster-whisper truncates at 223 tokens and over-prompting makes Whisper emit the words unbidden |
 | `[vocab] replace_after_hits` | `2` | corrections of the same garble before it is also repaired after the fact. `1` would let one slip in the box start rewriting a word you really say |
-| `[vocab] keep_audio` | `50` | recordings kept in `recent\` so `--benchmark` can replay them. `0` = keep none |
+| `[vocab] keep_audio` | `50` | recordings kept in `recent\` so `dev\measure.py --benchmark` can replay them. `0` = keep none |
 | `[polish] when` | `always` | `never` \| `known` (only when a learned garble is present) \| `always`. Adds ~5 s to every paste; worth it when it fires |
 | `[polish] min_chars` | `20` | below this there is no context to reason from |
 | `[polish] prefer` | `groq` | `groq` \| `cerebras` \| `ollama` — which backend repairs **first**; the others follow underneath it, the local one always among them, so this is a preference and never a commitment. `ollama` IS classic's behavior |
@@ -4522,7 +4537,7 @@ cannot see them, on purpose.
 ## Tests
 
 The suite is two files — `tests.py`, the product's, and
-`dev\tests_ops.py`, the owner's (the nightly run, the git card) —
+`dev\tests_ops.py`, the owner's (the nightly run, the master app) —
 and neither is the file you run. They stand up real windows — cards,
 the dashboard, overlays, the correction box — and every one of them
 would land on top of whatever you are doing. So they are run through
@@ -4615,10 +4630,9 @@ must not be one.
 - **A clean night files nothing.** No card, no document, no row. You
   should not wake up to a receipt.
 - **A night with real failures files ONE report** into the problems store
-  (`problems.py`), so it is waiting on the **Problems** place exactly like
-  a report you filed yourself — and so the Saturday routine
-  (`.claude\commands\weekly-reports.md`) picks it up and rules on it with
-  the rest, instead of becoming a second pile nobody reads. The report is
+  (`problems.py`), the same store a report you filed yourself goes
+  into, so the master app's Reports screen shows it beside the rest
+  instead of it becoming a second pile nobody reads. The report is
   the evidence and nothing else: which tests failed, the one command that
   re-runs one of them, and the path to the whole transcript.
 - **The machine's one known flake does not count on its own.**
@@ -4650,8 +4664,8 @@ whether to draw the button. Everything is in `problems\nightly\`
 | --- | --- |
 | `run.log` | what every run did, appended, one previous generation kept — `problems\weekly\run.log`'s shape |
 | `run.lock` | an **OS-held byte lock**, taken for the whole of one invocation, question and suite together. It is what stops two runs overlapping, and it cannot wedge the feature: Windows drops the lock however the process ended — cleanly, on a crash, on a kill, on a power cut — so there is no such thing as a stale lock here and no override is needed. The file is left behind on purpose; the lock is the handle, never the file's existence |
-| `running.json` | the marker the dashboard polls: written when the suite starts, deleted when it ends. Never trusted alone — `nightly.running()` also asks whether the lock is held, so a marker left behind by a killed run does not leave a dead button in the bar |
-| `stop` | what **Stop tests** writes. The runner clears it before the suite starts and watches for it once a second while it runs |
+| `running.json` | the marker: written when the suite starts, deleted when it ends. Never trusted alone — `nightly.running()` also asks whether the lock is held, so a marker left behind by a killed run never reads as a run. The desk polled it for its Stop button until 2026-10-01 |
+| `stop` | what ends a run. The desk had a **Stop tests** button in the bar until 2026-10-01 (MASTER.md §8); by hand it is `python -c "import nightly; nightly.ask_stop('.')"`. The runner clears the file before the suite starts and watches for it once a second while it runs |
 | `<stamp>-tests.txt` | one run's transcript, which the report points at. The last fourteen are kept |
 
 **Installing the task.** It is not installed by running anything in this
