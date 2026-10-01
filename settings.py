@@ -688,6 +688,27 @@ def label_for(path: str) -> str:
     return path
 
 
+def saved_sentence(path: str, live: bool = True) -> str:
+    """What a person is told when the line behind `path` was written.
+
+    THE NAME IN IT IS THE ONE THE ROW SHOWS, never the dotted path.
+    2026-10-01, the owner turned a switch on the Settings place off and
+    on again and the window told him `hint.enabled saved` — the
+    developer's name for the line in the file, in a message meant for
+    the person who had just read the row in English. The row's own
+    label is right there on the screen he is looking at, so it is the
+    only name that belongs in the message.
+
+    A path no tab draws has no name a person would know; its message
+    carries none at all rather than falling back to the path, which is
+    the bug. `live` is whether the running app took the change now:
+    False adds the sentence that says it waits for the next start.
+    """
+    label = label_for(path)
+    head = "saved" if label == path else f'"{label}" — saved'
+    return head if live else f"{head}, and it applies the next time it starts"
+
+
 def groups_for(name: str) -> tuple[Group, ...]:
     """What a tab draws, in order. The rows are the tab's own; a tab
     that draws only blocks (a screen that used to be its own) has no
