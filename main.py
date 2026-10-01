@@ -759,7 +759,8 @@ class App:
             scale=cfg.hint.scale, on_change=self._save_hint,
             dot_corner=self._dot_corner,
             dot_at=self._dot_beside
-            if getattr(cfg.hint, "follow_dot", True) else None)
+            if getattr(cfg.hint, "follow_dot", True) else None,
+            compact=getattr(cfg.hint, "compact", False))
             if cfg.hint.enabled else overlay_mod.HintCard.off())
         # And the second reading's card (review.py): one proposal, three
         # buttons, a clock. Off by config, and off by construction until a
@@ -3429,7 +3430,8 @@ class App:
                 scale=hcfg.scale, on_change=self._save_hint,
                 dot_corner=self._dot_corner,
                 dot_at=self._dot_beside
-                if getattr(hcfg, "follow_dot", True) else None)
+                if getattr(hcfg, "follow_dot", True) else None,
+                compact=getattr(hcfg, "compact", False))
                 if hcfg.enabled else overlay_mod.HintCard.off())
             old.stop()
             self.hint = new

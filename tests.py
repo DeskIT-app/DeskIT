@@ -20251,8 +20251,8 @@ def test_held_greys_the_text_keys_and_latched_does_not() -> None:
     assert all(on for _k, _l, on in latched["keys"]), latched["keys"]
     assert live | dead == {k for k, _l, _o in latched["keys"]}
     # Held offers the release and the latch; latched offers neither.
-    assert any(k == "שחרר" for k, _l, _o in held["rows"])
-    assert not any(k == "שחרר" for k, _l, _o in latched["rows"])
+    assert any(k == hint_mod.RELEASE for k, _l, _o in held["rows"])
+    assert not any(k == hint_mod.RELEASE for k, _l, _o in latched["rows"])
     assert all(any(k == "Esc" for k, _l, _o in c["rows"])
                for c in (held, latched))
 
@@ -20658,17 +20658,24 @@ def test_the_card_takes_the_mouse_in_five_places_and_nowhere_else() -> None:
         assert skin_hint.hit_test(card, scale, 2, 2)[0] == \
             skin_glass.HTTRANSPARENT
         # the box's row is as wide as the card, but only the box and its
-        # words take the click: the left end of that row is the window
-        # behind
+        # words take the click: the right end of that row is the window
+        # behind (the full card has no fold button there)
         fy = boxes[skin_hint.DISMISS]
-        assert skin_hint.hit_test(card, scale, pad + 4, (fy[1] + fy[3]) / 2)[0] \
+        assert skin_hint.MORE not in boxes, boxes
+        assert skin_hint.hit_test(card, scale, pad + width - 4,
+                                  (fy[1] + fy[3]) / 2)[0] \
             == skin_glass.HTTRANSPARENT
-    # the X, − and + sit in a row, left to right, not on top of each other,
-    # and the X is a clear gap away from − so a size press is not a close
+        # left to right since 2026-10-01: the box at the left edge
+        assert fy[0] < pad + skin_hint.PAD * scale, fy
+    # −, + and the X sit in a row, left to right, not on top of each other,
+    # the X in the corner and a clear gap from + so a size press is not a
+    # close
     boxes = skin_hint.regions(card, 1.0)
-    assert boxes[skin_hint.CLOSE][2] < boxes[skin_hint.SMALLER][0], boxes
-    assert boxes[skin_hint.SMALLER][0] - boxes[skin_hint.CLOSE][2] >= 10
     assert boxes[skin_hint.SMALLER][2] <= boxes[skin_hint.BIGGER][0], boxes
+    assert boxes[skin_hint.BIGGER][2] < boxes[skin_hint.CLOSE][0], boxes
+    assert boxes[skin_hint.CLOSE][0] - boxes[skin_hint.BIGGER][2] >= 10
+    width, _h = skin_hint.measure(card, 1.0)
+    assert boxes[skin_hint.CLOSE][2] == skin_hint.SHADOW + width - skin_hint.PAD
 
 
 def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
@@ -20689,10 +20696,19 @@ def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
         skin_hint.SCALE_MIN
     # ...and the first + from there is a press that changes the size on
     # screen: stepped from the 0.8 he sees, not the 0.6 in the file
-    step = skin_hint.STEP
-    assert skin_hint.stepped(0.6, step) == round(skin_hint.SCALE_MIN + step, 3)
-    assert skin_hint.stepped(0.6, -step) == skin_hint.SCALE_MIN
-    assert skin_hint.stepped(skin_hint.SCALE_MAX, step) == skin_hint.SCALE_MAX
+    lo, hi, inc = skin_hint.SCALE_MIN, skin_hint.SCALE_MAX, skin_hint.STEP
+    assert skin_hint.step(0.6, False, 1) == (round(lo + inc, 3), False)
+    assert skin_hint.step(1.2, False, -1) == (1.1, False)
+    assert skin_hint.step(hi, False, 1) == (hi, False)
+    # The ladder's bottom rung is the small card (2026-10-01, his ask: "I
+    # want to make it smaller still — maybe only the most important ones
+    # when I shrink it"): − at the smallest size is the small card, − on
+    # the small card does nothing more, + leaves it at the size it had.
+    assert skin_hint.step(0.6, False, -1) == (lo, True)
+    assert skin_hint.step(lo, False, -1) == (lo, True)
+    assert skin_hint.step(lo, True, -1) == (lo, True)
+    assert skin_hint.step(lo, True, 1) == (lo, False)
+    assert skin_hint.step(1.2, True, 1) == (1.2, False)
 
 
 def test_the_key_card_is_readable_at_its_smallest_and_not_half_a_screen(
@@ -20724,9 +20740,10 @@ def test_the_key_card_is_readable_at_its_smallest_and_not_half_a_screen(
 
 
 def test_the_keys_go_in_two_columns_split_between_groups() -> None:
-    """The dictation and the screen on the right, where a Hebrew reader
-    starts; "more" on the left. A group is never cut in two, and the cut
-    is the one that makes the taller column shortest."""
+    """The dictation and the screen in the first column — the LEFT one
+    since the card went English, 2026-10-01 — and "Other" in the second.
+    A group is never cut in two, and the cut is the one that makes the
+    taller column shortest."""
     try:
         from skin import hint as skin_hint
     except Exception:
@@ -20738,16 +20755,16 @@ def test_the_keys_go_in_two_columns_split_between_groups() -> None:
         names = [name for name, _rows in card["groups"]]
         assert names == [hint_mod.GROUP_DICTATION, hint_mod.GROUP_SCREEN,
                          hint_mod.GROUP_OTHER], names
-        right, left = skin_hint.split(card["groups"])
-        assert [n for n, _r in right] == names[:2], right
-        assert [n for n, _r in left] == names[2:], left
+        first, second = skin_hint.split(card["groups"])
+        assert [n for n, _r in first] == names[:2], first
+        assert [n for n, _r in second] == names[2:], second
     one = [("a", [("F1", "x", True)] * 3)]
     assert skin_hint.split(one) == [one]
-    # a tall first group goes alone on the right
+    # a tall first group goes alone in the first column
     tall = [("a", [("F1", "x", True)] * 9), ("b", [("F2", "y", True)] * 2),
             ("c", [("F3", "z", True)] * 3)]
-    right, left = skin_hint.split(tall)
-    assert [n for n, _r in right] == ["a"], right
+    first, _second = skin_hint.split(tall)
+    assert [n for n, _r in first] == ["a"], first
 
 
 def test_the_key_card_is_as_wide_as_its_words() -> None:
@@ -20758,21 +20775,21 @@ def test_the_key_card_is_as_wide_as_its_words() -> None:
         from skin import hint as skin_hint
     except Exception:
         return
-    groups = [("א", [("F1", "קצר", True)]), ("ב", [("F2", "קצר", True)])]
-    base = {"title": "נעול", "sub": "", "footer": "אל תציג", "dot": "locked",
+    groups = [("A", [("F1", "short", True)]), ("B", [("F2", "short", True)])]
+    base = {"title": "Locked", "sub": "", "footer": "Don't", "dot": "locked",
             "groups": groups}
-    wide = dict(base, groups=[groups[0], ("ב", [(
-        "F2", "תווית ארוכה מאוד שממלאת את כל השורה הזאת", True)])])
+    wide = dict(base, groups=[groups[0], ("B", [(
+        "F2", "a very long label that fills the whole of this row", True)])])
     w1, h1 = skin_hint.measure(base, 1.0)
     w2, h2 = skin_hint.measure(wide, 1.0)
     assert w2 > w1 and h1 == h2, (w1, w2, h1, h2)
-    # and the two columns fill the inside: the right one ends at the right
-    # padding, the left one starts at the left padding
+    # and the two columns fill the inside: the first starts at the left
+    # padding, the last ends at the right padding
     lay = skin_hint._layout(wide, 1.0)
     pad = skin_hint.PAD
-    assert abs(lay.col_right[0] - (skin_hint.SHADOW + w2 - pad)) < 1
-    left_edge = lay.col_right[1] - lay.col_w[1]
-    assert abs(left_edge - (skin_hint.SHADOW + pad)) < 1.5, left_edge
+    assert lay.col_left[0] == skin_hint.SHADOW + pad, lay.col_left
+    right_edge = lay.col_left[-1] + lay.col_w[-1]
+    assert abs(right_edge - (skin_hint.SHADOW + w2 - pad)) < 1.5, right_edge
 
 
 def test_the_box_ticks_and_the_x_closes() -> None:
@@ -20822,6 +20839,123 @@ def test_the_box_ticks_and_the_x_closes() -> None:
     card = fresh()
     card.card_gone()
     assert writes == [] and card._enabled, writes
+
+
+def test_the_small_card_shows_the_dictation_and_a_way_to_all_keys() -> None:
+    """His ask of 2026-10-01: smaller than the smallest size, "only the
+    most important ones, and an option to see more". The small card is the
+    dictation's own rows (release, lock, Esc) with no heading, and "All
+    keys" at the foot; opened, it is every key and "Fewer keys"."""
+    try:
+        from skin import glass as skin_glass, hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        small = skin_hint._layout(card, skin_hint.SCALE_MIN, skin_hint.COMPACT)
+        assert len(small.columns) == 1, small.columns
+        (only,) = small.columns
+        assert only == [("", list(card["groups"][0][1]))], only
+        full_w, full_h = skin_hint.measure(card, skin_hint.SCALE_MIN)
+        w, h = skin_hint.measure(card, skin_hint.SCALE_MIN, skin_hint.COMPACT)
+        assert h * 1.6 < full_h and w < full_w, ((w, h), (full_w, full_h))
+        assert skin_hint.measure(card, skin_hint.SCALE_MIN,
+                                 skin_hint.PEEK) == (full_w, full_h)
+        for view, word in ((skin_hint.COMPACT, "All keys"),
+                           (skin_hint.PEEK, "Fewer keys")):
+            assert skin_hint.TOGGLE[view] == word
+            boxes = skin_hint.regions(card, skin_hint.SCALE_MIN, view)
+            x0, y0, x1, y1 = boxes[skin_hint.MORE]
+            assert skin_hint.hit_test(card, skin_hint.SCALE_MIN,
+                                      (x0 + x1) / 2, (y0 + y1) / 2, view) \
+                == (skin_glass.HTCLIENT, skin_hint.MORE)
+            # the fold button and the box share the foot without touching
+            assert boxes[skin_hint.DISMISS][2] < x0, boxes
+        # and both pictures draw
+        assert skin_hint.paint(card, None, skin_hint.SCALE_MIN,
+                               view=skin_hint.COMPACT).size == (
+            w + 2 * skin_hint.SHADOW, h + 2 * skin_hint.SHADOW)
+
+
+def test_the_hint_card_keeps_the_small_card_and_peeks_for_one_dictation(
+) -> None:
+    """`compact` is saved like the scale (state.json); "All keys" opens the
+    small card for the card on screen only — the next dictation, or the
+    card going away, folds it again — and the full card has nothing to
+    fold."""
+    writes = []
+    card = overlay_mod.HintCard(on_change=writes.append, scale=0.8)
+    assert card.view == "full"
+    card.more()
+    assert card.view == "full" and writes == [], "the full card folds nothing"
+    card.sized(0.8, True)                   # − at the smallest size
+    assert card.view == "compact" and writes == [{"compact": True}], writes
+    card.more()
+    assert card.view == "peek" and len(writes) == 1, "a peek is not saved"
+    card.more()
+    assert card.view == "compact"
+    for gone in (card.card_gone, card.recording_began, card.closed_by_hand):
+        card._shut.clear()
+        card.more()
+        assert card.view == "peek"
+        gone()
+        assert card.view == "compact", gone.__name__
+    writes.clear()
+    card.sized(0.8, False)                  # + on the small card
+    assert card.view == "full" and writes == [{"compact": False}], writes
+    writes.clear()
+    card.sized(0.9, False)
+    assert writes == [{"scale": 0.9}], writes
+    card.sized(0.9, False)
+    assert writes == [{"scale": 0.9}], "nothing changed, nothing written"
+    # the app builds it from the config, and the config keeps it per machine
+    assert overlay_mod.HintCard(compact=True).view == "compact"
+    assert "hint.compact" in config_mod.STATE_KEYS
+    assert config_mod.HintConfig().compact is False
+    assert _hint_cfg().hint.compact is False
+
+
+def test_the_key_card_is_english_left_to_right_and_smooth() -> None:
+    """His words of 2026-10-01: "I want everything to be in English here"
+    and "my screen is 2K, it should not look blurry — the round strokes
+    look pixelated". Every word the card says is English; its text is
+    FreeType's, which gives a glyph edge many levels of coverage (GDI's
+    ANTIALIASED_QUALITY gave 14 at these sizes, measured); the weight axis
+    of the variable Rubik is really pinned; and the lock key's arrow, which
+    Rubik does not have, is drawn rather than set in a fallback face."""
+    import main as main_mod
+
+    hebrew = [chr(c) for c in range(0x0590, 0x0600)]
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        words = [card["title"], card["sub"], card["section"], card["footer"]]
+        words += [name for name, _rows in card["groups"]]
+        words += [w for rows in (card["rows"], card["keys"])
+                  for k, label, _on in rows for w in (k, label)]
+        for word in words:
+            assert not any(ch in word for ch in hebrew), word
+    assert set(hint_mod.LABELS.values()) and all(
+        v.isascii() for v in hint_mod.LABELS.values()), hint_mod.LABELS
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    small = skin_hint.SCALE_MIN
+    ink = skin_hint._text("Record the screen", skin_hint.PT_LABEL * small)
+    levels = sum(1 for n in ink.img.getchannel("A").histogram()[1:255] if n)
+    assert levels > 40, levels
+    regular = skin_hint._text("Ctrl+Alt+N", 12, weight=skin_hint.W_TEXT)
+    strong = skin_hint._text("Ctrl+Alt+N", 12, weight=skin_hint.W_STRONG)
+    assert sum(strong.img.getchannel("A").getdata()) > \
+        1.1 * sum(regular.img.getchannel("A").getdata()), "the axis is not set"
+    assert skin_hint._missing("\u2190") and not skin_hint._missing("A")
+    assert set(skin_hint.ARROWS) >= {"\u2190", "\u2192", "\u2191", "\u2193"}
+    # every row of a card shares one baseline, whatever its letters
+    a = skin_hint._text("Screenshot", 12)
+    b = skin_hint._text("Ctrl+F2", 12)
+    assert a.base == b.base and a.cap == b.cap, (a.base, b.base)
 
 
 def test_the_ticked_box_is_drawn_and_nothing_else_moves() -> None:
