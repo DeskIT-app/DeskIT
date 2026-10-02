@@ -108,8 +108,10 @@ ICON_PNG = APP_DIR / "icon.png"
 # Any string, as long as it is OURS and stays put. Windows groups taskbar
 # buttons and picks their icon by this; without one the window inherits
 # pythonw.exe's identity, which is why the taskbar showed a generic file
-# icon rather than the app's.
-APP_ID = paths.APP_ID + ".Dashboard"
+# icon rather than the app's. Inside the Store package the window takes
+# the package's own id: an id the package does not declare would be a
+# taskbar button no Start tile owns, and a pin that launches nothing.
+APP_ID = paths.APP_ID if paths.PACKAGED else paths.APP_ID + ".Dashboard"
 
 W, H = 1160, 720         # fixed, which is what lets every bitmap be cached
 SIDE = 0                 # the rail is gone; the places are along the top
@@ -636,7 +638,14 @@ def _set_taskbar_relaunch(root) -> bool:
     comtypes rather than raw vtable ctypes: it is already a dependency
     (pycaw brings it in), and a hand-rolled IUnknown is the kind of code
     that works until the day it corrupts a stack.
+
+    Not inside the Store package: there the window carries the package's
+    own id, and a pin of it is the package's tile, which launches
+    DeskIT.exe — a relaunch command naming the versioned python\\ under
+    WindowsApps would go stale with the next update.
     """
+    if paths.PACKAGED:
+        return False
     try:
         from ctypes import POINTER, wintypes
 

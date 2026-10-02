@@ -242,8 +242,41 @@ DEV_TAG: str = "Dev" if DEVELOPER else ""
 #: stranger's copy one above that — the three may all be listening.
 DEFAULT_PORT: int = 8757 if DEVELOPER else 8758 if STRANGER else 8756
 
+def _package_family() -> str:
+    """The MSIX package family this process runs inside — the Store copy
+    (DISTRIBUTION_PLAN.md 10.7) and every process it starts — or "".
+    Asked of Windows, not of the CHANNEL word: the word says how a copy
+    came, this says whether Windows is virtualising its AppData and its
+    registry right now. A private kernel32 handle (the argtypes trap)."""
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        size = ctypes.c_uint32(0)
+        # 122 = ERROR_INSUFFICIENT_BUFFER: there IS a package, this long.
+        # 15700 = APPMODEL_ERROR_NO_PACKAGE: a plain process.
+        if k32.GetCurrentPackageFamilyName(ctypes.byref(size), None) != 122:
+            return ""
+        buf = ctypes.create_unicode_buffer(size.value)
+        if k32.GetCurrentPackageFamilyName(ctypes.byref(size), buf) != 0:
+            return ""
+        return buf.value
+    except (OSError, AttributeError, ImportError):
+        return ""            # Windows before 8, or no kernel32 to ask
+
+
+#: "YoavShimron.DeskITApp_d0r2ms77220w6" inside the Store package, "" in
+#: every other copy.
+PACKAGE_FAMILY: str = _package_family()
+PACKAGED: bool = bool(PACKAGE_FAMILY)
+#: The package's application id (packaging/store/AppxManifest.xml).
+PACKAGE_APP: str = "DeskIT"
+
 #: AppUserModelID for the taskbar: neutral (D5), and distinct for Dev.
-APP_ID: str = "DeskIT.Dev" if DEVELOPER else "DeskIT.Test" if STRANGER else "DeskIT.App"
+#: Inside the package it is the package's own — family!application — so
+#: the windows group under the Start tile and a pin launches the package.
+APP_ID: str = (f"{PACKAGE_FAMILY}!{PACKAGE_APP}" if PACKAGED
+               else "DeskIT.Dev" if DEVELOPER
+               else "DeskIT.Test" if STRANGER else "DeskIT.App")
 
 # ---- the channel this copy came through (chapter 10 §10.4, chapter 11)
 
