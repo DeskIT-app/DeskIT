@@ -56,9 +56,10 @@ far past its heard form: told that a lone "ה" means "ה-Dev", a language
 model writes "ה-Dev" wherever the app's name might be.
 
 So every substitution is checked on its own, after `_is_safe`, and stays
-only when (1) the speaker taught exactly it — a learned pair whose heard
-form is in the span, Hebrew prefix letters allowed either side as
-vocab.apply allows them — or (2) it is the SAME WORD in another spelling
+only when (1) the speaker taught exactly it — a learned pair, Hebrew
+prefix letters allowed either side as vocab.apply allows them, which
+licenses itself and never a neighbour the diff folded into the same span
+(`_atoms`) — or (2) it is the SAME WORD in another spelling
 or script: every word out sounds like a word in, and every word in left
 a sound in the words out, judged on a consonant skeleton both scripts map
 into (`_skeleton`: "מהדב" and "מה-Dev" are both m-d-b; "ימני" is m-n and
@@ -473,23 +474,63 @@ def _same_stem(a: str, b: str) -> bool:
             and any(c in _PREFIX_LETTERS for c in head))
 
 
-def _runs_in(span: list[str], phrase: list[str]) -> bool:
+def _find(span: list[str], phrase: list[str]) -> int | None:
+    """Where `phrase` starts inside `span` (prefix letters allowed on its
+    first word), or None. Both lowercased."""
     n = len(phrase)
-    return any(_same_stem(span[i], phrase[0]) and span[i + 1:i + n] == phrase[1:]
-               for i in range(len(span) - n + 1))
+    for i in range(len(span) - n + 1):
+        if _same_stem(span[i], phrase[0]) and span[i + 1:i + n] == phrase[1:]:
+            return i
+    return None
 
 
-def _taught(said: list[str], got: list[str], glossary) -> bool:
-    """The speaker taught exactly this substitution: a learned pair's heard
-    form is in what was said and its meant form is in what came back."""
-    s = [w.lower() for w in said]
-    g = [w.lower() for w in got]
+def _pairs(glossary):
     for heard, meant in glossary:
         h = [w.lower() for w in words(heard)]
         m = [w.lower() for w in words(meant)]
-        if h and m and _runs_in(g, m) and _runs_in(s, h):
-            return True
-    return False
+        if h and m:
+            yield h, m
+
+
+def _taught(said: list[str], got: list[str], glossary) -> bool:
+    """The speaker taught exactly this substitution and nothing beside it:
+    a learned pair whose heard form IS what was said and whose meant form
+    IS what came back — the whole of both, prefix letters allowed."""
+    s = [w.lower() for w in said]
+    g = [w.lower() for w in got]
+    return any(len(s) == len(h) and len(g) == len(m)
+               and _find(s, h) == 0 and _find(g, m) == 0
+               for h, m in _pairs(glossary))
+
+
+def _atoms(a: list[str], b: list[str], i1: int, i2: int, j1: int, j2: int,
+           glossary) -> list[tuple[int, int, int, int, bool]]:
+    """One changed span cut into the pieces judged on their own, as
+    (i1, i2, j1, j2, taught) over the lowercased words of what was said
+    (a) and what came back (b).
+
+    The matcher folds neighbouring swaps into one span, so a taught pair
+    must license ITSELF and never a neighbour that rode in with it:
+    "והדסקית מאסטר" -> "וה-Dev master" with "מאסטר" -> "master" taught is
+    one span, and before 2026-10-02's fix that pair waved "וה-Dev" through
+    with it. So a taught pair is cut out wherever it sits, what is left on
+    either side is cut again, equal-length leftovers pair word by word,
+    and anything else is judged whole."""
+    if i1 == i2 and j1 == j2:
+        return []
+    if i1 < i2 and j1 < j2:
+        for h, m in _pairs(glossary):
+            x, y = _find(a[i1:i2], h), _find(b[j1:j2], m)
+            if x is None or y is None:
+                continue
+            x, y = i1 + x, j1 + y
+            return (_atoms(a, b, i1, x, j1, y, glossary)
+                    + [(x, x + len(h), y, y + len(m), True)]
+                    + _atoms(a, b, x + len(h), i2, y + len(m), j2, glossary))
+        if i2 - i1 == j2 - j1 > 1:
+            return [(i1 + k, i1 + k + 1, j1 + k, j1 + k + 1, False)
+                    for k in range(i2 - i1)]
+    return [(i1, i2, j1, j2, False)]
 
 
 def _covered(word: str, pool: list[str], pool_skeleton: str) -> bool:
@@ -544,35 +585,38 @@ def _keep_what_was_said(text: str, candidate: str,
     text toward what was heard, never away from it."""
     said = list(_WORD.finditer(text))
     got = list(_WORD.finditer(candidate))
-    ops = difflib.SequenceMatcher(None, [m.group().lower() for m in said],
-                                  [m.group().lower() for m in got],
-                                  autojunk=False).get_opcodes()
+    a = [m.group().lower() for m in said]
+    b = [m.group().lower() for m in got]
+    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
     patches = []
     undone = []
     for tag, i1, i2, j1, j2 in ops:
         if tag == "equal":
             continue
-        before = [m.group() for m in said[i1:i2]]
-        after = [m.group() for m in got[j1:j2]]
-        ok, why = _justified(before, after, glossary)
-        if ok:
-            continue
-        undone.append((" ".join(before), " ".join(after), why))
-        back = text[said[i1].start():said[i2 - 1].end()] if before else ""
-        if after:
-            start, end = got[j1].start(), got[j2 - 1].end()
-            if not back:            # an added word: its space goes with it
-                if start > 0 and candidate[start - 1] == " ":
-                    start -= 1
-                elif end < len(candidate) and candidate[end] == " ":
-                    end += 1
-            patches.append((start, end, back))
-        elif j1 < len(got):         # a dropped word: back in its place
-            patches.append((got[j1].start(), got[j1].start(), back + " "))
-        elif got:
-            patches.append((got[-1].end(), got[-1].end(), " " + back))
-        else:
-            patches.append((0, len(candidate), back))
+        for x1, x2, y1, y2, taught in _atoms(a, b, i1, i2, j1, j2, glossary):
+            if taught:
+                continue
+            before = [m.group() for m in said[x1:x2]]
+            after = [m.group() for m in got[y1:y2]]
+            ok, why = _justified(before, after, glossary)
+            if ok:
+                continue
+            undone.append((" ".join(before), " ".join(after), why))
+            back = text[said[x1].start():said[x2 - 1].end()] if before else ""
+            if after:
+                start, end = got[y1].start(), got[y2 - 1].end()
+                if not back:        # an added word: its space goes with it
+                    if start > 0 and candidate[start - 1] == " ":
+                        start -= 1
+                    elif end < len(candidate) and candidate[end] == " ":
+                        end += 1
+                patches.append((start, end, back))
+            elif y1 < len(got):     # a dropped word: back in its place
+                patches.append((got[y1].start(), got[y1].start(), back + " "))
+            elif got:
+                patches.append((got[-1].end(), got[-1].end(), " " + back))
+            else:
+                patches.append((0, len(candidate), back))
     repaired = candidate
     for start, end, back in sorted(patches, reverse=True):
         repaired = repaired[:start] + back + repaired[end:]

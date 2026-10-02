@@ -5060,6 +5060,21 @@ def test_a_taught_pair_stays_even_where_it_does_not_sound_alike() -> None:
     # not license the app's name, and a lone "ה" licenses nothing longer
     assert not _span_kept("דסקיט", "ה-Dev", _HIS_GLOSSARY)
     assert not _span_kept("הנדאוף", "ה-Dev", _HIS_GLOSSARY)
+    # ...and a taught pair licenses ITSELF, never a neighbour the diff
+    # folded into the same span. The first version of this guard let
+    # "וה-Dev" through on the back of a taught "מאסטר" -> "master"
+    # (found timing it, 2026-10-02, before it reached the paste).
+    import polish as polish_mod
+    out, undone = polish_mod._keep_what_was_said(
+        "תריץ את הבדיקות והדסקית מאסטר עכשיו",
+        "תריץ את הבדיקות וה-Dev master עכשיו", [("מאסטר", "master")])
+    assert out == "תריץ את הבדיקות והדסקית master עכשיו", out
+    assert [u[:2] for u in undone] == [("והדסקית", "וה-Dev")], undone
+    # the same span, untaught: the sound-alike half stays all the same
+    out, _ = polish_mod._keep_what_was_said(
+        "תריץ את הבדיקות והדסקית מאסטר עכשיו",
+        "תריץ את הבדיקות וה-Dev master עכשיו", [])
+    assert out == "תריץ את הבדיקות והדסקית master עכשיו", out
 
 
 def test_the_repair_puts_back_only_the_bad_span_and_keeps_the_rest() -> None:

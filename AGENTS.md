@@ -515,10 +515,12 @@ exactly what classic did.
   "keyboard" over "kicard" and "שמאלי" over "ימני", every one inside
   `_is_safe` — mostly the glossary (every learned pair, as instructions)
   applied far past its heard form. `polish._keep_what_was_said` checks
-  each substitution on its own: it stays when he TAUGHT it (a pair's heard
-  form in the span) or when it is the same word in another spelling or
-  script (a consonant skeleton both scripts map into), and goes back to
-  the decoder's words otherwise; added and dropped words always go back.
+  each substitution on its own: it stays when he TAUGHT it (the pair
+  itself — never a neighbour the diff folded into the same span, which a
+  first version let through) or when it is the same word in another
+  spelling or script (a consonant skeleton both scripts map into), and
+  goes back to the decoder's words otherwise; added and dropped words
+  always go back.
   Measured 2026-10-02 by hand label: 16/16 good repairs kept, 15/16 harms
   put back; held out on his 164 review verdicts, every rejected change it
   would block was a real harm. **Do not "fix" it into a confidence gate**
