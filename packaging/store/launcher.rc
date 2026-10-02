@@ -1,0 +1,35 @@
+// The launcher's icon and version block: Task Manager and the file's
+// Properties say "DeskIT" rather than nothing. launcher_version.h is
+// written by build_msix.ps1 with the release's numbers.
+#include <winver.h>
+#include "launcher_version.h"
+
+1 ICON DESKIT_ICON
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION DESKIT_V1,DESKIT_V2,DESKIT_V3,0
+ PRODUCTVERSION DESKIT_V1,DESKIT_V2,DESKIT_V3,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Yoav Shimron"
+            VALUE "FileDescription", "DeskIT"
+            VALUE "FileVersion", DESKIT_VERSION
+            VALUE "InternalName", "DeskIT"
+            VALUE "LegalCopyright", "Copyright Yoav Shimron. Apache License 2.0."
+            VALUE "ProductName", "DeskIT"
+            VALUE "ProductVersion", DESKIT_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

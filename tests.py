@@ -39650,6 +39650,199 @@ def test_autostart_run_value():
     assert "setup.autostart" in settings_mod.friendly_paths()
 
 
+def test_autostart_in_the_store_package_is_the_startup_task():
+    """Inside the Store package the switch asks Windows' StartupTask
+    (the manifest's DeskITAutostart) through Windows PowerShell, off the
+    caller's thread, and never writes a Run value — a packaged app's HKCU
+    is a private hive Explorer never reads. Nothing is re-asserted at
+    start: Windows keeps the task, and DisabledByUser is the person's."""
+    import base64
+    import winreg
+
+    import autostart
+
+    scratch = r"Software\DeskIT.test\Run-" + str(os.getpid()) + "-pkg"
+    calls = []
+
+    class _Done:
+        def __init__(self, out, rc=0):
+            self.stdout, self.stderr, self.returncode = out, "", rc
+
+    answers = {"on": "Enabled", "off": "Disabled", "ask": "Enabled"}
+
+    def runner(cmd, **kw):
+        script = base64.b64decode(cmd[cmd.index("-EncodedCommand") + 1]).decode("utf-16-le")
+        want = script.split("'", 2)[1]
+        calls.append((cmd, kw, script, want))
+        return _Done(answers[want])
+
+    class _Setup:
+        autostart = True
+
+    class _Cfg:
+        setup = _Setup()
+
+    try:
+        with _patched(autostart, "RUN_KEY", scratch), _patched(paths, "DEVELOPER", False), \
+                _patched(paths, "PACKAGED", True), _patched(autostart, "_run", runner), \
+                _patched(autostart, "_spawn", lambda target, *a: target(*a)):
+            assert autostart.apply(True) is True
+            cmd, kw, script, want = calls[-1]
+            assert want == "on" and cmd[0] == "powershell.exe"
+            assert kw["creationflags"] == autostart.CREATE_NO_WINDOW == 0x08000000
+            assert f"GetAsync('{autostart.TASK_ID}')" in script and "RequestEnableAsync" in script
+            assert '"' not in autostart._TASK_PS, "the script travels with no double quote"
+            assert autostart.apply(False) is True and calls[-1][3] == "off"
+            assert "$task.Disable()" in calls[-1][2]
+            assert autostart.task_state() == "Enabled" and calls[-1][3] == "ask"
+            n = len(calls)
+            autostart.sync(_Cfg())
+            assert len(calls) == n, "the package's task is never re-asserted at start"
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, scratch) as k:
+                    winreg.QueryValueEx(k, autostart.VALUE)
+                raise AssertionError("a Run value was written inside the package")
+            except FileNotFoundError:
+                pass
+            # a refusal is None, not an exception; a person's off is logged
+            answers["on"] = "DisabledByUser"
+            autostart.apply(True)
+            assert autostart.task_state("on", runner=lambda *a, **k: _Done("", 1)) is None
+            try:
+                autostart.task_state("maybe")
+                raise AssertionError("an unknown wish reached PowerShell")
+            except ValueError:
+                pass
+    finally:
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, scratch)
+        except OSError:
+            pass
+
+
+def test_the_store_package_is_the_reserved_identity_with_three_doors():
+    """packaging/store/AppxManifest.xml names what Partner Center gave on
+    2026-10-02 — the family name's hash recomputed from the Publisher, so
+    a mistyped character fails here and not at upload — and its three
+    executables are the launcher's three variants, each running a script
+    the archive ships; the startup task and the alias are the ones
+    autostart.py and notify_hook.py name; the workflow checks the same
+    family; the launcher has no network, registry or file write in it."""
+    import hashlib
+    import xml.etree.ElementTree as ET
+
+    import autostart
+    import notify_hook
+
+    store = REPO / "packaging" / "store"
+    text = (store / "AppxManifest.xml").read_text("utf-8")
+    assert "{VERSION}" in text
+    root = ET.fromstring(text.replace("{VERSION}", "1.2.3.0"))
+    ns = {"m": "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
+          "uap": "http://schemas.microsoft.com/appx/manifest/uap/windows10",
+          "uap3": "http://schemas.microsoft.com/appx/manifest/uap/windows10/3",
+          "desktop": "http://schemas.microsoft.com/appx/manifest/desktop/windows10",
+          "rescap": "http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"}
+    ident = root.find("m:Identity", ns)
+    assert ident.get("Name") == "YoavShimron.DeskITApp"
+    publisher = ident.get("Publisher")
+    digest = hashlib.sha256(publisher.encode("utf-16-le")).digest()[:8]
+    bits = int.from_bytes(digest, "big") << 1
+    alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+    suffix = "".join(alphabet[(bits >> (5 * (12 - i))) & 31] for i in range(13))
+    family = f"{ident.get('Name')}_{suffix}"
+    assert family == "YoavShimron.DeskITApp_d0r2ms77220w6", family
+    assert root.findtext("m:Properties/m:DisplayName", namespaces=ns) == "DeskIT App"
+    assert root.findtext("m:Properties/m:PublisherDisplayName", namespaces=ns) == "Yoav Shimron"
+    apps = root.findall("m:Applications/m:Application", ns)
+    assert [a.get("Id") for a in apps] == [paths.PACKAGE_APP]
+    app = apps[0]
+    assert app.get("Executable") == "DeskIT.exe"
+    assert app.get("EntryPoint") == "Windows.FullTrustApplication"
+    assert app.find("uap:VisualElements", ns).get("DisplayName") == "DeskIT"
+    task = app.find("m:Extensions/desktop:Extension/desktop:StartupTask", ns)
+    assert task.get("TaskId") == autostart.TASK_ID and task.get("Enabled") == "false"
+    startup = app.find("m:Extensions/desktop:Extension[@Category='windows.startupTask']", ns)
+    assert startup.get("Executable") == "DeskITQuiet.exe"
+    alias_ext = app.find("m:Extensions/uap3:Extension[@Category='windows.appExecutionAlias']", ns)
+    assert alias_ext.get("Executable") == "DeskITHook.exe"
+    alias = alias_ext.find("uap3:AppExecutionAlias/desktop:ExecutionAlias", ns)
+    assert alias.get("Alias") == notify_hook.HOOK_ALIAS == "deskit-hook.exe"
+    caps = {c.get("Name") for c in root.find("m:Capabilities", ns)}
+    assert caps == {"internetClient", "privateNetworkClientServer", "runFullTrust", "microphone"}
+    for name in ("StoreLogo.png", "Square44x44Logo.png", "Square150x150Logo.png"):
+        assert f"assets\\{name}" in text
+
+    launcher = (store / "launcher.c").read_text("utf-8")
+    variants = dict(re.findall(r"DESKIT_VARIANT == (\d)\s+/\* (\S+) \*/", launcher))
+    assert variants == {"1": "DeskITQuiet.exe", "2": "DeskITHook.exe"}, variants
+    for script in re.findall(r'#define DESKIT_SCRIPT L"([^"]+)"', launcher):
+        assert (REPO / script).exists(), f"{script} is not in the tree"
+    assert '"--quiet"' in launcher and "DESKIT_SILENT" in launcher
+    for banned in ("Reg", "WinHttp", "InternetOpen", "socket", "CreateFileW", "WriteFile"):
+        assert banned not in launcher, f"the launcher calls {banned}"
+    build = (store / "build_msix.ps1").read_text("utf-8")
+    for name, number in (("DeskIT.exe", 0), ("DeskITQuiet.exe", 1), ("DeskITHook.exe", 2)):
+        assert f'"{name}" = {number}' in build
+    assert "{VERSION}" in build and "CHANNEL" in build and "-B" in build
+    workflow = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
+    assert f"FAMILY: {family}" in workflow and f"PUBLISHER: {publisher}" in workflow
+    assert "/CHANNEL=store" in workflow and "/NODOWNLOAD" in workflow and "--verify" in workflow
+
+
+def test_the_store_copy_holds_the_claude_door_through_its_alias():
+    """Inside the package the hook line names the deskit-hook.exe alias —
+    one path for every version, and a door that runs INSIDE the package,
+    where the phone token is — never the versioned python under
+    WindowsApps. The alias line is a DeskIT door like any other: it
+    replaces another copy's, another copy's install replaces it, the
+    switch reads it as mine or other, uninstall takes it out."""
+    import notify_hook
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-hook-alias-"))
+    settings = tmp / "settings.json"
+    alias = notify_hook.alias_path()
+    assert alias.lower().endswith(r"\microsoft\windowsapps\deskit-hook.exe")
+    checkout_script = str(REPO / "notify_hook.py")
+    try:
+        settings.write_text(json.dumps({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": '"py.exe" "C:\\other\\notify_hook.py"'}]},
+            {"hooks": [{"type": "command", "command": "echo foreign"}]}]}}), "utf-8")
+        with _patched(paths, "PACKAGED", True):
+            assert notify_hook.this_copy(checkout_script) == alias
+            assert notify_hook.hook_state(settings, script=checkout_script)[0] == "other"
+            assert notify_hook.install_hook(settings, python="ignored.exe", script=checkout_script)
+            data = json.loads(settings.read_text("utf-8"))
+            stop = [h["command"] for e in data["hooks"]["Stop"] for h in e["hooks"]]
+            assert stop == ["echo foreign", f'"{alias}"'], stop
+            note = data["hooks"]["Notification"][0]["hooks"][0]["command"]
+            assert note == f'"{alias}"' and "python" not in note.lower()
+            assert notify_hook.hook_state(settings, script=checkout_script) == ("mine", None)
+            assert notify_hook.install_hook(settings) is False, "idempotent"
+        # seen from a copy that is not the package: someone else's door
+        state, where = notify_hook.hook_state(settings, script=checkout_script)
+        assert state == "other" and where.lower().endswith("windowsapps"), (state, where)
+        assert notify_hook.hook_script(settings) == alias
+        assert notify_hook.uninstall_hook(settings) is True
+        data = json.loads(settings.read_text("utf-8"))
+        assert data["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "echo foreign"}]}]}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_outside_a_package_there_is_no_package_identity():
+    """paths asks Windows whether this process runs inside an MSIX
+    package; the checkout, an installed copy and the tests never do. The
+    window outside the package keeps its own id and its relaunch line."""
+    assert paths._package_family() == "" and paths.PACKAGE_FAMILY == ""
+    assert paths.PACKAGED is False
+    assert paths.APP_ID in ("DeskIT.Dev", "DeskIT.Test", "DeskIT.App")
+    import dashboard
+    assert dashboard.APP_ID == paths.APP_ID + ".Dashboard"
+    with _patched(paths, "PACKAGED", True):
+        assert dashboard._set_taskbar_relaunch(object()) is False
+
+
 def test_deskit_pyw_is_the_entry_and_the_window_is_relaunched_by_layout():
     """deskit.pyw does nothing but main.main(); launch.dashboard_command()
     is wscript + Dashboard.vbs in the checkout (the pin's command since

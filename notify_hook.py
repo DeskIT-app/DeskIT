@@ -538,8 +538,32 @@ def post(payload: dict, url: str, token: str, timeout: float = 3.0) -> bool:
         return False
 
 
+#: The Store copy's door (DISTRIBUTION_PLAN.md 10.7). Inside the package
+#: the phone token lives in the package's private AppData, which a
+#: python started by path from outside cannot see — and the path itself
+#: names a versioned folder under WindowsApps that the next update
+#: removes. So the package declares an App Execution Alias: Windows
+#: puts deskit-hook.exe in the user's WindowsApps folder (on PATH), and
+#: running it starts DeskITHook.exe INSIDE the package, which runs this
+#: script with Claude Code's stdin passed through.
+HOOK_ALIAS = "deskit-hook.exe"
+
+
+def alias_path() -> str:
+    """Where Windows puts the alias: one path for every version."""
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return str(Path(local) / "Microsoft" / "WindowsApps" / HOOK_ALIAS)
+
+
+def this_copy(script: str | None = None) -> str:
+    """What THIS copy's hook line names: the alias inside the package,
+    the script everywhere else — the identity hook_state compares."""
+    return alias_path() if paths.PACKAGED else (script or str(HERE / "notify_hook.py"))
+
+
 def hook_entries(python: str, script: str) -> dict:
-    command = f'"{python}" "{script}"'
+    command = (f'"{alias_path()}"' if paths.PACKAGED
+               else f'"{python}" "{script}"')
     hook = {"type": "command", "command": command, "timeout": 10}
     return {
         "Stop": [{"hooks": [dict(hook)]}],
@@ -558,20 +582,23 @@ def _is_ours(entry) -> bool:
 
 def _script_of(entry) -> str | None:
     """The notify_hook.py an entry runs, as written in its command
-    (`"python" "…\\notify_hook.py"`), or None when the entry is not a
-    DeskIT hook at all."""
+    (`"python" "…\\notify_hook.py"`) — or the Store copy's alias
+    (`"…\\WindowsApps\\deskit-hook.exe"`) — or None when the entry is
+    not a DeskIT hook at all."""
     if not isinstance(entry, dict):
         return None
     for hook in entry.get("hooks") or []:
         if not isinstance(hook, dict):
             continue
         command = str(hook.get("command", ""))
-        if "notify_hook.py" not in command:
-            continue
-        for arg in reversed(re.findall(r'"([^"]*)"', command)):
-            if arg.lower().endswith("notify_hook.py"):
-                return arg
-        return command                 # unquoted, or some older shape
+        lowered = command.lower()
+        for name in ("notify_hook.py", HOOK_ALIAS):
+            if name not in lowered:
+                continue
+            for arg in reversed(re.findall(r'"([^"]*)"', command)):
+                if arg.lower().endswith(name):
+                    return arg
+            return command             # unquoted, or some older shape
     return None
 
 
@@ -660,11 +687,12 @@ def hook_state(settings_path=None, script: str | None = None) -> tuple[str, str 
     """Who holds the door: ("none", None), ("mine", None) when the lines
     name THIS copy's script, or ("other", folder) when they name another
     DeskIT copy — the folder is the one to show, the checkout's or the
-    installed one's. `script` is this copy's, left unsaid HERE's."""
+    installed one's. `script` is this copy's, left unsaid HERE's — and
+    inside the Store package the alias, whatever was said (this_copy)."""
     found = hook_script(settings_path)
     if found is None:
         return "none", None
-    mine = script or str(HERE / "notify_hook.py")
+    mine = this_copy(script)
     if _same_file(found, mine):
         return "mine", None
     return "other", os.path.dirname(found) or found
