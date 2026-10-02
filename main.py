@@ -66,7 +66,8 @@ import hotkey as hotkey_mod
 from hotkey import (HookThread, PTTStateMachine, parse_binding,
                     parse_chord, vk_for)
 from launch import open_dashboard
-from recorder import Recorder, SILENT_AFTER_S, SILENT_PEAK
+from recorder import (EMPTY_NO_AUDIO, EMPTY_OVERFLOWED, Recorder,
+                      SILENT_AFTER_S, SILENT_PEAK)
 from spool import Spool
 from transcribers import RateLimitError, TranscriptionError, get_transcriber
 from transcribers.base import ModelMissing, TooLongForCloud
@@ -236,6 +237,24 @@ _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
 # worse than no clip: a week later it still reads as evidence.
 PROBLEM_LAST_MAX_S = 300.0
 
+# A microphone stream that died (recorder.STALL_S) is opened again at
+# once, and while no input can be opened at all — the headset unplugged
+# and nothing else there — tried again every MIC_RETRY_S. One attempt is
+# a close and an open, a few hundred milliseconds on a thread of its own.
+MIC_RETRY_S = 5.0
+# The card a lost dictation leaves, in plain words: what happened, and
+# then either that it is back or that DeskIT is still trying.
+MIC_WORDS = {
+    "lost": ("Nothing was recorded",
+             "The microphone stopped sending sound while you held the key."),
+    "partial": ("The end was not recorded",
+                "The microphone stopped partway through, so the end of "
+                "what you said is missing."),
+}
+MIC_BACK = "It is connected again. Please say it again."
+MIC_TRYING = ("DeskIT keeps trying to connect it. Check that it is "
+              "plugged in.")
+
 # What the dot should say for a machine state, when a worker has finished
 # with something and is deciding what to put back. Only two states are
 # named because only two mean "still listening": everything else — idle,
@@ -343,6 +362,14 @@ class App:
     _capture_vk = None
     _record_vk = None
     _camera_vk = None
+    # The dead-stream recovery (_mic_lost): one reopen at a time, the
+    # card still owed, whether a "still trying" card is up, and the retry
+    # timer stop() cancels. Class-level for the same half-built Apps.
+    _mic_lock = threading.Lock()
+    _mic_busy = False
+    _mic_due: str | None = None
+    _mic_waiting = False
+    _mic_timer = None
 
     def _save(self, updates: dict) -> None:
         """Write a changed setting where this copy keeps its settings.
@@ -2658,6 +2685,9 @@ class App:
         if self.phone is not None:
             self.phone.stop()
         self.hook.stop()
+        timer = self._mic_timer           # a reopen waiting on its retry
+        if timer is not None:
+            timer.cancel()
         self.recorder.close()
 
     def control_command(self, command: str, args: dict) -> dict:
@@ -3362,6 +3392,15 @@ class App:
 
     def _on_start(self, language: str | None = "he") -> None:
         self.recorder.begin()   # also restores the cap a latch may have lifted
+        if getattr(self.recorder, "stalled", lambda: False)():
+            # The stream has stopped calling back (recorder.STALL_S). Open
+            # it again NOW, behind the press: the callback is the same, so
+            # this recording starts receiving sound the moment it is back
+            # rather than being lost whole. Quiet — whether anything was
+            # lost is the release's to say (_on_stop).
+            log.warning("the microphone stream has stopped — opening it "
+                        "again")
+            self._mic_kick()
         self._question_texts = []
         self._cap, self._latched = self.cfg.max_seconds, False
         self._rec_at = time.monotonic()
@@ -3521,12 +3560,33 @@ class App:
         self._set_state("busy")
         self.dot.alarm(False)          # whatever it was doing, it is over
         if wav is None:
-            # overflowed at the cap — beep already fired at cap time
-            log.info("discarded: hit the %.0f s cap", self._cap)
-            transcript_log.info("DISCARDED | %.1fs | hit the %.0f s cap",
-                                seconds, self._cap)
+            why = getattr(self.recorder, "last_empty", None)
+            if why == EMPTY_NO_AUDIO:
+                # The key was held and not one buffer came: the stream is
+                # dead, and until 2026-09-23 this line said "hit the cap"
+                # 23 times in three minutes with no cue (recorder.STALL_S).
+                beep("error")
+                held = time.monotonic() - (self._rec_at or time.monotonic())
+                log.warning("discarded: no audio arrived in %.1f s held — "
+                            "the microphone stream has stopped", held)
+                transcript_log.info("DISCARDED | %.1fs | no audio arrived",
+                                    held)
+                self._mic_lost(partial=False)
+            elif why in (None, EMPTY_OVERFLOWED):
+                # overflowed at the cap — beep already fired at cap time
+                log.info("discarded: hit the %.0f s cap", self._cap)
+                transcript_log.info("DISCARDED | %.1fs | hit the %.0f s cap",
+                                    seconds, self._cap)
+            else:
+                log.info("discarded: nothing to keep (%s)", why)
             self._set_state("ready")
             return
+        if getattr(self.recorder, "stalled", lambda: False)():
+            # Audio came and then stopped: what arrived is transcribed as
+            # usual, and the stream is opened again behind it.
+            log.warning("the microphone stream stopped during this "
+                        "recording — %.1f s arrived", seconds)
+            self._mic_lost(partial=True)
         if seconds < self.cfg.min_seconds:
             log.info("discarded: %.2f s hold is under min_seconds=%.2f "
                      "(accidental tap?)", seconds, self.cfg.min_seconds)
@@ -5187,6 +5247,95 @@ class App:
         Once per recording, like the alarm it answers."""
         self.dot.alarm(False)
         log.info("sound arrived — the microphone is live after all")
+
+    def _mic_lost(self, partial: bool) -> None:  # hook thread
+        """The microphone STREAM died under a recording (recorder.STALL_S):
+        `partial` when some audio came before it stopped, not when none
+        did. Owes him a card saying so, and opens the stream again — the
+        card and the reopen on a thread, because this runs inside the
+        keyboard hook. Until 2026-09-23 nothing did either: every press
+        after a dead stream played the start cue, lit the dot, and threw
+        the dictation away as "hit the cap" until the app was restarted.
+        """
+        with self._mic_lock:
+            if not (partial and self._mic_due == "lost"):
+                self._mic_due = "partial" if partial else "lost"
+        self._say("the microphone stopped — "
+                  + ("the end of that dictation is missing" if partial
+                     else "nothing was recorded"))
+        self._mic_kick()
+
+    def _mic_kick(self) -> None:
+        """Start a reopen unless one is already running or waiting on its
+        timer — in which case only the card that is owed goes out now.
+        Never blocks: the work is on the `mic-reopen` thread."""
+        def run() -> None:
+            with self._mic_lock:
+                busy, self._mic_busy = self._mic_busy, True
+            if busy:
+                self._mic_tell(back=False)
+            else:
+                self._mic_try(1)
+        threading.Thread(target=run, daemon=True, name="mic-reopen").start()
+
+    def _mic_try(self, tries: int) -> None:
+        """One reopen through the recorder's own ladder; on failure, the
+        next one MIC_RETRY_S later on a timer, for as long as the app
+        runs. stop() closes the recorder, which ends the chain."""
+        rec = self.recorder
+        if getattr(rec, "_closed", False):
+            with self._mic_lock:
+                self._mic_busy = False
+            return
+        try:
+            rec.reopen()
+        except Exception as e:                               # noqa: BLE001
+            if tries == 1:
+                log.warning("the microphone could not be opened again (%s)"
+                            " — trying every %.0f s",
+                            str(e).splitlines()[0] if str(e) else type(e)
+                            .__name__, MIC_RETRY_S)
+            self._mic_tell(back=False)
+            timer = threading.Timer(MIC_RETRY_S, self._mic_try,
+                                    args=(tries + 1,))
+            timer.daemon = True
+            timer.name = "mic-reopen"
+            self._mic_timer = timer
+            timer.start()
+            return
+        with self._mic_lock:
+            self._mic_busy = False
+        label = getattr(rec, "device_label", lambda: "the microphone")()
+        log.info("the microphone stream is open again (%s; attempt %d)",
+                 label, tries)
+        self._mic_tell(back=True)
+
+    def _mic_tell(self, back: bool) -> None:
+        """The card, once per lost dictation: what happened, and that the
+        microphone is back or that DeskIT is still trying. A "still
+        trying" card is replaced by one line when it comes back."""
+        with self._mic_lock:
+            due, self._mic_due = self._mic_due, None
+            waiting = self._mic_waiting
+            self._mic_waiting = (not back) and (waiting or due is not None)
+        if back and (due or waiting):
+            self._say("the microphone is connected again")
+        engine = getattr(self, "notify", None)
+        if engine is None or (due is None and not (back and waiting)):
+            return
+        try:
+            if back and waiting:
+                engine.dismiss_source("microphone")
+            if due is not None:
+                title, body = MIC_WORDS[due]
+                body = f"{body} {MIC_BACK if back else MIC_TRYING}"
+            else:
+                title, body = ("The microphone is connected again",
+                               "You can dictate again.")
+            engine.receive({"source": "microphone", "kind": "info",
+                            "title": title, "body": body, "app": "DeskIT"})
+        except Exception:                                    # noqa: BLE001
+            log.debug("the microphone card did not go out", exc_info=True)
 
     # ---- worker thread ----
 
