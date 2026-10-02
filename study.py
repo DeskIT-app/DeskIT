@@ -517,13 +517,36 @@ class Corpus:
             return False
 
     def _trim(self) -> None:
+        # The owner's checkout never trims: there corpus\ IS the training
+        # data (paths.OWNER_DATA; AGENTS: never delete, prune or rotate it
+        # away). Counted 2026-09-23: 230 clips, 41 of them gold, +25-50 a
+        # day against corpus_keep = 400 — this loop would have started
+        # deleting his oldest clips, gold first in line, within the week.
+        if paths.OWNER_DATA:
+            return
         wavs = sorted(self.root.glob("*.wav"))
-        for wav in wavs[:max(0, len(wavs) - self.keep)]:
+        excess = len(wavs) - self.keep
+        if excess <= 0:
+            return
+        # On anybody else's copy the cap stands, and silver goes before
+        # gold: a machine-agreed label can be earned again by the next
+        # dictation, a clip the person corrected by hand cannot.
+        silver = [w for w in wavs if self._tier(w) != "gold"]
+        gold = [w for w in wavs if self._tier(w) == "gold"]
+        for wav in (silver + gold)[:excess]:
             for p in (wav, wav.with_suffix(".json")):
                 try:
                     p.unlink()
                 except OSError:
                     pass
+
+    @staticmethod
+    def _tier(wav: Path) -> str:
+        try:
+            return json.loads(
+                wav.with_suffix(".json").read_text("utf-8")).get("tier", "")
+        except (OSError, ValueError):
+            return ""
 
     def __len__(self) -> int:
         try:

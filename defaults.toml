@@ -1524,7 +1524,10 @@ corpus_keep = 400         # verified (audio, text) pairs kept in corpus\ as
                           # long game: enough of these becomes a LoRA
                           # fine-tune of the local model on YOUR speech.
                           # PRIVACY: raw audio on this disk, gitignored,
-                          # capped, oldest dropped first. 0 keeps none.
+                          # capped, oldest machine-agreed (silver) clips
+                          # dropped first, hand-corrected (gold) last.
+                          # 0 keeps none. The developer's checkout is
+                          # never trimmed (paths.OWNER_DATA: training data).
 # Read this to me -- the dashboard's Corrections > Read aloud tab
 # (reading.py). A sentence from your own gold dictations is shown, you
 # hold the dictation key with the dashboard in front and read it, and
