@@ -23,14 +23,33 @@ backups, 2026-09-21):
   per value and the row's identity as the associated data, so a sealed
   history line cannot be moved under another row. ``seal``/``open_``.
 - A NEW DEVICE never types a secret. It makes a key pair of its own
-  (ECDH P-256, CNG again), publishes the public half with a short
-  code, and shows the code; a device that already holds the account
-  key shows the same request with the same code and the person, having
-  compared the two, presses Approve — the approving device wraps the
-  account key to the applicant's public key (``hand_over``), the
-  applicant unwraps it (``take``), and the server only ever carried a
-  public key and a wrapped one. Apple and Bitwarden both do exactly
-  this; WhatsApp's link-with-phone-number is the same shape.
+  (ECDH P-256, CNG again), publishes the public half, and shows a short
+  code COMPUTED FROM that public half (``pairing_code``); a device that
+  already holds the account key computes the code again from the public
+  key it is about to wrap to — never from anything the server says the
+  code is — and the person, having compared the two, presses Approve:
+  the approving device wraps the account key to the applicant's public
+  key (``hand_over``), the applicant unwraps it (``take``), and the
+  server only ever carried a public key and a wrapped one. Apple and
+  Bitwarden both do this; WhatsApp's link-with-phone-number is the same
+  shape. Bitwarden's log-in-with-device shows a fingerprint phrase made
+  from the request's own public key on both screens
+  (bitwarden.com/help/log-in-with-device, and the phrase's inputs in
+  github.com/bitwarden/android/issues/5856); until 2026-09-23 the code
+  here was random, so a twin request with the same code and another key
+  passed the comparison (the audit's A35/A74).
+- THE PC IS THE TRUST ANCHOR, not the server (2026-09-23, the audit's
+  A15: one write of ``profiles.lock_id`` used to make every PC delete
+  its key and take the next one handed to it). A PC that holds a key
+  never drops it or replaces it because the server names another lock:
+  the key's fingerprint is pinned beside it in the DPAPI file, a lock
+  that moved elsewhere is a question for the person on Home, and a key
+  is only ever MOVED ASIDE (``set_aside``), never deleted, except by
+  Delete my account. Apple's keychain circle works the same way: a new
+  device is added by a device already in it, and Apple's servers cannot
+  add one or swap the keys (support.apple.com/guide/security/
+  sec0a319b35f); Signal shows "safety number changed" in the chat and
+  trusts nothing silently (signal.org/blog/safety-number-updates).
 - When no other device is at hand: a RECOVERY KEY the app generates
   (``new_recovery``, 24 characters in six groups — Apple's is 28,
   Signal's 64), shown once, kept by the person; the account key wrapped
@@ -78,14 +97,40 @@ KEY_BYTES = 32
 NONCE_BYTES = 12
 TAG_BYTES = 16
 #: The DPAPI file (secretstore.FILE_NAMES) the account key lives in:
-#: a JSON blob {"uid", "key" (base64), "created"}.
+#: a JSON blob {"uid", "key" (base64), "created", "lock" (the key's
+#: fingerprint — the lock this PC trusts, pinned beside it), and
+#: "refused" (a lock on the server the person said was not his)}.
 KEY_NAME = "account_key"
+#: Keys this PC moved aside instead of deleting — a change of lock the
+#: person confirmed, or a key another one would have overwritten:
+#: {"keys": [{"uid", "key" (base64, or "" for a confirmation alone),
+#: "lock", "created", "aside_at", "for_lock", "why"}]}, oldest first.
+ASIDE_NAME = "account_key_aside"
 
 #: Crockford's base32 alphabet without I, L, O and U — nothing that reads
 #: like something else on a screen or on paper.
 ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _ALIASES = str.maketrans({"O": "0", "I": "1", "L": "1"})
-CODE_CHARS = 8
+#: The pairing code both screens show: ten characters in two groups of
+#: five, 50 bits of a slow hash of the applicant's public key. Why 50
+#: and why slow: the one who wants to pass a twin request off as the
+#: real one must find ANOTHER key (or request id — it picks its own)
+#: whose code is the same, inside the few minutes the person spends
+#: comparing. Each guess costs CODE_ROUNDS of PBKDF2-HMAC-SHA256 — the
+#: way Signal iterates its safety number 5200 times for the same reason
+#: — so 2^50 guesses at a big GPU's ~9e9 HMAC rounds a second (hashcat's
+#: PBKDF2-SHA256 figure) are some 500 GPU-years, fifty million GPUs to
+#: do it inside five minutes; eight characters of one plain SHA-256 (the
+#: audit's first sketch) were under a minute of one GPU.
+CODE_CHARS = 10
+CODE_GROUP = 5
+#: 2^17 rounds: 50 ms on the owner's PC (measured 2026-09-23), paid
+#: once per request on each side (``_codes`` remembers it).
+CODE_ROUNDS = 2 ** 17
+#: The ``pairings.code`` column: 0004's check is eight characters of the
+#: alphabet. It carries the first eight of the code, a lookup hint only
+#: — the approver never shows it and never trusts it.
+HINT_CHARS = 8
 RECOVERY_CHARS = 24
 GROUP = 4
 
@@ -351,7 +396,20 @@ def _read() -> dict | None:
         return None
     if len(key) != KEY_BYTES or not data.get("uid"):
         return None
-    return {"uid": str(data["uid"]), "key": key, "created": str(data.get("created") or "")}
+    return {"uid": str(data["uid"]), "key": key, "created": str(data.get("created") or ""),
+            "lock": str(data.get("lock") or "") or fingerprint(key),
+            "refused": str(data.get("refused") or "")}
+
+
+def _write(held: dict) -> None:
+    secretstore.set(KEY_NAME, json.dumps({
+        "uid": held["uid"], "key": _b64(held["key"]), "created": held["created"],
+        "lock": fingerprint(held["key"]), "refused": held.get("refused") or ""}))
+
+
+def _now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def key(uid: str) -> bytes | None:
@@ -376,36 +434,164 @@ def create(uid: str) -> bytes:
 
 
 def keep(uid: str, new: bytes) -> None:
-    """Store a received key for ``uid`` — replacing whatever was there."""
-    from datetime import datetime, timezone
+    """Store a received key for ``uid``, its fingerprint pinned beside it.
+    A DIFFERENT key already here — another account's, or an older lock of
+    this one — is moved aside first, never written over."""
     if len(new) != KEY_BYTES:
         raise VaultError("the key is not 32 bytes")
     with _lock:
-        secretstore.set(KEY_NAME, json.dumps({
-            "uid": str(uid), "key": _b64(new),
-            "created": datetime.now(timezone.utc).isoformat(timespec="seconds")}))
+        held = _read()
+        if held is not None and held["key"] != new:
+            _put_aside(held, for_lock="", why="replaced")
+        _write({"uid": str(uid), "key": new, "created": _now(), "refused": ""})
 
 
-def forget() -> bool:
-    """Delete my account, or a lock the server says was replaced."""
+def _aside() -> list[dict]:
+    try:
+        raw = secretstore.get(ASIDE_NAME)
+        rows = json.loads(raw)["keys"] if raw else []
+    except Exception:                                        # noqa: BLE001
+        log.warning("lock: the file of keys set aside could not be read — kept as it is")
+        raise VaultError("the keys set aside could not be read") from None
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _put_aside(held: dict | None, *, for_lock: str, why: str, uid: str = "") -> None:
+    rows = _aside()
+    rows.append({"uid": str(held["uid"] if held else uid),
+                 "key": _b64(held["key"]) if held else "",
+                 "lock": fingerprint(held["key"]) if held else "",
+                 "created": held["created"] if held else "",
+                 "aside_at": _now(), "for_lock": str(for_lock or ""), "why": why})
+    secretstore.set(ASIDE_NAME, json.dumps({"keys": rows}))
+
+
+def set_aside(uid: str, for_lock: str) -> bool:
+    """The person confirmed that the account's lock changed to
+    ``for_lock`` (Home's [It was me]): this PC's key for ``uid`` moves
+    into the file of keys set aside — kept, never deleted — and the
+    confirmation is written with it, so the key handed over for the new
+    lock is taken and no other. With no key here, the confirmation
+    alone. True when a key was moved."""
     with _lock:
-        return secretstore.delete(KEY_NAME)
+        held = _read()
+        mine = held if held and held["uid"] == str(uid) else None
+        _put_aside(mine, for_lock=for_lock, why="the lock changed", uid=str(uid))
+        if mine is not None:
+            secretstore.delete(KEY_NAME)
+        return mine is not None
+
+
+def confirmed(uid: str) -> str | None:
+    """The lock the person last confirmed a change to on this PC, or None
+    when this PC never set a key of ``uid`` aside for one."""
+    with _lock:
+        try:
+            rows = _aside()
+        except VaultError:
+            return ""                    # unreadable: nothing is confirmed
+    for r in reversed(rows):
+        if r.get("uid") == str(uid) and r.get("for_lock"):
+            return str(r["for_lock"])
+    return None
+
+
+def aside(uid: str) -> list[str]:
+    """The fingerprints of the keys of ``uid`` set aside here, oldest
+    first — what the tests and a support question can see; never a key."""
+    with _lock:
+        return [str(r.get("lock") or "") for r in _aside()
+                if r.get("uid") == str(uid) and r.get("key")]
+
+
+def refuse(uid: str, lock_id: str) -> bool:
+    """Home's [It wasn't me]: the lock ``lock_id`` on the server is not
+    the person's — written beside the key so a restart does not ask
+    again; "" clears it. False when this PC holds no key of ``uid``."""
+    with _lock:
+        held = _read()
+        if held is None or held["uid"] != str(uid):
+            return False
+        held["refused"] = str(lock_id or "")
+        _write(held)
+        return True
+
+
+def refused(uid: str) -> str:
+    """The lock the person said was not his, or ""."""
+    with _lock:
+        held = _read()
+        return held["refused"] if held and held["uid"] == str(uid) else ""
+
+
+def forget(uid: str | None = None) -> bool:
+    """Delete my account: the key, and — for ``uid`` — every key of that
+    account set aside. Nothing else deletes a key."""
+    with _lock:
+        gone = secretstore.delete(KEY_NAME)
+        if uid is not None:
+            try:
+                rows = _aside()
+            except VaultError:
+                rows = []
+            left = [r for r in rows if r.get("uid") != str(uid)]
+            if left:
+                secretstore.set(ASIDE_NAME, json.dumps({"keys": left}))
+            else:
+                secretstore.delete(ASIDE_NAME)
+        return gone
 
 
 # --------------------------------------------------------- codes and keys
 
-def _chunks(text: str) -> str:
-    return "-".join(text[i:i + GROUP] for i in range(0, len(text), GROUP))
+def _chunks(text: str, group: int = GROUP) -> str:
+    return "-".join(text[i:i + group] for i in range(0, len(text), group))
 
 
 def _random(n: int) -> str:
     return "".join(_secrets.choice(ALPHABET) for _ in range(n))
 
 
-def new_code() -> str:
-    """The pairing code the applicant shows and the approver compares:
-    ``XXXX-XXXX``."""
-    return _chunks(_random(CODE_CHARS))
+#: (uid, pairing id, public key) -> its code: 50 ms each, and the desk
+#: asks for the same request's code on every poll. Public values only.
+_codes: dict[tuple[str, str, str], str] = {}
+
+
+def pairing_code(uid: str, pairing_id: str, public: str) -> str:
+    """The code a request to join is compared by, ``XXXXX-XXXXX``,
+    computed from the request itself: the account, the request's id and
+    the applicant's public key (``p1.…``) — the applicant from the key
+    it made, the approver from the key it is about to wrap to. Another
+    key, or the same key under another request, is another code.
+    VaultError when ``public`` is not a public key."""
+    ident = (str(uid), str(pairing_id), str(public))
+    with _lock:
+        known = _codes.get(ident)
+    if known:
+        return known
+    point = _unb64("p1", public)
+    if len(point) != _ECC_POINT_BYTES:
+        raise VaultError("the applicant's public key has the wrong length")
+    material = b"\0".join((b"deskit pairing code v1", ident[0].encode("utf-8"),
+                           ident[1].encode("utf-8"), point))
+    digest = hashlib.pbkdf2_hmac("sha256", material, b"deskit pairing code v1",
+                                 CODE_ROUNDS, dklen=32)
+    bits = int.from_bytes(digest[:8], "big") >> (64 - 5 * CODE_CHARS)
+    flat = "".join(ALPHABET[(bits >> (5 * (CODE_CHARS - 1 - i))) & 31]
+                   for i in range(CODE_CHARS))
+    code = _chunks(flat, CODE_GROUP)
+    with _lock:
+        if len(_codes) > 64:
+            _codes.clear()
+        _codes[ident] = code
+    return code
+
+
+def code_hint(code: str) -> str:
+    """What the ``pairings.code`` column holds: the first HINT_CHARS of
+    the code, flat. A hint for a person reading the table, never
+    compared by the app."""
+    return re.sub(r"[^0-9A-Z]", "", str(code or "").upper())[:HINT_CHARS]
 
 
 def new_recovery() -> str:
@@ -423,8 +609,8 @@ def normalize(text: str, length: int) -> str | None:
     return flat
 
 
-def pretty(flat: str) -> str:
-    return _chunks(flat)
+def pretty(flat: str, group: int = GROUP) -> str:
+    return _chunks(flat, group)
 
 
 # ------------------------------------------------------------- the hand-off
@@ -593,7 +779,9 @@ def import_keys(account_key: bytes, uid: str, rows: dict[str, str]) -> list[str]
 __all__ = [
     "VaultError", "KEY_NAME", "KEY_BYTES", "seal", "open_", "seal_json", "open_json",
     "is_sealed", "fingerprint", "key", "have", "create", "keep", "forget",
-    "new_code", "new_recovery", "normalize", "pretty", "CODE_CHARS", "RECOVERY_CHARS",
+    "ASIDE_NAME", "set_aside", "confirmed", "aside", "refuse", "refused",
+    "pairing_code", "code_hint", "new_recovery", "normalize", "pretty", "CODE_CHARS",
+    "CODE_GROUP", "HINT_CHARS", "RECOVERY_CHARS",
     "applicant", "drop", "hand_over", "take", "wrap_recovery", "unwrap_recovery",
     "export_keys", "digest_keys", "import_keys",
     "AAD_HISTORY", "AAD_VAULT", "AAD_PAIRING", "AAD_RECOVERY",
