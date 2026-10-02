@@ -1,13 +1,12 @@
 # Code signing policy
 
-> **Status (2026-09-19):** application to SignPath Foundation submitted; releases up to and
-> including 1.1.0 are unsigned, and Windows shows "Windows protected your PC" for them
-> (More info → Run anyway; see the [FAQ](https://deskit-app.github.io/DeskIT/en/10-faq)).
-> This page states the policy that applies from the first signed release.
+> **Status (2026-10-02):** releases are not code-signed yet, and Windows shows
+> "Windows protected your PC" for them (More info → Run anyway; see the
+> [FAQ](https://deskit-app.github.io/DeskIT/en/10-faq)). This page states the policy that
+> applies from the first signed release.
 
 DeskIT's Windows installer (`DeskIT-Setup-x.y.z.exe`, also published as `DeskIT-Setup.exe`)
-is signed under SignPath Foundation's programme for open-source projects:
-**Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).**
+is to be signed under SignPath Foundation's programme for open-source projects.
 
 ## What gets signed
 
