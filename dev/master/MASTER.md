@@ -307,6 +307,29 @@ and hands it `api.Api` — six calls and no others (`rows`, `tick`,
 As each screen lands, the matching `paths.DEVELOPER` branch comes out of the
 product — that is the point of the whole thing.
 
+**DONE, 2026-10-01, in one branch (`product-only`).** All of the "leaves"
+list below is out: 5,700 lines from `dashboard.py`, `main.py` and
+`overlay.py`, nine tests of surfaces that no longer exist, and
+`test_a_strangers_copy_shows_no_owner_surface` — which asserted the surface
+was HIDDEN — replaced by `test_the_product_has_no_owner_surface_left`, which
+names each piece and asserts it is absent for everybody. Nothing was deleted
+from the TREE: `reading.py`, `questions.py`, `answer_card.py` and
+`nightly.py` are all still here, the last three already export-ignored, and
+the three measuring commands are `dev\measure.py` (`benchmark` moved
+verbatim; `word_error_rate` stayed in `main.py`, because `review.py` and
+`study.py` import it and they ship).
+
+Two things the owner decided while it was being done. The Read-aloud tool
+only *disappears*: "delete it completely from the Dev, but keep it in the
+files, so if one day I want to use it again it exists" — the chip is gone,
+the module, the `read` control verb and main.py's divert are untouched, and
+nothing arms it. And the reporting the product keeps is the FILING half
+alone: the key, the button, the card and the preview. He asked for the
+evidence to widen at the same time — the last screenshot, the last screen
+recording and the last three transcripts, with one tick that says "send
+this to the developer" and is never asked twice — and that is its own
+branch, not this one.
+
 **Leaves (what he sees):** the Problems place and its git card, the routine's
 questions and `answer_card`, the Stop-tests button and the nightly's window,
 the Read-aloud tab (being deleted anyway), the developer rows in Settings
