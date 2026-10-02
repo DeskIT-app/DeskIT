@@ -66,6 +66,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -240,6 +241,53 @@ def heard_by_decoder(pairs: list[tuple[str, str]],
             if all(w.lower() in raw_words for w in words(h))]
 
 
+def _parse_store(text: str) -> dict:
+    """vocab.json's text as its mapping, or ValueError — a file that
+    parses to anything but an object is as unreadable as a cut one."""
+    data = json.loads(text)
+    if not isinstance(data, dict) or not isinstance(data.get("corrections", []), list):
+        raise ValueError("not a vocabulary file")
+    return data
+
+
+def _read_store(path: Path) -> dict:
+    return _parse_store(path.read_text("utf-8"))
+
+
+def _write_atomic(path: Path, body: str | bytes) -> None:
+    """The whole file or none of it: written beside, flushed to the disk,
+    then swapped in. A text body is written the way write_text wrote it
+    (CRLF on Windows), so a file saved by this build is the file the
+    last one saved. The temp name carries the pid: the desk and the app
+    may both save while one of them starts. A reader holding the file
+    for its few milliseconds (the desk's Words list) makes the swap
+    fail with a sharing violation, so it is tried again for ~0.2 s."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        if isinstance(body, bytes):
+            fh = open(tmp, "wb")
+        else:
+            fh = open(tmp, "w", encoding="utf-8")
+        with fh:
+            fh.write(body)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.02)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 class Vocab:
     """The learned store. Safe to read from any thread; writes go through
     save(). Since the study engine (study.py) arrived there are TWO
@@ -268,35 +316,163 @@ class Vocab:
         self.auto_after = auto_after
         self.max_auto_terms = max_auto_terms
         self.corrections: list[dict] = []
+        #: Heard forms taken out on THIS PC (forget, an edit that renamed
+        #: one) that the account has not been told of yet. The sync's
+        #: guard reads it: a word missing from the file is a tombstone
+        #: for every PC of the account, and only a word in here is one a
+        #: person asked to lose (sb._sync_vocab). Kept in the file, so a
+        #: forget on the desk with nothing running still counts.
+        self.forgotten: list[str] = []
+        #: Why the file could not be read at start (the exception's
+        #: name), or None. While it is set the account is not told
+        #: anything from here: the sync pulls the whole list back down
+        #: instead, and mend() clears it.
+        self.broken: str | None = None
+        # True when the unreadable file could not be moved aside: then
+        # nothing is ever saved over it.
+        self._hold = False
         self._write_lock = threading.RLock()
         self.load()
 
     # ---- persistence ----
+    #
+    # vocab.json used to be written in place (write_text truncates
+    # first), and a file that would not read loaded as an EMPTY list. So
+    # a full disk, a power cut or the Tcl abort AGENTS.md describes,
+    # mid-write, cost every learned word: the next correction saved one
+    # word over the damaged file, and 30 s after start the sync pushed a
+    # tombstone for every other word to every PC of the account (audit
+    # 2026-09-23, A7; probed: 5 words, the file cut in half -> 0 loaded,
+    # 5 tombstones pushed, the other PC 5 -> 0). Now: a temp file and
+    # os.replace, the previous good file kept as vocab.json.bak, an
+    # unreadable file set aside and the .bak read in its place, and the
+    # store marked broken so the sync restores rather than deletes.
+
+    @property
+    def backup_path(self) -> Path:
+        return self.path.with_name(self.path.name + ".bak")
 
     def load(self) -> None:
+        data: dict = {}
         try:
-            data = json.loads(self.path.read_text("utf-8"))
+            data = _read_store(self.path)
         except FileNotFoundError:
-            return
-        except Exception as e:
+            if not self.backup_path.exists():
+                return                            # a first start
+            # Only a set-aside (or a hand) takes the file and leaves the
+            # copy — the desk may have read a damaged file first.
+            self.broken = "missing"
+            log.warning("%s is missing and %s is not — reading the last "
+                        "good copy", self.path.name, self.backup_path.name)
+        except OSError as e:
+            # It would not OPEN (locked, refused): the file itself may be
+            # fine, so it stays where it is and nothing is saved over it.
+            self.broken = type(e).__name__
+            self._hold = True
+            log.warning("could not open %s (%s) — left in its place and "
+                        "not saved over; reading the last good copy",
+                        self.path.name, self.broken)
+        except Exception as e:                               # noqa: BLE001
             # A corrupt store must never stop dictation — the app works
             # fine without any learned vocabulary, it just works worse.
-            log.warning("could not read %s (%s) — starting with an empty "
-                        "vocabulary", self.path.name, e)
-            return
+            # Nor may it be written over or told to the account.
+            self.broken = type(e).__name__
+            aside = self._set_aside()
+            log.warning("could not read %s (%s) — %s; reading the last "
+                        "good copy", self.path.name, self.broken,
+                        f"set aside as {aside.name}" if aside else
+                        "it could not be moved, so nothing will be saved over it")
+        if self.broken:
+            try:
+                data = _read_store(self.backup_path)
+            except Exception as e2:                          # noqa: BLE001
+                log.warning("no readable %s either (%s) — starting with an "
+                            "empty vocabulary", self.backup_path.name,
+                            type(e2).__name__)
+                return
         found = data.get("corrections")
         if isinstance(found, list):
             self.corrections = [c for c in found
                                 if isinstance(c, dict) and c.get("meant")]
+        gone = data.get("forgotten")
+        if isinstance(gone, list):
+            self.forgotten = [str(k).strip().lower() for k in gone
+                              if str(k).strip()]
+        if self.broken:
+            log.warning("%d learned word(s) back from %s", len(self.corrections),
+                        self.backup_path.name)
+
+    def _set_aside(self) -> Path | None:
+        """The unreadable file, renamed out of the way and kept (it may
+        be read by hand); None, and the store held, if it would not move."""
+        aside = self.path.with_name(
+            f"{self.path.name}.broken-{time.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            os.replace(self.path, aside)
+            return aside
+        except OSError:
+            self._hold = True
+            return None
+
+    def mend(self) -> bool:
+        """The account's whole list has come down over a store that could
+        not be read (sb._sync_vocab): from here on it may be told what
+        changes again. False while the unreadable file is still where a
+        save would go."""
+        with self._write_lock:
+            if self._hold:
+                return False
+            self.broken = None
+            return True
 
     def save(self) -> None:
         with self._write_lock:
+            if self._hold:
+                log.warning("%s not saved: the unreadable file is still in "
+                            "its place", self.path.name)
+                return
+            data: dict = {"version": 1, "corrections": self.corrections}
+            if self.forgotten:
+                data["forgotten"] = self.forgotten
             try:
-                self.path.write_text(json.dumps(
-                    {"version": 1, "corrections": self.corrections},
-                    ensure_ascii=False, indent=2), "utf-8")
+                self._keep_last_good()
+                _write_atomic(self.path, json.dumps(data, ensure_ascii=False,
+                                                    indent=2))
             except OSError as e:
                 log.warning("could not write %s: %s", self.path.name, e)
+
+    def _keep_last_good(self) -> None:
+        """The file as it stands, copied to vocab.json.bak before it is
+        replaced — only a file that reads, so a damaged one never pushes
+        the last good copy out."""
+        try:
+            raw = self.path.read_bytes()
+            _parse_store(raw.decode("utf-8"))
+        except (OSError, ValueError):
+            return
+        _write_atomic(self.backup_path, raw)
+
+    def _forgot(self, key: str) -> None:
+        if key and key not in self.forgotten:
+            self.forgotten.append(key)
+            del self.forgotten[:-500]          # a record, not a history
+
+    def _unforget(self, key: str) -> None:
+        if key in self.forgotten:
+            self.forgotten = [k for k in self.forgotten if k != key]
+
+    def forgotten_keys(self) -> set[str]:
+        with self._write_lock:
+            return set(self.forgotten)
+
+    def told(self, heard) -> None:
+        """The account holds these tombstones now: their record is done."""
+        keys = {str(h).strip().lower() for h in heard}
+        with self._write_lock:
+            left = [k for k in self.forgotten if k not in keys]
+            if len(left) != len(self.forgotten):
+                self.forgotten = left
+                self.save()
 
     # ---- learning ----
 
@@ -307,6 +483,7 @@ class Vocab:
 
     def _learn(self, heard: str, meant: str) -> dict:
         key = heard.strip().lower()
+        self._unforget(key)
         for entry in self.corrections:
             if entry.get("heard", "").strip().lower() == key:
                 entry["hits"] = int(entry.get("hits", 1)) + 1
@@ -357,6 +534,7 @@ class Vocab:
             if len(kept) == len(self.corrections):
                 return False
             self.corrections = kept
+            self._forgot(key)
             self.save()
             return True
 
@@ -379,6 +557,9 @@ class Vocab:
                 raise KeyError(heard)
             hits = max(int(old.get("hits", 1)), self.replace_after_hits)
             if new_heard.lower() != key:
+                # the old heard form leaves the account as a tombstone
+                self._forgot(key)
+                self._unforget(new_heard.lower())
                 self.corrections = [c for c in self.corrections if c is not old]
                 dup = next((c for c in self.corrections
                             if str(c.get("heard", "")).strip().lower()

@@ -3132,14 +3132,14 @@ class Wizard:
         if want["autostart"] != shown["autostart"]:
             updates["setup.autostart"] = want["autostart"]
         if want["updates"] != shown["updates"]:
-            try:
-                import privacy
-                if want["updates"]:
-                    privacy.grant("update_check")
-                else:
-                    privacy.withdraw("update_check")
-            except Exception as e:                         # noqa: BLE001
-                log.info("the update-check switch was not written: %r", e)
+            # A SWITCH, not a gate: it is written the way Settings >
+            # General writes the same row — a plain [privacy] line, and
+            # the process's switches re-read below. This used to call
+            # privacy.grant/withdraw, which take only the seven consent
+            # kinds and raise ValueError for a switch; the INFO line
+            # swallowed it, so an unticked row left the weekly GET on
+            # (audit 2026-09-23, A9).
+            updates["privacy.update_check"] = want["updates"]
         if want["claude"] != shown["claude"]:
             try:
                 import launch
@@ -3164,6 +3164,12 @@ class Wizard:
         try:
             if updates:
                 config_mod.save(updates)
+            if "privacy.update_check" in updates:
+                # The wizard runs in the app's own process, before the
+                # app starts: updates.py asks privacy.allowed, which
+                # answers from what configure last read.
+                import privacy
+                privacy.configure(config_mod.load_layered())
             if want["autostart"] != shown["autostart"]:
                 import autostart
                 autostart.apply(want["autostart"])

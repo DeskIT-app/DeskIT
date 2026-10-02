@@ -347,6 +347,217 @@ def test_the_rate_ladder_asks_wasapi_before_giving_up_on_16_khz() -> None:
     assert r.sample_rate == 16000, "the recording fell to the device's rate"
 
 
+def _dying_streams():
+    """Fake input streams that can die the way a WASAPI stream does:
+    `active` stays whatever it was and the callbacks simply stop. `gone`
+    set makes every open refuse, the headset unplugged."""
+    import recorder as rec
+
+    state = {"gone": False, "opened": [], "closed": 0}
+
+    class Stream:
+        device = 0
+
+        def __init__(self, **kw):
+            if state["gone"]:
+                _refuse(rec, "Device unavailable")
+            self.samplerate = kw.get("samplerate") or 16000
+            self.callback = kw["callback"]
+            self.active = False
+            state["opened"].append(self)
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        def close(self):
+            state["closed"] += 1
+
+    return rec, state, Stream
+
+
+def test_a_dead_microphone_stream_says_so_and_opens_again() -> None:
+    """Audit 2026-09-23, A5. The stream died (2026-09-18 22:36, the
+    headset refusing its format after a restart) and PortAudio's WASAPI
+    host said nothing: no callback came, so every recording after it was
+    ACTIVE with zero chunks, end_pieces handed back None and main logged
+    "discarded: hit the inf s cap" — 23 times in three minutes, no cue, no
+    card, until the app was restarted. The recorder must say WHY a
+    recording is empty, notice the stream has stopped, and open it again
+    through the same ladder."""
+    rec, state, Stream = _dying_streams()
+    real = rec.sd.InputStream
+    rec.sd.InputStream = Stream
+    try:
+        r = rec.Recorder(16000, None, 400, lambda: None)
+        r.start_stream()
+        first = state["opened"][-1]
+        assert not r.stalled(), "a stream that has just started is alive"
+
+        # A live stream: a buffer arrives, the recording has it.
+        r.begin()
+        first.callback(np.full((1600, 1), 900, dtype=np.int16), 1600,
+                       None, None)
+        wav, pieces, seconds = r.end_pieces()
+        assert wav is not None and r.last_empty is None, r.last_empty
+
+        # A tap too short for a buffer is a tap, not a dead microphone.
+        r.begin()
+        assert r.end_pieces()[0] is None
+        assert r.last_empty == rec.EMPTY_TAP, r.last_empty
+
+        # The stream dies silently: no more callbacks, `active` unchanged.
+        r._last_callback -= rec.STALL_S + 1
+        assert r.stalled(), "no buffer for longer than STALL_S"
+        r.begin()
+        r._began_at -= 1.0                   # the key held for a second
+        wav, pieces, seconds = r.end_pieces()
+        assert wav is None and pieces == [], (wav, pieces)
+        assert r.last_empty == rec.EMPTY_NO_AUDIO, \
+            f"a dead stream was reported as {r.last_empty!r}"
+
+        # PortAudio saying the stream stopped counts at once.
+        r._last_callback = time.monotonic()
+        first.active = False
+        assert r.stalled()
+
+        # Opened again through the same ladder, on the same callback: a
+        # recording that is running receives sound again.
+        r.begin()
+        r.reopen()
+        second = state["opened"][-1]
+        assert second is not first and second.active, state["opened"]
+        assert state["closed"] >= 1, "the dead stream was not closed"
+        assert not r.stalled()
+        second.callback(np.full((1600, 1), 900, dtype=np.int16), 1600,
+                        None, None)
+        wav, pieces, seconds = r.end_pieces()
+        assert wav is not None and abs(seconds - 0.1) < 0.01, seconds
+
+        # Nothing to open while the headset is out: reopen raises (the
+        # app retries on a timer), and works once it is back.
+        state["gone"] = True
+        try:
+            r.reopen()
+        except rec.sd.PortAudioError:
+            pass
+        else:
+            raise AssertionError("reopen with no device did not raise")
+        state["gone"] = False
+        r.reopen()
+        assert state["opened"][-1].active
+
+        # The overflow still says overflow, and a closed recorder is
+        # never reopened behind the app's back.
+        r._state = rec.OVERFLOWED
+        assert r.end_pieces()[0] is None
+        assert r.last_empty == rec.EMPTY_OVERFLOWED
+        r.close()
+        count = len(state["opened"])
+        r.reopen()
+        assert len(state["opened"]) == count and not r.stalled()
+    finally:
+        rec.sd.InputStream = real
+
+
+def test_a_dictation_lost_to_a_dead_stream_is_cued_carded_and_recovered(
+) -> None:
+    """The App's half of A5: a release with no audio in it plays the
+    error cue, leaves ONE card in plain words, and the stream is opened
+    again — on a timer while no input can be opened, and the card says
+    so; when it comes back, the card says that instead."""
+    import main as main_mod
+
+    rec, state, Stream = _dying_streams()
+
+    class Engine:
+        def __init__(self):
+            self.cards, self.dismissed = [], []
+
+        def receive(self, payload, **_kw):
+            self.cards.append(dict(payload))
+            return {}
+
+        def dismiss_source(self, source, **_kw):
+            self.dismissed.append(source)
+            return 1
+
+    cues: list[str] = []
+    real, was_beep, was_retry = (rec.sd.InputStream, main_mod.beep,
+                                 main_mod.MIC_RETRY_S)
+    rec.sd.InputStream = Stream
+    main_mod.beep = cues.append
+    main_mod.MIC_RETRY_S = 0.05
+    try:
+        r = rec.Recorder(16000, None, 400, lambda: None)
+        r.start_stream()
+        app = main_mod.App.__new__(main_mod.App)
+        app.recorder = r
+        app.notify = Engine()
+        app._roller = None
+        app._cap = 400.0
+        app._rec_at = time.monotonic() - 1.0
+        app._set_state = lambda *_a, **_k: None
+        app.dot = type("D", (), {"alarm": lambda s, v: None})()
+
+        # The stream dies; he holds the key for a second and lets go.
+        r._last_callback -= rec.STALL_S + 1
+        r.begin()
+        r._began_at -= 1.0
+        app._on_stop(None)
+        assert cues == ["error"], cues
+        assert _until(lambda: app.notify.cards and not app._mic_busy), \
+            "no card, or the reopen never finished"
+        (card,) = app.notify.cards
+        assert card["title"] == main_mod.MIC_WORDS["lost"][0], card
+        assert main_mod.MIC_BACK in card["body"], card
+        assert card["source"] == "microphone", card
+        assert len(state["opened"]) == 2 and not r.stalled(), \
+            "the stream was not opened again"
+
+        # Now the headset is OUT: the card says DeskIT keeps trying, and
+        # when it comes back that card is replaced by one that says so.
+        app.notify.cards.clear()
+        state["gone"] = True
+        r._last_callback -= rec.STALL_S + 1
+        r.begin()
+        r._began_at -= 1.0
+        app._on_stop(None)
+        assert _until(lambda: app.notify.cards), "no card while it is gone"
+        assert main_mod.MIC_TRYING in app.notify.cards[0]["body"], \
+            app.notify.cards
+        state["gone"] = False
+        assert _until(lambda: len(app.notify.cards) == 2
+                      and not app._mic_busy), app.notify.cards
+        assert app.notify.dismissed == ["microphone"], app.notify.dismissed
+        assert app.notify.cards[1]["title"] == \
+            "The microphone is connected again", app.notify.cards
+        assert state["opened"][-1].active and not r.stalled()
+
+        # A press on a stream that has stopped opens it again at once,
+        # quietly: the start cue and nothing else, no card — the
+        # release decides whether anything was lost.
+        cues.clear()
+        app.notify.cards.clear()
+        before = len(state["opened"])
+        r._last_callback -= rec.STALL_S + 1
+        app.cfg = type("C", (), {"max_seconds": 400.0,
+                                 "latch_hotkey": "", "local": None})()
+        app._vqa = app._problem_card = None
+        app._on_start(None)
+        assert _until(lambda: len(state["opened"]) > before
+                      and not app._mic_busy)
+        assert cues == ["start"] and app.notify.cards == [], \
+            (cues, app.notify.cards)
+        r.abort()
+    finally:
+        rec.sd.InputStream = real
+        main_mod.beep = was_beep
+        main_mod.MIC_RETRY_S = was_retry
+
+
 def test_config_loads_and_validates() -> None:
     cfg = config_mod.load(Path(__file__).parent / "defaults.toml")
     assert cfg.hotkey == "right ctrl"
@@ -836,15 +1047,22 @@ class _FakeInjector:
         self.calls.append(("show", text))
         return self.focus
 
-    def replace_placeholder(self, placeholder, text, chord, delay, hwnd):
+    def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                            marker=None):
         if hwnd and self.foreground_window() != hwnd:
             raise injector.FocusChangedError("moved")
         self.calls.append(("replace", placeholder, text))
         return "old clipboard restored"
 
-    def clear_placeholder(self, placeholder, hwnd):
+    def clear_placeholder(self, placeholder, hwnd, marker=None):
         self.calls.append(("clear", placeholder))
         return True
+
+    def modifiers_held(self):
+        return False
+
+    def copied_since(self, marker):
+        return False
 
     def inject(self, text, chord, delay):
         self.calls.append(("inject", text))
@@ -1191,9 +1409,14 @@ class _FakeHint:
 
     def __init__(self):
         self.shown = []
+        # how many cards had been shown each time a recording began
+        self.began = []
 
     def show(self, card):
         self.shown.append(card)
+
+    def recording_began(self):
+        self.began.append(len(self.shown))
 
     def start(self):
         pass
@@ -1395,6 +1618,10 @@ def test_a_transcript_is_never_aimed_at_one_of_our_own_windows() -> None:
         ours["mine"] = False
         app._on_start(None)
         assert app._start_hwnd == 0x1111, hex(app._start_hwnd)
+        # Every press told the key card a new dictation began, BEFORE the
+        # card for it was queued: a card closed with its X comes back on
+        # the next dictation and not a moment sooner.
+        assert app.hint.began == [0, 1], (app.hint.began, app.hint.shown)
     finally:
         main_mod.injector = real
 
@@ -1673,6 +1900,223 @@ def test_a_marker_that_fails_does_not_take_the_dictation_with_it() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_decode_does_not_wait_for_the_marker() -> None:
+    """Putting the "..." up is a paste like any other — the chord, then
+    restore_delay_ms (300) for the target to read it before the old
+    clipboard goes back — and every decode used to wait it out first,
+    about 0.35 s of every dictation (2026-09-23 audit, A32). The marker
+    goes up on a thread of its own now, so the decode starts while it is
+    still being pasted; and every door that reads `shown` — the erase,
+    the clear — still waits for the marker, so the cursor sees what it
+    always saw: "..." up, then replaced or taken down.
+
+    Asked with events, not a stopwatch. The marker's paste does not end
+    until the decode has begun, so a decode that waits for the marker is
+    a five-second timeout here, not a slow pass."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    decoding = threading.Event()   # the backend was entered
+    decoded = threading.Event()    # ...and it answered
+
+    class _SlowMarker(_FakeInjector):
+        def __init__(self, until):
+            super().__init__()
+            self.until = until
+
+        def show_placeholder(self, text, chord, delay):
+            self.calls.append(("show", text))
+            # The restore wait. What it waits FOR is the case under test.
+            beside = self.until.wait(5.0)
+            time.sleep(0.05)        # and a little more, past it
+            self.calls.append(("shown", beside))
+            return self.focus
+
+    class _Decoder(_Flaky):
+        def transcribe(self, wav):
+            decoding.set()
+            try:
+                return super().transcribe(wav)
+            finally:
+                decoded.set()
+
+    def run(until, backend, retry_seconds=5.0):
+        decoding.clear()
+        decoded.clear()
+        fake = _SlowMarker(until)
+        tmp = Path(tempfile.mkdtemp(prefix="dictation-marker-"))
+        real = main_mod.injector
+        try:
+            main_mod.injector = fake
+            app = _worker_app(backend, tmp, retry_seconds=retry_seconds)
+            app._handle(b"RIFF-audio", 4.0, fake.focus)
+            return fake.calls
+        finally:
+            main_mod.injector = real
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # The decode began while the marker was still being pasted, and the
+    # erase came after the marker was up.
+    calls = run(decoding, _Decoder(fail_times=0))
+    assert [c[0] for c in calls] == ["show", "shown", "replace"], calls
+    assert calls[1] == ("shown", True), \
+        f"the decode waited for the marker to be pasted first: {calls}"
+
+    # A decode that beat the marker (2 in 230 on the owner's PC) waits for
+    # it: backspaces sent before the "..." has landed would eat his text.
+    calls = run(decoded, _Decoder(fail_times=0))
+    assert [c[0] for c in calls] == ["show", "shown", "replace"], calls
+
+    # Nothing to paste after all: the marker is still taken back down,
+    # and only once it is there.
+    calls = run(decoded, _Decoder(fail_times=99), retry_seconds=0.2)
+    assert [c[0] for c in calls] == ["show", "shown", "clear"], calls
+    calls = run(decoded, _Decoder(fail_times=0, text="  "))
+    assert [c[0] for c in calls] == ["show", "shown", "clear"], calls
+
+
+def test_the_paste_time_runs_from_the_release_to_the_chord() -> None:
+    """The "X s to the paste" figure began after the marker's 0.35 s and
+    ended after the 0.3 s restore wait that follows the paste chord, so it
+    looked about right while measuring the wrong span (A32). It runs from
+    the RELEASE, which _on_stop stamps and the queue item carries, to the
+    transcript's paste chord — the moment the text is on its way to the
+    screen, stamped per thread by injector.paste_text."""
+    import logging
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    # The stamp: at the chord, before the restore wait, and per thread.
+    with _patched(injector, "_put_text", lambda text: None), \
+            _patched(injector, "send_chord", lambda chord: None):
+        before = time.monotonic()
+        injector.paste_text("x", "ctrl+v", 300)
+        after = time.monotonic()
+    at = injector.last_paste_at()
+    assert before <= at <= after - 0.25, (before, at, after)
+    other: list = []
+    t = threading.Thread(target=lambda: other.append(injector.last_paste_at()))
+    t.start()
+    t.join()
+    assert other == [0.0], other
+
+    class _Chord(_FakeInjector):
+        def __init__(self, stale=False):
+            super().__init__()
+            # A stamp left by some EARLIER paste on this thread, which the
+            # worker must not mistake for this one's chord.
+            self.stale = stale
+            self.chord_at = -1000.0 if stale else 0.0
+
+        def last_paste_at(self):
+            return self.chord_at
+
+        def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                                marker=None):
+            status = super().replace_placeholder(placeholder, text, chord,
+                                                 delay, hwnd, marker)
+            time.sleep(0.2)    # the Backspaces, the settle, the snapshot
+            if not self.stale:
+                self.chord_at = time.monotonic()
+            time.sleep(0.4)             # the restore wait after the chord
+            return status
+
+    def run(stale=False):
+        lines: list[str] = []
+        said: list[str] = []
+
+        class _Catch(logging.Handler):
+            def emit(self, record):
+                lines.append(record.getMessage())
+
+        app_log = logging.getLogger("app")
+        catch = _Catch()
+        level = app_log.level
+        app_log.setLevel(logging.INFO)
+        app_log.addHandler(catch)
+        tmp = Path(tempfile.mkdtemp(prefix="dictation-clock-"))
+        fake = _Chord(stale)
+        try:
+            with _patched(main_mod, "injector", fake):
+                app = _worker_app(_Flaky(fail_times=0), tmp)
+                app._say = lambda text: said.append(text)
+                released = time.monotonic() - 1.0   # he let go a second ago
+                app._handle(b"RIFF-audio", 4.0, fake.focus, released=released)
+                done = time.monotonic()
+        finally:
+            app_log.removeHandler(catch)
+            app_log.setLevel(level)
+            shutil.rmtree(tmp, ignore_errors=True)
+        pasted = [l for l in lines if l.startswith("pasted ")]
+        assert len(pasted) == 1, lines
+        m = re.search(r"\((-?\d+\.\d) s to the paste via ", pasted[0])
+        assert m, pasted[0]
+        to_paste = float(m.group(1))
+        status = [s for s in said if "spoken ->" in s]
+        assert status and f"in {to_paste:.1f} s via" in status[0], said
+        return to_paste, released, done, fake.chord_at, pasted[0]
+
+    to_paste, released, done, chord_at, line = run()
+    # From the release: the second before the worker got it is in it...
+    assert to_paste >= 0.95, line
+    # ...so is the work in front of the chord (not a clock that stops
+    # when the paste BEGINS)...
+    assert chord_at - released - 0.05 <= to_paste, (line, chord_at - released)
+    assert to_paste >= 1.15, line
+    # ...and the restore wait after the chord is not.
+    assert to_paste <= (done - released) - 0.3, (line, done - released)
+
+    # A stamp older than this paste is not this paste's chord: the clock
+    # falls back to the end of the paste, the old answer, never to a
+    # number from some other dictation.
+    to_paste, released, done, _chord_at, line = run(stale=True)
+    assert to_paste >= 1.55, line
+    assert to_paste <= (done - released) + 0.05, (line, done - released)
+
+
+def test_a_marker_thread_that_will_not_start_does_not_lose_the_dictation() -> None:
+    """The marker has a thread of its own (A32), and starting one can
+    fail when handles or memory run out. The audio is not on disk at that
+    point — it is spooled only once a decode fails — so raising out of
+    _handle there would lose the recording, which a marker may never do
+    (test_a_marker_that_fails_does_not_take_the_dictation_with_it). No
+    marker then, and the words are pasted plainly."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    class _NoMarkerThread:
+        """main's `threading`, except that the marker's thread won't start."""
+
+        class Thread(threading.Thread):
+            def start(self):
+                if self.name == "marker-paste":
+                    raise RuntimeError("can't start new thread")
+                super().start()
+
+        def __getattr__(self, name):
+            return getattr(threading, name)
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-e2e-"))
+    fake = _FakeInjector()
+    try:
+        with _patched(main_mod, "injector", fake), \
+                _patched(main_mod, "threading", _NoMarkerThread()):
+            app = _worker_app(_Flaky(fail_times=0, text="שלום"), tmp)
+            app._handle(b"RIFF-audio", 9.0, fake.focus)
+        kinds = [c[0] for c in fake.calls]
+        assert "show" not in kinds and "replace" not in kinds, fake.calls
+        assert ("inject", "שלום") in fake.calls, fake.calls
+        assert app.spool.pending() == [], app.spool.pending()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_a_clipboard_that_will_not_hand_over_its_text_is_nothing_to_put_back() -> None:
     """Measured on the owner's PC: the clipboard said CF_UNICODETEXT was
     there and GetClipboardData then failed (pywintypes error 0), and once
@@ -1734,6 +2178,329 @@ def test_moving_window_falls_back_to_clipboard() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+def test_the_marker_is_erased_only_while_nothing_could_have_moved_the_caret() -> None:
+    """2026-09-23 audit, A29/A60: the erase's one test was the top-level
+    window, which is a whole browser or a whole VS Code — a Ctrl+Tab, a
+    click into another box, a few letters typed while the text was on its
+    way, and the three backspaces ate the user's own characters, the
+    transcript landed in the other box and the "..." stayed behind. A key
+    that reached the app, a key the app itself sent there, a mouse press
+    (a short tap too, and on our own cards too), another box taking the
+    focus: any of them and not one backspace is sent. And a modifier still
+    held — the next dictation's Right Ctrl — is waited out, because a
+    Backspace under it is a Ctrl+Backspace that deletes a word."""
+    import threading
+    import time
+
+    import hotkey as hotkey_mod
+    import injector as inj
+
+    sent, pasted = [], []
+    keys = {"held": set(), "tapped": set()}
+    state = {"focus": 77}
+
+    def key_state(vk):
+        value = 0x8000 if vk in keys["held"] else 0
+        if vk in keys["tapped"]:
+            keys["tapped"].discard(vk)          # read once, like Windows
+            value |= 0x0001
+        return value
+
+    def cycle(between=None, clear=False):
+        """Marker down, `between` happens, then the erase. What it raised,
+        or None."""
+        keys["held"].clear()
+        keys["tapped"].clear()
+        state["focus"] = 77
+        sent.clear()
+        pasted.clear()
+        marker = inj.show_placeholder("...", "ctrl+v", 0)
+        assert marker.hwnd == 4242 and marker.focus == 77
+        if between is not None:
+            between()
+        try:
+            if clear:
+                return inj.clear_placeholder("...", 4242, marker=marker)
+            inj.replace_placeholder("...", "שלום", "ctrl+v", 0, 4242,
+                                    marker=marker)
+            return None
+        except inj.FocusChangedError as e:
+            return e
+        finally:
+            # whatever it decided, the watch is over
+            assert not marker._watch._thread.is_alive()
+
+    def click():
+        keys["held"].add(0x01)
+        time.sleep(inj.CLICK_POLL_S * 5)
+        keys["held"].discard(0x01)
+        time.sleep(inj.CLICK_POLL_S * 3)
+
+    def tap():
+        # down and up between two looks: only the "pressed since" bit
+        keys["tapped"].add(0x01)
+        time.sleep(inj.CLICK_POLL_S * 3)
+
+    hand = PTTStateMachine(                         # dictation on F8
+        0x77, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, taps={0x78: "capture"},  # F9: a screen key
+        on_tap=lambda action: None)
+
+    def press(*vks, injected=False):
+        """Down in order, up in reverse — a chord, or one key."""
+        for vk in vks:
+            hand.handle("down", vk, injected=injected)
+        for vk in reversed(vks):
+            hand.handle("up", vk, injected=injected)
+
+    with _patched(inj, "inject", lambda t, c, d: pasted.append(t) or "ok"), \
+            _patched(inj, "send_key_times",
+                     lambda name, n: sent.append((name, n))), \
+            _patched(inj, "foreground_window", lambda: 4242), \
+            _patched(inj, "focus_of", lambda h: state["focus"]), \
+            _patched(inj, "menu_open", lambda h: state.get("menu", False)), \
+            _patched(inj, "ours_in_front",
+                     lambda: state.get("ours", False)), \
+            _patched(inj, "key_state", key_state), \
+            _patched(inj, "SETTLE_SECONDS", 0):
+        # Nothing happened: the old erase, exactly.
+        assert cycle() is None
+        assert sent == [("backspace", 3)] and pasted == ["...", "שלום"]
+
+        # What moves no caret moves nothing: an injected key, a Ctrl on its
+        # own, the dictation key pressed for the next one, this app's own
+        # screen key, a lock or volume key, Alt+Tab away (the foreground
+        # test sees a switch that did not come back), a Win chord.
+        def harmless():
+            press(VK_V, injected=True)
+            press(VK_LCTRL)
+            press(0x77)
+            press(0x78)
+            press(0x14)                    # Caps Lock
+            press(0xAF)                    # volume up
+            press(0xA4, 0x09)              # Alt+Tab
+            press(0x5B, 0x44)              # Win+D
+            press(0xA0, 0xA4)              # Shift+Alt: the language switch
+        assert cycle(harmless) is None and sent == [("backspace", 3)]
+
+        # A press on one of OUR windows while it holds the foreground — a
+        # screenshot's drag — is not a press in the field.
+        def drag_on_ours():
+            state["ours"] = True
+            click()
+            state["ours"] = False
+        assert cycle(drag_on_ours) is None and sent == [("backspace", 3)]
+
+        # A lone Alt tap puts the focus in the window's menu.
+        moved = cycle(lambda: press(0xA4))
+        assert isinstance(moved, inj.MarkerMovedError) and sent == []
+        # ...and a menu that is open is where the keys would go.
+        state["menu"] = True
+        moved = cycle()
+        state["menu"] = False
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "menu" in str(moved) and sent == []
+
+        # A key that reached the app from a hand.
+        def typed():
+            hand.handle("down", 0x41, injected=False)      # "a"
+            hand.handle("up", 0x41, injected=False)
+        moved = cycle(typed)
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "keys" in str(moved) and sent == [] and pasted == ["..."]
+
+        # Keys the app itself sent there (a review Accept, a translate).
+        moved = cycle(hotkey_mod._count_sent)
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "app itself" in str(moved) and sent == []
+
+        # A mouse press, held or a tap shorter than a poll.
+        for between in (click, tap):
+            moved = cycle(between)
+            assert isinstance(moved, inj.MarkerMovedError), between
+            assert "mouse" in str(moved) and sent == []
+
+        # Another box in the same window took the focus.
+        moved = cycle(lambda: state.update(focus=78))
+        assert isinstance(moved, inj.MarkerMovedError) and sent == []
+
+        # The next dictation's Right Ctrl, still held: waited out...
+        def held_then_let_go():
+            keys["held"].add(0x11)
+            threading.Timer(0.2, keys["held"].discard, (0x11,)).start()
+        started = time.monotonic()
+        assert cycle(held_then_let_go) is None
+        assert time.monotonic() - started >= 0.2
+        assert sent == [("backspace", 3)]
+        # ...and never sent under it, however long it stays down.
+        with _patched(inj, "MODIFIER_WAIT_S", 0.1):
+            moved = cycle(lambda: keys["held"].add(0x11))
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "held" in str(moved) and sent == []
+
+        # The give-up path leaves it, too, and says so with False.
+        assert cycle(typed, clear=True) is False and sent == []
+        assert cycle(clear=True) is True and sent == [("backspace", 3)]
+
+    # A key the hook SWALLOWED never reached the app: the latch press
+    # mid-recording is the one every dictation can meet.
+    spy = Spy()
+    m = _latch_machine(spy)
+    before = hotkey_mod.keys_typed()
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)       # latched: swallowed
+    assert spy.events == ["start", "latch"], spy.events
+    assert hotkey_mod.keys_typed() == before
+    m.handle("up", VK_LEFT, injected=False)         # key-ups never count
+    assert hotkey_mod.keys_typed() == before
+
+    # Ctrl+Alt is AltGr: an app chord there still types a point in a
+    # Hebrew layout, so it counts even though this app took it.
+    altgr = PTTStateMachine(
+        VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, taps={parse_binding("ctrl+alt+m"): "x"},
+        on_tap=lambda action: None)
+    before = hotkey_mod.keys_typed()
+    for vk in (VK_LCTRL, 0xA4, 0x4D):
+        altgr.handle("down", vk, injected=False)
+    assert hotkey_mod.keys_typed() == before + 1
+
+    # A Win whose key-up Windows never delivered (Win+L: it happens on the
+    # secure desktop) must not switch the count off. The app's machine
+    # asks Windows (held_probe); here Windows says nothing is held.
+    stale = PTTStateMachine(
+        VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, held_probe=lambda vk: False)
+    stale.handle("down", 0x5B, injected=False)     # its up is lost
+    before = hotkey_mod.keys_typed()
+    stale.handle("down", 0x41, injected=False)
+    assert hotkey_mod.keys_typed() == before + 1, "a phantom Win hid a key"
+
+
+def test_the_erase_waits_for_the_next_dictations_hand_holding_nothing() -> None:
+    """The second review, 2026-09-23: the 30 s wait for a held Ctrl sat
+    under the cursor lock and gave up in the middle of an ordinary held
+    sentence. App._hands_off waits with no lock, for as long as the next
+    dictation is being recorded, and HANDS_OFF_S otherwise."""
+    import threading
+    import time
+
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    held = {"on": True}
+
+    class _Machine:
+        state = hotkey_mod.RECORDING
+
+    app.machine = _Machine()
+
+    class _Keys:
+        @staticmethod
+        def modifiers_held():
+            return held["on"]
+
+    real = main_mod.injector
+    try:
+        main_mod.injector = _Keys
+        # the next dictation is held for longer than the idle bound
+        with _patched(main_mod, "HANDS_OFF_S", 0.05):
+            threading.Timer(0.3, held.update, kwargs={"on": False}).start()
+            app._hands_off()
+            assert not held["on"], "gave up mid-hold"
+            # nothing is being recorded: a stuck key is waited out briefly
+            held["on"] = True
+            _Machine.state = hotkey_mod.IDLE
+            started = time.monotonic()
+            app._hands_off()
+            assert time.monotonic() - started < 0.3
+    finally:
+        main_mod.injector = real
+
+
+def test_a_caret_that_may_have_moved_sends_the_text_to_the_clipboard() -> None:
+    """The worker's half of the rule above: the erase refused, so the
+    transcript goes where a window switch always sent it — the clipboard —
+    and the marker it could not vouch for is handed back to the erase that
+    asks about it."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    class _CaretMoved(_FakeInjector):
+        def show_placeholder(self, text, chord, delay):
+            self.calls.append(("show", text))
+            return "the-marker"
+
+        def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                                marker=None):
+            self.calls.append(("refused", marker))
+            raise injector.MarkerMovedError(
+                "keys were pressed while the text was on its way")
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-e2e-"))
+    fake = _CaretMoved()
+    real = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0, text="טקסט"), tmp)
+        app._handle(b"RIFF-audio", 5.0, fake.focus)
+        assert fake.calls == [("show", "..."), ("refused", "the-marker"),
+                              ("clipboard", "טקסט")], fake.calls
+
+        # ...unless something was copied meanwhile (a screenshot taken
+        # during the wait): that stays, and the text is on the shelf.
+        fake.calls.clear()
+        fake.copied_since = lambda marker: marker == "the-marker"
+        app._handle(b"RIFF-audio", 5.0, fake.focus)
+        assert fake.calls == [("show", "..."), ("refused", "the-marker")], \
+            fake.calls
+        assert app._last["final"] == "טקסט"
+    finally:
+        main_mod.injector = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_restore_that_fails_after_the_paste_is_not_a_failed_paste() -> None:
+    """2026-09-23 audit, A109: once the chord is sent the text has landed,
+    and a clipboard that would not take its old contents back is a status,
+    not a raise. Raised, it read as "paste failed" with an error cue over
+    text that was on screen — and under the "..." marker it left the
+    worker believing there was no marker, so the transcript was pasted
+    after it and the marker stayed."""
+    import injector as inj
+
+    pasted = []
+
+    def busy(*_a, **_k):
+        raise inj.ClipboardBusyError("held by a clipboard manager")
+
+    with _patched(inj, "snapshot", lambda: ("text", "what I had")), \
+            _patched(inj, "paste_text",
+                     lambda t, c, d: pasted.append(t)), \
+            _patched(inj, "restore", busy):
+        with _patched(inj, "restore_all", lambda saved, **k: False):
+            status = inj.inject("שלום", "ctrl+v", 0)
+            assert pasted == ["שלום"], pasted
+            assert "could not be put back" in status, status
+            # ...and the marker is a Marker, so the worker knows it is up
+            marker = inj.show_placeholder("...", "ctrl+v", 0)
+            try:
+                assert isinstance(marker, inj.Marker)
+            finally:
+                marker.close()
+        # The text restore gets restore_all's longer budget before it
+        # gives up.
+        got = []
+        with _patched(inj, "restore_all",
+                      lambda saved, **k: got.append(saved) or True):
+            assert inj.inject("שלום", "ctrl+v", 0) == "old clipboard restored"
+        fmt, blob = got[0][0]
+        assert blob.decode("utf-16-le") == "what I had\0", blob
+
+
 def test_silence_is_not_retried_or_spooled() -> None:
     """An empty transcript means no speech — it must not be treated as a
     failure worth retrying or keeping."""
@@ -1783,6 +2550,41 @@ def test_cleanup_collapses_restarted_phrases() -> None:
     # no repetition -> untouched
     assert clean("הוא אמר לי ש הוא בא") == "הוא אמר לי ש הוא בא"
     assert clean("זה בית ספר טוב") == "זה בית ספר טוב"
+
+
+def test_cleanup_keeps_phrases_that_say_a_word_twice_on_purpose() -> None:
+    """The stutter collapse swallowed ANY one- or two-character token
+    between two copies of a word and collapsed every exact pair, so real
+    phrases lost words before the repair pass or the sidecar saw them
+    (audit 2026-09-23, A4). Only a real stutter goes now: a Hebrew prefix
+    letter, or the start of the repeated word."""
+    from cleanup import clean
+
+    for text in (
+            "go through the failing tests one by one and fix them",
+            "add end to end coverage",
+            "do it step by step",
+            "set the grid to 2 x 2",
+            "the code is 4 4 7 1",
+            "the PIN is 1 1 2 2",
+            "call 050 050 tomorrow",
+            "לאט לאט זה עובד",
+            "פגישה פנים אל פנים",
+            "הוא לא הוא",
+            "לא לא, זה לא נכון",
+            "very very good",
+            "turn it on on Monday"):
+        assert clean(text) == text, (text, clean(text))
+    # the real stutters still go: a word restarted from its start, a
+    # prefix letter left behind, a function word doubled, a row of three
+    assert clean("אני רוצה רוצ רוצה את זה") == "אני רוצה את זה"
+    assert clean("תוסיף את את הקובץ") == "תוסיף את הקובץ"
+    assert clean("I I think so") == "I think so"
+    assert clean("the the file") == "the file"
+    assert clean("לאט לאט לאט") == "לאט"
+    assert clean("אני א אני אני הולך") == "אני הולך"
+    # a Latin fragment is a word, never a leftover
+    assert clean("the file x the file") == "the file x the file"
 
 
 def test_cleanup_never_empties_real_content() -> None:
@@ -4907,6 +5709,107 @@ def test_repair_sees_through_a_hebrew_prefix() -> None:
     out, applied = v.apply("העלה את זה לסירקה ציבורית")
     assert out == "העלה את זה לסריקה ציבורית", out
     assert applied == ["סירקה -> סריקה"], applied
+    # Through a hyphen too, up to three prefix letters — the shape
+    # reading.py strips ("ל-GitHub", "וב-branch").
+    for said, fixed in (("וב-סירקה", "וב-סריקה"), ("ה-סירקה", "ה-סריקה")):
+        assert v.apply(said)[0] == fixed, said
+
+
+def test_a_lone_letter_pair_never_eats_the_head_of_a_hyphenated_word() -> None:
+    """The owner's live pair, 2026-09-23: "ה" -> "ה-Dev", taught twice
+    because the decoder had dropped "Dev" and left the article alone. The
+    matcher stopped at the first non-letter, so the hyphen of every
+    "ה-<English>" counted as the end of a word: "ה-read" was pasted as
+    "ה-Dev-read" and "ה-Problems" as "ה-Dev-Problems" — 3 of the last 50
+    pasted dictations — and a correct "ה-Dev" came out "ה-Dev-Dev". A word
+    ends where `_WORD` says it does."""
+    v = _tmp_vocab(replace_after_hits=2)
+    v.learn("ה", "ה-Dev")
+    v.learn("ה", "ה-Dev")
+    for said in ("זה ה-Problems של", "תפתח את ה-read", "זה ה-Dev של",
+                 "זה ה־API", "ה-Dev-Problems"):
+        out, applied = v.apply(said)
+        assert (out, applied) == (said, []), (said, out)
+    # The decoder's split already says it too.
+    assert v.apply("זה ה Dev של") == ("זה ה Dev של", [])
+    # And the lesson still fires where it was taught: the lone letter.
+    assert v.apply("זה ה של") == ("זה ה-Dev של", ["ה -> ה-Dev"])
+
+
+def test_a_pair_that_grows_a_word_never_doubles_what_is_already_right() -> None:
+    """2026-09-23 audit, A48: a pair whose `meant` holds its `heard`
+    ("Claude" -> "Claude Code") matched the head of every correct "Claude
+    Code" and pasted "Claude Code Code". Text that already says `meant`,
+    in any case, is left alone — from either side of the heard word."""
+    v = _tmp_vocab(replace_after_hits=1)
+    v.learn("Claude", "Claude Code")
+    for said in ("Claude Code", "claude code", "open Claude Code now"):
+        assert v.apply(said) == (said, []), said
+    assert v.apply("ask Claude now") == ("ask Claude Code now",
+                                         ["Claude -> Claude Code"])
+    assert v.apply("Claude, then Claude Code")[0] == \
+        "Claude Code, then Claude Code"
+    # A joined word is one word: "Claude's", "Claude.ai" are not "Claude".
+    for said in ("Claude's", "Claude.ai"):
+        assert v.apply(said) == (said, []), said
+    # ...and a joined tail on the correction's own last word still says it.
+    for said in ("Claude Code's docs", "Claude Code-based"):
+        assert v.apply(said) == (said, []), said
+
+    w = _tmp_vocab(replace_after_hits=1)
+    w.learn("Code", "Claude Code")
+    assert w.apply("Claude Code") == ("Claude Code", [])
+    assert w.apply("the Code")[0] == "the Claude Code"
+
+    # A maqaf joins like a hyphen; a word the correction holds twice is
+    # lined up at both places.
+    maqaf = _tmp_vocab(replace_after_hits=1)
+    maqaf.learn("ה", "ה־Dev")
+    assert maqaf.apply("זה ה Dev של") == ("זה ה Dev של", [])
+    assert maqaf.apply("זה ה Dev־ים") == ("זה ה Dev־ים", [])
+    twice = _tmp_vocab(replace_after_hits=1)
+    twice.learn("Go", "Go Go")
+    assert twice.apply("Go Go now") == ("Go Go now", [])
+    assert twice.apply("Go now")[0] == "Go Go now"
+
+
+def test_a_long_word_list_builds_each_pairs_patterns_once() -> None:
+    """Rebuilt on every apply(), the patterns lived in `re`'s own cache —
+    512 entries, oldest out first — and past ~256 ready pairs every
+    dictation missed on all of them: 165-400 ms before the paste (the
+    second review, 2026-09-23). Built once per pair now; a second apply
+    over 600 ready pairs compiles nothing."""
+    v = _tmp_vocab(replace_after_hits=1)
+    for i in range(600):
+        v.learn(f"garble{i}", f"word{i}")
+    v.learn("Claude", "Claude Code")
+    text = "garble7 and Claude and garble599"
+    first = v.apply(text)
+    built = vocab_mod._matcher.cache_info().misses
+    assert v.apply(text) == first
+    assert vocab_mod._matcher.cache_info().misses == built, \
+        "the second pass built patterns again"
+    assert first[0] == "word7 and Claude Code and word599", first
+
+
+def test_one_pairs_output_is_never_anothers_input() -> None:
+    """The pass used to run each pair over the text the previous pair had
+    already rewritten, so "cloud code" -> "Claude Code" followed by
+    "Claude" -> "Claude Code" pasted "Claude Code Code", and a chain
+    A -> B, B -> C turned an A into a C. Every match is taken from the
+    text as it arrived."""
+    v = _tmp_vocab(replace_after_hits=1)
+    v.learn("cloud code", "Claude Code")
+    v.learn("Claude", "Claude Code")
+    out, applied = v.apply("cloud code and Claude")
+    assert out == "Claude Code and Claude Code", out
+    assert applied == ["cloud code -> Claude Code", "Claude -> Claude Code"]
+
+    chain = _tmp_vocab(replace_after_hits=1)
+    chain.learn("xpogo", "Expo")
+    chain.learn("Expo", "Expo Go")
+    assert chain.apply("xpogo")[0] == "Expo", "A became C"
+    assert chain.apply("xpogo and Expo")[0] == "Expo and Expo Go"
 
 
 def test_hotwords_put_the_seeds_first_and_stay_bounded() -> None:
@@ -4981,6 +5884,80 @@ def test_the_vocabulary_survives_a_round_trip() -> None:
     b = vocab_mod.Vocab(path)
     assert [(c["heard"], c["meant"]) for c in b.corrections] == \
         [("xpogo", "Expo Go")], b.corrections
+
+
+def test_the_word_list_is_written_whole_and_a_damaged_one_is_set_aside() -> None:
+    """Audit 2026-09-23, A7: vocab.json was written in place and an
+    unreadable one loaded as an empty list, so a full disk or a crash
+    mid-write lost every learned word — and the sync then deleted them
+    from every PC. Now a save is a temp file swapped in (a failed write
+    leaves the old file whole and no temp behind), the previous good
+    file is kept as vocab.json.bak, a damaged file is set aside and the
+    .bak read in its place with the store marked broken, a file that
+    will not even open is never saved over, and a forget is recorded in
+    the file for the sync's guard."""
+    import shutil
+
+    d = Path(tempfile.mkdtemp(prefix="vocab-whole-"))
+    try:
+        path = d / "vocab.json"
+        v = vocab_mod.Vocab(path)
+        for i in range(5):
+            v.learn_by_hand(f"garble{i}", f"Word{i}")
+        assert v.broken is None
+        assert json.loads(path.read_text("utf-8"))["corrections"][-1]["heard"] == "garble4"
+        assert len(json.loads(v.backup_path.read_text("utf-8"))["corrections"]) == 4, \
+            "the last good copy is the file before the last save"
+        assert not list(d.glob("*.tmp")), list(d.glob("*"))
+
+        # a disk that fills mid-save: the file on disk is the one before
+        def full(fd):
+            raise OSError(28, "No space left on device")
+        whole = path.read_bytes()
+        with _patched(vocab_mod.os, "fsync", full):
+            v.learn_by_hand("garble5", "Word5")
+        assert path.read_bytes() == whole, "a failed save touched the file"
+        assert not list(d.glob("*.tmp")), "the failed save left its temp file"
+
+        # a file cut in half: set aside, the last good copy read instead
+        path.write_bytes(whole[: len(whole) // 2])
+        w = vocab_mod.Vocab(path)
+        assert w.broken == "JSONDecodeError", w.broken
+        aside = list(d.glob("vocab.json.broken-*"))
+        assert len(aside) == 1 and aside[0].read_bytes() == whole[: len(whole) // 2]
+        assert not path.exists(), "the damaged file stayed where a save would go"
+        assert [c["heard"] for c in w.corrections] == [f"garble{i}" for i in range(4)], w.corrections
+        w.learn_by_hand("garble9", "Word9")
+        assert len(json.loads(path.read_text("utf-8"))["corrections"]) == 5
+        assert w.mend() and w.broken is None
+        # the file gone and its copy there (the desk read the damaged
+        # one first): the copy is read, and the store is broken
+        path.unlink()
+        assert vocab_mod.Vocab(path).broken == "missing"
+
+        # a file that will not open is left alone and never saved over
+        (d / "held").mkdir()
+        held = d / "held" / "vocab.json"
+        held.mkdir()
+        h = vocab_mod.Vocab(held)
+        assert h.broken and h._hold and not h.mend()
+        h.learn_by_hand("xpogo", "Expo Go")
+        assert held.is_dir(), "a store that would not open was written over"
+
+        # forget is recorded in the file, a relearn clears it, told() ends it
+        fresh = vocab_mod.Vocab(d / "forget.json")
+        for i in range(3):
+            fresh.learn_by_hand(f"g{i}", f"W{i}")
+        fresh.forget("G0")
+        fresh.edit("g1", "g1b", "W1")
+        again = vocab_mod.Vocab(d / "forget.json")
+        assert again.forgotten_keys() == {"g0", "g1"}, again.forgotten
+        again.learn("g1", "W1")
+        assert again.forgotten_keys() == {"g0"}
+        again.told(["g0"])
+        assert vocab_mod.Vocab(d / "forget.json").forgotten_keys() == set()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # ---- the guard that makes the context pass safe to run at all ----
@@ -5066,6 +6043,191 @@ def test_polish_rejects_an_empty_reply() -> None:
     import polish as polish_mod
     ok, _ = polish_mod._is_safe("משהו אמיתי שנאמר כאן", "   ")
     assert not ok
+
+
+# ---- the second guarantee: the same word, never another one ----
+
+#: Shaped like the owner's own glossary on 2026-10-02: the pairs that drove
+#: the over-application ("ה" and "הדסקי dev" both meaning "ה-Dev") and the
+#: ones that are plainly right ("סלאש קליר" -> "slash clear").
+_HIS_GLOSSARY = [("ה", "ה-Dev"), ("הדסקי dev", "ה-Dev"), ("האשף", "ה-Dev"),
+                 ("פוש", "ה-push"), ("הפוש", "ה-push"),
+                 ("סלאש קליר", "slash clear")]
+
+
+def _span_kept(said: str, got: str, glossary=()) -> bool:
+    import polish as polish_mod
+    ok, _ = polish_mod._justified(polish_mod.words(said),
+                                  polish_mod.words(got), list(glossary))
+    return ok
+
+
+def test_the_repair_keeps_a_word_that_sounds_like_what_was_heard() -> None:
+    """The class the pass exists for, with NO glossary at all: a misheard
+    word replaced by one that sounds like it, in either script. The
+    confidence veto of 2026-08-17 failed exactly here — it blocked these —
+    so the second guarantee must never touch one of them."""
+    for said, got in [("מקללת", "מקלדת"), ("לסירקה", "לסריקה"),
+                      ("קירוב", "קירור"), ("יכלת", "יכולת"),
+                      ("הדב", "הדבר"), ("גירסה", "גרסה"), ("מס", "מסך"),
+                      ("סלאש קליר", "slash clear"), ("סדש קליר", "slash clear"),
+                      ("ארצ'יב", "archive"), ("מהדב", "מה-Dev"),
+                      ("פולסקרין", "full screen"), ("גיטאהאב", "GitHub"),
+                      ("ריפרש", "refresh"), ("xpogo", "Expo Go"),
+                      ("hint.anabled", "hint.enabled")]:
+        assert _span_kept(said, got), f"lost a real repair: {said} -> {got}"
+
+
+def test_the_repair_puts_back_a_word_that_sounds_like_nothing_said() -> None:
+    """Every one of these was pasted between 2026-09-24 and 2026-10-01 and
+    every one passed _is_safe. Right became left in an instruction about
+    a key; the app's own name, a handoff and a verb became "ה-Dev" or
+    "ה-push" because the glossary said so for some OTHER heard form."""
+    for said, got in [("ימני", "שמאלי"), ("הנדאוף", "ה-Dev"),
+                      ("ה-Desk It", "ה-Dev"), ("מדסקית", "מה-Dev"),
+                      ("לדחוף", "ה-push"), ("kicard", "keyboard"),
+                      ("דסקיט מאסטר", "dev master"),
+                      ("דסקית מאסטר", "אפליקציית master"),
+                      ("הרצ'יב", "ה-releases"), ("dev", "ה-Dev")]:
+        assert not _span_kept(said, got, _HIS_GLOSSARY), \
+            f"kept a word he never said: {said} -> {got}"
+
+
+def test_a_taught_pair_stays_even_where_it_does_not_sound_alike() -> None:
+    """The glossary is his: a pair he taught stands where its heard form
+    is in the span, Hebrew prefix letters allowed on either side as
+    vocab.apply allows them. The same swap untaught goes back."""
+    assert not _span_kept("כאשר הרצתי", "אתה יכול")
+    assert _span_kept("כאשר הרצתי", "אתה יכול", [("כאשר הרצתי", "אתה יכול")])
+    assert _span_kept("הדסקי dev", "ה-Dev", _HIS_GLOSSARY)
+    assert _span_kept("דסקי dev", "ה-Dev", _HIS_GLOSSARY), \
+        "a prefix missing from what was said is still the taught form"
+    assert _span_kept("ודסקית", "וה-Dev", [("דסקית", "ה-Dev")]), \
+        "a prefix in front of what was said is still the taught form"
+    # ...but only its own heard form licenses it: "האשף" -> "ה-Dev" does
+    # not license the app's name, and a lone "ה" licenses nothing longer
+    assert not _span_kept("דסקיט", "ה-Dev", _HIS_GLOSSARY)
+    assert not _span_kept("הנדאוף", "ה-Dev", _HIS_GLOSSARY)
+    # ...and a taught pair licenses ITSELF, never a neighbour the diff
+    # folded into the same span. The first version of this guard let
+    # "וה-Dev" through on the back of a taught "מאסטר" -> "master"
+    # (found timing it, 2026-10-02, before it reached the paste).
+    import polish as polish_mod
+    out, undone = polish_mod._keep_what_was_said(
+        "תריץ את הבדיקות והדסקית מאסטר עכשיו",
+        "תריץ את הבדיקות וה-Dev master עכשיו", [("מאסטר", "master")])
+    assert out == "תריץ את הבדיקות והדסקית master עכשיו", out
+    assert [u[:2] for u in undone] == [("והדסקית", "וה-Dev")], undone
+    # the same span, untaught: judged whole, and a span that fails goes
+    # back WHOLE — the decoder's own words, never half of a repair
+    out, _ = polish_mod._keep_what_was_said(
+        "תריץ את הבדיקות והדסקית מאסטר עכשיו",
+        "תריץ את הבדיקות וה-Dev master עכשיו", [])
+    assert out == "תריץ את הבדיקות והדסקית מאסטר עכשיו", out
+
+
+def test_a_recut_phrase_is_judged_whole_and_never_half_put_back() -> None:
+    """His read-aloud test of 2026-10-02: he said "קונטרול ימני", the
+    decoder wrote "קונטרולים אני" — the same sounds, the word boundary
+    moved. A repair that re-cuts it must stand, because the sounds pass
+    as a WHOLE even though "אני" -> "ימני" alone does not; the first
+    version split the span word by word and would have pasted "קונטרול
+    אני", a word nobody said. And a re-cut that is wrong goes back whole,
+    to the decoder's words, never to a hybrid of the two."""
+    import polish as polish_mod
+    fix = polish_mod._keep_what_was_said
+    said = "לחצתי על קונטרולים אני כדי להתחיל"
+    out, undone = fix(said, "לחצתי על קונטרול ימני כדי להתחיל", [])
+    assert (out, undone) == ("לחצתי על קונטרול ימני כדי להתחיל", []), (out, undone)
+    out, undone = fix(said, "לחצתי על קונטרול שמאלי כדי להתחיל", [])
+    assert out == said, out
+    assert [u[:2] for u in undone] == [("קונטרולים אני", "קונטרול שמאלי")], undone
+
+
+def test_the_repair_puts_back_only_the_bad_span_and_keeps_the_rest() -> None:
+    """Span by span: one bad swap costs that swap, not the repair that
+    came with it. Punctuation stays where it was; a reorder is undone
+    whole; an added word leaves with its space; a dropped word comes back
+    in its place."""
+    import polish as polish_mod
+    fix = polish_mod._keep_what_was_said
+
+    out, undone = fix("אני אצרף לך את הסשן הנדאוף פה. ביצעתי סלאש קליר באמצע.",
+                      "אני אצרף לך את הסשן ה-Dev פה. ביצעתי slash clear באמצע.",
+                      _HIS_GLOSSARY)
+    assert out == "אני אצרף לך את הסשן הנדאוף פה. ביצעתי slash clear באמצע.", out
+    assert [u[:2] for u in undone] == [("הנדאוף", "ה-Dev")], undone
+    out, undone = fix("לחץ על קונטרול ימני ואז תבחר.",
+                      "לחץ על קונטרול שמאלי ואז תבחר.", [])
+    assert out == "לחץ על קונטרול ימני ואז תבחר.", out
+    assert undone[0][2] == "a word that sounds like nothing said", undone
+    out, _ = fix("תשים אתר מחדש את זה עכשיו", "תשים את זה מחדש עכשיו", [])
+    assert out == "תשים אתר מחדש את זה עכשיו", out
+    out, _ = fix("אני רוצה את זה ואת זה גם", "אני רוצה את זה ואת זה גם בבקשה", [])
+    assert out == "אני רוצה את זה ואת זה גם", out
+    out, _ = fix("ואז עוד מילה אחרונה", "ואז עוד אחרונה", [])
+    assert out == "ואז עוד מילה אחרונה", out
+    # a reply with nothing to put back is returned as the model wrote it
+    out, undone = fix("וגם מקללת מסתירה את השדה", "וגם מקלדת מסתירה את השדה", [])
+    assert (out, undone) == ("וגם מקלדת מסתירה את השדה", []), (out, undone)
+
+
+def test_polish_puts_back_a_swap_and_keeps_the_words_out_of_app_log() -> None:
+    """Through Polisher.polish, the one door every repair goes through
+    (before the paste, a stretch while he speaks, the local model's card):
+    the bad swap goes back, the good one stands, app.log gets a count and
+    transcripts.log one POLISH-UNDONE line per span with the words (D8).
+    A reply whose every change goes back is no repair at all."""
+    import logging
+
+    import polish as polish_mod
+
+    marker = "סימן-7c1e"
+    app_lines: list[str] = []
+    tx_lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def __init__(self, sink):
+            super().__init__()
+            self.sink = sink
+
+        def emit(self, record):
+            self.sink.append(record.getMessage())
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
+        cfg.polish, when="always", min_chars=1, max_wait_s=5))
+    pol = polish_mod.Polisher(cfg, _tmp_vocab())
+    # Long enough that _is_safe passes the reply first (3 of 14 words
+    # change): the second guarantee only ever sees what the first let by.
+    head = "היום בבוקר ביצעתי"
+    tail = f"במחשב של העבודה ואז {marker} לחצתי על קונטרול"
+    said = f"{head} סלאש קליר {tail} ימני"
+    seen: list = []
+    app_log, tx_log = logging.getLogger("app"), logging.getLogger("transcripts")
+    ca, ct = _Catch(app_lines), _Catch(tx_lines)
+    levels = (app_log.level, tx_log.level)
+    app_log.setLevel(logging.INFO)
+    tx_log.setLevel(logging.INFO)
+    app_log.addHandler(ca)
+    tx_log.addHandler(ct)
+    try:
+        pol._backends = lambda t, kinds=None: iter(
+            [_SideBackend("groq", f"{head} slash clear {tail} שמאלי", seen)])
+        assert pol.polish(said) == (f"{head} slash clear {tail} ימני", "groq")
+        pol._backends = lambda t, kinds=None: iter(
+            [_SideBackend("groq", f"{head} סלאש קליר {tail} שמאלי", seen)])
+        assert pol.polish(said) == (said, None), \
+            "a reply whose every change went back is not a repair"
+    finally:
+        app_log.removeHandler(ca)
+        tx_log.removeHandler(ct)
+        app_log.setLevel(levels[0])
+        tx_log.setLevel(levels[1])
+    assert any("1 substitution(s) put back" in l for l in app_lines), app_lines
+    assert not any(marker in l or "ימני" in l for l in app_lines), app_lines
+    undone = [l for l in tx_lines if l.startswith("POLISH-UNDONE | groq")]
+    assert len(undone) == 2 and all("ימני || שמאלי" in l for l in undone), tx_lines
 
 
 def test_polish_only_wakes_up_for_a_known_mistake() -> None:
@@ -6140,6 +7302,10 @@ def test_the_window_carries_the_real_icon() -> None:
     finally:
         try:
             board.root.destroy()
+            # a destroyed desk is not a buried one: the sleeping dashboard-poll
+            # thread still holds it, and whichever thread collects it later
+            # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+            board._bury()
         except Exception:
             pass
 
@@ -6844,15 +8010,55 @@ def test_nikud_passes_the_same_guard() -> None:
 
 def test_a_swapped_word_is_rejected_and_named() -> None:
     """The failure this exists for: a model that decided to 'improve' a
-    word while it was in there. The reason has to name the word, or the
-    log line is a verdict with no evidence behind it."""
+    word while it was in there. The reason the CARD gets has to name the
+    word, or it is a verdict with no evidence behind it — and app.log
+    gets the verdict alone (D8, 2026-09-23: this word went to app.log,
+    whose tail Copy diagnostics copies into a public bug report). The
+    word is kept, privately, on a transcripts.log line."""
+    import logging
+
     import punctuate as punctuate_mod
 
     before = "המקלדת מסתירה את השדה"
     after = "הלוח מסתיר את השדה."
     ok, why = punctuate_mod.is_safe(before, after)
-    assert not ok
-    assert "המקלדת" in why, why
+    assert not ok and "words changed" in why, why
+    assert "המקלדת" not in why, "is_safe's reason is logged — it must not quote"
+
+    app_lines: list[str] = []
+    tx_lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def __init__(self, sink):
+            super().__init__()
+            self.sink = sink
+
+        def emit(self, record):
+            self.sink.append(record.getMessage())
+
+    app_log, tx_log = logging.getLogger("app"), logging.getLogger("transcripts")
+    ca, ct = _Catch(app_lines), _Catch(tx_lines)
+    levels = (app_log.level, tx_log.level)
+    app_log.setLevel(logging.INFO)
+    tx_log.setLevel(logging.INFO)
+    app_log.addHandler(ca)
+    tx_log.addHandler(ct)
+    try:
+        try:
+            _punctuator(_FakePunctuateBackend("groq", reply=after)).punctuate(before)
+        except punctuate_mod.UnsafeReply as e:
+            card, logged = str(e), e.logged
+        else:
+            raise AssertionError("the swapped word was pasted")
+    finally:
+        app_log.removeHandler(ca)
+        tx_log.removeHandler(ct)
+        app_log.setLevel(levels[0])
+        tx_log.setLevel(levels[1])
+    assert "המקלדת" in card and "words changed" in card, card
+    assert "המקלדת" not in logged and "words changed" in logged, logged
+    assert app_lines and not any("המקלדת" in l or "הלוח" in l for l in app_lines), app_lines
+    assert any("המקלדת" in l for l in tx_lines), tx_lines
 
 
 def test_added_and_dropped_words_are_both_rejected() -> None:
@@ -10942,12 +12148,12 @@ def test_the_way_home_sits_at_the_top_middle_of_the_column_of_rows(
         root.destroy()
 
 
-def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
+def test_the_way_home_lands_the_same_way_on_all_of_the_five_places(
 ) -> None:
     """The other half of it, on the real window rather than a stand-in.
 
     One screen is not the test: the button is the Scroller's and every
-    place has one, so this walks all six, forces each page to have been
+    place has one, so this walks all five, forces each page to have been
     scrolled back up, and asks the same questions of each — is it the
     right size, is it centred on that page's own column of rows, is it
     inside the viewport, is it clear of the thumb, and is it clear of
@@ -10960,9 +12166,9 @@ def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
     the 'Show more', so please move it" — and it is the spot the button
     would have gone back to if the bottom middle had been chosen.
 
-    Corrections and Problems are given proposals and reports of their
-    own, because on this machine both are empty and an empty page has
-    nothing to scroll. Home and Keys are given a long filler instead:
+    Corrections is given proposals of its own, because on this machine
+    it is empty and an empty page has nothing to scroll. Home and Keys
+    are given a long filler instead:
     neither of them scrolls with a real day's load — the Home is a
     summary that is built to fit exactly and the Keys place is a board
     with a short list under it — so on those two the button never appears
@@ -11072,8 +12278,7 @@ def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
         for name in dash.SCREENS:
             board._show(name)
             # Both of these draw off a poll rather than off the build.
-            board._problems_stamp = board._corr_stamp = None
-            board._poll_problems()
+            board._corr_stamp = None
             board._poll_corrections()
             for _ in range(60):
                 root.update()
@@ -11116,7 +12321,7 @@ def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
                         f"on {name} the way home (sheet x{sx}..{sx + bw} "
                         f"y{sy}..{sy + bh}) sits on {label!r} at "
                         f"x{cx}..{cx + cw} y{cy}..{cy + ch}")
-        for must in ("Home", "Corrections", "Problems", "Said", "Keys",
+        for must in ("Home", "Corrections", "Said", "Keys",
                      "Settings"):
             assert must in seen, (
                 f"the {must} page had no way home to measure — only "
@@ -11207,6 +12412,10 @@ def _window(log=None):
             board.closing = True
             try:
                 board.root.destroy()
+                # a destroyed desk is not a buried one: the sleeping dashboard-poll
+                # thread still holds it, and whichever thread collects it later
+                # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+                board._bury()
             except Exception:
                 pass
         control_mod.send, singleton_mod.is_running, history_mod.load = saved
@@ -11433,18 +12642,18 @@ def test_a_place_asked_for_mid_switch_comes_after_it() -> None:
         _let_the_switch_land(board)
         order: list = []
         real_keys, real_said = board._screen_keys, board._screen_said
-        real_problems = board._screen_problems
+        real_corr = board._screen_corrections
 
         def keys() -> None:
             order.append("keys")
             real_keys()
-            board._show("Problems")      # a click that lands mid-switch
+            board._show("Corrections")   # a click that lands mid-switch
             board._show("Said")          # and another: the newest wins
             order.append("keys built")
         board._screen_keys = keys
         board._screen_said = lambda: (order.append("said"), real_said())
-        board._screen_problems = lambda: (order.append("problems"),
-                                          real_problems())
+        board._screen_corrections = lambda: (order.append("corrections"),
+                                             real_corr())
         board._show("Keys")
         assert order == ["keys", "keys built", "said"], order
         assert board.screen == "Said" and board.nav.selected == "Said"
@@ -13245,6 +14454,10 @@ def test_the_keys_screen_can_reach_every_key_it_lists() -> None:
     finally:
         try:
             board.root.destroy()
+            # a destroyed desk is not a buried one: the sleeping dashboard-poll
+            # thread still holds it, and whichever thread collects it later
+            # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+            board._bury()
         except Exception:
             pass
 
@@ -15433,6 +16646,179 @@ def test_the_recorder_declares_its_streams_before_the_first_frame() -> None:
         # Nothing was recorded, so nothing is left behind.
         assert silent.finish(timeout=1) is None
         assert not (tmp / "a.mp4").exists(), "an empty clip left a stub file"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_picture_and_the_sound_take_turns_writing_the_clip() -> None:
+    """Audit 2026-09-23, A14. A recording with sound — the default — has
+    two threads writing one mp4: clip-encode muxes the frames, clip-audio
+    the sound, and PyAV's mux copies into ONE packet buffer and writes
+    with the GIL released. Unlocked, the audit's paced runs aborted the
+    whole app (exit 3), left clips with no moov atom, and once died of
+    heap corruption inside mux. Every encode+mux takes Clip's lock now,
+    and the sound thread never sees a container whose resampler does not
+    exist yet.
+
+    Part one is a fake PyAV whose mux notices a second thread inside it —
+    deterministic, and it fails on the unlocked Clip. Part two is the real
+    PyAV, when this interpreter has it: a few hundred packets of each from
+    two threads, and the file must come back readable."""
+    import types
+
+    import capture as cap
+
+    seen = {"inside": 0, "most": 0, "h264": 0, "aac": 0, "half": 0}
+    guard = threading.Lock()
+
+    class Packet:
+        def __init__(self, kind):
+            self.kind = kind
+
+    class Stream:
+        def __init__(self, kind):
+            self.kind = kind
+            self.codec_context = types.SimpleNamespace()
+
+        def encode(self, frame=None):
+            return [Packet(self.kind)] if frame is not None else []
+
+    class Container:
+        def add_stream(self, codec, rate=None):
+            time.sleep(0.002)       # widen the half-built window
+            return Stream("h264" if codec == "libx264" else "aac")
+
+        def mux(self, packet):
+            with guard:
+                seen["inside"] += 1
+                seen["most"] = max(seen["most"], seen["inside"])
+            time.sleep(0.0003)
+            with guard:
+                seen["inside"] -= 1
+                seen[packet.kind] += 1
+
+        def close(self):
+            pass
+
+    class Frame:
+        @classmethod
+        def from_ndarray(cls, _array, **_kw):
+            return cls()
+
+    class Resampler:
+        def __init__(self, **_kw):
+            pass
+
+        def resample(self, frame):
+            return [frame]
+
+    fake = types.ModuleType("av")
+    fake.open = lambda _path, mode="w": Container()
+    fake.VideoFrame = fake.AudioFrame = Frame
+    fake_audio = types.ModuleType("av.audio")
+    fake_resampler = types.ModuleType("av.audio.resampler")
+    fake_resampler.AudioResampler = Resampler
+    fake.audio, fake_audio.resampler = fake_audio, fake_resampler
+    names = ("av", "av.audio", "av.audio.resampler")
+    saved = {n: sys.modules.get(n) for n in names}
+    sys.modules.update(zip(names, (fake, fake_audio, fake_resampler)))
+    try:
+        clip = cap.Clip(Path("unused.mp4"), (64, 48), 30, 23,
+                        audio_rate=48000)
+        sound = np.zeros(1024, dtype=np.int16)
+        picture = np.zeros((48, 64, 4), dtype=np.uint8)
+        start = threading.Barrier(2)
+        problems: list[BaseException] = []
+
+        def frames():
+            start.wait()
+            try:
+                for i in range(300):
+                    clip.add_frame(picture, i * 33)
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        def audio():
+            start.wait()
+            end = time.monotonic() + 20
+            try:
+                while seen["aac"] < 300 and time.monotonic() < end:
+                    # the start-order race: open, but no resampler yet
+                    if clip._container is not None and clip._resampler is None:
+                        seen["half"] += 1
+                    clip.add_audio(sound)
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        threads = [threading.Thread(target=frames),
+                   threading.Thread(target=audio)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        assert not problems, problems
+        assert seen["h264"] == 300 and seen["aac"] >= 300, seen
+        assert seen["most"] == 1, \
+            f"two threads were inside mux at once ({seen['most']})"
+        assert seen["half"] == 0, "the sound saw a half-built clip"
+        assert clip.close() == Path("unused.mp4")
+        clip.add_audio(sound)                    # after close: dropped
+        assert clip.close() is None
+    finally:
+        for n, module in saved.items():
+            if module is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = module
+
+    try:
+        import av
+    except ImportError:
+        return
+    if getattr(av, "is_stub", None) is not None and av.is_stub():
+        return                    # an installed copy without the pack
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-clip-"))
+    try:
+        path = tmp / "both.mp4"
+        clip = cap.Clip(path, (64, 48), 30, 30, audio_rate=48000)
+        picture = np.zeros((48, 64, 4), dtype=np.uint8)
+        sound = (np.sin(np.arange(1024) / 8.0) * 3000).astype(np.int16)
+        start = threading.Barrier(2)
+        problems = []
+        pushed = [0]
+
+        def frames():
+            start.wait()
+            try:
+                for i in range(300):
+                    clip.add_frame(picture, i * 33)
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        def audio():
+            start.wait()
+            end = time.monotonic() + 30
+            try:
+                while pushed[0] < 300 and time.monotonic() < end:
+                    live = clip._container is not None
+                    clip.add_audio(sound)
+                    pushed[0] += live
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        threads = [threading.Thread(target=frames),
+                   threading.Thread(target=audio)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert not problems, problems
+        assert pushed[0] >= 300, pushed
+        assert clip.close() == path
+        with av.open(str(path)) as done:
+            assert done.streams.video and done.streams.audio, done.streams
+            video = sum(1 for _ in done.decode(video=0))
+        assert video >= 250, f"{video} of 300 frames came back"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -18621,7 +20007,8 @@ def test_the_adjudicator_cannot_introduce_words_from_nowhere() -> None:
     assert ok
     ok, why = study_mod._safe_choice(primary, candidates,
                                      "נוזל צינון למנוע")
-    assert not ok and "צינון" in why, (ok, why)
+    # the reason is logged to app.log, so it names no word (D8, 2026-09-23)
+    assert not ok and "no decode" in why and "צינון" not in why, (ok, why)
     # the Hebrew prefixes are one word, not a new one
     ok, _ = study_mod._safe_choice("הלכתי סירקה", ["הלכתי לסריקה"],
                                    "הלכתי סריקה")
@@ -19048,8 +20435,8 @@ def test_held_greys_the_text_keys_and_latched_does_not() -> None:
     assert all(on for _k, _l, on in latched["keys"]), latched["keys"]
     assert live | dead == {k for k, _l, _o in latched["keys"]}
     # Held offers the release and the latch; latched offers neither.
-    assert any(k == "שחרר" for k, _l, _o in held["rows"])
-    assert not any(k == "שחרר" for k, _l, _o in latched["rows"])
+    assert any(k == hint_mod.RELEASE for k, _l, _o in held["rows"])
+    assert not any(k == hint_mod.RELEASE for k, _l, _o in latched["rows"])
     assert all(any(k == "Esc" for k, _l, _o in c["rows"])
                for c in (held, latched))
 
@@ -19420,10 +20807,11 @@ def test_a_failed_save_never_reaches_the_keyboard_thread() -> None:
     assert (card.x, card.y) == (10, 20)
 
 
-def test_the_card_takes_the_mouse_in_four_places_and_nowhere_else() -> None:
-    """Everything else answers HTTRANSPARENT, so a click aimed at the close
-    button of a maximised window underneath still reaches it — the trap the
-    status dot paid for once already."""
+def test_the_card_takes_the_mouse_in_a_few_places_and_nowhere_else() -> None:
+    """The drag strip, the X, the box and the size grip in the corner.
+    Everything else answers HTTRANSPARENT, so a click aimed at the close
+    button of a maximised window underneath still reaches it — the trap
+    the status dot paid for once already."""
     try:
         from skin import glass as skin_glass, hint as skin_hint
     except Exception:
@@ -19453,9 +20841,37 @@ def test_the_card_takes_the_mouse_in_four_places_and_nowhere_else() -> None:
         # and so does everything outside the card entirely
         assert skin_hint.hit_test(card, scale, 2, 2)[0] == \
             skin_glass.HTTRANSPARENT
-    # the size buttons must not sit on top of each other
+        # the box's row is as wide as the card, but only the box and its
+        # words take the click: the right end of that row is the window
+        # behind (the full card has no fold button there)
+        fy = boxes[skin_hint.DISMISS]
+        assert skin_hint.MORE not in boxes, boxes
+        assert skin_hint.hit_test(card, scale, pad + width - 4,
+                                  (fy[1] + fy[3]) / 2)[0] \
+            == skin_glass.HTTRANSPARENT
+        # left to right since 2026-10-01: the box at the left edge
+        assert fy[0] < pad + skin_hint.PAD * scale, fy
+    # The X in the top-right corner, alone since − and + went (2026-10-01,
+    # "instead of plus and minus, the corner — like any app's window");
+    # the size grip in the bottom-right corner, answering the code Windows
+    # draws the diagonal resize cursor for, and touching nothing else that
+    # takes a click — in the small card's foot either.
     boxes = skin_hint.regions(card, 1.0)
-    assert boxes[skin_hint.SMALLER][2] <= boxes[skin_hint.BIGGER][0], boxes
+    width, height = skin_hint.measure(card, 1.0)
+    edge = skin_hint.SHADOW
+    assert set(boxes) == {skin_hint.CLOSE, skin_hint.DISMISS,
+                          skin_hint.GRIP_HIT, skin_hint.DRAG}, boxes
+    assert boxes[skin_hint.CLOSE][2] == edge + width - skin_hint.PAD
+    gx0, gy0, gx1, gy1 = boxes[skin_hint.GRIP_HIT]
+    assert (gx1, gy1) == (edge + width, edge + height), boxes
+    assert gx1 - gx0 >= skin_hint.GRIP_MIN and gy1 - gy0 >= skin_hint.GRIP_MIN
+    assert skin_hint.hit_test(card, 1.0, gx1 - 2, gy1 - 2) == (
+        skin_glass.HTBOTTOMRIGHT, skin_hint.GRIP_HIT)
+    for scale in (0.8, 1.0, 1.4):
+        for view in (skin_hint.COMPACT, skin_hint.PEEK):
+            small = skin_hint.regions(card, scale, view)
+            g, m = small[skin_hint.GRIP_HIT], small[skin_hint.MORE]
+            assert m[2] < g[0] or m[3] < g[1], (scale, view, g, m)
 
 
 def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
@@ -19466,10 +20882,387 @@ def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
     assert skin_hint.clamp_scale(99) == skin_hint.SCALE_MAX
     assert skin_hint.clamp_scale(0.01) == skin_hint.SCALE_MIN
     assert skin_hint.clamp_scale(1.0) == 1.0
-    # and the range the card enforces is the range config.py will accept,
-    # or a size chosen on screen would refuse to load next time
-    assert skin_hint.SCALE_MIN == config_mod.HINT_SCALE_MIN
-    assert skin_hint.SCALE_MAX == config_mod.HINT_SCALE_MAX
+    # and the range the card enforces is INSIDE the range config.py will
+    # accept, or a size chosen on screen would refuse to load next time
+    assert config_mod.HINT_SCALE_MIN <= skin_hint.SCALE_MIN
+    assert skin_hint.SCALE_MAX <= config_mod.HINT_SCALE_MAX
+    # An older, smaller size that config.py still accepts (the owner's
+    # was 0.6 on 2026-09-24) is drawn at the card's smallest, not refused.
+    assert skin_hint.clamp_scale(config_mod.HINT_SCALE_MIN) == \
+        skin_hint.SCALE_MIN
+
+
+
+def test_dragging_the_corner_asks_for_the_size_nearest_the_pointer() -> None:
+    """The corner drag (2026-10-01): `fit` reads where the corner is asked
+    to be along the card's own diagonal, lands on a multiple of
+    RESIZE_STEP inside 0.8 .. 1.4, and below the full card at 0.8 snaps to
+    the small card — halfway between the two, not at the first pixel."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    lo, hi = skin_hint.SCALE_MIN, skin_hint.SCALE_MAX
+    card = hint_mod.card_for(_hint_cfg(), hint_mod.HOLD,
+                             main_mod._SCREEN_ACTIONS)
+    fw, fh = skin_hint.measure(card, 1.0)
+    # the corner held exactly where a scale's card would end is that scale
+    for scale in (0.8, 0.9, 1.0, 1.2, 1.4):
+        assert skin_hint.fit(card, fw * scale, fh * scale) == (scale, False)
+    # a sideways tug moves it along the diagonal, by a step at a time
+    s, small = skin_hint.fit(card, fw * 1.1 + 3, fh * 1.1 - 3)
+    assert not small and abs(s - 1.1) < 1e-9, s
+    s, _small = skin_hint.fit(card, fw * 1.031, fh * 1.031)
+    assert abs(s / skin_hint.RESIZE_STEP - round(s / skin_hint.RESIZE_STEP)) \
+        < 1e-6, s
+    # past either end it stops at the end
+    assert skin_hint.fit(card, fw * 3, fh * 3) == (hi, False)
+    # smaller than the full card at 0.8: the small card, or the full card
+    # at 0.8, whichever the corner is nearer
+    cw, ch = skin_hint.measure(card, lo, skin_hint.COMPACT)
+    mw, mh = skin_hint.measure(card, lo)
+    assert skin_hint.fit(card, cw, ch) == (lo, True)
+    assert skin_hint.fit(card, 10, 10) == (lo, True)
+    assert skin_hint.fit(card, cw + (mw - cw) * 0.3,
+                         ch + (mh - ch) * 0.3) == (lo, True)
+    assert skin_hint.fit(card, cw + (mw - cw) * 0.7,
+                         ch + (mh - ch) * 0.7) == (lo, False)
+    # the preview's size is the full card's times the scale, without a
+    # layout (a layout at a new scale renders every string again)
+    assert skin_hint.guess(card, 1.2, False) == (round(fw * 1.2),
+                                                 round(fh * 1.2))
+    assert skin_hint.guess(card, 1.2, True) == (cw, ch)
+
+
+def test_the_key_card_is_readable_at_its_smallest_and_not_half_a_screen(
+) -> None:
+    """The owner's clip of 2026-09-24: "if I make it bigger it takes half
+    the screen, and at a reasonable size I cannot read it". The card was
+    one column of fourteen keys, 652 px tall at 1.0 and 913 at 1.4, and at
+    the 0.6 he had pressed it down to a label was 8 px.
+
+    Two numbers hold the answer: the smallest size still draws a label at
+    12 px or more, and the whole key list at the largest size is shorter
+    than half of a 1080-line screen."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    label_px = skin_hint.PT_LABEL * skin_hint.SCALE_MIN * 96 / 72
+    assert label_px >= 12, label_px
+    key_px = skin_hint.PT_KEY * skin_hint.SCALE_MIN * 96 / 72
+    assert key_px >= 11, key_px
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        _w, h = skin_hint.measure(card, skin_hint.SCALE_MAX)
+        assert h < 540, (state, h)
+        _w, h = skin_hint.measure(card, 1.0)
+        assert h < 400, (state, h)
+
+
+def test_the_keys_go_in_two_columns_split_between_groups() -> None:
+    """The dictation and the screen in the first column — the LEFT one
+    since the card went English, 2026-10-01 — and "Other" in the second.
+    A group is never cut in two, and the cut is the one that makes the
+    taller column shortest."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        names = [name for name, _rows in card["groups"]]
+        assert names == [hint_mod.GROUP_DICTATION, hint_mod.GROUP_SCREEN,
+                         hint_mod.GROUP_OTHER], names
+        first, second = skin_hint.split(card["groups"])
+        assert [n for n, _r in first] == names[:2], first
+        assert [n for n, _r in second] == names[2:], second
+    one = [("a", [("F1", "x", True)] * 3)]
+    assert skin_hint.split(one) == [one]
+    # a tall first group goes alone in the first column
+    tall = [("a", [("F1", "x", True)] * 9), ("b", [("F2", "y", True)] * 2),
+            ("c", [("F3", "z", True)] * 3)]
+    first, _second = skin_hint.split(tall)
+    assert [n for n, _r in first] == ["a"], first
+
+
+def test_the_key_card_is_as_wide_as_its_words() -> None:
+    """The old card was 340 px whatever it said, and a third of every row
+    was empty on the left. Now the width is the columns' own: take the
+    longest label away and the card gets narrower."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    groups = [("A", [("F1", "short", True)]), ("B", [("F2", "short", True)])]
+    base = {"title": "Locked", "sub": "", "footer": "Don't", "dot": "locked",
+            "groups": groups}
+    wide = dict(base, groups=[groups[0], ("B", [(
+        "F2", "a very long label that fills the whole of this row", True)])])
+    w1, h1 = skin_hint.measure(base, 1.0)
+    w2, h2 = skin_hint.measure(wide, 1.0)
+    assert w2 > w1 and h1 == h2, (w1, w2, h1, h2)
+    # and the two columns fill the inside: the first starts at the left
+    # padding, the last ends at the right padding
+    lay = skin_hint._layout(wide, 1.0)
+    pad = skin_hint.PAD
+    assert lay.col_left[0] == skin_hint.SHADOW + pad, lay.col_left
+    right_edge = lay.col_left[-1] + lay.col_w[-1]
+    assert abs(right_edge - (skin_hint.SHADOW + w2 - pad)) < 1.5, right_edge
+
+
+def test_the_box_ticks_and_the_x_closes() -> None:
+    """His rule of 2026-09-24. The box only ticks — nothing closes and
+    nothing is written. The X closes: unticked, until the next dictation;
+    ticked, for good (enabled=false, which Settings > General undoes). A
+    tick left on the box when the card goes away on its own counts too."""
+    writes = []
+
+    def fresh():
+        return overlay_mod.HintCard(on_change=writes.append)
+
+    card = fresh()
+    assert card.ticked is False
+    assert card.tick() is True and card.ticked is True
+    assert card.tick() is False and card.ticked is False
+    assert writes == [], writes
+    assert card.accepts({"state": "hold"}) and card.accepts(None)
+
+    # the X, unticked: down for the rest of this dictation, nothing written
+    card.closed_by_hand()
+    assert writes == [], writes
+    assert not card.accepts({"state": "latched"}), "came back after the X"
+    assert card.accepts(None), "taking it down is always taken"
+    assert card._enabled
+    card.recording_began()
+    assert card.accepts({"state": "hold"}), "the next dictation shows it"
+
+    # the X, ticked: never again
+    card = fresh()
+    card.tick()
+    card.closed_by_hand()
+    assert writes == [{"enabled": False}], writes
+    assert not card._enabled and card.ticked is False
+    card._thread = object()                 # as if started
+    card.show({"state": "hold"})
+    assert card._q.empty(), "a card switched off still queued a card"
+
+    # ticked, and the key let go before the X: the tick is the answer
+    writes.clear()
+    card = fresh()
+    card.tick()
+    card.card_gone()
+    assert writes == [{"enabled": False}], writes
+    # ...and untouched, the card going away writes nothing
+    writes.clear()
+    card = fresh()
+    card.card_gone()
+    assert writes == [] and card._enabled, writes
+
+
+def test_the_small_card_shows_the_dictation_and_a_way_to_all_keys() -> None:
+    """His ask of 2026-10-01: smaller than the smallest size, "only the
+    most important ones, and an option to see more". The small card is the
+    dictation's own rows (release, lock, Esc) with no heading, and "All
+    keys" at the foot; opened, it is every key and "Fewer keys"."""
+    try:
+        from skin import glass as skin_glass, hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        small = skin_hint._layout(card, skin_hint.SCALE_MIN, skin_hint.COMPACT)
+        assert len(small.columns) == 1, small.columns
+        (only,) = small.columns
+        assert only == [("", list(card["groups"][0][1]))], only
+        full_w, full_h = skin_hint.measure(card, skin_hint.SCALE_MIN)
+        w, h = skin_hint.measure(card, skin_hint.SCALE_MIN, skin_hint.COMPACT)
+        assert h * 1.6 < full_h and w < full_w, ((w, h), (full_w, full_h))
+        assert skin_hint.measure(card, skin_hint.SCALE_MIN,
+                                 skin_hint.PEEK) == (full_w, full_h)
+        for view, word in ((skin_hint.COMPACT, "All keys"),
+                           (skin_hint.PEEK, "Fewer keys")):
+            assert skin_hint.TOGGLE[view] == word
+            boxes = skin_hint.regions(card, skin_hint.SCALE_MIN, view)
+            x0, y0, x1, y1 = boxes[skin_hint.MORE]
+            assert skin_hint.hit_test(card, skin_hint.SCALE_MIN,
+                                      (x0 + x1) / 2, (y0 + y1) / 2, view) \
+                == (skin_glass.HTCLIENT, skin_hint.MORE)
+            # the fold button and the box share the foot without touching
+            assert boxes[skin_hint.DISMISS][2] < x0, boxes
+        # and both pictures draw
+        assert skin_hint.paint(card, None, skin_hint.SCALE_MIN,
+                               view=skin_hint.COMPACT).size == (
+            w + 2 * skin_hint.SHADOW, h + 2 * skin_hint.SHADOW)
+
+
+def test_the_hint_card_keeps_the_small_card_and_peeks_for_one_dictation(
+) -> None:
+    """`compact` is saved like the scale (state.json); "All keys" opens the
+    small card for the card on screen only — the next dictation, or the
+    card going away, folds it again — and the full card has nothing to
+    fold."""
+    writes = []
+    card = overlay_mod.HintCard(on_change=writes.append, scale=0.8)
+    assert card.view == "full"
+    card.more()
+    assert card.view == "full" and writes == [], "the full card folds nothing"
+    card.sized(0.8, True)                   # the corner dragged past 0.8
+    assert card.view == "compact" and writes == [{"compact": True}], writes
+    card.more()
+    assert card.view == "peek" and len(writes) == 1, "a peek is not saved"
+    card.more()
+    assert card.view == "compact"
+    for gone in (card.card_gone, card.recording_began, card.closed_by_hand):
+        card._shut.clear()
+        card.more()
+        assert card.view == "peek"
+        gone()
+        assert card.view == "compact", gone.__name__
+    writes.clear()
+    card.sized(0.8, False)                  # ...and dragged bigger again
+    assert card.view == "full" and writes == [{"compact": False}], writes
+    writes.clear()
+    card.sized(0.9, False)
+    assert writes == [{"scale": 0.9}], writes
+    card.sized(0.9, False)
+    assert writes == [{"scale": 0.9}], "nothing changed, nothing written"
+    # the app builds it from the config, and the config keeps it per machine
+    assert overlay_mod.HintCard(compact=True).view == "compact"
+    assert "hint.compact" in config_mod.STATE_KEYS
+    assert config_mod.HintConfig().compact is False
+    assert _hint_cfg().hint.compact is False
+
+
+def test_a_glass_window_takes_its_corner_and_resizes_in_place() -> None:
+    """skin\\glass's half of the corner drag. A press where the hit test
+    answered HTBOTTOMRIGHT goes to `gripped` (screen coordinates) and NOT
+    to DefWindowProc, whose modal sizing loop would stall this thread; the
+    window says it is `gripping` until the button comes up. And resize()
+    gives the same window — the same handle, so the capture survives — a
+    new size that the next present() puts on screen. The drag itself needs
+    a real mouse (AGENTS.md); everything around it is here."""
+    try:
+        from skin import glass as skin_glass
+    except Exception:
+        return
+    import ctypes
+    import ctypes.wintypes
+    from PIL import Image
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                    ctypes.c_size_t, ctypes.c_ssize_t]
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+    user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    pressed = []
+    glass = skin_glass.Glass(40, 50, 120, 80, gpu=False,
+                             hit=lambda x, y: skin_glass.HTBOTTOMRIGHT,
+                             gripped=lambda x, y: pressed.append((x, y)))
+    try:
+        glass.present(Image.new("RGBA", (120, 80), (10, 20, 30, 200)))
+        lparam = (155 & 0xFFFF) | ((125 & 0xFFFF) << 16)
+        user32.SendMessageW(glass.hwnd, skin_glass.WM_NCLBUTTONDOWN,
+                            skin_glass.HTBOTTOMRIGHT, lparam)
+        assert pressed == [(155, 125)], pressed
+        assert glass.gripping
+        user32.SendMessageW(glass.hwnd, skin_glass.WM_LBUTTONUP, 0, 0)
+        assert not glass.gripping
+        # a press on anything else is not a grip (HTCLIENT: a caption
+        # press would start Windows' own move loop, which waits for a hand)
+        user32.SendMessageW(glass.hwnd, skin_glass.WM_NCLBUTTONDOWN,
+                            skin_glass.HTCLIENT, lparam)
+        assert pressed == [(155, 125)] and not glass.gripping, pressed
+        hwnd = glass.hwnd
+        glass.resize(200, 140)
+        assert glass.hwnd == hwnd and (glass.width, glass.height) == (200, 140)
+        assert glass.present(Image.new("RGBA", (200, 140), (10, 20, 30, 200)))
+        rect = ctypes.wintypes.RECT()
+        user32.GetWindowRect(glass.hwnd, ctypes.byref(rect))
+        assert (rect.right - rect.left, rect.bottom - rect.top) == (200, 140)
+        glass.resize(90, 60)
+        assert glass.present(Image.new("RGBA", (90, 60), (10, 20, 30, 200)))
+        user32.GetWindowRect(glass.hwnd, ctypes.byref(rect))
+        assert (rect.right - rect.left, rect.bottom - rect.top) == (90, 60)
+        glass.gripping = True
+        glass.let_go()
+        assert not glass.gripping
+    finally:
+        glass.close()
+
+
+def test_the_key_card_is_english_left_to_right_and_smooth() -> None:
+    """His words of 2026-10-01: "I want everything to be in English here"
+    and "my screen is 2K, it should not look blurry — the round strokes
+    look pixelated". Every word the card says is English; its text is
+    FreeType's, which gives a glyph edge many levels of coverage (GDI's
+    ANTIALIASED_QUALITY gave 14 at these sizes, measured); the weight axis
+    of the variable Rubik is really pinned; and the lock key's arrow, which
+    Rubik does not have, is drawn rather than set in a fallback face."""
+    import main as main_mod
+
+    hebrew = [chr(c) for c in range(0x0590, 0x0600)]
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        words = [card["title"], card["sub"], card["section"], card["footer"]]
+        words += [name for name, _rows in card["groups"]]
+        words += [w for rows in (card["rows"], card["keys"])
+                  for k, label, _on in rows for w in (k, label)]
+        for word in words:
+            assert not any(ch in word for ch in hebrew), word
+    assert set(hint_mod.LABELS.values()) and all(
+        v.isascii() for v in hint_mod.LABELS.values()), hint_mod.LABELS
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    small = skin_hint.SCALE_MIN
+    ink = skin_hint._text("Record the screen", skin_hint.PT_LABEL * small)
+    levels = sum(1 for n in ink.img.getchannel("A").histogram()[1:255] if n)
+    assert levels > 40, levels
+    regular = skin_hint._text("Ctrl+Alt+N", 12, weight=skin_hint.W_TEXT)
+    strong = skin_hint._text("Ctrl+Alt+N", 12, weight=skin_hint.W_STRONG)
+    assert sum(strong.img.getchannel("A").getdata()) > \
+        1.1 * sum(regular.img.getchannel("A").getdata()), "the axis is not set"
+    assert skin_hint._missing("\u2190") and not skin_hint._missing("A")
+    assert set(skin_hint.ARROWS) >= {"\u2190", "\u2192", "\u2191", "\u2193"}
+    # every row of a card shares one baseline, whatever its letters
+    a = skin_hint._text("Screenshot", 12)
+    b = skin_hint._text("Ctrl+F2", 12)
+    assert a.base == b.base and a.cap == b.cap, (a.base, b.base)
+
+
+def test_the_ticked_box_is_drawn_and_nothing_else_moves() -> None:
+    """The tick changes the box and its words, and not the card's size or
+    where anything takes the mouse."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    card = hint_mod.card_for(_hint_cfg(), hint_mod.LATCHED,
+                             main_mod._SCREEN_ACTIONS)
+    plain = skin_hint.paint(card, None, 1.0)
+    ticked = skin_hint.paint(card, None, 1.0, ticked=True)
+    assert plain.size == ticked.size
+    box = skin_hint.regions(card, 1.0)[skin_hint.DISMISS]
+    diff = [(x, y) for y in range(int(box[1]), int(box[3]))
+            for x in range(int(box[0]), int(box[2]))
+            if plain.getpixel((x, y)) != ticked.getpixel((x, y))]
+    assert diff, "the tick drew nothing"
+    top = skin_hint.regions(card, 1.0)[skin_hint.DRAG]
+    for y in range(int(top[1]), int(top[3]), 3):
+        for x in range(int(top[0]), int(top[2]), 3):
+            assert plain.getpixel((x, y)) == ticked.getpixel((x, y)), (x, y)
 
 
 # ---------------------------------------------------------------------------
@@ -20558,12 +22351,24 @@ def test_the_card_is_measured_from_its_rows_not_a_guess() -> None:
                                 translate_hotkey="", correct_hotkey="")
     small = hint_mod.card_for(fewer, hint_mod.LATCHED,
                               main_mod._SCREEN_ACTIONS)
-    w1, h1 = skin_hint.measure(full)
-    w2, h2 = skin_hint.measure(small)
-    assert w1 == w2, (w1, w2)
     dropped = len(full["keys"]) - len(small["keys"])
     assert dropped == 4, dropped
-    assert h1 - h2 == dropped * skin_hint.ROW_H, (h1, h2)
+    # Two columns since 2026-09-24: the card is as tall as the TALLER one,
+    # counted row by row, heading by heading.
+    sizes = {}
+    for name, card in (("full", full), ("small", small)):
+        tall = max(
+            sum(skin_hint.GROUP_H + skin_hint.ROW_H * len(rows)
+                for _n, rows in column)
+            + skin_hint.GROUP_GAP * (len(column) - 1)
+            for column in skin_hint.split(card["groups"]))
+        want = round(skin_hint.PAD + skin_hint.HEAD_H + skin_hint.RULE_GAP
+                     + tall + skin_hint.RULE_GAP + skin_hint.FOOT_H
+                     + skin_hint.PAD - 4)
+        sizes[name] = skin_hint.measure(card)
+        assert sizes[name][1] == want, (name, sizes[name], want)
+    # four keys fewer is a shorter card, never a taller or a clipped one
+    assert sizes["small"][1] < sizes["full"][1], sizes
 
 
 # --------------------------------------------------------------------------
@@ -21457,378 +23262,88 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
     finally:
         try:
             board.root.destroy()
+            # a destroyed desk is not a buried one: the sleeping dashboard-poll
+            # thread still holds it, and whichever thread collects it later
+            # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+            board._bury()
         except Exception:
             pass
 
 
-def test_restart_stops_the_app_waits_for_it_to_go_starts_it_and_then_reopens_the_window(
-) -> None:
-    """Restart, with singleton and launch faked — NEVER against the real
-    app: the owner's dictation runs from the main checkout while this
-    suite runs.
+def test_no_message_about_a_setting_calls_it_what_the_file_calls_it() -> None:
+    """A sentence a person reads never carries the developer's name for
+    the line.
 
-    The app half: quit is asked for, then the mutex is polled until it
-    is gone, and only then is the app started — a start while the old
-    copy still holds the mutex is a second copy refused at its own door.
-    An app that is not running is simply started. An app that will not
-    let go is a sentence and no start.
+    2026-10-01: the owner turned one switch on the Settings place off and
+    on again, and the window told him `hint.enabled saved` — the dotted
+    path out of defaults.toml, under a row that reads "Show the key card
+    while a key is held". The row's own label was on the screen he was
+    looking at; the path is the name only this repository uses.
 
-    The window half: the window closes itself with _relaunch set, and
-    main() opens the new copy only AFTER the instance mutex is released
-    — a copy started earlier would be the "second launch" that pokes
-    the old window and exits, leaving no dashboard at all. A restart
-    that failed keeps the window and says why on the card."""
-    import launch as launch_mod
-    import singleton as singleton_mod
-
-    import dashboard as dash
-
-    saved = (singleton_mod.is_running, singleton_mod.request_quit,
-             launch_mod.start_app)
-    log: list[str] = []
-    try:
-        answers = iter([True, True, True, False, False, False])
-
-        def running() -> bool:
-            now = next(answers, False)
-            log.append(f"running={now}")
-            return now
-        singleton_mod.is_running = running
-        singleton_mod.request_quit = lambda: (log.append("quit"), True)[1]
-        launch_mod.start_app = lambda *a, **k: (log.append("start"), True)[1]
-        result = dash.restart_app(wait_s=2.0, step_s=0.001)
-        assert result["ok"] is True, result
-        assert log == ["running=True", "quit", "running=True", "running=True",
-                       "running=False", "start"], log
-
-        # Nothing running: no quit, no wait, just the start.
-        log.clear()
-        singleton_mod.is_running = lambda: (log.append("running=False"),
-                                            False)[1]
-        result = dash.restart_app(wait_s=2.0, step_s=0.001)
-        assert result["ok"] is True
-        assert log == ["running=False", "start"], log
-
-        # It will not let go: no start, and a sentence that says so.
-        log.clear()
-        singleton_mod.is_running = lambda: True
-        result = dash.restart_app(wait_s=0.02, step_s=0.001)
-        assert result["ok"] is False
-        assert "did not stop" in result["said"], result["said"]
-        assert log == ["quit"], log
-    finally:
-        (singleton_mod.is_running, singleton_mod.request_quit,
-         launch_mod.start_app) = saved
-
-    # The window: a restart that worked closes it with the one word
-    # main() reads; one that failed leaves it, with the sentence.
-    real = dash.restart_app
-    with _window() as board:
-        if board is None:
-            return
-        board._scan_changes = lambda: None
-        board._write_digest = lambda: None
-        board._show("Problems")
-        try:
-            dash.restart_app = lambda *a, **k: {"ok": False,
-                                                "said": "It would not stop."}
-            board._restart_all()
-            assert board._pushing == "restart"
-            assert board._push_said[dash.TRUNK] == \
-                "Restarting — the app takes about 25 seconds to load."
-            assert _until(lambda: board._pushing is None,
-                          pump=board.root.update), \
-                "the restart never came back"
-            assert board._push_said[dash.TRUNK] == "It would not stop."
-            assert not board.closing and board.root.winfo_exists(), \
-                "a failed restart took the window away"
-            assert not board.__dict__.get("_relaunch")
-
-            dash.restart_app = lambda *a, **k: {"ok": True, "said": ""}
-            board._restart_all()
-            end = time.monotonic() + 10.0     # not _until: the pump itself
-            while time.monotonic() < end:     # dies here, and that is the point
-                try:
-                    board.root.update()
-                except Exception:         # the root is gone: that is the
-                    break                 # point
-                if board.closing:
-                    break
-                time.sleep(0.02)
-            assert board.closing, "a restart that worked left the window up"
-            assert board.__dict__.get("_relaunch") is True, \
-                "the window closed without asking to come back"
-        finally:
-            dash.restart_app = real
-
-    # main(): release, THEN relaunch — and no relaunch when the window
-    # closed for any other reason.
-    import singleton as singleton_mod
-    order: list[str] = []
-
-    class Lock:
-        def __init__(self, name) -> None:
-            order.append(f"lock {name}")
-
-        def release(self) -> None:
-            order.append("release")
-
-    class Window:
-        wants = True
-
-        def run(self) -> bool:
-            order.append("run")
-            return Window.wants
-
-    # bring_up_the_keys is faked too: left real, each main() here spawned a
-    # real `main.py --no-model` under the suite's home, and the second of
-    # them opened a real desk — the pair every full run left on the hidden
-    # desktop until 2026-09-19 (found through the suite home's spawn.log).
-    saved = (singleton_mod.InstanceLock, dash.Dashboard,
-             dash._relaunch_dashboard, dash.bring_up_the_keys)
-    try:
-        singleton_mod.InstanceLock = Lock
-        dash.Dashboard = Window
-        dash._relaunch_dashboard = lambda: (order.append("relaunch"), True)[1]
-        dash.bring_up_the_keys = lambda: (order.append("keys"), False)[1]
-        assert dash.main() == 0
-        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "keys", "run",
-                         "release", "relaunch"], order
-        order.clear()
-        Window.wants = False
-        assert dash.main() == 0
-        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "keys", "run",
-                         "release"], order
-    finally:
-        (singleton_mod.InstanceLock, dash.Dashboard,
-         dash._relaunch_dashboard, dash.bring_up_the_keys) = saved
-
-
-def test_an_answered_report_reopens_and_the_x_asks_before_it_deletes(
-) -> None:
-    """The two things he asked for on 2026-09-08, on the row itself.
-
-    He found four of his own reports closed and did not close them: "open
-    them again... and if I close something I should be able to open it
-    again, because right now I cannot". So an ANSWERED row carries
-    Reopen, and pressing it puts the report back on the list with no
-    resolution date and nobody's name on it.
-
-    And the delete: "add an X, and when I'm pressing the X a question
-    will jump — are you sure — because I don't want the reports to be
-    deleted instantly". So the ✕ writes NOTHING. It grows the row into a
-    question with Delete and Keep it under it, Keep it takes the question
-    away and leaves the report, and only Delete reaches the store. That
-    is the whole point of the test: the press that used to be the delete
-    is asserted here to have deleted nothing.
-
-    The store is a temp one. It is never his — see the cleanup that ate
-    two real reports while screenshotting this very screen.
+    Every row the Settings place draws and every key the Keys screen
+    lists is checked here, and the two files that build such sentences
+    are read for the shapes that made that one, so a new message cannot
+    bring it back.
     """
-    import shutil
-    import tkinter as tk
+    import settings as settings_mod
 
-    import ui as ui_mod
+    for path in settings_mod.friendly_paths():
+        label = settings_mod.label_for(path)
+        assert label and label != path, path
+        for live in (True, False):
+            said = settings_mod.saved_sentence(path, live=live)
+            assert path not in said, (path, said)
+            assert label in said, (path, said)
+        assert "next time" in settings_mod.saved_sentence(path, live=False)
+        assert "next time" not in settings_mod.saved_sentence(path)
 
-    import problems as problems_mod
+    # A switch answers WHICH WAY it went: his two screenshots of
+    # 2026-10-01 are the same sentence, one taken after turning the key
+    # card off and one after turning it back on.
+    here = Path(__file__).resolve().parent
+    sections = settings_mod.read(here / "defaults.toml")
+    switches = menus = 0
+    for path in settings_mod.friendly_paths():
+        setting = settings_mod.find(sections, path)
+        if setting is None:
+            continue
+        if settings_mod.kind_of(setting.value) == "bool":
+            on = settings_mod.saved_sentence(path, True)
+            off = settings_mod.saved_sentence(path, False)
+            assert on.endswith("is now on"), on
+            assert off.endswith("is now off"), off
+            want = (f'"{settings_mod.label_for(path)}" will be off '
+                    "the next time it starts")
+            later = settings_mod.saved_sentence(path, False, live=False)
+            assert later == want, later
+            switches += 1
+            continue
+        row = settings_mod._row_for(path)
+        if row is not None and len(row.names) > 1:
+            said = {settings_mod.saved_sentence(path, choice)
+                    for choice, _name in row.names}
+            assert len(said) == len(row.names), (path, said)
+            menus += 1
+    assert switches > 10 and menus > 3, (switches, menus)
 
-    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
-    try:
-        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
-        ident = store.add({"text": "the recordings tab shows yesterday",
-                           "kind": "wrong", "where": "recordings"})["id"]
-        assert store.resolve(ident, problems_mod.CLOSED, by="dashboard")
+    # A measurement no tab draws has no name a person would know, so its
+    # message carries none — rather than falling back to the path, which
+    # is the bug itself.
+    quiet = settings_mod.saved_sentence("local.beam_size", live=False)
+    assert "local.beam_size" not in quiet and "next time" in quiet, quiet
 
-        with _window() as board:
-            if board is None:
-                return
-            board.closing = True
-            board._scan_changes = lambda: None   # git is not the subject
-            board._write_digest = lambda: None  # nor is his problems.md
-            board._problems_store = lambda: store
-            board._show("Problems")
-            board.root.update()
+    for field, label in config_mod.HOTKEY_FIELDS:
+        said = config_mod.rebound_sentence(field, "ctrl+f6")
+        assert field not in said and label in said, said
+        assert "ctrl+f6" in said, said
+        off = config_mod.rebound_sentence(field, "")
+        assert field not in off and label in off, off
 
-            def controls() -> dict:
-                """Every pressable thing on the list, by its label."""
-                found: dict = {}
-                stack = list(board.parts["problems_list"]
-                             .inner.winfo_children())
-                while stack:
-                    widget = stack.pop()
-                    if isinstance(widget, ui_mod.Button):
-                        found[widget.itemcget(widget._label, "text")] = widget
-                    elif isinstance(widget, tk.Label):
-                        found.setdefault(str(widget.cget("text")), widget)
-                    stack.extend(widget.winfo_children())
-                return found
-
-            def words() -> str:
-                out = []
-                stack = list(board.parts["problems_list"]
-                             .inner.winfo_children())
-                while stack:
-                    widget = stack.pop()
-                    if isinstance(widget, tk.Canvas):
-                        for item in widget.find_all():
-                            if widget.type(item) == "text":
-                                out.append(str(widget.itemcget(item, "text")))
-                    try:
-                        out.append(str(widget.cget("text")))
-                    except Exception:
-                        pass
-                    stack.extend(widget.winfo_children())
-                return "\n".join(out)
-
-            def press(label: str) -> None:
-                widget = controls().get(label)
-                assert widget is not None, f"no {label!r} on the row: " \
-                                           f"{sorted(controls())}"
-                if isinstance(widget, ui_mod.Button):
-                    widget._released(None)
-                else:
-                    widget.event_generate("<Button-1>")
-                board.root.update()
-
-            # ANSWERED, and offering the way back.
-            assert "Reopen" in controls(), sorted(controls())
-            assert "closed" in words(), words()
-            press("Reopen")
-            back = store.get(ident)
-            assert back["status"] == problems_mod.OPEN, back
-            assert back["resolved"] is None and back["by"] == "", back
-            assert "Reopen" not in controls(), "it is open — nothing to undo"
-            assert "Fixed" in controls() and "Close" in controls()
-
-            # THE ✕ WRITES NOTHING.
-            before = json.loads((tmp / problems_mod.STORE_NAME)
-                                .read_text("utf-8"))
-            press("✕")
-            assert json.loads((tmp / problems_mod.STORE_NAME)
-                              .read_text("utf-8")) == before, \
-                "the ✕ touched the store before he had answered"
-            assert board._problem_asking == ident
-            said = words()
-            assert "Delete this report?" in said, said
-            assert "Delete" in controls() and "Keep it" in controls()
-            assert "✕" not in controls(), "it has already been asked"
-
-            # Keep it: the question goes, the report stays.
-            press("Keep it")
-            assert board._problem_asking == ""
-            assert "Delete this report?" not in words()
-            assert store.get(ident) is not None
-            assert "✕" in controls()
-
-            # And the second, deliberate press is the one that deletes.
-            press("✕")
-            press("Delete")
-            assert store.get(ident) is None, "Delete did not delete"
-            assert store.items() == []
-            assert board._problem_asking == ""
-            assert "Nothing reported yet" in str(
-                board.parts["problems_empty"].cget("text"))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def test_pressing_the_x_on_a_report_keeps_the_page_where_he_was_reading(
-) -> None:
-    """His words on 2026-09-08, the day after the ✕ was built: "when I'm
-    pressing the X button to delete the problem it makes the screen jump
-    up and then I just scroll down and then press delete".
-
-    _fill_problems rebuilds every row from scratch and ended in
-    to_top(), so the ✕ — which writes nothing and is a redraw and
-    nothing else — threw the whole list back to the beginning and left
-    him to find the row again. Every redraw but the one that OPENS the
-    tab now puts the view back where it was, in pixels, and the answer he
-    has to press is on screen when it lands.
-
-    Twenty reports, because the bug cannot exist on a page that does not
-    scroll. The store is a temp one, never his.
-    """
-    import shutil
-    import tkinter as tk
-
-    import ui as ui_mod
-
-    import problems as problems_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
-    try:
-        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
-        for n in range(20):
-            store.add({"text": f"report number {n} of a list long enough "
-                               f"to have somewhere to be lost in",
-                       "kind": "wrong", "where": "recordings"})
-
-        with _window() as board:
-            if board is None:
-                return
-            board.closing = True
-            board._scan_changes = lambda: None
-            board._write_digest = lambda: None
-            board._problems_store = lambda: store
-            board._show("Problems")
-            board.root.update()
-
-            page = board.parts["problems_list"]
-            page.canvas.yview_scroll(12, "units")
-            page._paint_thumb()
-            board.root.update()
-            where = page.canvas.canvasy(0)
-            assert where > 0, "the page did not scroll: nothing to lose"
-
-            def cross_on_screen():
-                """The ✕ of a row he can see, with room under it for the
-                question the press opens."""
-                view = page.canvas.canvasy(0)
-                for row in page.inner.winfo_children():
-                    top = row.winfo_y()
-                    if not view + 8 <= top <= view + page._height - 160:
-                        continue
-                    for child in row.winfo_children():
-                        if (isinstance(child, tk.Label)
-                                and child.cget("text") == "✕"):
-                            return row, child
-                return None, None
-
-            row, cross = cross_on_screen()
-            assert cross is not None, "no ✕ on screen to press"
-            cross.event_generate("<Button-1>")
-            board.root.update()
-            assert board._problem_asking, "the ✕ did not ask"
-            landed = page.canvas.canvasy(0)
-            assert landed > 0, "the ✕ threw the page back to the top"
-            assert abs(landed - where) <= ui_mod.SCROLL_STEP * 3, \
-                f"the page moved {landed - where} px under him"
-            # And the two answers are ON SCREEN, not below the fold.
-            asked = board._asking_row
-            assert asked is not None and asked.winfo_exists()
-            bottom = asked.winfo_y() + asked.winfo_height()
-            assert bottom <= page.canvas.canvasy(0) + page._height + 1, \
-                "the question opened off the bottom of the page"
-
-            # The same again for the press that does delete.
-            gone = None
-            for child in asked.winfo_children():
-                if (isinstance(child, ui_mod.Button)
-                        and child.itemcget(child._label, "text") == "Delete"):
-                    gone = child
-            assert gone is not None, "no Delete on the row that asked"
-            gone._released(None)
-            board.root.update()
-            assert len(store.items()) == 19, "Delete did not delete"
-            assert page.canvas.canvasy(0) > 0, \
-                "deleting threw the page back to the top"
-
-            # Opening the tab, and only that, goes home.
-            board._show("Problems")
-            board.root.update()
-            assert board.parts["problems_list"].canvas.canvasy(0) == 0
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    for name in ("dashboard.py", "main.py"):
+        source = (here / name).read_text(encoding="utf-8")
+        for shape in ("{setting.path} saved", "{name} saved",
+                      "{field} is now", "{setting.path}:"):
+            assert shape not in source, (name, shape)
 
 
 def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
@@ -21853,7 +23368,8 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
             switch.toggle()
             assert written == [{"punctuate.auto": True}], written
             assert board.parts["values"]["punctuate.auto"] is True
-            assert "punctuate.auto saved" in board._toast_text, \
+            assert "Punctuate every dictation" in board._toast_text \
+                and "punctuate.auto" not in board._toast_text, \
                 board._toast_text
             # Drawn again after a visit to another tab, the line shows
             # the new value: the values cache outlives the widgets.
@@ -21895,7 +23411,9 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
         def ask(command, then=None, **args):
             asked.append((command, args))
             if then is not None:
-                then({"ok": True, "message": f"{args['name']} saved"})
+                then({"ok": True, "message":
+                      settings_mod.saved_sentence(args["name"],
+                                                  args["value"])})
 
         def never(*_a, **_k):
             raise AssertionError("the dashboard wrote the file itself")
@@ -21918,7 +23436,10 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
                                          "value": "never"})], asked
             assert menu.get() == "never"
             assert board.parts["values"]["polish.when"] == "never"
-            assert "polish.when saved" in board._toast_text
+            assert "Fix misheard words with a model" \
+                in board._toast_text \
+                and "polish.when" not in board._toast_text, \
+                board._toast_text
 
             def refuse(command, then=None, **args):
                 then({"ok": False, "error": "polish.when must be one "
@@ -22212,8 +23733,9 @@ def test_set_option_writes_first_and_takes_the_live_ones_into_the_running_app() 
         app.hint = _Hint()
 
         message = app.set_option("punctuate.auto", True)
-        assert "punctuate.auto saved" in message and "next time" not in message, \
-            message
+        assert "Punctuate every dictation" in message \
+            and "punctuate.auto" not in message \
+            and "next time" not in message, message
         assert config_mod.load(copy).punctuate.auto is True
         assert app.cfg.punctuate.auto is True
         assert app._punctuator is None, \
@@ -23231,63 +24753,6 @@ def test_a_second_reading_row_says_which_word_became_which():
                 "changes": []}
         bands = dash.Dashboard._change_bands(dash.Dashboard, none, 800)
         assert bands["runs"] is None and bands["text"] == "שלום", bands
-    finally:
-        root.destroy()
-
-
-def test_a_report_row_leads_with_the_first_sentence_of_the_report():
-    """And it knows what day the report was filed.
-
-    Two things, and the second one was invisible: problems.Store writes
-    "at", in ISO, and this row asked for "when" in the review store's
-    format — so every report stamped 0.0, sorted to the bottom of the
-    pile and drew "You reported this" with no date on it.
-    """
-    import time as time_mod
-
-    import dashboard as dash
-    import problems as problems_mod
-
-    root = _tk_or_skip()
-    if root is None:
-        return
-    try:
-        report = {
-            "id": "1", "at": "2026-09-05T20:11:03", "status": "open",
-            "where": "Chrome",
-            "text": "הדשבורד נתקע לשתים עשרה שניות כשלחצתי על הכפתור. "
-                    "זה קרה פעמיים היום, גם אחרי שהפעלתי מחדש."}
-
-        class Store:
-            def items(self, _status=None):
-                return [report]
-
-        class Desk(dash.Dashboard):
-            def __init__(self):
-                pass
-
-            def _problems(self):
-                return problems_mod
-
-            def _problems_store(self):
-                return Store()
-
-        spec = Desk()._waiting_problems()[0]
-        assert spec["text"] == \
-            "הדשבורד נתקע לשתים עשרה שניות כשלחצתי על הכפתור.", spec
-        assert not spec["text"].endswith("…"), "a whole sentence, unmarked"
-        assert "the whole list has all of it" in spec["note"], spec
-        assert spec["note"].startswith("Chrome"), spec
-        assert spec["at"] == time_mod.mktime(
-            time_mod.strptime("2026-09-05 20:11:03", "%Y-%m-%d %H:%M:%S"))
-        assert "5 Sep" in spec["eyebrow"], spec["eyebrow"]
-
-        # One sentence and nothing behind it: no note about a rest that
-        # does not exist.
-        report["text"] = "הדשבורד נתקע."
-        spec = Desk()._waiting_problems()[0]
-        assert spec["text"] == "הדשבורד נתקע." and spec["note"] == "Chrome", \
-            spec
     finally:
         root.destroy()
 
@@ -26720,12 +28185,14 @@ def test_a_held_finish_is_said_on_the_waiting_place_and_never_counted_twice():
         assert line.cget("text") == ""
 
 
-def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
-    """The pile IS the files: four stores, newest first, a row each with
-    its own verb, and a redraw only when one of the four stamps moved —
-    because a rebuild every second would cost the caret in whatever is
-    being typed into it. A store that raises contributes nothing and the
-    other three still draw."""
+def test_the_waiting_pile_draws_its_stores_and_notices_they_moved():
+    """The pile IS the files: a row per unread notification and per
+    proposal of the second reading, newest first, each with its own
+    verb, and a redraw only when one of the stamps moved — because a
+    rebuild every second would cost the caret in whatever is being
+    typed into it. A store that raises contributes nothing and the
+    other still draws. His reports and the routine's questions were
+    two more sources here until 2026-10-01 (MASTER.md §8)."""
     import widgets as widgets_mod
 
     class Fake:
@@ -26756,37 +28223,33 @@ def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
                "status": "pending", "proposed": "הטקסט הזה נכון עכשיו.",
                "changes": [{"before": "נכן", "after": "נכון",
                             "why": "הגייה דומה"}]}]
-    problems = [{"id": "p1", "when": "2026-09-03 09:00:00",
-                 "status": "open", "what": "A card stayed on the screen."}]
     with _window() as board:
         if board is None:
             return
         board._show("Home")
         board._notify_store = lambda: Fake(notify)
         board._review_store = lambda: Fake(review)
-        board._problems_store = lambda: Fake(problems)
         items = board._waiting_items()
-        assert [i["kind"] for i in items] == ["review", "notify", "problem"],\
+        assert [i["kind"] for i in items] == ["review", "notify"], \
             [i["kind"] for i in items]        # newest first, whatever it is
         board._pile_stamp = object()
         board._poll_waiting()
         rows = [w for w in board.parts["pile_list"].inner.winfo_children()
                 if isinstance(w, widgets_mod.PileRow)]
-        assert len(rows) == 3, len(rows)
+        assert len(rows) == 2, len(rows)
         assert board.parts["pile_card"].winfo_manager() == "pack"
-        assert "Three things" in board.parts["waiting_head"].cget("text")
+        assert "Two things" in board.parts["waiting_head"].cget("text")
         # Exactly one gold button on the surface: Yes on a second reading.
         golds = [b for row in rows for b in row.buttons.values()
                  if isinstance(b, widgets_mod.ToneButton)]
         assert len(golds) == 1, len(golds)
 
-        # The stamp is remembered: the same four files do not redraw.
+        # The stamp is remembered: the same files do not redraw.
         board._notify_store = lambda: Fake([])
         board._review_store = lambda: Fake([])
-        board._problems_store = lambda: Fake([])
         board._poll_waiting()
         assert len([w for w in board.parts["pile_list"].inner.winfo_children()
-                    if isinstance(w, widgets_mod.PileRow)]) == 3, \
+                    if isinstance(w, widgets_mod.PileRow)]) == 2, \
             "redrew without a file moving"
         board._pile_stamp = object()
         board._poll_waiting()
@@ -26796,14 +28259,13 @@ def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
             "an empty pile shows no card at all"
         assert "Nothing is waiting" in board.parts["waiting_head"].cget("text")
 
-        # One broken file must not cost the other two their rows.
+        # One broken file must not cost the other its rows.
         board._notify_store = lambda: Fake(notify, boom=True)
         board._review_store = lambda: Fake(review)
-        board._problems_store = lambda: Fake(problems)
         board._pile_stamp = object()
         board._poll_waiting()              # must not raise
         assert len([w for w in board.parts["pile_list"].inner.winfo_children()
-                    if isinstance(w, widgets_mod.PileRow)]) == 2
+                    if isinstance(w, widgets_mod.PileRow)]) == 1
 
 
 # ---------------------------------------------- report a problem
@@ -27591,230 +29053,6 @@ def test_the_copy_that_travels_is_the_toggles_and_nothing_else() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_the_problems_list_draws_a_report_with_and_without_a_picture(
-        ) -> None:
-    """The list is the file: two open reports and one answered draw three
-    rows plus the ANSWERED heading, a report whose screenshot has been
-    deleted draws a row anyway, an empty store shows the empty line, and
-    a store that raises leaves an empty list rather than a dead screen. It
-    redraws only when the stamp moved."""
-    import tkinter as tk
-
-    import problems as problems_mod
-
-    class Fake:
-        def __init__(self, items, boom=False):
-            self._items, self._boom = items, boom
-            self.path = REPO / problems_mod.STORE_NAME
-
-        def items(self, status=None):
-            if self._boom:
-                raise OSError("broken file")
-            return [i for i in self._items
-                    if status is None or i.get("status") == status]
-
-        def summary(self):
-            if self._boom:
-                raise OSError("broken file")
-            return {"open": 2, "fixed": 1, "closed": 0}
-
-        def stamp(self):
-            return (1, 1)
-
-    def report(ident, status, **extra):
-        return dict({"id": ident, "at": "2026-09-04T13:22:01",
-                     "where": "recordings", "kind": "wrong",
-                     "text": "הכרטיס מראה את המספר של אתמול — yesterday's "
-                             "count", "status": status, "resolved": None,
-                     "by": "", "dictation": {}, "shot": "", "env": {}},
-                    **extra)
-
-    three = [report("a", problems_mod.OPEN,
-                    shot="problems/definitely-not-here.jpg",
-                    dictation={"raw": "מטוס", "final": "מנטוס",
-                               "backend": "local", "seconds": 2.8}),
-             report("b", problems_mod.OPEN, kind="idea", where=""),
-             report("c", problems_mod.FIXED, resolved="2026-09-04T14:00:00",
-                    by="claude")]
-    with _window() as board:
-        if board is None:
-            return
-        # The real problems.md is not this test's to rewrite; opening the
-        # tab regenerates it, and the store here is a fake.
-        board._write_digest = lambda: None
-        board._show("Home")
-        board._waiting_all()          # the whole backlog, behind the pile
-        board._problems_store = lambda: Fake(three)
-        board._problems_stamp = None
-        board._poll_problems()
-        rows = [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)]
-        assert len(rows) == 3, len(rows)
-        assert all(getattr(r, "shot", None) is None for r in rows), \
-            "a shot that is not on disk drew a picture anyway"
-        heads = [w for w in board.parts["problems_list"].inner.winfo_children()
-                 if isinstance(w, tk.Label)]
-        assert [w.cget("text") for w in heads] == ["ANSWERED"], heads
-        assert "2 open" in board.parts["problems_head"].cget("text")
-        assert "1 fixed" in board.parts["problems_head"].cget("text")
-        assert not board.parts["problems_empty"].winfo_manager()
-        # The stamp is remembered: the same file does not redraw.
-        board._problems_store = lambda: Fake([])
-        board._poll_problems()
-        rows = [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)]
-        assert len(rows) == 3, "redrew without the file moving"
-        board._problems_stamp = None
-        board._poll_problems()
-        assert [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)] == []
-        assert board.parts["problems_empty"].winfo_manager() == "place"
-        assert "Nothing reported yet" in \
-            board.parts["problems_empty"].cget("text")
-        board._problems_store = lambda: Fake([], boom=True)
-        board._problems_stamp = None
-        board._poll_problems()              # must not raise
-        assert [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)] == []
-        board._problems = lambda: None      # no problems.py on this checkout
-        board._problems_store = lambda: None
-        board._problems_stamp = None
-        board._poll_problems()
-        assert "problems.py is not here" in \
-            board.parts["problems_empty"].cget("text")
-
-
-def test_a_row_the_routine_thinks_is_fixed_says_fixed_maybe_in_amber_and_waits(
-) -> None:
-    """His words, after the routine closed three reports on 2026-09-12
-    that were not fixed: "instead of writing 'fix' it writes 'fix?' in a
-    different colour, not green like now" — and asks him.
-
-    So a marked report is still an OPEN row: the same Fixed, Close and ✕
-    on it, in the same place, and the counts line still counts it as
-    open. What it gains is a FIXED? tag beside the kind, in the tab's
-    amber and not the Fixed button's green, and an amber line under his
-    text carrying the routine's note — drawn through ui.draw_text, like
-    every other line here that may be Hebrew — and telling him what to
-    do about it. The counts line says how many are waiting like that,
-    and only when any are. Pressing Fixed is his answer: the report
-    resolves exactly as it always did and the mark goes with it.
-
-    The store is a temp one, never his.
-    """
-    import shutil
-    import tkinter as tk
-
-    import ui as ui_mod
-
-    import problems as problems_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
-    drawn: list[tuple[str, str]] = []
-    real_draw = ui_mod.draw_text
-
-    def spy_draw(text, **kw):
-        drawn.append((text, kw.get("colour", "")))
-        return real_draw(text, **kw)
-
-    try:
-        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
-        plain = store.add({"text": "the dot sits on the wrong screen",
-                           "kind": "broken", "where": "overlay"})["id"]
-        ident = store.add({"text": "the recordings tab shows yesterday",
-                           "kind": "wrong", "where": "recordings"})["id"]
-        note = "הכרטיס נבנה מחדש ומראה את הספירה של היום"
-        assert store.suggest(ident, by="weekly", note=note)
-        ui_mod.draw_text = spy_draw
-
-        with _window() as board:
-            if board is None:
-                return
-            board.closing = True
-            board._scan_weekly = lambda: None   # git is not the subject
-            board._write_digest = lambda: None  # nor is his problems.md
-            board._problems_store = lambda: store
-            board._show("Problems")
-            board.root.update()
-
-            def rows() -> list:
-                return [w for w in board.parts["problems_list"]
-                        .inner.winfo_children() if isinstance(w, tk.Canvas)]
-
-            def texts(row) -> dict:
-                """Every text item on a row canvas, by its words."""
-                return {str(row.itemcget(i, "text")): i
-                        for i in row.find_all() if row.type(i) == "text"}
-
-            def buttons(row) -> dict:
-                return {w.itemcget(w._label, "text"): w
-                        for w in row.winfo_children()
-                        if isinstance(w, ui_mod.Button)}
-
-            # Two open rows, newest first: the marked one on top.
-            assert len(rows()) == 2, len(rows())
-            marked, other = rows()
-            assert "FIXED?" in texts(marked), sorted(texts(marked))
-            assert "FIXED?" not in texts(other), sorted(texts(other))
-            tag = texts(marked)["FIXED?"]
-            assert marked.itemcget(tag, "fill") == ui_mod.AMBER, \
-                marked.itemcget(tag, "fill")
-            assert ui_mod.AMBER != ui_mod.GREEN
-            # The tag stands to the right of the kind and the surface, on
-            # their line, and inside a frame drawn under it.
-            kinds = texts(marked)["WRONG  ·  RECORDINGS"]
-            assert marked.bbox(tag)[0] > marked.bbox(kinds)[2], \
-                (marked.bbox(tag), marked.bbox(kinds))
-            assert abs(marked.bbox(tag)[1] - marked.bbox(kinds)[1]) <= 2
-            order = list(marked.find_all())
-            frame = order[order.index(tag) - 1]
-            assert marked.type(frame) == "image", marked.type(frame)
-            fx0, fy0, fx1, fy1 = marked.bbox(frame)
-            tx0, ty0, tx1, ty1 = marked.bbox(tag)
-            assert fx0 <= tx0 and fx1 >= tx1 and fy0 <= ty0 and fy1 >= ty1, \
-                (marked.bbox(frame), marked.bbox(tag))
-            # The note, in amber, through the Hebrew-capable path, with
-            # what he does about it — and the row grew to hold it.
-            hint = [t for t, c in drawn if note in t]
-            assert hint, [t for t, _c in drawn]
-            assert hint[-1] == f"{note} — try it, then press Fixed", hint[-1]
-            assert (hint[-1], ui_mod.AMBER) in drawn, \
-                [c for t, c in drawn if t == hint[-1]]
-            assert int(marked.cget("height")) > int(other.cget("height"))
-            # His buttons are exactly what an open row has.
-            assert sorted(buttons(marked)) == ["Close", "Fixed"], \
-                sorted(buttons(marked))
-            assert sorted(buttons(other)) == ["Close", "Fixed"]
-            head = str(board.parts["problems_head"].cget("text"))
-            assert "2 open" in head and "1 fixed?" in head, head
-            assert "0 fixed   " in head and "0 closed" in head, head
-
-            # And pressing Fixed is his word.
-            buttons(marked)["Fixed"]._released(None)
-            board.root.update()
-            done = store.get(ident)
-            assert done["status"] == problems_mod.FIXED, done
-            assert done["by"] == "dashboard" and done["resolved"], done
-            assert problems_mod.MAYBE not in done, done
-            assert store.get(plain)["status"] == problems_mod.OPEN
-            assert all("FIXED?" not in texts(r) for r in rows()), \
-                "the tag outlived the mark"
-            head = str(board.parts["problems_head"].cget("text"))
-            assert "1 open" in head and "1 fixed" in head, head
-            assert "fixed?" not in head, head
-
-        # The line itself, with and without a note that already says it.
-        import dashboard as dash
-        hint = dash.Dashboard._problem_hint
-        assert hint({"note": "נסה שוב ולחץ Fixed"}) == "נסה שוב ולחץ Fixed"
-        assert hint({"note": ""}) == "Try it, then press Fixed"
-        assert hint({"note": "  the  count is  today's "}) \
-            == "the count is today's — try it, then press Fixed"
-    finally:
-        ui_mod.draw_text = real_draw
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def test_the_report_cards_painter_puts_every_control_where_it_draws_it(
         ) -> None:
     """problem_card is a pure function of the report, so the card can be
@@ -28411,8 +29649,8 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
     (locally, as always), marks the row PREVIEW with the toggles and
     opens the Preview — the exact JSON and the ticked files, with [Send]
     and [Keep on this PC]. Keep leaves nothing in the outbox and clears
-    the mark; Send writes the payload and the copies into the outbox
-    and the row says "waiting to send" with a Send now beside it. A
+    the mark; Send writes the payload and the copies into the outbox,
+    and the store carries the verdict the master reads back. A
     shut gate asks the app for its consent card over the pipe and the
     switch stays off until the gate opens. The store, the recent folder
     and the outbox are all under a temp root; the screen grab is a
@@ -28456,14 +29694,6 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             time.sleep(0.05)
             board.root.update()
 
-    def first_row(board):
-        return [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)][0]
-
-    def words_on(row) -> set:
-        return {str(row.itemcget(i, "text")) for i in row.find_all()
-                if row.type(i) == "text"}
-
     try:
         recent = tmp / "recent"
         recent.mkdir()
@@ -28482,10 +29712,8 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
                 return
             control_mod.send = fake_send      # _window's None until now
             board.closing = True
-            board._scan_weekly = lambda: None
-            board._write_digest = lambda: None
             board._problems_on = True
-            board._show("Problems")
+            board._show("Home")
             board.root.update()
             store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
 
@@ -28565,20 +29793,16 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             spin(board, 3)
             assert not toplevels(board, "Preview — what leaves this PC")
             assert store.get(ident)["sent"] == "" and not (tmp / "problems" / "outbox").exists()
-            # the row offers nothing about sending now
-            board._fill_problems()
-            board.root.update()
-            assert "Preview & send" not in buttons(first_row(board)), sorted(buttons(first_row(board)))
-            # marked again from the row's side (the hotkey path): [Preview & send]
+            # MARKED AGAIN FROM THE HOTKEY CARD, which is the other
+            # process: the row is the message, and the look-round is
+            # the door that opens its preview now that the Problems
+            # place is gone (_preview_if_waiting, MASTER.md §8).
             problems_mod.mark_preview(store, ident, {"shot": True, "transcript": True})
-            board._fill_problems()
-            board.root.update()
-            row = first_row(board)
-            assert "Preview & send" in buttons(row), sorted(buttons(row))
-            buttons(row)["Preview & send"]._released(None)
-            spin(board, 3)
+            board._previewed.clear()
+            board._preview_if_waiting()
+            spin(board, 5)
             preview = toplevels(board, "Preview — what leaves this PC")
-            assert preview
+            assert preview, "the look-round opened no preview"
             buttons(preview[0])["Send"]._released(None)
             spin(board, 3)
             queued = store.get(ident)
@@ -28589,18 +29813,13 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             assert body["text"] == "המילה האחרונה נעלמה" and body["kind"] == "wrong"
             assert [a["name"] for a in body["attachments"]] == ["shot.jpg", "sidecar.json"]
             assert ("account", {"do": "nudge"}) in asked, asked
-            board._fill_problems()
-            board.root.update()
-            row = first_row(board)
-            assert "waiting to send" in words_on(row), sorted(words_on(row))
-            assert "Send now" in buttons(row), sorted(buttons(row))
-            # the app's verdict, read back on the next draw
+            # and sb.py's verdict is read back off the store, which is
+            # where the master's Reports screen reads it too: the
+            # payload gone means the app sent it.
             payload.unlink()
-            board._fill_problems()
-            board.root.update()
-            row = first_row(board)
-            assert "sent to the developer" in words_on(row), sorted(words_on(row))
-            assert "Send now" not in buttons(row)
+            assert problems_mod.sync_outbox(store, app_dir=tmp)
+            assert store.get(ident)["sent"] == problems_mod.SENT, \
+                store.get(ident)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -28844,7 +30063,7 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
     there, and nothing on the page that needs scrolling to be seen.
 
     The doors were a thin line of counts drawn only for the kinds that
-    had something waiting; they are a band of five tiles now, one per
+    had something waiting; they are a band of four tiles now, one per
     place, always drawn. What is being held to has not changed — a count
     with nowhere to go is a count nobody can act on.
     """
@@ -28872,14 +30091,11 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
                "text": "הטקסט הזה נכן עכשיו.",
                "changes": [{"before": "נכן", "after": "נכון",
                             "why": "הגייה דומה"}]} for i in range(5)]
-    problems = [{"id": "p1", "when": "2026-09-07 09:00:00",
-                 "status": "open", "what": "A card stayed on the screen."}]
     with _window() as board:
         if board is None:
             return
         board._notify_store = lambda: None
         board._review_store = lambda: Fake(review)
-        board._problems_store = lambda: Fake(problems)
         board._show("Home")
         board._pile_stamp = object()
         board._poll_waiting()
@@ -28887,14 +30103,14 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         rows = [w for w in board.parts["pile_list"].inner.winfo_children()
                 if isinstance(w, widgets_mod.PileRow)]
         assert len(rows) == dash.PILE_CAP == 3, len(rows)
-        assert "Six things" in board.parts["waiting_head"].cget("text"), \
+        assert "Five things" in board.parts["waiting_head"].cget("text"), \
             board.parts["waiting_head"].cget("text")
-        # The subline has to AGREE with the headline: six things want an
-        # answer and three of them are on the screen, so it says which
-        # three and how many are not, rather than "nothing else needs
-        # you" under a headline that says six things do.
+        # The subline has to AGREE with the headline: five things want
+        # an answer and three of them are on the screen, so it says
+        # which three and how many are not, rather than "nothing else
+        # needs you" under a headline that says five things do.
         sub = board.parts["waiting_sub"].cget("text")
-        assert "newest three" in sub and "three more are waiting" in sub, sub
+        assert "newest three" in sub and "two more are waiting" in sub, sub
         # Exactly one lit button on the surface, still.
         golds = [b for row in rows for b in row.buttons.values()
                  if isinstance(b, widgets_mod.ToneButton)]
@@ -28903,9 +30119,9 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         band = board.parts["elsewhere"]
         board.root.update_idletasks()
         tiles = sorted(band.winfo_children(), key=lambda w: w.winfo_x())
-        # five again since Network left the bar (2026-09-18): a door to a
+        # four since Problems left the bar (2026-10-01): a door to a
         # place that is not on the bar is a door with no way back
-        assert len(tiles) == 5, len(tiles)
+        assert len(tiles) == 4, len(tiles)
         assert all(t.winfo_manager() for t in tiles)
         # The count and the words it counts are two labels on one line,
         # so the tile is read as the set of things drawn on it.
@@ -28913,8 +30129,6 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         corrections = next(t for t in tiles
                            if "corrections" in words[t])
         assert "5" in words[corrections], words[corrections]
-        trouble = next(t for t in tiles if "problems" in words[t])
-        assert "1" in words[trouble], words[trouble]
         # the band fills the row: the last tile ends where the page does
         last = tiles[-1]
         assert last.winfo_x() + last.winfo_width() == dash.CW, (
@@ -28969,20 +30183,14 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
                "text": "הטקסט הזה נכן עכשיו.",
                "changes": [{"before": "נכן", "after": "נכון",
                             "why": "הגייה דומה"}]} for i in range(5)]
-    problems = [{"id": f"p{i}", "when": "2026-09-07 09:00:00",
-                 "status": "open", "what": "A card stayed on the screen."}
-                for i in range(2)]
     with _window() as board:
         if board is None:
             return
         board._notify_store = lambda: None
-        board._questions_store = lambda: None
         board._show("Home")
-        for name, proposals, reports in (("nothing", [], []),
-                                         ("two", [], problems),
-                                         ("six", review, problems[:1])):
+        for name, proposals in (("nothing", []), ("two", review[:2]),
+                                ("five", review)):
             board._review_store = lambda p=proposals: Fake(p)
-            board._problems_store = lambda r=reports: Fake(r)
             board._pile_stamp = object()
             board._poll_waiting()
             board.root.update_idletasks()
@@ -28999,14 +30207,14 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
             # say, so it may never be the thing that is missing.
             tiles = sorted(board.parts["elsewhere"].winfo_children(),
                            key=lambda w: w.winfo_x())
-            assert len(tiles) == 5, (name, len(tiles))
+            assert len(tiles) == 4, (name, len(tiles))
             assert tiles[0].winfo_x() == 0
             assert (tiles[-1].winfo_x() + tiles[-1].winfo_width()
                     == dash.CW), name
             # Every tile is still a door to somewhere that is not here.
             # By index and re-read each time: pressing one rebuilds the
             # screen, so the widgets from before the press are gone.
-            for index in range(5):
+            for index in range(4):
                 tiles = sorted(board.parts["elsewhere"].winfo_children(),
                                key=lambda w: w.winfo_x())
                 said = _texts(tiles[index])
@@ -29538,202 +30746,6 @@ def test_the_writer_turns_a_reply_into_a_file_of_sentences() -> None:
                                              Path(d) / "read")] == found
 
 
-def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
-    """The Corrections place's second tab, driven against the app's own
-    control handler over a Reading in a temp folder: the tab arms the
-    sentence it shows, redraws for each phase, lets a reading stand until
-    ← keeps it — however it came back — and puts up the next one, takes
-    the last one back on Redo, asks again only when nothing came back at
-    all, has a paragraph written when the folder runs dry, and disarms
-    when he leaves."""
-    import shutil
-
-    import control as control_mod
-    import main as main_mod
-    import reading
-    import dashboard as dash
-    import widgets as widgets_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="dictation-readtab-"))
-    texts, read = tmp / "texts", tmp / "read"
-    texts.mkdir()
-    (texts / "notes.txt").write_text(
-        "אני רוצה לפתוח את הפרויקט הזה מחדש היום.\n"
-        "לא הבנתי למה זה לא עובד בכלל.\n", "utf-8")
-    r = reading.Reading(read, root_of=lambda h: h)
-    # The writer, scripted: asked once the folder is read out, and what
-    # it writes is the next thing on the card.
-    wrote: list = []
-
-    def write(_self, count=reading.WRITE_SENTENCES, seed=None, names=()):
-        wrote.append((count, seed))
-        return ["הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון.",
-                "תזכיר לי לבדוק את הענף הזה אחרי שאני שומר."]
-    app = main_mod.App.__new__(main_mod.App)
-    app.reading = r
-    activity = ["ready"]
-    sent: list[dict] = []
-
-    def send(cmd, timeout_ms=0, **args):
-        if cmd == "status":
-            return {"ok": True, "stage": "running", "activity": activity[0],
-                    "uptime_s": 60, "keys": {"hotkey": "right ctrl"},
-                    "read": r.state()}
-        if cmd == "read":
-            sent.append(dict(args))
-            return app.control_command("read", args)
-        return None
-
-    def settle(board, until=None, ticks: int = 40) -> None:
-        """Pump the window until `until` holds — the poll runs every
-        POLL_MS and a pipe reply lands on the next pump, so a chain of
-        them is seconds, not a fixed number of ticks — or for `ticks`
-        when nothing in particular is waited for."""
-        for _ in range(250 if until is not None else ticks):
-            board.root.update()
-            time.sleep(0.02)
-            if until is not None and until():
-                board.root.update()
-                return
-        assert until is None, "the window never got there"
-
-    def phase(board) -> str:
-        board._refresh(send("status"))
-        return board._read_phase()[0]
-
-    def kept() -> list:
-        return [p for p in read.glob("*.wav")
-                if not p.name.startswith(reading.PENDING)]
-
-    saved = (dash.READ_DIR, dash.READ_TEXTS, control_mod.send,
-             reading.Writer.write)
-    dash.READ_DIR, dash.READ_TEXTS = read, texts
-    reading.Writer.write = write
-    try:
-        with _window() as board:
-            if board is None:
-                return
-            control_mod.send = send
-            board._corr_tab = "read"
-            board._show("Corrections")
-            settle(board, until=lambda: r.armed_id is not None)
-            first = board._read_current
-            assert first is not None and board._read_deck, "the deck is empty"
-            assert first.text == "אני רוצה לפתוח את הפרויקט הזה מחדש היום."
-            assert first.said == "notes" and (first.index, first.count) == (1, 2)
-            assert r.armed_id == first.key, "the tab armed what it shows"
-            assert sent[-1]["hwnd"] == board._read_hwnd() and sent[-1]["hwnd"]
-            assert phase(board) == "waiting"
-            assert "read_card" in board.parts and "voice_card" in board.parts
-            assert "corr_list" not in board.parts, "the other tab's list"
-            assert not wrote, "nothing written while the folder has text"
-
-            activity[0] = "recording"
-            assert phase(board) == "listening"
-            activity[0] = "ready"
-            # NOTHING CAME BACK: the one case he is asked to read again
-            r.heard(first.key, b"RIFF", 0.4, "")
-            assert phase(board) == "nothing"
-            settle(board, ticks=10)
-            assert not kept() and board._read_current is first
-            assert not [w for w in board.parts["read_card"].body.winfo_children()
-                        if isinstance(w, widgets_mod.ToneButton)], \
-                "no gold button on the card any more"
-
-            # A WORD CAME BACK DIFFERENT: the recording STANDS all the
-            # same — he read the card, and the card is the label — until
-            # ← keeps it; ← with nothing standing does nothing
-            assert board._read_left() is None and not kept()
-            r.heard(first.key, b"RIFF-1", 3.0,
-                    "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
-            assert phase(board) == "heard"
-            settle(board, ticks=10)
-            assert not kept() and board._read_current is first, "it stands"
-            golds = [w for w in board.parts["read_card"].body.winfo_children()
-                     if isinstance(w, widgets_mod.ToneButton)]
-            assert len(golds) == 1, "the gold Keep, for the mouse"
-            assert board._read_left() == "break"
-            settle(board, until=lambda: board._read_current is not None
-                   and board._read_current.key != first.key
-                   and r.armed_id == board._read_current.key)
-            assert len(kept()) == 1, "kept on the left arrow"
-            second = board._read_current
-            assert second is not None and second.key != first.key
-            assert r.armed_id == second.key, "the next one is armed"
-            assert board._read_counts["kept"] == 1
-            assert board._read_last is not None and board._read_last[0] is first
-            side = json.loads(kept()[0].with_suffix(".json").read_text("utf-8"))
-            assert side["text"] == first.text and side["match"] == [7, 8], side
-            assert side["heard"].startswith("אני רוצה לפתוח את הפרוגקט"), side
-
-            # REDO: the reading he just made is taken back, its sentence is
-            # up again and the one that replaced it waits behind it
-            board._read_redo()
-            settle(board, until=lambda: board._read_current is first
-                   and r.armed_id == first.key and not board._read_busy)
-            assert not kept(), "the fumbled reading is gone"
-            assert board._read_counts == {"kept": 0, "skipped": 0, "again": 1}
-            assert board._read_last is None and board._read_deck[0] is second
-            r.heard(first.key, b"RIFF-2", 3.0, first.text)
-            r.heard(first.key, b"RIFF-3", 3.2, first.text)   # read it over
-            assert phase(board) == "heard"
-            board._read_left()
-            settle(board, until=lambda: board._read_current is second
-                   and r.armed_id == second.key)
-            assert len(kept()) == 1 and kept()[0].read_bytes() == b"RIFF-3", \
-                "the new take replaced the one before it"
-
-            r.heard(second.key, b"RIFF", 2.0, second.text)   # word for word
-            assert phase(board) == "heard"
-            board._read_left()
-            settle(board, until=lambda: board._read_counts["kept"] == 2
-                   and board._read_current is not None
-                   and r.armed_id == board._read_current.key)
-            assert len(kept()) == 2
-            assert board._read_counts["kept"] == 2
-            # THE FOLDER IS READ OUT: a paragraph was asked for, saved as
-            # a file, and its first sentence is up
-            assert len(wrote) == 1 and wrote[0][1] == 0, wrote
-            written = [p for p in texts.iterdir()
-                       if p.stem.startswith(reading.WRITTEN)]
-            assert len(written) == 1, written
-            third = board._read_current
-            assert third is not None and third.text.startswith("הדשבורד מציג")
-            assert third.said.startswith(reading.WRITTEN)
-            assert (third.index, third.count) == (1, 2)
-            assert r.armed_id == third.key and phase(board) == "waiting"
-            sides = [json.loads(p.read_text("utf-8"))
-                     for p in read.glob("*.json") if p.name != reading.SKIPPED]
-            assert sorted(s["text"] for s in sides) == sorted(
-                [first.text, second.text]), sides
-            assert sorted(s["key"] for s in sides) == sorted(
-                [first.key, second.key]), "the sentence's key is filed"
-
-            assert board.root.bind("<Left>"), "the left arrow is the tab's"
-            board._corr_tab_to("waiting")
-            settle(board, until=lambda: r.armed_id is None
-                   and sent[-1]["do"] == "disarm")
-            assert r.armed_id is None, "leaving the tab disarms"
-            assert "corr_list" in board.parts and "read_card" not in board.parts
-            assert sent[-1]["do"] == "disarm", sent[-1]
-            assert not board.root.bind("<Left>"), "and gives the arrow back"
-            # And with no model able to write, the card says what to do
-            # instead of asking again and again
-            reading.Writer.write = lambda _self, count=0, seed=None, names=(): None
-            for p in written:
-                p.unlink()
-            board._corr_tab_to("read")
-            settle(board, until=lambda: board._read_write_failed
-                   and not board._read_writing)
-            assert board._read_write_failed and not board._read_writing
-            assert board._read_current is None and phase(board) == "done"
-            assert "corpus" in (board._toast_text or ""), board._toast_text
-    finally:
-        (dash.READ_DIR, dash.READ_TEXTS, control_mod.send,
-         reading.Writer.write) = saved
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def test_a_reading_is_kept_under_the_cards_words_and_can_be_taken_back() -> None:
     """reading.Reading: the app's side. Armed with the dashboard's window,
     it takes a dictation begun over that window and no other; what comes
@@ -30176,23 +31188,25 @@ def test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day() -> None:
         assert room >= 100, f"Stop is back within a slip of Pause: {room} px"
 
 
-def test_the_window_has_six_places_and_every_one_of_them_is_registered():
+def test_the_window_has_five_places_and_every_one_of_them_is_registered():
     """A place is five registrations (NAV, ICON, _show, _refresh, and for
     a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
     KeyError the first time somebody clicks.
 
-    There are SEVEN, in this order: Home (a summary and nothing more),
+    There are FIVE, in this order: Home (a summary and nothing more),
     Corrections (the second reading's proposals and the words it has
-    learned), Problems (his reports, the routine's questions, what is
-    here and not on GitHub), Said (transcripts.log read back), Keys,
-    Settings. Network — D12's window — was the seventh word from PR 21
-    (chapter 9 screen 6) to 2026-09-18, when he said "as a user I don't
-    understand why I need it": it is a screen still (SCREENS), reached
-    from the EVERY CONNECTION card on Settings > Privacy, and the bar
-    lights Settings while it is up. It was three for one evening, with
-    the whole desk on the home; he read that home and said "Home should
-    be a summary, and then maybe add more tabs". Home, Corrections,
-    Problems and Said are new words for old screens, so NAV_GLYPH is
+    learned), Said (transcripts.log read back), Keys, Settings. It was
+    seven at its widest: Network — D12's window — was a word on the bar
+    from PR 21 to 2026-09-18, when he said "as a user I don't
+    understand why I need it", and it is a screen still (SCREENS),
+    reached from the EVERY CONNECTION card on Settings > Privacy, with
+    the bar lighting Settings while it is up; Problems — his reports,
+    the routine's questions and the git card — left on 2026-10-01 with
+    the rest of the owner's surface (MASTER.md §8), and reporting is a
+    button and a card now, with no place behind it. It was three for
+    one evening, with the whole desk on the home; he read that home and
+    said "Home should be a summary, and then maybe add more tabs".
+    Corrections and Said are new words for old screens, so NAV_GLYPH is
     what says whose glyphs they borrow. Every place has to fit along the
     56 px top bar beside the state chip and the three buttons — which is
     why the wordmark is gone."""
@@ -30200,9 +31214,9 @@ def test_the_window_has_six_places_and_every_one_of_them_is_registered():
     import ui
 
     names = [key for key, _label in dash.NAV]
-    assert names == ["home", "corrections", "problems", "said", "keys",
+    assert names == ["home", "corrections", "said", "keys",
                      "settings"], names
-    assert dash.SCREENS == ("Home", "Corrections", "Problems", "Said", "Keys",
+    assert dash.SCREENS == ("Home", "Corrections", "Said", "Keys",
                             "Settings", "Network"), dash.SCREENS
     assert dash.SIDE == 0, "the rail is gone"
     for key, label in dash.NAV:
@@ -30220,7 +31234,7 @@ def test_the_window_has_six_places_and_every_one_of_them_is_registered():
         assert board._problems_on, "the shipped config has it on"
         assert set(board.nav.items) == {label for _key, label in dash.NAV}, \
             sorted(board.nav.items)
-        # The bar holds all seven words, the state and the buttons, and
+        # The bar holds all five words, the state and the buttons, and
         # nothing in it may reach past the window: a place drawn off the
         # right edge is a place with no way to click it. Measured in the
         # state that holds the MOST buttons, which is the one that pushes
@@ -30645,6 +31659,9 @@ def test_the_press_starts_a_roller_and_the_release_hands_it_to_the_worker():
         assert app._roller is None
         item = app.queue.get_nowait()
         assert item[5].get("rolled") is roller, item[5]
+        # ...and the release, for the time to the paste (A32)
+        assert isinstance(item[5].get("released"), float), item[5]
+        assert item[5]["released"] <= time.monotonic(), item[5]
         assert roller._stop.is_set()
         # The worker: a head with a window makes the backend decode the
         # tail; here the thread found nothing, so the whole recording.
@@ -32722,7 +33739,12 @@ TEXT_NAMES = frozenset({
     "cleaned", "text", "fixed", "final", "raw", "transcript", "polished",
     "sentence", "answer", "question", "selection", "selected", "typed",
     "phrase", "heard", "meant", "translated", "punctuated", "pasted",
-    "shown", "body"})
+    "shown", "body",
+    # 2026-09-23 audit: the four shapes the narrow walk let through —
+    # a repair reply, a proposed field, the learned pairs, a join of them.
+    "candidate", "proposed", "applied", "pairs", "reply", "changes"})
+#: A call that turns text into a number: len(text) is fine, text is not.
+LOG_COUNTS = frozenset({"len", "sum", "round", "int", "float", "bool"})
 LOG_SCANNED = ("main.py", "polish.py", "punctuate.py", "translate.py",
                "lookup.py", "visual_qa.py", "review.py", "study.py",
                "server.py", "reading.py", "notify.py", "shelf.py",
@@ -32730,17 +33752,71 @@ LOG_SCANNED = ("main.py", "polish.py", "punctuate.py", "translate.py",
                "spool.py", "vocab.py", "summary.py", "popup.py")
 
 
-def _log_calls_quoting_text() -> list[str]:
-    """Every `log.<info|warning|error|exception>(fmt, ...)` in LOG_SCANNED
-    whose arguments include a bare name, attribute or subscript whose
-    last word is in TEXT_NAMES — the shape of a line that quotes what
-    the person said or read. Wrapped in len() or any other call it
-    does not count."""
+def _words_reaching_a_log(node):
+    """Every name, attribute or string key under `node` whose value can
+    reach the formatted line: the whole expression is walked — a join
+    of pairs, `candidate.strip()[:300]`, an f-string, a comprehension's
+    source — except what only makes a number (LOG_COUNTS) or a truth
+    value (a comparison, a `not`, the condition of an `a if c else b`).
+    An attribute is its own last word (`answer.backend` is a backend,
+    not an answer) unless a method is called on it, which passes the
+    text through (`pasted.strip()`); `x["text"]` and `x.get("text")`
+    are their key."""
     import ast
 
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in LOG_COUNTS:
+            return
+        if (isinstance(f, ast.Attribute) and f.attr == "get" and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            yield node.args[0].value
+            return
+        if isinstance(f, ast.Attribute):
+            yield from _words_reaching_a_log(f.value)
+        for sub in list(node.args) + [k.value for k in node.keywords]:
+            yield from _words_reaching_a_log(sub)
+    elif isinstance(node, ast.Name):
+        yield node.id
+    elif isinstance(node, ast.Attribute):
+        yield node.attr
+    elif isinstance(node, ast.Subscript):
+        key = getattr(node.slice, "value", None)
+        if isinstance(key, str):
+            yield key                     # heard["text"] yes, heard["seconds"] no
+        else:
+            yield from _words_reaching_a_log(node.value)
+    elif isinstance(node, ast.IfExp):
+        yield from _words_reaching_a_log(node.body)
+        yield from _words_reaching_a_log(node.orelse)
+    elif isinstance(node, ast.Compare) or (
+            isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)):
+        return
+    elif isinstance(node, ast.comprehension):
+        yield from _words_reaching_a_log(node.iter)
+    else:
+        for child in ast.iter_child_nodes(node):
+            yield from _words_reaching_a_log(child)
+
+
+def _log_calls_quoting_text(sources: dict[str, str] | None = None) -> list[str]:
+    """Every `log.<info|warning|error|exception>(...)` in LOG_SCANNED
+    (or in `sources`, name -> code) whose arguments can carry a name in
+    TEXT_NAMES into the line — the shape of a line that quotes what the
+    person said or read. Every sub-expression of every argument counts,
+    the format string's included (an f-string there is a quote too);
+    len() and the other counts do not. Until 2026-09-23 only a bare
+    name, attribute or subscript argument counted, and a join of the
+    learned pairs, a proposed field and a sliced repair reply all went
+    to app.log past it."""
+    import ast
+
+    if sources is None:
+        sources = {name: (REPO / name).read_text("utf-8") for name in LOG_SCANNED}
     found = []
-    for name in LOG_SCANNED:
-        tree = ast.parse((REPO / name).read_text("utf-8"))
+    for name, code in sources.items():
+        tree = ast.parse(code)
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Attribute)
@@ -32749,18 +33825,44 @@ def _log_calls_quoting_text() -> list[str]:
                     and isinstance(node.func.value, ast.Name)
                     and node.func.value.id in ("log", "logger")):
                 continue
-            for arg in node.args[1:]:
-                # heard["text"] is text; heard["seconds"] is not
-                if isinstance(arg, ast.Subscript):
-                    key = getattr(arg.slice, "value", None)
-                    word = key if isinstance(key, str) else None
-                else:
-                    word = (arg.id if isinstance(arg, ast.Name) else
-                            arg.attr if isinstance(arg, ast.Attribute)
-                            else None)
-                if word in TEXT_NAMES:
-                    found.append(f"{name}:{node.lineno} passes {word}")
+            words = sorted({w for arg in node.args
+                            for w in _words_reaching_a_log(arg)
+                            if w in TEXT_NAMES})
+            if words:
+                found.append(f"{name}:{node.lineno} passes {', '.join(words)}")
     return found
+
+
+def test_the_log_walk_sees_every_shape_of_a_quote():
+    """The walk behind test_app_log_never_quotes_text, held to the shapes
+    the 2026-09-23 audit found in app.log (a join of the learned pairs,
+    a proposed field, a sliced reply, a join over the changes, an
+    f-string) and to the shapes that are only numbers or names."""
+    quoting = {
+        "join": 'log.info("repaired %d: %s", len(applied), " | ".join(applied))',
+        "name": 'log.info("fixed the field: %s", proposed)',
+        "slice": 'log.warning("wanted: %s", candidate.strip()[:300])',
+        "method": 'log.info("was: %s", pasted.strip())',
+        "comp": 'log.info("%s", " | ".join(f"{c}" for c in changes))',
+        "fstring": 'log.info(f"heard {heard!r}")',
+        "key": 'log.info("%s", item["text"])',
+        "get": 'log.info("%s", item.get("text"))',
+        "either": 'log.info("%s", text or "(none)")',
+    }
+    for shape, code in quoting.items():
+        assert _log_calls_quoting_text({shape: code}), f"{shape} got past: {code}"
+    clean = {
+        "count": 'log.info("repaired %d", len(applied))',
+        "sum": 'log.info("%d", sum(len(p) for p in pairs))',
+        "attr": 'log.info("%s via %s", answer.target, answer.backend)',
+        "seconds": 'log.info("%.1f s", heard["seconds"])',
+        "flag": 'log.info("%s", ", with text" if text.strip() else "")',
+        "compare": 'log.info("%s", reply == "")',
+        "debug": 'log.debug("%s", text)',
+        "other": 'transcript_log.info("OK | %s", text)',
+    }
+    for shape, code in clean.items():
+        assert not _log_calls_quoting_text({shape: code}), f"{shape} flagged: {code}"
 
 
 def test_app_log_never_quotes_text():
@@ -32818,6 +33920,46 @@ def test_app_log_never_quotes_text():
         ssrc = inspect.getsource(server_mod)
         assert 'log.info("open this on the phone: %s", self.url)' not in ssrc
         assert "Local URL: %s" not in ssrc
+        # 5b. the 2026-09-23 audit's sites, driven: the learned-pair
+        # repair on every dictation (main._improve) and a rejected
+        # second-reading card (review._learn). Counts to app.log, the
+        # words to transcripts.log.
+        import types
+        app.cfg = types.SimpleNamespace(vocab=types.SimpleNamespace(enabled=True))
+        app.vocab = types.SimpleNamespace(
+            apply=lambda t: (t, [f"heard-{marker} -> meant-{marker}"]))
+        assert app._improve("some text", wait=False) == "some text"
+        engine = review_mod.Engine.__new__(review_mod.Engine)
+        engine._learn({"id": "r1", "status": review_mod.REJECTED, "by": "card",
+                       "changes": [{"before": "before-" + marker,
+                                    "after": "after-" + marker}]})
+        # ...and a repair reply the guard throws away (polish.py): it is
+        # the dictation near enough, so it is kept where words are kept
+        import dataclasses
+
+        import polish as polish_mod
+
+        class _Rewriter:
+            name = "rewriter"
+
+            def translate(self, text):
+                return f"an entirely different paragraph {marker} about other things"
+
+        pcfg = config_mod.load(REPO / "defaults.toml")
+        pcfg = dataclasses.replace(pcfg, polish=config_mod.PolishConfig(
+            when="always", min_chars=1, max_wait_s=5))
+        pol = polish_mod.Polisher(pcfg, _tmp_vocab())
+        pol._backends = lambda text: iter([_Rewriter()])
+        said = "תריץ את השרת בבקשה ותגיד לי מה קרה שם"
+        assert pol.polish(said) == (said, None)
+        assert any(l.startswith("polish REJECTED from rewriter") for l in app_lines), app_lines
+        assert any("POLISH-REJECTED | rewriter" in l and marker in l for l in tx_lines), tx_lines
+        assert any(l.startswith("repaired 1 learned") for l in app_lines), app_lines
+        assert any(l.startswith("review r1 rejected") for l in app_lines), app_lines
+        assert any("REPAIRED" in l and marker in l for l in tx_lines), tx_lines
+        assert any("REVIEW | rejected" in l and marker in l for l in tx_lines), tx_lines
+        assert not any(marker in l for l in app_lines), \
+            [l for l in app_lines if marker in l]
         # 6. and every other site, statically: no app-log call in a
         # product module hands a text-shaped variable to its format as
         # it is. len(text) is fine, text is not; the paste line quoted
@@ -32939,6 +34081,64 @@ def test_the_owners_transcripts_rotate_without_deleting():
             f"rollovers deleted records: {kept}"
 
 
+def test_keep_days_prunes_the_log_the_app_holds_open():
+    """Audit 2026-09-23, A8: main.setup_logging opens transcripts.log
+    with a RotatingFileHandler before keep_days is read, and on Windows
+    os.replace onto a file Python holds open fails — so an installed
+    copy never pruned, left transcripts.log.tmp (a second copy of the
+    text) beside it, and app.log still said the lines were dropped.
+    With the handler open exactly as main opens it: the old line goes,
+    no .tmp is left, the handler writes on into the pruned file — and a
+    replace that fails reports nothing dropped and leaves no .tmp."""
+    import logging
+    import logging.handlers
+    from datetime import datetime, timedelta
+
+    import history as history_mod
+
+    now = datetime.now()
+    old = (now - timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S")
+    new = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp, path = _log_with([
+        f"{old},000 | OK | 4.0s | local | 0.5s latency | old words",
+        f"{new},000 | OK | 4.0s | local | 0.5s latency | new words",
+    ])
+    logger = logging.getLogger("tests-transcripts-held-open")
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+    logger.addHandler(handler)
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    try:
+        assert handler.stream is not None, "the fixture must hold the file open"
+        with _patched(paths, "OWNER_DATA", False):
+            line = history_mod.apply(cfg, logger)
+        assert "(1 older line(s) dropped" in line, line
+        text = path.read_text("utf-8")
+        assert "old words" not in text and "new words" in text, text
+        assert not path.with_name(path.name + ".tmp").exists(), "a copy of the text was left beside the log"
+        logger.info("OK | 1.0s | local | 0.1s latency | after the prune")
+        handler.flush()
+        assert "after the prune" in path.read_text("utf-8"), "the handler did not take the log back"
+
+        # prune() alone, with the handler holding the file again, is the
+        # old road: the replace fails, and now it counts nothing and
+        # takes its .tmp with it.
+        path.write_text(f"{old},000 | OK | 4.0s | local | 0.5s latency | old again\n", "utf-8")
+        assert handler.stream is not None
+        dropped, removed = history_mod.prune(30)
+        assert (dropped, removed) == (0, 0), (dropped, removed)
+        assert "old again" in path.read_text("utf-8")
+        assert not path.with_name(path.name + ".tmp").exists(), "the failed prune left its .tmp"
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        history_mod.enabled = True
+        _restore_log(tmp)
+
+
 def test_reset_spares_the_owners_training_data():
     """--reset-data on the checkout's own data leaves transcripts.log,
     recent\ and corpus\ alone (the 72 read-aloud clips of 2026-09-13
@@ -32973,19 +34173,27 @@ def test_reset_spares_the_owners_training_data():
                 setattr(paths, name, value)
 
 
-# ------------------------------------------- the owner's surface, hidden
+# -------------------------------------------- the owner's surface, gone
 #
-# DISTRIBUTION_PLAN.md D15, PR 7: what only the checkout has — the git
-# block, the Saturday routine's questions and problems.md, the nightly
-# tests, the read-aloud corpus tool, the developer rows on Settings, the
-# three owner commands — is behind paths.DEVELOPER. On this checkout it
-# is all there; the test flips the flag and looks at a stranger's copy.
+# It was behind paths.DEVELOPER for a year (DISTRIBUTION_PLAN.md D15,
+# PR 7) and a flag is not the same promise: he tested a desk no user
+# had. MASTER.md §8 took each surface out of the product as the master
+# app grew one of its own — the Problems place and its git card, the
+# routine's questions and answer_card, the Stop-tests button, the
+# Read-aloud tab, and --benchmark/--study/--review. So this asks the
+# stronger thing: they are not in the product AT ALL, for anybody,
+# and what replaces each one is where it says it is.
+#
+# What STAYS is underneath and is not a surface: the portable layout,
+# OWNER_DATA, the .dev names, port 8757, autostart refusing in a
+# checkout, updates that look and never install.
 
-def test_a_strangers_copy_shows_no_owner_surface():
+def test_the_product_has_no_owner_surface_left():
     import inspect
 
     import dashboard as dash
     import main as main_mod
+    import overlay as overlay_mod
     import settings as settings_mod
 
     defaults = Path(__file__).resolve().parent / "defaults.toml"
@@ -33002,18 +34210,48 @@ def test_a_strangers_copy_shows_no_owner_surface():
     assert not hasattr(settings_mod, "developer_only")
     assert "Privacy" in settings_mod.tab_names()
 
-    with _patched(paths, "DEVELOPER", False):
-        assert [k for k, _n in dash.corr_tabs()] == ["words"]
-
-        class _Board:
-            _questions = staticmethod(lambda: object())
-            _questions_store = staticmethod(lambda: object())
-        assert dash.Dashboard._pending_questions(_Board()) == []
-        assert dash.Dashboard._nightly_running(_Board()) is False
-    assert [k for k, _n in dash.corr_tabs()] == ["words", "read"]
+    # the Corrections tabs are the words and nothing else, on every
+    # copy — the flag cannot bring the Read-aloud chip back
+    for flag in (True, False):
+        with _patched(paths, "DEVELOPER", flag):
+            assert [k for k, _n in dash.corr_tabs()] == ["words"], flag
+    # five places, and Problems is not one of them
+    assert "Problems" not in dash.SCREENS and "Problems" not in [
+        name for _key, name in dash.NAV], dash.SCREENS
+    # nothing of the Problems place, the questions or the git card is
+    # left on the window — not hidden, not guarded: absent
+    for gone in ("_screen_problems", "_fill_problems", "_poll_problems",
+                 "_waiting_problems", "_waiting_questions",
+                 "_pending_questions", "_questions_store",
+                 "_answer_question", "_nightly_running", "_stop_tests",
+                 "_scan_changes", "_changes_block", "_git_done",
+                 "_restart_all", "_write_digest"):
+        assert not hasattr(dash.Dashboard, gone), gone
+    for gone in ("local_changes", "push_main", "undo_main",
+                 "restart_app", "_git", "_nightly", "_answerable"):
+        assert not hasattr(dash, gone), gone
+    # ...nor of the question card in the app or on the overlay
+    assert not hasattr(overlay_mod, "AnswerCard")
+    for gone in ("_watch_questions", "_question_show", "_answer_box",
+                 "_shelf_question", "_questions_quiet"):
+        assert not hasattr(main_mod.App, gone), gone
+    assert not hasattr(main_mod, "_questions_mod")
+    # the three measuring commands are a dev tool, not a guarded flag
     src = inspect.getsource(main_mod.main)
-    assert "for the developer's checkout only" in src
-    assert src.index("not paths.DEVELOPER") < src.index("return benchmark(cfg)")
+    for word in ("--benchmark", "--study", "--review",
+                 "for the developer's checkout only"):
+        assert word not in src, word
+    assert not hasattr(main_mod, "benchmark")
+    measure = Path(__file__).resolve().parent / "dev" / "measure.py"
+    if measure.is_file():        # export-ignored, so not on a user's disk
+        words = measure.read_text("utf-8")
+        for word in ("--benchmark", "--study", "--review"):
+            assert word in words, word
+    # and what a person CAN still do about a problem: the key, the
+    # button and the card, with problems.py behind them
+    assert "report_hotkey" in [f for f, _label in config_mod.HOTKEY_FIELDS]
+    assert hasattr(dash.Dashboard, "_report")
+    assert hasattr(dash.Dashboard, "_report_preview")
 
 
 # ------------------------------------------------- one number (PR 9, D21)
@@ -34943,6 +36181,31 @@ def test_network_md_matches_net_py():
     assert "us.aws.cdn.hf.co" in page and "Offline" in page
 
 
+def test_diagnose_leaves_out_log_lines_that_hold_hebrew():
+    """The second belt behind D8 (2026-09-23 audit: 136 lines with Hebrew
+    in six days of the owner's app.log, and Copy diagnostics says "no
+    transcripts"): a line of app.log's tail that holds a Hebrew letter
+    or point is left out of the block, and the header says how many."""
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-diag-he-"))
+    try:
+        log_path = tmp / "app.log"
+        log_path.write_text("\n".join(
+            ["line 0", "repaired 1 learned mishearing(s): שלום -> שולם",
+             "line 2", "review: fixed the text in the field: בדיקה",
+             "pointed: ָ only", "line 5"]) + "\n", "utf-8")
+        with _patched(paths, "APP_LOG", log_path), _patched(paths, "LOGS_DIR", tmp):
+            block = problems_mod.diagnose()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    tail = block.split("--- app.log")[1]
+    assert not problems_mod.HEBREW.search(tail), tail
+    assert "last 6 lines (3 left out: they held Hebrew words) ---" in tail, tail
+    for kept in ("line 0", "line 2", "line 5"):
+        assert kept in tail.splitlines(), kept
+
+
 def test_diagnose_block_is_safe_to_paste():
     """--diagnose: the env whitelist, the backend, the model's and the
     packs' standing, the channel and the port, the tail of app.log — and
@@ -36195,6 +37458,58 @@ def test_the_extras_page_asks_before_taking_the_claude_door():
             assert (w._claude_state, w._claude_other) == ("mine", None)
             assert config_mod.read_settings(s).get("notify.enabled") in (None, True)
         finally:
+            try:
+                w.root.destroy()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_wizards_update_switch_turns_the_weekly_check_off():
+    """Audit 2026-09-23, A9: the extras page's 'Check for updates
+    weekly' went through privacy.withdraw, which takes only the seven
+    consent kinds and raised ValueError for the switch — swallowed at
+    INFO, so an unticked row left [privacy] update_check true and the
+    weekly GET the person declined still went out. Unticked and Next:
+    the line is in settings.toml, and this process's privacy.allowed
+    (what updates.py asks) says no before the app has started."""
+    import firstrun
+    import net as net_mod
+    import notify_hook
+    import privacy
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    gates, was_offline = dict(privacy._gates), net_mod.offline
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(notify_hook, "DEFAULT_SETTINGS", d / "claude-settings.json"):
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            privacy._gates["update_check"] = True
+            assert privacy.allowed("update_check")
+            w.page = firstrun.PAGES.index("extras")
+            w._show_page()
+            w.root.update()
+            assert w.switches["updates"].get() is True, "the shipped default is on"
+            w.switches["updates"].toggle()
+            assert w.extras["updates"] is False
+            w._next()
+            assert w.name == "done", "Next did not leave the extras page"
+            assert config_mod.read_settings(s).get("privacy.update_check") is False, \
+                config_mod.read_settings(s)
+            assert privacy.allowed("update_check") is False, \
+                "the unticked switch left the weekly check on"
+            assert config_mod.load_layered().privacy.update_check is False
+        finally:
+            privacy._gates.clear()
+            privacy._gates.update(gates)
+            net_mod.offline = was_offline
             try:
                 w.root.destroy()
             except Exception:                                # noqa: BLE001
@@ -38761,15 +40076,18 @@ def test_install_hook_names_an_interpreter_that_exists():
 # DISTRIBUTION_PLAN.md 7.5 and chapter 15: this file is the product suite
 # — run on GitHub's windows-latest by .github/workflows/ci.yml and on the
 # owner's hidden desktop by tests_quiet.py — and dev/tests_ops.py is the
-# owner's half (the nightly run, the git card, the routine's docs), run in
+# owner's half (the nightly run, the master, the routine's docs), run in
 # the checkout only. Two things have to stay true for that to hold: the
 # product must import without a single owner file, and the runner's list
 # of tests that need the real screen must be the list of tests that do.
 
 #: The owner's modules — the python half of 7.4's build manifest, D15. A
 #: product module may reach for one inside a function only the owner's
-#: surface calls (dashboard._nightly, main._questions_mod), never at
-#: import; this file imports none of them anywhere.
+#: surface calls, never at import; this file imports none of them
+#: anywhere. There is no such call left in the product since
+#: 2026-10-01 (MASTER.md §8) — questions.py and answer_card.py are in
+#: the tree and nothing reaches for them — and the list stays, because
+#: it is what the import test blocks.
 DEV_MODULES = ("nightly", "questions", "tests_quiet", "tests_ops", "inbox",
                "weekly_review", "dev_git", "answer_card", "versions")
 #: The tree's files that are not product modules. (versions.py is gone
@@ -39109,6 +40427,7 @@ class _fixture_project:
         import secretstore
         secretstore.delete("supabase_session")
         secretstore.delete("account_key")
+        secretstore.delete("account_key_aside")
         self.sb.forget_cache()
         self.sb._status.update(busy="", last_error="", last_sync="", signin_url="")
         self.sb._device_names.update(at=0.0, names={})       # the other PCs' names, believed 10 min
@@ -39523,7 +40842,8 @@ class _pc:
         self.home = Path(tempfile.mkdtemp(prefix=f"deskit-pc-{name}-"))
         self.state = {"sb": {"_cache": {"loaded": False, "session": None},
                              "_lock_state": {"at": 0.0, "state": "", "lock_id": "", "pairing": None,
-                                             "pending": [], "recovery": None, "error": ""},
+                                             "pending": [], "recovery": None, "error": "",
+                                             "changed": None},
                              "_device_names": {"at": 0.0, "names": {}},
                              "_seen_pairings": set(), "_pending": set()},
                       "vault": {"_applicants": {}}}
@@ -39628,8 +40948,9 @@ def test_vault_seals_hands_over_and_recovers_through_cng():
         # the recovery key
         recovery = vault.new_recovery()
         assert re.fullmatch(r"([0-9A-HJKMNP-TV-Z]{4}-){5}[0-9A-HJKMNP-TV-Z]{4}", recovery), recovery
-        code = vault.new_code()
-        assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}", code), code
+        assert not hasattr(vault, "new_code"), "a random pairing code is back"
+        code = vault.pairing_code(uid, "req-1", pub)
+        assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", code), code
         assert vault.normalize("0l1o-abcd", 8) == "0110ABCD" and vault.normalize("ABCD-EFG", 8) is None \
             and vault.normalize("ABCD-EFGU", 8) is None and vault.pretty("0110ABCD") == "0110-ABCD"
         raad = vault.AAD_RECOVERY.format(uid=uid)
@@ -39678,7 +40999,7 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
     the wire has `cipher` and no `text`; the words appear in no request)
     and its Credential Manager key as a sealed vault row. B signs in:
     its pass finds the lock taken, opens a request (a `pairings` row with
-    B's public key and an eight-character code), says "waiting", pushes
+    B's public key and a ten-character code computed from that key), says "waiting", pushes
     nothing of what was said, and still syncs its words and settings. A
     sees the request (once, through PAIRING_HOOKS, with B's name and the
     same code) and approves: the row gets the key wrapped to B's public
@@ -39747,12 +41068,13 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 assert out["history"] == "waiting for the lock" and out["vault"] == "waiting for the lock", out
                 assert out["settings"] in ("pulled", "pushed", "same"), out
                 lock = sb.status()["lock"]
-                assert lock["state"] == "waiting" and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}", lock["code"]), lock
+                assert lock["state"] == "waiting" and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", lock["code"]), lock
                 assert vault.key(fake.UID) is None
                 assert len(fake.tables["history"]) == 1, "B pushed while waiting"
                 req = fake.tables["pairings"][0]
-                assert req["device_name"] == "laptop" and req["code"] == lock["code"].replace("-", "") \
+                assert req["device_name"] == "laptop" and req["code"] == lock["code"].replace("-", "")[:8] \
                     and req["applicant"].startswith("p1.") and req.get("handed") is None, req
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"])
                 assert set(req) == {"id", "user_id", "device_id", "device_name", "code", "applicant", "updated_at"}
                 pairing = [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
                 assert len(pairing) == 1 and pairing[0]["messages"][0]["payload"]["code"] == lock["code"]
@@ -39849,7 +41171,9 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 assert out["history"] == "pulled 2, pushed 0" and sb.status()["lock"]["state"] == "have", out
                 assert fake.tables["pairings"] == []
 
-            # ---- A: a fingerprint that changed under it drops the key and asks
+            # ---- A: a fingerprint that changed under it KEEPS the key and
+            # pauses (it dropped it and asked to join until 2026-09-23 —
+            # the audit's A15; test_a_changed_lock_* has the whole story)
             with a:
                 fake.tables["profiles"][0]["lock_id"] = "0" * 16
                 # "the last look at the lock was longer ago than LOCK_TTL_S":
@@ -39859,17 +41183,365 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 # its key, state "have"); this PC has been up for hours
                 sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
                 out = sb.sync_now()
-                assert vault.key(fake.UID) is None and sb.status()["lock"]["state"] == "waiting", (out, sb.status()["lock"])
-                assert out["history"] == "waiting for the lock"
+                assert vault.key(fake.UID) == a_key and sb.status()["lock"]["state"] == "changed", (out, sb.status()["lock"])
+                assert out["history"] == "paused — the lock changed" and out["vault"] == "paused — the lock changed", out
+                assert fake.tables.get("pairings", []) == [], "A asked to join a lock it did not hold"
                 # delete my account forgets everything of the lock
                 fake.tables["profiles"][0]["lock_id"] = fp
-                vault.keep(fake.UID, a_key)
                 sb.delete_account()
                 assert vault.key(fake.UID) is None and sb.status()["lock"] == {
-                    "state": "", "id": "", "code": "", "pending": [], "recovery": None, "error": ""}
+                    "state": "", "id": "", "code": "", "pending": [], "recovery": None, "error": "",
+                    "changed": None}
     finally:
         for pc in (a, b, c):
             pc.gone()
+
+
+def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
+    """The code both screens show is the request's own (2026-09-23, the
+    audit's A35/A74 — it was random, so a copy of a real request with
+    another public key carried the real code and got the account key):
+    vault.pairing_code over the account, the request id and the
+    applicant's public key, ten characters of a slow hash. The same
+    inputs give the same code on both PCs; another key, another request
+    or another account gives another; the column holds an eight-character
+    hint that fits 0004's check and that the approver never reads.
+    Against the fake project: B asks; a twin with B's name and B's code
+    column but another key shows ANOTHER code on A; two open requests of
+    one PC are one entry with `twins`, no code and no knock, and
+    approving either is refused; a twin written after Home showed the
+    real one is caught at the approval; a row written again under the
+    shown id with another key is refused; the real one alone is
+    approved, and B takes the key."""
+    import sb
+    import secretstore
+    import vault
+
+    uid = _FakeSupabase.UID
+    pub1, pub2 = vault.applicant("code-1"), vault.applicant("code-2")
+    try:
+        c1 = vault.pairing_code(uid, "code-1", pub1)
+        assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", c1), c1
+        vault._codes.clear()
+        t0 = time.perf_counter()
+        assert vault.pairing_code(uid, "code-1", pub1) == c1, "the approver computes another code"
+        assert time.perf_counter() - t0 < 2.0, "the code's hash is too slow for a poll"
+        assert vault.CODE_ROUNDS >= 2 ** 17 and 5 * vault.CODE_CHARS >= 50, "the code got cheap to grind"
+        assert vault.pairing_code(uid, "code-1", pub2) != c1, "another key, the same code"
+        assert vault.pairing_code(uid, "code-2", pub1) != c1, "another request, the same code"
+        assert vault.pairing_code("another-uid", "code-1", pub1) != c1
+        hint = vault.code_hint(c1)
+        assert hint == c1.replace("-", "")[:8] and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{8}", hint), hint
+        sql = (REPO / "supabase" / "migrations" / "0004_account_lock.sql").read_text("utf-8")
+        assert "code ~ '^[0-9A-HJKMNP-TV-Z]{8}$'" in sql, "the column's check moved: the hint must follow it"
+        try:
+            vault.pairing_code(uid, "code-3", "p1.AAAA")
+        except vault.VaultError:
+            pass
+        else:
+            raise AssertionError("a code for something that is not a public key")
+    finally:
+        vault.drop("code-1")
+        vault.drop("code-2")
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    asked: list[dict] = []
+    twin_pub = vault.applicant("twin")                      # somebody else's key
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "PAIRING_HOOKS", [asked.append]):
+            session = json.dumps(fake.session("p@example.com"))
+
+            def sign_in(name):
+                secretstore.set("supabase_session", session)
+                sb.forget_cache()
+                config_mod.save({"account.device_name": name})
+
+            with a:
+                sign_in("desk")
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "have"
+            with b:
+                sign_in("laptop")
+                sb.sync_now()
+                b_code = sb.status()["lock"]["code"]
+                real = dict(fake.tables["pairings"][0])
+            assert real["code"] == vault.code_hint(b_code)
+            # the copy: the name and the code column B wrote, another key
+            twin = dict(real, id="99999999-0000-0000-0000-000000000001",
+                        device_id="somebody-else", applicant=twin_pub)
+            fake.tables["pairings"].append(twin)
+            with a:
+                shown = {p["id"]: p for p in sb.pending_pairings()}
+                assert shown[real["id"]]["code"] == b_code, "A shows another code than B"
+                assert shown[twin["id"]]["code"] and shown[twin["id"]]["code"] != b_code, \
+                    "the copy shows the real request's code"
+                # the same PC twice: one entry, no code, no knock, no approval
+                fake.tables["pairings"].remove(twin)
+                twin["device_id"] = real["device_id"]
+                fake.tables["pairings"].append(twin)
+                asked.clear()
+                sb._seen_pairings.clear()               # as if it were new: still no knock
+                pending = sb.pending_pairings()
+                assert len(pending) == 1 and pending[0]["twins"] == 2 and pending[0]["code"] == "", pending
+                assert sb.status()["lock"]["pending"][0]["twins"] == 2
+                assert asked == [], "a knock for a request nobody can approve"
+                for pid in (real["id"], twin["id"]):
+                    try:
+                        sb.approve_pairing(pid)
+                    except sb.AccountError as e:
+                        assert "Home" in str(e), str(e)
+                    else:
+                        raise AssertionError("one of two twins was approved")
+                assert all(r.get("handed") is None for r in fake.tables["pairings"])
+                # Home shows the real one alone; a twin arrives after: caught at the press
+                fake.tables["pairings"].remove(twin)
+                assert [(p["id"], p["code"]) for p in sb.pending_pairings()] == [(real["id"], b_code)]
+                fake.tables["pairings"].append(twin)
+                try:
+                    sb.approve_pairing(real["id"])
+                except sb.AccountError as e:
+                    assert "neither" in str(e), str(e)
+                else:
+                    raise AssertionError("approved while a twin waited")
+                fake.tables["pairings"].remove(twin)
+                # the shown row, written again under its id with another key
+                row = next(r for r in fake.tables["pairings"] if r["id"] == real["id"])
+                row["applicant"] = twin_pub
+                try:
+                    sb.approve_pairing(real["id"])
+                except sb.AccountError as e:
+                    assert "changed after Home showed it" in str(e), str(e)
+                else:
+                    raise AssertionError("approved a request whose key changed after it was shown")
+                assert row.get("handed") is None
+                row["applicant"] = real["applicant"]
+                assert sb.approve_pairing(real["id"]) == "laptop"
+            with b:
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "have", sb.status()["lock"]
+    finally:
+        vault.drop("twin")
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him():
+    """The PC is the lock's trust anchor, not the server (2026-09-23, the
+    audit's A15: one write of profiles.lock_id made every PC delete its
+    key, take the next key handed to it and push everything again under
+    it). Now: the profile names another lock -> this PC KEEPS its key
+    (the same bytes, the file still there), the lock is "changed" with
+    both fingerprints, history and the cloud keys say "paused — the lock
+    changed" and touch neither table in either direction, no request to
+    join is made (so there is nothing to hand a key to), and this PC
+    approves nobody. A restart asks again. [It wasn't me]: nothing moves,
+    the refusal survives a restart; [Put my lock back] writes this PC's
+    fingerprint over the one the server was given and the stores resume.
+    Another change, [It was me]: the key is MOVED ASIDE (never deleted),
+    this PC asks to join with a code computed from its key; a key handed
+    over for another lock is refused; the confirmed lock's key is taken.
+    Delete my account forgets the key and what was set aside."""
+    import sb
+    import secretstore
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), a:
+            uid = fake.UID
+            a.log.write_text("2026-09-23 10:00:00,100 | OK | 1.0s | local | 0.4s latency | המילה הראשונה\n", "utf-8")
+            secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+            sb.forget_cache()
+            config_mod.save({"account.device_name": "desk"})
+            for n in secretstore.CRED_NAMES:
+                secretstore.delete(n)
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 1", out
+            a_key = vault.key(uid)
+            fp = vault.fingerprint(a_key)
+
+            def stale():
+                # "the last look was longer ago than LOCK_TTL_S" — see the
+                # three-PC test for why this is not 0.0
+                sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
+
+            # ---- the attack: the profile is given another lock
+            attacker = os.urandom(32)
+            fake.tables["profiles"][0]["lock_id"] = vault.fingerprint(attacker)
+            stale()
+            with a.log.open("a", encoding="utf-8") as f:
+                f.write("2026-09-23 10:01:00,100 | OK | 1.0s | local | 0.4s latency | המילה השנייה\n")
+            calls = len(fake.calls)
+            sb._lock_state["pending"] = [{"id": "req-9", "name": "laptop", "code": "7K2MQ-X9D4H", "created_at": ""}]
+            out = sb.sync_now()
+            assert vault.key(uid) == a_key, "the server's word took this PC's key"
+            assert sb.status()["lock"]["pending"] == [], "an Approve stayed up under a lock this PC does not trust"
+            assert (paths.SECRETS_DIR / "account_key.bin").is_file()
+            lock = sb.status()["lock"]
+            assert lock["state"] == "changed" and lock["changed"] == {
+                "server": vault.fingerprint(attacker)[:8], "mine": fp[:8], "refused": False}, lock
+            assert out["history"] == "paused — the lock changed" and out["vault"] == "paused — the lock changed", out
+            touched = {c["path"] for c in fake.calls[calls:]}
+            assert not touched & {"rest/v1/history", "rest/v1/vault", "rest/v1/pairings"}, touched
+            assert out["settings"] in ("pulled", "pushed", "same"), "the words and settings stopped too"
+            assert len(fake.tables["history"]) == 1, "pushed while the lock was changed"
+            assert sb.pending_pairings() == []
+            try:
+                sb.approve_pairing("00000000-0000-0000-0000-000000000000")
+            except sb.AccountError as e:
+                assert "does not hold" in str(e), str(e)
+            else:
+                raise AssertionError("approved while the lock was changed")
+            try:
+                sb.recover(vault.new_recovery())
+            except sb.AccountError as e:
+                assert "Home" in str(e), str(e)
+            else:
+                raise AssertionError("recovered while the lock was changed")
+            # a restart asks again, and nothing moved
+            sb._forget_lock_state()
+            sb.sync_now()
+            assert sb.status()["lock"]["state"] == "changed" and vault.key(uid) == a_key
+
+            # ---- [It wasn't me]: kept, paused, remembered
+            assert sb.lock_answer(False) == "kept"
+            assert vault.key(uid) == a_key and vault.refused(uid) == vault.fingerprint(attacker)
+            assert sb.status()["lock"]["changed"]["refused"] is True
+            sb._forget_lock_state()
+            out = sb.sync_now()
+            assert sb.status()["lock"]["changed"]["refused"] is True, "the refusal was forgotten on a restart"
+            assert out["history"] == "paused — the lock changed", out
+            # ---- [Put my lock back]
+            assert sb.restore_lock() == fp
+            assert fake.tables["profiles"][0]["lock_id"] == fp and vault.refused(uid) == ""
+            lock = sb.status()["lock"]
+            assert lock["state"] == "have" and lock["changed"] is None, lock
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 1", out
+            try:
+                sb.restore_lock()
+            except sb.AccountError:
+                pass
+            else:
+                raise AssertionError("put a lock back that was never refused")
+
+            # ---- another change, and this time it was him
+            other = os.urandom(32)
+            fake.tables["profiles"][0]["lock_id"] = vault.fingerprint(other)
+            stale()
+            sb.sync_now()
+            assert sb.status()["lock"]["state"] == "changed"
+            assert sb.lock_answer(True) == "asked"
+            assert vault.key(uid) is None and vault.aside(uid) == [fp], vault.aside(uid)
+            assert (paths.SECRETS_DIR / "account_key_aside.bin").is_file()
+            assert a_key not in (paths.SECRETS_DIR / "account_key_aside.bin").read_bytes(), "the key set aside is not DPAPI"
+            assert vault.confirmed(uid) == vault.fingerprint(other)
+            lock = sb.status()["lock"]
+            req = fake.tables["pairings"][-1]
+            assert lock["state"] == "waiting" and lock["code"] == vault.pairing_code(uid, req["id"], req["applicant"]), lock
+            # a key handed over for ANOTHER lock than the one he confirmed: refused
+            req["handed"] = vault.hand_over(attacker, req["applicant"],
+                                            vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"]))
+            sb.sync_now()
+            assert vault.key(uid) is None and sb.status()["lock"]["state"] == "waiting"
+            assert all(r["id"] != req["id"] for r in fake.tables["pairings"]), "the refused hand-over stayed"
+            # the confirmed lock's key: taken
+            req = fake.tables["pairings"][-1]
+            req["handed"] = vault.hand_over(other, req["applicant"],
+                                            vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"]))
+            sb.sync_now()
+            assert vault.key(uid) == other and sb.status()["lock"]["state"] == "have"
+            assert vault.aside(uid) == [fp], "the old key did not stay set aside"
+            # ---- Delete my account: the key and what was set aside go
+            sb.delete_account()
+            assert vault.key(uid) is None and vault.aside(uid) == [] and vault.confirmed(uid) is None
+            assert not (paths.SECRETS_DIR / "account_key_aside.bin").exists()
+    finally:
+        a.gone()
+
+
+def test_a_changed_lock_is_a_row_on_home_and_one_knock():
+    """The desk's side of a changed lock (2026-09-23): a ROW on Home's
+    pile, never a card that asks by itself (the owner's rule) — "The lock
+    of your account changed — not on this PC. Was it you?" with [It
+    wasn't me] / [It was me] sending `account` `lock_answer` no / yes;
+    after the refusal, [Put my lock back] (`lock_restore`) and [Sign
+    out], which only goes to Settings > Account. Two requests from one
+    PC are a row with [Not now] and no Approve. No recovery-key row while
+    the lock is changed. The app knocks ONCE per changed lock through its
+    own notification door (source `account`, the desk link) and takes it
+    down once he answered; the pipe verb wants yes or no."""
+    import dashboard
+    import notify as notify_mod
+    import sb
+
+    board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    board.running = True
+    account = {"signed_in": True, "lock": {}}
+    board.status = {"account": account}
+    sent: list = []
+    board._lock_do = lambda do, said, **args: sent.append((do, args))
+    changed = {"state": "changed", "id": "d8de920c", "code": "", "pending": [], "recovery": False,
+               "error": "", "changed": {"server": "00ff00ff", "mine": "d8de920c", "refused": False}}
+    account["lock"] = json.loads(json.dumps(changed))
+    rows = board._waiting_lock()
+    assert len(rows) == 1, rows
+    assert "lock of your account changed" in rows[0]["text"] and "Was it you?" in rows[0]["text"]
+    assert [b[0] for b in rows[0]["buttons"]] == ["It wasn't me", "It was me"]
+    for label, tone, press in rows[0]["buttons"]:
+        press()
+    assert sent == [("lock_answer", {"kind": "no"}), ("lock_answer", {"kind": "yes"})], sent
+    account["lock"]["changed"]["refused"] = True
+    rows = board._waiting_lock()
+    assert len(rows) == 1 and rows[0]["text"].startswith("Not you"), rows
+    assert [b[0] for b in rows[0]["buttons"]] == ["Put my lock back", "Sign out"]
+    rows[0]["buttons"][0][2]()
+    assert sent[-1] == ("lock_restore", {})
+    assert rows[0]["buttons"][1][2] == board._lock_go_account, "Sign out does more than show the way"
+    account["lock"]["changed"]["mine"] = ""        # its key was set aside already: nothing to put back
+    assert [b[0] for b in board._waiting_lock()[0]["buttons"]] == ["Sign out"]
+    account["lock"] = {"state": "have", "id": "d8de920c", "code": "", "recovery": True, "error": "",
+                       "changed": None,
+                       "pending": [{"id": "req-9", "name": "laptop", "code": "", "twins": 2, "created_at": ""}]}
+    rows = board._waiting_lock()
+    assert len(rows) == 1 and rows[0]["text"].startswith("Two requests say they are laptop"), rows
+    assert [b[0] for b in rows[0]["buttons"]] == ["Not now"], "a twin can be approved"
+    rows[0]["buttons"][0][2]()
+    assert sent[-1] == ("decline", {"kind": "req-9"})
+
+    # the app: one knock per changed lock, down once answered
+    main_mod = __import__("main")
+    app = main_mod.App.__new__(main_mod.App)
+    said: list[str] = []
+    app._say = said.append
+    received: list = []
+    dismissed: list = []
+
+    class Engine:
+        def receive(self, payload, **kw):
+            received.append(notify_mod.clean(payload))
+            return {"ok": True}
+
+        def dismiss_source(self, source, **kw):
+            dismissed.append(source)
+            return 1
+    app.notify = Engine()
+    lock = json.loads(json.dumps(changed))
+    with _patched(sb, "lock_status", lambda: lock):
+        app._pairing_settled()
+        app._pairing_settled()
+        assert len(received) == 1 and dismissed == [], (received, dismissed)
+        note = received[0]
+        assert note["source"] == "account" and note["title"] == "The lock of your account changed"
+        assert note["link"] == notify_mod.DESK_LINK and "was it you" in note["body"].lower()
+        assert said and "Home" in said[-1]
+        lock["changed"]["refused"] = True
+        app._pairing_settled()
+        assert len(received) == 1 and dismissed == ["account"]
+    with _patched(sb, "configured", lambda: True):
+        reply = app._account_command("lock_answer", kind="maybe")
+        assert not reply["ok"] and "yes or no" in reply["error"], reply
 
 
 def test_sb_imports_are_narrow():
@@ -40018,9 +41690,9 @@ def test_the_sync_follows_the_account():
             privacy.grant("history_sync", "deskit-terms-0+en-2020-01-01")
         migrations._the_lock_asks_nothing_new()                  # another old version: not carried
         assert privacy.consent("history_sync") is None
-        assert [n for n, _fn in migrations.STEPS] == [2, 3, 4]
+        assert [n for n, _fn in migrations.STEPS] == [2, 3, 4, 5]
         import version
-        assert version.CONFIG_VERSION == 4
+        assert version.CONFIG_VERSION == 5
         for kind in privacy.SYNC_KINDS:
             words = " ".join(t for _l, t in cc.card_for(kind)["blocks"]).lower()
             assert "technically" not in words and "cannot" in words, (kind, words)
@@ -40033,6 +41705,82 @@ def test_the_sync_follows_the_account():
         policy = " ".join((REPO / "docs" / "privacy.md").read_text("utf-8").split())
         assert "Both come with the account" in policy and "Withdraw" in policy
         assert "the two sync consents" in policy, "the policy does not say the press grants both"
+    finally:
+        for kind in all_three:
+            privacy.withdraw(kind)
+
+
+def test_the_account_words_say_what_the_sign_in_press_turns_on():
+    """The sign-in press grants the account AND both syncs
+    (privacy.sign_in_grants), and the syncs store what was said and the
+    cloud keys in the account, sealed (sb._sync_history, sb._sync_vault).
+    Until 2026-09-23 every surface that meets a person before or around
+    that press said the opposite — "Never stored: your voice, what you
+    said, your keys" above the button, "your keys never travel there" on
+    the account card, "Every sync stays off until you turn it on" on the
+    desk's landing, "never sent to the developer" beside the key field,
+    "no column that could hold a key" on NETWORK.md. The owner kept the
+    syncs on (2026-09-20) and had the words fixed: only the voice stays,
+    the rest is kept in the account, what was said and the keys locked.
+    The account card's words changed, so its version bumped — and a row
+    given under the old words is carried forward (nothing new leaves
+    under that gate), by migration step 5 and, for a copy old enough to
+    run step 2 first, by step 2 before it reads the row."""
+    import consent_card as cc
+    import dashboard as dash
+    import firstrun
+    import migrations
+    import privacy
+    import secretstore
+
+    assert set(privacy.SYNC_KINDS) == {"settings_sync", "history_sync"}
+    shown = {"account.never": firstrun.WORDS["account.never"],
+             "account.never.signin": firstrun.WORDS["account.never.signin"],
+             "landing": dash.Dashboard.LANDING_STORED}
+    for where, words in shown.items():
+        low = words.lower()
+        assert "never stored" not in low and "stays off" not in low, (where, words)
+        assert "only your voice never leaves this pc" in low, (where, words)
+        for must in ("what you said", "cloud keys", "learned words", "settings",
+                     "locked with a key only your own pcs hold"):
+            assert must in low, (where, must)
+        assert "turns this off" in low or "turn this off" in low, (where, words)
+    card = " ".join(t for _l, t in cc.card_for("account")["blocks"]).lower()
+    assert "never travel" not in card and "no column" not in card, card
+    assert "cloud keys" in card and "what you said" in card and "locked" in card, card
+    assert cc.card_for("account")["text_version"] == privacy.TEXT_VERSIONS["account"]
+    old = "deskit-terms-0+en-2026-09-19"
+    assert old != privacy.TEXT_VERSIONS["account"] and old in privacy.CARRIED_FORWARD["account"]
+    for name in secretstore.KEY_HOSTS:
+        sentence = secretstore.storage_sentence(name)
+        assert "never sent to the developer" not in sentence, sentence
+        assert "your account" in sentence and "only your own PCs hold" in sentence, sentence
+        assert f"as it is only to {secretstore.KEY_HOSTS[name]}" in sentence, sentence
+    page = (REPO / "NETWORK.md").read_text("utf-8")
+    assert "no column that could hold a" not in page
+    assert "- A key to any host but the one provider" not in page
+
+    # the carry: a row under the old words reads stale, step 5 makes it
+    # current with the date it was given; step 2 does it before it reads
+    assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+    all_three = ("account",) + privacy.SYNC_KINDS
+    for kind in all_three:
+        privacy.withdraw(kind)
+    try:
+        with _patched(privacy, "TEXT_VERSIONS", {**privacy.TEXT_VERSIONS, "account": old}):
+            privacy.grant("account", old)
+            given = privacy.consent("account")["when"]
+        assert privacy.consent("account") is None, "the old row is not stale"
+        migrations._the_account_words_ask_nothing_new()
+        row = privacy.consent("account")
+        assert row is not None and row["carried_from"] == old and row["when"] == given, row
+        assert (5, migrations._the_account_words_ask_nothing_new) in migrations.STEPS
+        privacy.withdraw("account")
+        with _patched(privacy, "TEXT_VERSIONS", {**privacy.TEXT_VERSIONS, "account": old}):
+            privacy.grant("account", old)
+        migrations._sync_follows_the_account()
+        assert privacy.consent("account") is not None
+        assert privacy.consent("settings_sync") is not None, "step 2 read the old row as signed out"
     finally:
         for kind in all_three:
             privacy.withdraw(kind)
@@ -40294,6 +42042,111 @@ def test_sync_vocab_merges_as_a_union_with_tombstones():
     push = sync_mod.vocab_changed(sync_mod.vocab_rows(later, snapshot), snapshot)
     assert [(r["heard"], r["hits"], r["deleted"]) for r in push] == \
         [("brinth", 2, False), ("cowork", 0, True)], push
+
+
+def test_the_sync_deletes_only_the_words_this_pc_forgot():
+    """Audit 2026-09-23, A7: a word missing from vocab.json is a
+    tombstone for every PC of the account, so a damaged file used to
+    delete the whole list everywhere 30 s after start. Three roads now:
+    a store that could not be read pulls the account's whole list back
+    and sends nothing; a list that lost most of the snapshot without a
+    forget on this PC holds those tombstones back and pulls everything
+    on the next pass, which puts the words back; and words this PC's
+    forget() took out still leave, however many, and their record ends
+    once the account has them."""
+    import sb
+    import sync as sync_mod
+
+    server: dict[str, dict] = {}
+    calls: list[tuple] = []
+    clock = [0]
+
+    def fake_rest(method, table, *, purpose, query="", payload=None, prefer=""):
+        assert table == "vocab_sync" and purpose == "sync"
+        calls.append((method, query, payload))
+        if method == "GET":
+            m = re.search(r"updated_at=gt\.([^&]+)", query)
+            since = urllib_parse.unquote(m.group(1)) if m else ""
+            rows = sorted((dict(r) for r in server.values() if r["updated_at"] > since),
+                          key=lambda r: r["updated_at"])
+            return 200, rows
+        out = []
+        for row in payload:
+            clock[0] += 1
+            stored = dict(row, updated_at=f"2026-09-23T00:00:{clock[0]:02d}+00:00")
+            stored.pop("user_id", None)
+            server[row["heard"]] = stored
+            out.append(stored)
+        return 201, out
+
+    words = [{"heard": f"garble{i}", "meant": f"Word{i}", "hits": 2,
+              "last": "2026-09-20 10:00:00"} for i in range(5)]
+    for i, e in enumerate(words):
+        server[e["heard"]] = {"heard": e["heard"], "meant": e["meant"], "hits": 2,
+                              "last_used": "2026-09-20T07:00:00+00:00", "deleted": False,
+                              "updated_at": f"2026-09-20T00:00:0{i}+00:00"}
+
+    def synced_cursor():
+        return {"vocab_pulled_at": "2026-09-20T00:00:04+00:00",
+                "vocab_snapshot": sync_mod.vocab_snapshot(words)}
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-vocab-guard-"))
+    try:
+        with _patched(sb, "_rest", fake_rest), \
+                _patched(sb, "_fresh", lambda: {"user": {"id": "u"}}):
+            # 1. unreadable at start, no copy: the whole list comes back
+            (d / "vocab.json").write_text('{"version": 1, "corrections": [{"he', "utf-8")
+            v = vocab_mod.Vocab(d / "vocab.json")
+            assert v.broken and v.corrections == []
+            cursor = synced_cursor()
+            out = sb._sync_vocab(cursor, v)
+            assert [c[0] for c in calls] == ["GET"], "a broken store sent something"
+            assert "updated_at=gt." not in calls[0][1], "the pull did not start from the beginning"
+            assert out == "pulled 5, pushed 0", out
+            assert sorted(c["heard"] for c in v.corrections) == [e["heard"] for e in words]
+            assert v.broken is None and all(not r["deleted"] for r in server.values())
+            assert len(json.loads((d / "vocab.json").read_text("utf-8"))["corrections"]) == 5
+
+            # 2. a list that lost most words with no forget here (a file an
+            #    older build damaged, restored from an old copy, a hand edit)
+            calls.clear()
+            (d / "two.json").write_text(json.dumps(
+                {"version": 1, "corrections": words[:1]}), "utf-8")
+            v2 = vocab_mod.Vocab(d / "two.json")
+            assert v2.broken is None
+            cursor = synced_cursor()
+            out = sb._sync_vocab(cursor, v2)
+            assert out.endswith("held back 4"), out
+            assert not any(r.get("deleted") for m, _q, p in calls if m == "POST" for r in p), \
+                "a word nobody forgot was deleted from the account"
+            assert all(not r["deleted"] for r in server.values())
+            assert cursor["vocab_pulled_at"] == "", "the next pass does not pull everything"
+            sb._sync_vocab(cursor, v2)
+            assert sorted(c["heard"] for c in v2.corrections) == [e["heard"] for e in words], \
+                "the held words did not come back"
+
+            # 3. forget() on this PC: the tombstones leave, most of the list or not
+            calls.clear()
+            (d / "three.json").write_text(json.dumps(
+                {"version": 1, "corrections": [dict(e) for e in words]}), "utf-8")
+            v3 = vocab_mod.Vocab(d / "three.json")
+            for i in range(3):
+                assert v3.forget(f"garble{i}")
+            cursor = synced_cursor()
+            out = sb._sync_vocab(cursor, v3)
+            assert out == "pulled 0, pushed 3", out
+            assert sorted(k for k, r in server.items() if r["deleted"]) == \
+                ["garble0", "garble1", "garble2"]
+            assert v3.forgotten_keys() == set(), "the record outlived the push"
+
+            # 4. the other PC's tombstones are not echoed back as this PC's
+            calls.clear()
+            out = sb._sync_vocab(synced_cursor(), v2)
+            assert "held back" not in out, out
+            assert sorted(c["heard"] for c in v2.corrections) == ["garble3", "garble4"]
+            assert not any(m == "POST" for m, _q, _p in calls), calls
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_sync_history_rows_and_remote_lines_round_trip():
