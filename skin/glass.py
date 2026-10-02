@@ -86,6 +86,15 @@ _user32.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint,
 # someone else's machine after a long uptime.
 _user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 _user32.GetWindowRect.restype = ctypes.c_bool
+_user32.SetCapture.argtypes = [ctypes.c_void_p]
+_user32.SetCapture.restype = ctypes.c_void_p
+_user32.ReleaseCapture.argtypes = []
+_user32.ReleaseCapture.restype = ctypes.c_bool
+_user32.GetCursorPos.argtypes = [ctypes.c_void_p]
+_user32.GetCursorPos.restype = ctypes.c_bool
+_user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+_user32.GetAsyncKeyState.restype = ctypes.c_short
+_user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 _gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
 _gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
 _gdi32.CreateDIBSection.restype = ctypes.c_void_p
@@ -116,12 +125,20 @@ ERROR_CLASS_ALREADY_EXISTS = 1410
 # one: it hands the click to whatever is underneath, which is how a window
 # can be draggable by one strip and click-through everywhere else.
 WM_NCHITTEST = 0x0084
+WM_NCLBUTTONDOWN = 0x00A1
 WM_NCLBUTTONUP = 0x00A2
 WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+WM_CAPTURECHANGED = 0x0215
 WM_EXITSIZEMOVE = 0x0232
 HTTRANSPARENT = -1
 HTCLIENT = 1
 HTCAPTION = 2
+# The size grip's answer. Windows shows the diagonal resize cursor over it
+# by itself; the PRESS is taken here (`gripped`) and never reaches
+# DefWindowProc, whose modal sizing loop would resize a layered window
+# behind the picture's back and block this thread's pump while it did.
+HTBOTTOMRIGHT = 17
 
 
 class _BITMAPINFOHEADER(ctypes.Structure):
@@ -196,6 +213,22 @@ def _proc(hwnd, msg, wparam, lparam):
                 y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
                 glass.clicked(x, y)        # already window-relative here
                 return 0
+            if (msg == WM_NCLBUTTONDOWN and wparam == HTBOTTOMRIGHT
+                    and glass.gripped):
+                # screen coordinates here, like WM_NCHITTEST's. Capture
+                # keeps the mouse (and the resize cursor) with this window
+                # until the button comes up, wherever the pointer goes.
+                x = ctypes.c_short(lparam & 0xFFFF).value
+                y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                glass.gripping = True
+                _user32.SetCapture(hwnd)
+                glass.gripped(x, y)
+                return 0
+            if glass.gripping and msg in (WM_LBUTTONUP, WM_CAPTURECHANGED):
+                glass.gripping = False
+                if msg == WM_LBUTTONUP:
+                    _user32.ReleaseCapture()
+                return 0
             if msg in (WM_EXITSIZEMOVE, WM_NCLBUTTONUP) and glass.moved:
                 glass.moved()
     except Exception:
@@ -264,6 +297,22 @@ def wants_motion() -> bool:
     return True
 
 
+def cursor() -> tuple[int, int]:
+    """Where the pointer is, in screen pixels."""
+    pt = _POINT()
+    if _user32.GetCursorPos(ctypes.byref(pt)):
+        return int(pt.x), int(pt.y)
+    return 0, 0
+
+
+def primary_button_down() -> bool:
+    """Is the PRIMARY mouse button held? GetAsyncKeyState reads the
+    physical button, so a mouse with its buttons swapped is asked for the
+    right one (SM_SWAPBUTTON)."""
+    vk = 0x02 if _user32.GetSystemMetrics(23) else 0x01
+    return bool(_user32.GetAsyncKeyState(vk) & 0x8000)
+
+
 class Glass:
     """A topmost, click-through, never-focusable layer that Skia paints.
 
@@ -272,7 +321,8 @@ class Glass:
     """
 
     def __init__(self, x: int, y: int, width: int, height: int,
-                 gpu: bool = True, hit=None, moved=None, clicked=None) -> None:
+                 gpu: bool = True, hit=None, moved=None, clicked=None,
+                 gripped=None) -> None:
         # Deferred (see skin/__init__), and OPTIONAL since 2026-09-19: a
         # fresh install has no skia — it is the skin pack, a download —
         # and the dot, the boot card and the hint card paint with Pillow
@@ -293,6 +343,10 @@ class Glass:
         self.hit = hit
         self.moved = moved               # called after a drag finishes
         self.clicked = clicked           # called for a click on HTCLIENT
+        # called (screen x, y) for a press on HTBOTTOMRIGHT; `gripping`
+        # stays True, with the mouse captured, until the button comes up
+        self.gripped = gripped
+        self.gripping = False
         self.hwnd = None
         self.dc = None
         self._bitmap = None
@@ -317,34 +371,18 @@ class Glass:
         # Registered AFTER the handle exists and removed in close(), so a
         # message arriving on a half-built or half-dead window finds
         # nothing and falls through to DefWindowProc.
-        if hit is not None or moved is not None or clicked is not None:
+        if (hit is not None or moved is not None or clicked is not None
+                or gripped is not None):
             _live[int(self.hwnd)] = self
 
         screen = _user32.GetDC(None)
         try:
             self.dc = _gdi32.CreateCompatibleDC(screen)
-            info = _BITMAPINFO()
-            info.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-            info.bmiHeader.biWidth = self.width
-            info.bmiHeader.biHeight = -self.height       # top-down rows
-            info.bmiHeader.biPlanes = 1
-            info.bmiHeader.biBitCount = 32
-            info.bmiHeader.biCompression = 0             # BI_RGB
-            bits = ctypes.c_void_p()
-            self._bitmap = _gdi32.CreateDIBSection(
-                self.dc, ctypes.byref(info), 0, ctypes.byref(bits), None, 0)
-            if not self._bitmap:
-                raise ctypes.WinError(ctypes.get_last_error())
-            self._old = _gdi32.SelectObject(self.dc, self._bitmap)
         finally:
             _user32.ReleaseDC(None, screen)
-
-        nbytes = self.width * self.height * 4
-        self._buf = (ctypes.c_char * nbytes).from_address(bits.value)
-        self._view = memoryview(self._buf)
+        self._dib()
         self._src = _POINT(0, 0)
         self._dst = _POINT(self.x, self.y)
-        self._size = _SIZE(self.width, self.height)
         self._blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
         if skia is None:
             return                        # a window for present() alone
@@ -385,6 +423,67 @@ class Glass:
         if self.surface is None:
             raise RuntimeError("Skia would not wrap the layered window's DIB")
         self.canvas = self.surface.getCanvas()
+
+    def _dib(self) -> None:
+        """The 32-bit top-down DIB the layered window is handed, at the
+        window's current size, selected into its DC."""
+        info = _BITMAPINFO()
+        info.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        info.bmiHeader.biWidth = self.width
+        info.bmiHeader.biHeight = -self.height       # top-down rows
+        info.bmiHeader.biPlanes = 1
+        info.bmiHeader.biBitCount = 32
+        info.bmiHeader.biCompression = 0             # BI_RGB
+        bits = ctypes.c_void_p()
+        bitmap = _gdi32.CreateDIBSection(
+            self.dc, ctypes.byref(info), 0, ctypes.byref(bits), None, 0)
+        if not bitmap:
+            raise ctypes.WinError(ctypes.get_last_error())
+        old = _gdi32.SelectObject(self.dc, bitmap)
+        if self._bitmap:
+            # a resize: the DC already had the first DIB in it, and `old`
+            # is that one — the DC's own stock bitmap stays in `_old`
+            _gdi32.DeleteObject(self._bitmap)
+        else:
+            self._old = old
+        self._bitmap = bitmap
+        nbytes = self.width * self.height * 4
+        self._buf = (ctypes.c_char * nbytes).from_address(bits.value)
+        self._view = memoryview(self._buf)
+        self._size = _SIZE(self.width, self.height)
+
+    def resize(self, width: int, height: int) -> None:
+        """A new size for the same window — the same handle, so a mouse
+        capture survives it (a corner drag resizes the hint card under the
+        pointer it has captured). The next present() puts the picture up
+        at the new size. A window with a GPU surface is refused: nothing
+        that resizes has one."""
+        width, height = int(width), int(height)
+        if (width, height) == (self.width, self.height) or not self.hwnd:
+            return
+        if self.on_gpu:
+            raise RuntimeError("a GPU-backed glass window cannot resize")
+        self.width, self.height = width, height
+        self.surface = self.canvas = None
+        self._view = self._buf = None
+        self._dib()
+        if self._info is not None:
+            import skia
+            self._info = skia.ImageInfo.Make(width, height,
+                                             skia.kBGRA_8888_ColorType,
+                                             skia.kPremul_AlphaType)
+            self.surface = skia.Surface.MakeRasterDirect(
+                self._info, self._view, width * 4)
+            self.canvas = self.surface.getCanvas() if self.surface else None
+
+    def let_go(self) -> None:
+        """End a grip this side asked to end: the capture goes back."""
+        if self.gripping:
+            self.gripping = False
+            try:
+                _user32.ReleaseCapture()
+            except Exception:
+                pass
 
     def show(self) -> None:
         _user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
@@ -493,6 +592,7 @@ class Glass:
 
     def close(self) -> None:
         try:
+            self.let_go()
             _live.pop(int(self.hwnd or 0), None)
             self.surface = None
             self.canvas = None

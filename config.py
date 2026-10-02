@@ -102,6 +102,10 @@ class HintConfig:
     x: int = -100000
     y: int = -100000
     scale: float = 1.0
+    # The small card (2026-10-01): its corner dragged past the smallest
+    # size shows only the dictation's own keys, with "All keys" to see the rest
+    # for that one dictation. Written by the card, like the scale.
+    compact: bool = False
     # Did the file say "dot"? load() answers it with `follows_dot` and
     # keeps the answer, because `corner` above cannot: by then the word
     # has been resolved into a real corner and a card that FOLLOWS the
@@ -1780,6 +1784,7 @@ def build(data: dict) -> Config:
             x=int(hint.get("x", HintConfig.x)),
             y=int(hint.get("y", HintConfig.y)),
             scale=float(hint.get("scale", HintConfig.scale)),
+            compact=bool(hint.get("compact", HintConfig.compact)),
         ),
         setup=SetupConfig(
             done=bool(setup.get("done", SetupConfig.done)),
@@ -2653,7 +2658,7 @@ def set_values(path: Path, updates: dict[str, object], *,
 #: hides them. Kept in step with the table in chapter 3.4.
 STATE_KEYS: frozenset[str] = frozenset({
     "dot.x", "dot.y",
-    "hint.x", "hint.y", "hint.scale",
+    "hint.x", "hint.y", "hint.scale", "hint.compact",
     "notify.x", "notify.y",
     "problems.x", "problems.y", "problems.card_x", "problems.card_y",
     "shelf.x", "shelf.y", "shelf.scale",
