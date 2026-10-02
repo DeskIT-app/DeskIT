@@ -116,14 +116,24 @@ TEXTS: dict[str, dict] = {
         ),
     },
     "account": {
-        "version": "deskit-terms-0+en-2026-09-19",
+        # 2026-09-23: the ACCOUNT line said "your keys never travel there
+        # — they have no column in the database" while the sign-in press
+        # grants the two syncs (privacy.sign_in_grants) and the keys go
+        # to the vault table, sealed. Nothing new leaves under THIS gate
+        # — what the syncs send, their own cards always said — so a row
+        # given under the old words is carried forward
+        # (privacy.CARRIED_FORWARD, migrations step 5), never asked again.
+        "version": "deskit-terms-0+en-2026-09-23",
         "title": "Open an account?",
+        "changed": "It now says that signing in keeps what you said and your cloud "
+                   "keys in your account, locked with a key only your own PCs hold.",
         "blocks": (
             (WHAT, "An account id — anonymous, or the e-mail of the Google account you "
                    "chose; this PC's name; the app, Windows and hardware versions."),
             (WHOM, _DESKIT),
-            (ACCOUNT, "DeskIT's project; your keys never travel there — they have no "
-                      "column in the database."),
+            (ACCOUNT, "DeskIT's project. Signing in also keeps your learned words and "
+                      "settings there, and what you said and your cloud keys, locked "
+                      "with a key only your own PCs hold."),
             (TERMS, _TERMS),
             (OFF, "Your data > Delete my account."),
         ),

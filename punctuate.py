@@ -65,10 +65,21 @@ from transcribers.base import RateLimitError, TranscriptionError
 from vocab import words
 
 log = logging.getLogger("app")
+transcript_log = logging.getLogger("transcripts")
 
 
 class UnsafeReply(TranscriptionError):
-    """The model changed the words, not just the punctuation."""
+    """The model changed the words, not just the punctuation.
+
+    Two readings of one refusal (D8, 2026-09-23): ``str(e)`` is what the
+    person is shown — the card, the phone's reply, the console — and
+    names the word the model altered, which is the evidence; ``logged``
+    is the same verdict without any word of theirs, and is the only form
+    that may go to app.log, whose tail Copy diagnostics copies."""
+
+    def __init__(self, why: str, logged: str | None = None):
+        super().__init__(why)
+        self.logged = logged if logged is not None else CHANGED
 
 
 def needs_punctuation(text: str) -> bool:
@@ -143,8 +154,14 @@ def _core(text: str) -> str:
     return "".join(ch.lower() for ch in text if ch.isalnum())
 
 
+#: is_safe's verdict when the letters moved — word-free on purpose, so it
+#: can be logged; the word itself is _what_changed's, for the person.
+CHANGED = "the words changed, not just the punctuation"
+
+
 def _what_changed(original: str, candidate: str) -> str:
-    """The first word the model actually altered, for the log line.
+    """The first word the model actually altered, for the card and for
+    transcripts.log — never app.log (D8).
 
     "the reply is unsafe" is a verdict; this is the evidence, and it is the
     difference between tuning the prompt and guessing at it.
@@ -162,7 +179,8 @@ def _what_changed(original: str, candidate: str) -> str:
 
 
 def is_safe(original: str, candidate: str) -> tuple[bool, str]:
-    """The guarantee. Returns (ok, reason_if_not)."""
+    """The guarantee. Returns (ok, reason_if_not); the reason holds no
+    word of the text, so it may be logged (the word is _what_changed)."""
     if not candidate.strip():
         return False, "empty reply"
     before, after = _core(original), _core(candidate)
@@ -170,8 +188,7 @@ def is_safe(original: str, candidate: str) -> tuple[bool, str]:
         return False, "nothing to compare"
     if before == after:
         return True, ""
-    return False, f"the words changed, not just the punctuation: " \
-                  f"{_what_changed(original, candidate)}"
+    return False, CHANGED
 
 
 # The order the backends are tried in, whichever one `prefer` puts first.
@@ -334,7 +351,7 @@ class Punctuator:
         """
         deadline = (None if max_wait_s is None
                     else time.monotonic() + max_wait_s)
-        unsafe = ""
+        unsafe = shown = ""
         errors: list[str] = []
         for backend in self._backends():
             try:
@@ -363,13 +380,21 @@ class Punctuator:
             ok, why = is_safe(text, candidate)
             if not ok:
                 # Loud on purpose: this is the guard doing its job, and if it
-                # fires often the prompt or the model is wrong.
+                # fires often the prompt or the model is wrong. The word it
+                # altered is the evidence — for the card and transcripts.log;
+                # app.log gets the verdict alone (D8).
                 log.warning("punctuation REJECTED from %s — %s. Your text is "
                             "untouched.", backend.name, why)
                 unsafe = why
+                shown = why
+                if why == CHANGED:
+                    named = _what_changed(text, candidate)
+                    shown = f"{why}: {named}"
+                    transcript_log.info("PUNCTUATE-REJECTED | %s | %s",
+                                        backend.name, named)
                 continue
             return candidate.strip(), backend.name
         if unsafe:
-            raise UnsafeReply(unsafe)
+            raise UnsafeReply(shown, logged=unsafe)
         raise TranscriptionError("; ".join(errors)
                                  or "no punctuation backend answered")

@@ -85,7 +85,7 @@
   },
   "account": {
     "kind": "account",
-    "text_version": "deskit-terms-0+en-2026-09-19",
+    "text_version": "deskit-terms-0+en-2026-09-23",
     "title": "Open an account?",
     "blocks": [
       [
@@ -98,7 +98,7 @@
       ],
       [
         "On whose account",
-        "DeskIT's project; your keys never travel there — they have no column in the database."
+        "DeskIT's project. Signing in also keeps your learned words and settings there, and what you said and your cloud keys, locked with a key only your own PCs hold."
       ],
       [
         "The providers say",
