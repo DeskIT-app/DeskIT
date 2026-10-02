@@ -82,11 +82,18 @@ jobs:
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOLAUNCH", "/NODOWNLOAD", "/CHANNEL=store", "/LOG=$log"
           if ($p.ExitCode) { Get-Content $log; throw "the installer exited $($p.ExitCode)" }
           $app = "$env:LOCALAPPDATA\Programs\DeskIT"
-          # python\, app\ and the papers beside them; never the uninstaller
-          # or a bytecode cache (robocopy: below 8 is success)
-          robocopy $app pkg /E /XF "unins*" /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
-          if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
+          # python\ and app\ whole, minus bytecode caches (robocopy: below 8
+          # is success), and the papers beside them minus Inno's
+          # uninstaller. Not one robocopy with /XF unins*: /XF matches at
+          # every depth, and it took pip's commands\uninstall.py out of
+          # site-packages (the first run, 2026-10-02 — --verify caught it).
+          foreach ($part in "python", "app") {
+            robocopy "$app\$part" "pkg\$part" /E /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw "robocopy $part failed ($LASTEXITCODE)" }
+          }
           $global:LASTEXITCODE = 0
+          Get-ChildItem $app -File | Where-Object { $_.Name -notlike "unins*" } | Copy-Item -Destination pkg
+          Get-ChildItem pkg -File | ForEach-Object { "root: $($_.Name)" }
           $env:DESKIT_HOME = "$env:RUNNER_TEMP\deskit-verify-home"
           $verdict = & pkg\python\python.exe -B pkg\app\main.py --verify
           Remove-Item Env:DESKIT_HOME
