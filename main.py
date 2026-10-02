@@ -164,36 +164,6 @@ LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
                  "privacy": None}
 LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
 
-# THE WEEKLY ROUTINE'S QUESTION, and the three numbers that decide when it
-# gets on his screen (questions.py + overlay.AnswerCard).
-#
-# Nobody presses a key for this card. The question is written by a headless
-# process — the Saturday review, which fires at 04:00 and retries hourly —
-# so the app has to NOTICE one rather than be told about one, and it has to
-# notice it without being a cost: questions.Store.stamp() is one os.stat of
-# a small json and no read at all, which is why 20 s is affordable. It is
-# also the right number from the other end. The question can be minutes old
-# before it matters, so nothing is lost by waiting; but a Saturday can ask
-# three questions, and after he answers one the next has to follow while he
-# is still in the mood to answer it. Twenty seconds is "the app noticed";
-# five minutes would be "the app forgot".
-QUESTION_POLL_S = 20.0
-
-# How still the machine has to have been before a card takes the
-# foreground. The card is a WordPrompt underneath — it TAKES THE KEYBOARD —
-# and this is an unsolicited window, so the bar is higher than for anything
-# else in this file: see _questions_quiet for the whole gate. Twenty seconds
-# of no key-down anywhere on the machine is a real pause in what he was
-# doing, and it is short enough that the card still feels like an answer to
-# the question rather than a letter that arrived next week.
-QUESTION_SETTLE_S = 20.0
-
-# Escape records nothing and the question stays pending, so it comes back —
-# but not in twenty seconds. A card that reappears while he is still moving
-# his hand away from it is a card he cannot get rid of, and the point of
-# Escape is "not now".
-QUESTION_REASK_S = 300.0
-
 # The flag that runs a console program with its console never shown —
 # awake.py and visual_qa.py both spawn powershell with it. NOT combined
 # with DETACHED_PROCESS: the two decide the same thing and are documented
@@ -254,6 +224,12 @@ MIC_WORDS = {
 MIC_BACK = "It is connected again. Please say it again."
 MIC_TRYING = ("DeskIT keeps trying to connect it. Check that it is "
               "plugged in.")
+
+# How long a marker's erase waits for a held modifier to come up (see
+# App._hands_off): while the next dictation is being held, up to the
+# longest recording there is; otherwise a Ctrl held for anything else.
+HELD_NEXT_MAX_S = 600.0
+HANDS_OFF_S = 5.0
 
 # What the dot should say for a machine state, when a worker has finished
 # with something and is deciding what to put back. Only two states are
@@ -339,17 +315,6 @@ def cursor_point() -> tuple[int, int] | None:
     except Exception:
         log.debug("could not read the cursor position", exc_info=True)
     return None
-
-
-def _questions_mod():
-    """questions.py, the Saturday routine's store — the owner's
-    (DISTRIBUTION_PLAN.md D15). It is not in the product build, so it
-    is imported only where the store is actually on (`[questions]
-    enabled = true`, off by default) and never at start: a copy
-    without the file must still dictate.
-    test_product_suite_imports_no_dev_modules holds the line."""
-    import questions
-    return questions
 
 
 class App:
@@ -450,7 +415,7 @@ class App:
         # A ring of recent recordings, kept so a correction can be tied to
         # the audio that produced it. Without this the app can only be told
         # that a word is wrong, never SHOWN — and no vocabulary change can
-        # ever be measured, only assumed. See --benchmark.
+        # ever be measured, only assumed. See dev\measure.py.
         self.recent = (Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio)
                        if cfg.vocab.keep_audio > 0 else None)
         # His own bug list (problems.py). Next to `recent` because that is
@@ -466,56 +431,6 @@ class App:
         # corpus, not in it, so [study] corpus_keep can never trim away
         # what he sat down to read.
         self.reading = reading_mod.Reading(paths.READ_DIR)
-        # The OTHER direction of the same conversation (questions.py). The
-        # bug list is what he tells the app; this is what the weekly
-        # routine asks him back when a report cannot be explained from the
-        # evidence it has — three concrete options and a fourth he types
-        # into, put on his screen here and answered here, never in a chat.
-        #
-        # getattr for the section, like every optional one. What is
-        # different is the DEFAULT when there is no [questions] section at
-        # all: on, which is the opposite of the line above it. The routine
-        # writes questions.json whether or not this Config has grown a
-        # section for it, and a pending question nobody is ever shown is
-        # worse than no feature — it leaves the routine waiting forever on
-        # an answer he was never asked for. An explicit `enabled = false`
-        # still turns the whole thing off and leaves the file alone.
-        # OFF unless a [questions] section explicitly turns it on, which is
-        # the opposite of what the comment above argues -- and the argument
-        # died with the design it was written for. The weekly review is a
-        # Claude Code local scheduled task now, and every run is a real
-        # session with a live composer in the sidebar, so it asks him there
-        # with AskUserQuestion and reads his answer in the same breath. It
-        # still writes each question into the store, but only as a record
-        # that survives him closing the session -- not as a queue anything
-        # serves. A card offering a question he has already answered in the
-        # session would be the worse half of both designs, and an item that
-        # stays PENDING because he answered somewhere else would sit in the
-        # dashboard forever. So the card stays built, tested and 83 ms of
-        # import (measured), and does not run. `[questions] enabled = true`
-        # brings it back whole if the asking ever moves back into the app.
-        qcfg = getattr(cfg, "questions", None)
-        self.questions = (
-            _questions_mod().Store(paths.QUESTIONS_FILE)
-            if qcfg is not None and getattr(qcfg, "enabled", False) else None)
-        # (size, mtime_ns) as of the last look. questions.Store.stamp()
-        # exists for exactly this — notice a headless write without reading
-        # the file — and the empty tuple means "never looked", so the FIRST
-        # poll always reads: a question written while the app was down is
-        # still a question waiting on him.
-        self._q_stamp: tuple = ()
-        self._q_pending: list[dict] = []
-        # id -> the monotonic time before which it must not be offered
-        # again. Escape puts a question in here; nothing else does.
-        self._q_hushed: dict[str, float] = {}
-        # The last real key-down anywhere on this machine, written by the
-        # keyboard hook (see _popup_key) and read by _questions_quiet. It
-        # is seeded to NOW rather than to zero because the app is launched
-        # by hand: a card must not open in the first twenty seconds because
-        # the process happened to start with the field empty.
-        self._q_last_key = time.monotonic()
-        self._answer_card = None     # built on the first question
-        self._q_no_card = False      # ...unless the overlay has no class
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
                                  cfg.max_seconds, self._on_overflow)
@@ -577,7 +492,8 @@ class App:
             ask_open=self._ask_card_open,
             on_ask_start=self._on_ask_start,
             on_ask_stop=self._on_ask_stop,
-            on_refused=self._on_dictation_refused)
+            on_refused=self._on_dictation_refused,
+            held_probe=hotkey_mod.held_now)
         self.hook = HookThread(self.machine)
         # The model's own state: "on", "off", "loading", "unloading".
         # Stop in the desk unloads the model and the microphone stream
@@ -752,7 +668,8 @@ class App:
             scale=cfg.hint.scale, on_change=self._save_hint,
             dot_corner=self._dot_corner,
             dot_at=self._dot_beside
-            if getattr(cfg.hint, "follow_dot", True) else None)
+            if getattr(cfg.hint, "follow_dot", True) else None,
+            compact=getattr(cfg.hint, "compact", False))
             if cfg.hint.enabled else overlay_mod.HintCard.off())
         # And the second reading's card (review.py): one proposal, three
         # buttons, a clock. Off by config, and off by construction until a
@@ -1400,18 +1317,9 @@ class App:
         bind lookup to C and popup.py never sees the Ctrl+C it would
         otherwise take, because this returns first.
         """
-        # HIS HANDS, in one assignment, before anything else can go wrong.
-        # This is the only place in the process that sees a real key-down
-        # (see above: the boxes never take focus, so the hook is the only
-        # witness), and it is therefore the only way the unsolicited
-        # question card can know he is at the keyboard at all — the app can
-        # sit perfectly idle while he writes an email in another window,
-        # and that is exactly the moment not to jump in front of it. One
-        # monotonic() and one store: no lock, no call that can raise, and
-        # nothing that can be slow. This is the keyboard hook, where an
-        # exception is a dropped hook and a frozen keyboard, and where 300
-        # ms of work unhooks the app silently.
-        self._q_last_key = time.monotonic()
+        # Nothing is read off the hook here any more: the one
+        # assignment it made was for the question card's stillness
+        # gate, and that card left with the routine (MASTER.md §8).
         # The move frame before everything: Enter and Esc, and only while
         # the light round the screens is up (dotmove.MoveFrame.on_key).
         # No pointer gate, like the shelf's Esc — he asked for this mode
@@ -1586,7 +1494,8 @@ class App:
         """Write what the owner did to the card back into config.toml.
 
         Called from the overlay thread when a drag ends, a size button is
-        pressed or the box is ticked. Everything goes through
+        pressed, or the card goes away with its "don't show this again"
+        box ticked (the X, or the key let go). Everything goes through
         `config.set_values`, which is a line-wise edit that keeps the
         comments — a TOML round-trip here would delete the measurements
         the file is made of.
@@ -2155,10 +2064,12 @@ class App:
         # field it loads into is hotkey.
         write_key = NESTED_HOTKEYS.get(field, field)
         self._save( {write_key: key})
-        message = (f"{field} is now '{key}'" if key
-                   else f"{field} is off")
+        message = config_mod.rebound_sentence(field, key)
         self._say(message)
-        log.info("%s (saved to %s)", message, self.config_path.name)
+        # The log keeps the file's own name for the line; the sentence
+        # above it is the one the person was shown.
+        log.info("%s (%s, saved to %s)", message, field,
+                 self.config_path.name)
         return message
 
     def set_option(self, name: str, value) -> str:
@@ -2177,7 +2088,14 @@ class App:
         one writer, and the reply says it applies at the next start —
         which is the truth, rather than a control that lies about having
         done something.
+
+        What it SAYS is settings.saved_sentence: the row's own label in
+        the words the screen shows it in, never the dotted path — this
+        reply is read by a person, on the desk and on the dashboard
+        both.
         """
+        import settings as settings_mod
+
         name = (name or "").strip()
         if not name:
             raise ValueError("no setting was named")
@@ -2194,7 +2112,9 @@ class App:
             message = ("Windows will start DeskIT when you sign in" if on
                        else "DeskIT no longer starts with Windows")
             if paths.DEVELOPER:
-                message = "setup.autostart saved — the checkout starts from its own shortcut"
+                message = (f'"{settings_mod.label_for("setup.autostart")}"'
+                           " — saved; the checkout starts from its own "
+                           "shortcut")
             self._say(message)
             log.info("%s", message)
             return message
@@ -2220,10 +2140,9 @@ class App:
             if section == "privacy":
                 privacy.configure(fresh)
             live = True
-        message = (f"{name} saved" if live
-                   else f"{name} saved — it applies the next time it starts")
+        message = settings_mod.saved_sentence(name, value, live=live)
         self._say(message)
-        log.info("%s", message)
+        log.info("%s (%s)", message, name)
         return message
 
     def _tour_ended(self, reason: str) -> None:
@@ -2388,21 +2307,6 @@ class App:
             self.move_frame.start()
         self.notify.start()
         self.notify_watch.start()
-        # The weekly routine's question, WATCHED FOR rather than pushed:
-        # it is written by a headless process, possibly overnight, so
-        # there is nothing on this machine to tell the app about it. Off
-        # with the store, and after the hotkey is live either way — the
-        # first look happens a whole poll from now, so this can never be
-        # what delays dictation coming up.
-        if getattr(self, "questions", None) is not None:
-            self._q_watcher = threading.Thread(
-                target=self._watch_questions, daemon=True, name="questions")
-            self._q_watcher.start()
-            log.info("questions: watching %s every %.0f s; a card goes up "
-                     "after %.0f s of stillness and waits %.0f min if he "
-                     "escapes it", _questions_mod().STORE_NAME,
-                     QUESTION_POLL_S, QUESTION_SETTLE_S,
-                     QUESTION_REASK_S / 60.0)
         # The weekly look at GitHub Releases (updates.py, plan 11.4): ten
         # minutes after this start, then weekly; a newer version is one
         # line on the card and a row on the dashboard, never a download.
@@ -3421,7 +3325,8 @@ class App:
                 scale=hcfg.scale, on_change=self._save_hint,
                 dot_corner=self._dot_corner,
                 dot_at=self._dot_beside
-                if getattr(hcfg, "follow_dot", True) else None)
+                if getattr(hcfg, "follow_dot", True) else None,
+                compact=getattr(hcfg, "compact", False))
                 if hcfg.enabled else overlay_mod.HintCard.off())
             old.stop()
             self.hint = new
@@ -3444,6 +3349,11 @@ class App:
         self._question_texts = []
         self._cap, self._latched = self.cfg.max_seconds, False
         self._rec_at = time.monotonic()
+        # A key card closed with its X stays down until a new dictation —
+        # this one. Before _set_state, which queues the card.
+        began = getattr(getattr(self, "hint", None), "recording_began", None)
+        if began is not None:
+            began()
         self._set_state("recording")
         # An ask-the-screen card that is reading an answer aloud stops the
         # moment you start talking over it — that is what makes the thing
@@ -3587,6 +3497,9 @@ class App:
             return None
 
     def _on_stop(self, language: str | None = "he") -> None:
+        # The release, for the clock the worker stops at the paste: the
+        # number a person feels starts HERE, not when the worker got to it.
+        released = time.monotonic()
         # The rolling transcriber first, so its next look at the buffer
         # finds it ended; the worker collects what it finished (_handle).
         roller, self._roller = getattr(self, "_roller", None), None
@@ -3653,6 +3566,7 @@ class App:
         # `in_stream` already travel this way and every caller and test
         # that builds a five- or six-tuple keeps working untouched.
         extra = {"pieces": pieces} if len(pieces) > 1 else {}
+        extra["released"] = released
         if self._to_prompt:
             extra["to_prompt"] = True
         if self._to_read:
@@ -4142,7 +4056,7 @@ class App:
         out = []
         for owner, attr in ((getattr(self, "notify", None), "store"),
                             (getattr(self, "_review", None), "store"),
-                            (self, "problems"), (self, "questions")):
+                            (self, "problems")):
             store = getattr(owner, attr, None) if owner is not None else None
             stamp = None
             if store is not None:
@@ -4185,22 +4099,20 @@ class App:
         """Everything waiting for an answer, from all four stores, newest
         first, as one list.
 
-        ONE LIST AND ONE ORDER, which is the notification column's order
-        ("the first one will be at the upper side and the oldest one will
-        be on the down side"). The cost of one rule for four sources is
-        that a burst of notifications can push a question that has waited
-        since Saturday past the cap into "+N more"; the alternative is
+        ONE LIST AND ONE ORDER, which is the notification column's
+        order ("the first one will be at the upper side and the
+        oldest one will be on the down side"). The cost of one rule
+        for three sources is that a burst of notifications can push
+        a report past the cap into "+N more"; the alternative is
         two rules, and this one is three lines to change if he minds.
 
-        Every store is read through getattr and every read is wrapped: a
-        store that is off, missing or unreadable costs its own rows and
-        nothing else. `self.questions` is None on this machine today
-        ([questions] is not in config.toml), which is exactly the case
-        this shape is for.
+        Every store is read through getattr and every read is
+        wrapped: a store that is off, missing or unreadable costs
+        its own rows and nothing else.
 
         The verb on an answer names the SOURCE as well as the act
-        ("notify.dismiss"), because ids from four stores share one list
-        and _shelf_pressed must know which store an id belongs to.
+        ("notify.dismiss"), because ids from three stores share one
+        list and _shelf_pressed must know which store an id belongs to.
         shelf_card hands the verb back untouched and decides nothing.
         """
         rows: list[dict] = []
@@ -4255,22 +4167,6 @@ class App:
                                     ("problem.close", "Close")]})
             except Exception:                    # noqa: BLE001
                 log.debug("shelf: could not read the problems", exc_info=True)
-        store = getattr(self, "questions", None)
-        if store is not None:
-            try:
-                for item in store.items(_questions_mod().PENDING):
-                    rows.append({
-                        "kind": "question",
-                        "id": item.get("id"),
-                        "text": str(item.get("question")
-                                    or item.get("text") or ""),
-                        "at": str(item.get("at") or ""),
-                        "pill": "",
-                        "answers": [("question.answer", "Answer"),
-                                    ("question.later", "Later")]})
-            except Exception:                    # noqa: BLE001
-                log.debug("shelf: could not read the questions",
-                          exc_info=True)
         rows.sort(key=lambda r: str(r.get("at") or ""), reverse=True)
         return rows
 
@@ -4382,16 +4278,6 @@ class App:
                 threading.Thread(target=self._shelf_problem_close,
                                  args=(str(ident),), daemon=True,
                                  name="shelf-problem").start()
-        elif source == "question":
-            if verb == "answer":
-                threading.Thread(target=self._shelf_question, daemon=True,
-                                 args=(str(ident),),
-                                 name="shelf-question").start()
-            else:
-                self._q_hushed[str(ident)] = (time.monotonic()
-                                              + QUESTION_REASK_S)
-                log.info("questions: %s waved away from the shelf — back in "
-                         "about %.0f min", ident, QUESTION_REASK_S / 60.0)
         else:
             return
         if do in self._SHELF_LEAVES:
@@ -4414,19 +4300,6 @@ class App:
             self._say("report closed")
         except Exception:                        # noqa: BLE001
             log.exception("shelf: could not close %s", ident)
-
-    def _shelf_question(self, ident: str) -> None:
-        """The real question card, on the real question. The shelf never
-        tries to BE that card — it has two to five options and a text box
-        — it just stops standing in front of it."""
-        store = getattr(self, "questions", None)
-        if store is None:
-            return
-        item = store.get(ident)
-        card = self._answer_box()
-        if item is None or card is None:
-            return
-        self._question_show(card, item)
 
     def _shelf_chrome(self, name: str) -> None:
         """The panel's own buttons. Pause and Screens change something the
@@ -4919,348 +4792,18 @@ class App:
                 # exits (dashboard.main), so this is right either way.
                 open_dashboard()
                 self._say(f"problem {item['id']} noted — the preview of "
-                          "what would be sent is on the Problems screen")
+                          "what would be sent is on the desk")
             except Exception:                 # noqa: BLE001
                 log.info("problems: %s is filed; the preview could not be "
                          "opened", item["id"], exc_info=True)
-                self._say(f"problem {item['id']} noted — open Problems on "
-                          "the desk to preview and send it")
+                self._say(f"problem {item['id']} noted — open the desk "
+                          "to preview and send it")
         else:
             self._say(f"problem {item['id']} noted — {item['text'][:60]}")
         log.info("problems: %s filed from the key, %s%s%s", item["id"],
                  "with the last dictation" if last else "with no dictation",
                  ", with a screenshot" if item.get("shot") else "",
                  ", awaiting its preview" if send else "")
-
-    # ---- the weekly routine's question (questions.py) ----
-    #
-    # The report key's mirror image, and every difference between the two
-    # comes from one fact: NOBODY PRESSES A KEY FOR THIS ONE. The report
-    # card opens because he asked for it, at a moment he chose, with his
-    # hands already on the keyboard. This card opens because a headless
-    # process wrote a question into questions.json — on a Saturday at
-    # 04:00, quite possibly while he was asleep — and the app has to both
-    # notice it and pick the moment. So there are two mechanisms here that
-    # the report side has no need of at all: a poll (questions.Store.stamp,
-    # which is why it exists) and a gate (_questions_quiet, which is the
-    # strictest in this file).
-    #
-    # Nothing below may raise into anything that matters. The watch is its
-    # own daemon thread, the store write and the wake are a thread of their
-    # own off the card's pump, and the one line that runs inside the
-    # keyboard hook is an assignment (see _popup_key). A broken question
-    # card must cost the card and never the dictation.
-
-    def _save_answer_card(self, fields: dict) -> None:
-        """The question card's twin of _save_problem_card: where it was
-        dragged to, written into [questions] through the same
-        comment-keeping line edit.
-
-        Guarded the same way and for the same reason, only more so — this
-        section may not exist AT ALL yet, not merely be missing two
-        fields, so a `dataclasses.replace` would raise on the section
-        before it raised on the field. What is lost while that is true is
-        the restart and never the drag: the card's own instance keeps the
-        position for the rest of the run either way.
-        """
-        qcfg = getattr(self.cfg, "questions", None)
-        if qcfg is None or not dataclasses.is_dataclass(qcfg):
-            log.info("question card: there is no [questions] section to "
-                     "save a drag in yet — it stays put for this run only")
-            return
-        known = {f.name for f in dataclasses.fields(qcfg)}
-        missing = sorted(set(fields) - known)
-        if missing:
-            log.info("question card: [questions] has no %s to save a drag "
-                     "in yet — it stays put for this run only",
-                     ", ".join(missing))
-            return
-        self.cfg = dataclasses.replace(
-            self.cfg, questions=dataclasses.replace(qcfg, **fields))
-        self._save(
-                              {f"questions.{k}": v for k, v in fields.items()})
-        log.info("question card: %s",
-                 ", ".join(f"{k}={v}" for k, v in fields.items()))
-
-    def _questions_quiet(self, now: float) -> bool:
-        """May a question card take the foreground RIGHT NOW?
-
-        `_learning_quiet` is most of the answer already and is reused
-        rather than re-derived: ready and idle, not recording, not
-        transcribing, not paused, nothing queued, no text key in flight
-        and neither screen feature busy. Paused matters more here than it
-        does there — paused usually means a game or a presentation owns
-        the screen, and a window that takes the foreground over one costs
-        him the thing he was doing, not just some GPU time.
-
-        Two things are added to it.
-
-        The first is the other windows in this process that TAKE THE
-        KEYBOARD: the pencil's word box, the report card, the ask card and
-        a question card already up. The AnswerCard comes down the
-        WordPrompt side of overlay's tree exactly as ProblemCard does, so
-        a second one opening over the first would pull the caret out of a
-        box he is in the middle of typing into.
-
-        The second is HIS HANDS, and it is the one signal that is not
-        about this app at all. `_q_last_key` is written by the keyboard
-        hook on every real key-down anywhere on the machine, so a still
-        app with a busy keyboard — he is answering mail, the app has
-        nothing to do — reads as busy here, which is right. It also covers
-        the gap between two polls twenty seconds apart: a whole dictation
-        can start and finish in there, and its hotkey press went through
-        the hook like every other key.
-
-        What it cannot see is the mouse, and that is accepted rather than
-        fixed: a mouse hook is a second low-level hook on the machine for
-        a card that can afford to arrive five minutes late.
-        """
-        if now - self._q_last_key < QUESTION_SETTLE_S:
-            return False
-        for name in ("_word_prompt", "_problem_card", "_answer_card"):
-            box = getattr(self, name, None)
-            if box is None:
-                continue
-            try:
-                if box.open():
-                    return False
-            except Exception:            # noqa: BLE001
-                return False             # a box we cannot ask about is a no
-        if self._ask_card_open():
-            return False
-        return self._learning_quiet()
-
-    def _answer_box(self):
-        """The question card, built on first need, or None.
-
-        Looked up rather than named — `getattr(overlay_mod, "AnswerCard")`
-        — for the reason the report card is looked up: the class lands with
-        answer_card.py's other half, and until it does this feature has to
-        say so once and leave the questions in the dashboard, not take the
-        app down at startup.
-
-        Built HERE and not in __init__ so that a class whose signature has
-        moved costs one log line on the watch thread instead of a process
-        that will not start. Never on the hook thread either way: building
-        it imports Tk.
-        """
-        card = getattr(self, "_answer_card", None)
-        if card is not None or self._q_no_card:
-            return card
-        card_cls = getattr(overlay_mod, "AnswerCard", None)
-        if card_cls is None:
-            self._q_no_card = True
-            log.info("questions: this overlay has no question card — the "
-                     "%d question(s) wait in the dashboard until it lands",
-                     len(self._q_pending))
-            return None
-        qcfg = getattr(self.cfg, "questions", None)
-        unset = getattr(config_mod, "HINT_UNSET", -100000)
-        try:
-            # Where it was last dragged to and where to write the next
-            # drag, which is the hint/review/notify/report shape and the
-            # one this card's own `placed` asks for by name. x and y
-            # through getattr because they land with the config half of
-            # this feature: HINT_UNSET is the "never moved" sentinel, a
-            # number no desktop can reach, because a monitor left of the
-            # primary has genuinely negative coordinates and -1 would
-            # throw a real position away.
-            card = card_cls(
-                x=int(getattr(qcfg, "x", unset) if qcfg is not None
-                      else unset),
-                y=int(getattr(qcfg, "y", unset) if qcfg is not None
-                      else unset),
-                on_change=self._save_answer_card)
-        except Exception:                # noqa: BLE001
-            self._q_no_card = True
-            log.exception("questions: the question card would not build — "
-                          "the questions wait in the dashboard")
-            return None
-        self._answer_card = card
-        return card
-
-    def _watch_questions(self) -> None:
-        """Notice a new pending question, and put it up when it is safe.
-
-        Its own daemon thread, ended by the same `_stopping` event the
-        fullscreen watcher waits on. Everything inside is wrapped: this
-        thread may log a bad week, and may not end one.
-        """
-        while not self._stopping.wait(QUESTION_POLL_S):
-            try:
-                self._questions_tick()
-            except Exception:            # noqa: BLE001
-                log.exception("questions: the question watch stumbled — "
-                              "dictation is unaffected")
-
-    def _questions_tick(self) -> None:
-        """One look at the store, and at most one card."""
-        store = getattr(self, "questions", None)
-        if store is None:
-            return
-        stamp = store.stamp()
-        if stamp != self._q_stamp:
-            # The file changed (or this is the first look): re-read it
-            # once. OLDEST FIRST — `items` hands them back newest first,
-            # and a question that has been waiting since last Saturday
-            # goes before one written this morning.
-            self._q_stamp = stamp
-            self._q_pending = list(
-                reversed(store.items(_questions_mod().PENDING)))
-            log.info("questions: %d waiting on him", len(self._q_pending))
-        if not self._q_pending:
-            return
-        now = time.monotonic()
-        item = next((row for row in self._q_pending
-                     if self._q_hushed.get(str(row.get("id") or ""), 0.0)
-                     <= now), None)
-        if item is None or not self._questions_quiet(now):
-            return
-        card = self._answer_box()
-        if card is None:
-            return
-        self._question_show(card, item)
-
-    def _question_show(self, card, item: dict) -> None:
-        """Open the card on one question. From the watch thread.
-
-        Nothing is taken off `_q_pending` here. What keeps the next poll
-        from opening a second card is `_questions_quiet` asking the card
-        whether it is up (and `ask` itself refusing a second one), and
-        what takes the question off the list afterwards is the store: an
-        answer changes the stamp, the next tick re-reads, and an answered
-        question is no longer PENDING. An ESCAPED one has to stay on the
-        list, because it is still pending and still his to answer.
-        """
-        ident = str(item.get("id") or "")
-
-        def done(choice=None, text="") -> None:
-            """The card's answer, on the card's own Tk thread.
-
-            (None, "") is Escape, and it records NOTHING — the store is
-            not touched, the question stays PENDING and it comes back.
-            Hushed for QUESTION_REASK_S first: "not now" that returns in
-            twenty seconds is not "not now".
-
-            Anything real goes to a thread of its own, which is
-            _notify_dismissed's rule and for the same two reasons — the
-            store takes a cross-process lock and the wake starts a
-            process, and neither belongs in a painter's pump.
-            """
-            try:
-                if choice is None and not str(text or "").strip():
-                    self._q_hushed[ident] = (time.monotonic()
-                                             + QUESTION_REASK_S)
-                    log.info("questions: %s waved away — back in about "
-                             "%.0f min", ident, QUESTION_REASK_S / 60.0)
-                    return
-                threading.Thread(
-                    target=self._question_answered,
-                    args=(ident, choice, str(text or "")), daemon=True,
-                    name="question-answer").start()
-            except Exception:            # noqa: BLE001
-                log.exception("questions: the answer to %s could not be "
-                              "handed on", ident)
-
-        try:
-            opened = bool(card.ask(item, done, focus=True))
-        except Exception:                # noqa: BLE001
-            # A signature that has moved under us, or a card that will not
-            # draw. One question is worth one log line and no more: the
-            # class is marked absent so the watch stops trying every
-            # twenty seconds, and the dashboard still has the question.
-            self._q_no_card = True
-            self._answer_card = None
-            log.exception("questions: the question card would not open — "
-                          "the questions wait in the dashboard")
-            return
-        if not opened:
-            log.info("questions: a card is already up — %s waits", ident)
-            return
-        log.info("questions: asked him %s on screen (%d option(s), about "
-                 "%s)", ident, len(item.get("options") or ()),
-                 item.get("report_id") or "nothing in particular")
-        self._say("a question from the weekly review is on screen")
-
-    def _question_answered(self, ident: str, choice, text: str) -> None:
-        """His answer: written down, then the routine woken. Own thread.
-
-        The order is not negotiable. The routine reads the store to find
-        out what it may build, so waking it before the answer is on disk
-        would wake it to nothing — and it would then write today's `.done`
-        stamp over a run that did no work.
-        """
-        store = getattr(self, "questions", None)
-        if store is None:
-            return
-        try:
-            ok = store.answer(ident, choice=choice, text=text, by="card")
-        except Exception:                # noqa: BLE001
-            # questions.answer swallows its own OSErrors, so this is the
-            # unexpected kind. Never fatal: a lost answer is a question he
-            # gets asked again.
-            log.exception("questions: could not record the answer to %s",
-                          ident)
-            return
-        if not ok:
-            # False is a real outcome and has three causes, and the one
-            # that matters is the third: the dashboard may have answered
-            # this same question in the other window while this card was
-            # up. A decision he has already made must not be overwritten,
-            # and must not fire a second build.
-            log.info("questions: %s was not recorded — nothing answered, or "
-                     "it was already answered elsewhere", ident)
-            self._say("that question was already answered elsewhere")
-            self._q_hushed[ident] = time.monotonic() + QUESTION_REASK_S
-            return
-        log.info("questions: %s answered from the card (option %s%s)",
-                 ident, "none" if choice is None else choice,
-                 ", with text" if text.strip() else "")
-        self._say("answer saved — the weekly review is starting on it")
-        self._q_hushed.pop(ident, None)
-        self._wake_review(ident)
-
-    def _wake_review(self, ident: str) -> None:
-        """THE MOMENT HE ANSWERS, THE ROUTINE WAKES AND WRITES THE CODE.
-
-        `weekly_review.ps1 -Answered`: the same script the Saturday task
-        runs, with the switch that ignores today's `.done` stamp, because
-        a new answer is new work even though this morning's scan finished.
-        The script's own lock is what keeps this from starting a second
-        review on top of a running one — that is its job, not ours, and it
-        is why this can be fire-and-forget.
-
-        And fire-and-forget it is: a review is minutes of work, and this
-        is a thread inside a dictation app. Nothing waits on it, nothing
-        reads its output (it has a log), and its console never appears —
-        CREATE_NO_WINDOW, the flag awake.py and visual_qa.py already spawn
-        powershell with, because a window flashing on his screen every
-        time he answers a question is its own bug report.
-        """
-        script = APP_DIR / "weekly_review.ps1"
-        if not script.is_file():
-            log.warning("questions: %s is missing — %s is answered and "
-                        "waiting, and the next Saturday run will build it",
-                        script.name, ident)
-            return
-        args = ["powershell", "-NoProfile", "-NonInteractive",
-                "-ExecutionPolicy", "Bypass", "-File", str(script),
-                "-Answered"]
-        try:
-            subprocess.Popen(args, cwd=str(APP_DIR),
-                             creationflags=CREATE_NO_WINDOW, close_fds=True,
-                             stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-        except Exception:                # noqa: BLE001
-            # The answer is safely on disk either way, which is the half
-            # that cannot be redone. A wake that failed costs him a wait,
-            # not a decision.
-            log.exception("questions: could not wake the weekly review for "
-                          "%s — it will be built on the next run", ident)
-            return
-        log.info("questions: woke the weekly review for %s "
-                 "(weekly_review.ps1 -Answered)", ident)
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -5669,9 +5212,9 @@ class App:
                     and self._last.get("raw") == last.get("raw")):
                 self._last["final"] = fixed.strip()
         # Tie the truth to the audio. This is what turns "it got this wrong"
-        # into a test case: --benchmark replays these and reports whether a
-        # vocabulary change actually helped, instead of leaving it to
-        # impressions.
+        # into a test case: dev\measure.py --benchmark replays these
+        # and reports whether a vocabulary change actually helped,
+        # instead of leaving it to impressions.
         wav = last.get("wav")
         if wav and self.recent is not None:
             from spool import SpooledItem
@@ -6470,16 +6013,110 @@ class App:
             self._polisher = polish_mod.Polisher(self.cfg, self.vocab)
         return self._polisher
 
+    def _put_marker(self, placeholder: str, hwnd: int) -> tuple[bool, object]:
+        """The "..." at the cursor, if `hwnd` still has the focus: (shown,
+        the injector's Marker — what was true when it went down, so the
+        erase can ask whether the caret is still after it). Runs on the
+        marker's own thread (_marker_beside). Never raises."""
+        # BOUNDED, unlike the paste the worker makes later, and the focus
+        # test is INSIDE the lock rather than in front of it. A translate
+        # or punctuate holds this lock across its whole model call (up to
+        # translate.ollama_timeout_s = 150 s); waiting that out would hold
+        # the paste back for a marker that is only cosmetic. And
+        # show_placeholder pastes wherever focus is when it finally runs,
+        # so a check made before the wait would be a check of the wrong
+        # moment.
+        if not self._cursor_lock.acquire(timeout=1.0):
+            log.info("something else is working at the cursor — "
+                     "transcribing without the marker")
+            return False, None
+        try:
+            if injector.foreground_window() == hwnd:
+                return True, injector.show_placeholder(
+                    placeholder, self.cfg.paste_chord,
+                    self.cfg.restore_delay_ms)
+        except injector.ClipboardBusyError as e:
+            log.warning("could not show the placeholder: %s", e)
+        except Exception as e:
+            # The marker is cosmetic; the recording is not. Every other
+            # failure here used to unwind to the worker and take the
+            # dictation with it — 10 recordings, 90 s of speech, lost that
+            # way 2026-09-18..22, all on a clipboard read under this call.
+            # Transcribe without it.
+            log.warning("could not show the placeholder (%s) — "
+                        "transcribing without it", type(e).__name__)
+        finally:
+            self._cursor_lock.release()
+        return False, None
+
+    def _marker_beside(self, placeholder: str, hwnd: int):
+        """Start _put_marker on a thread of its own, so the decode does not
+        wait for it (_handle says why), and hand back the wait: a callable
+        returning (shown, marker) once the marker is up — or is not going
+        to be. The wait is as long as the marker's own call, which is
+        bounded by the cursor lock's second and the clipboard's retries,
+        exactly as it was when the worker made that call itself."""
+        got: list = [False, None]
+
+        def put() -> None:
+            # _put_marker does not raise; if it ever does, the marker is
+            # simply not shown, and _handle goes on without it.
+            try:
+                got[:] = self._put_marker(placeholder, hwnd)
+            except Exception:
+                log.exception("the marker failed — transcribing without it")
+
+        try:
+            thread = threading.Thread(target=put, daemon=True,
+                                      name="marker-paste")
+            thread.start()
+        except Exception as e:
+            # The OS would not give us a thread (handles or memory running
+            # out). The audio is not on disk yet — it is spooled only once
+            # a decode fails — so this raising out of _handle would lose
+            # the recording, which a marker failure may never do (see
+            # _put_marker). No marker; the decode goes on.
+            log.warning("could not start the marker (%s) — transcribing "
+                        "without it", type(e).__name__)
+            return lambda: (False, None)
+
+        def wait() -> tuple[bool, object]:
+            thread.join()
+            return got[0], got[1]
+
+        return wait
+
+    def _hands_off(self) -> None:
+        """Wait for every modifier to come up before a marker's Backspaces
+        (injector._vouch says why), holding NOTHING while it waits — not
+        the cursor lock every other door to the cursor queues on.
+
+        As long as the next dictation is being held, because its release
+        is certain and is the moment the text may land: Right Ctrl is the
+        hold key, and a text that waited out a flat bound went to the
+        clipboard in the middle of an ordinary sentence (the second
+        review, 2026-09-23). Otherwise HANDS_OFF_S — a Ctrl held for
+        something else, or a key stuck down — and then _vouch decides."""
+        started = time.monotonic()
+        while injector.modifiers_held():
+            waited = time.monotonic() - started
+            held_next = self.machine.state == hotkey_mod.RECORDING
+            if waited > (HELD_NEXT_MAX_S if held_next else HANDS_OFF_S):
+                return
+            time.sleep(0.02)
+
     def _handle(self, wav: bytes, seconds: float, hwnd: int,
                 language: str | None = None,
                 to_card: bool | None = None,
                 sliced: bool = False, in_stream: bool = False,
                 pieces: list | None = None,
                 to_prompt: bool = False, silent: bool = False,
-                rolled=None, to_read: str | None = None) -> None:
+                rolled=None, to_read: str | None = None,
+                released: float | None = None) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
+        marker = None
         # A screen question owns the next dictation: no marker in the app
         # underneath, because nothing will ever be pasted over it.
         #
@@ -6498,38 +6135,22 @@ class App:
         # foreground at the press, so _on_start already filtered hwnd to
         # 0 — but only normally, and a stray "..." left in his editor is
         # exactly the kind of litter this branch exists to avoid.
+        marker_up = None
         if fb.enabled and hwnd and not diverting and not to_prompt \
                 and not to_read:
-            # BOUNDED, unlike the paste below, and the focus test is INSIDE
-            # the lock rather than in front of it. A translate or punctuate
-            # holds this lock across its whole model call (up to
-            # translate.ollama_timeout_s = 150 s); waiting that out would
-            # park the worker before transcription had even started, for a
-            # marker that is only cosmetic. And show_placeholder pastes
-            # wherever focus is when it finally runs, so a check made before
-            # the wait would be a check of the wrong moment.
-            if self._cursor_lock.acquire(timeout=1.0):
-                try:
-                    if injector.foreground_window() == hwnd:
-                        injector.show_placeholder(placeholder,
-                                                  self.cfg.paste_chord,
-                                                  self.cfg.restore_delay_ms)
-                        shown = True
-                except injector.ClipboardBusyError as e:
-                    log.warning("could not show the placeholder: %s", e)
-                except Exception as e:
-                    # The marker is cosmetic; the recording is not. Every
-                    # other failure here used to unwind to the worker and
-                    # take the dictation with it — 10 recordings, 90 s of
-                    # speech, lost that way 2026-09-18..22, all on a
-                    # clipboard read under this call. Transcribe without it.
-                    log.warning("could not show the placeholder (%s) — "
-                                "transcribing without it", type(e).__name__)
-                finally:
-                    self._cursor_lock.release()
-            else:
-                log.info("something else is working at the cursor — "
-                         "transcribing without the marker")
+            # BESIDE THE DECODE, NOT IN FRONT OF IT. Putting the marker up
+            # is a paste like any other — the clipboard saved, "..." put on
+            # it, the chord, then restore_delay_ms (300) for the target to
+            # read it before the old clipboard goes back — about 0.35 s in
+            # all, and until 2026-09-24 every decode waited it out first
+            # (2026-09-23 audit, A32). Measured off app.log, 230
+            # dictations 2026-09-18..24: release to the "pasted" line was
+            # 0.36 s (p50) longer than the logged figure, which started
+            # after the marker; and the decode itself is p10 0.40 s, p50
+            # 0.70 s, under 0.35 s in 2 of 230 — so on a thread of its own
+            # the marker is hidden behind the decode almost every time.
+            # The wait for it is below, before anything reads `shown`.
+            marker_up = self._marker_beside(placeholder, hwnd)
 
         started = time.monotonic()
         deadline = started + fb.retry_seconds
@@ -6584,13 +6205,21 @@ class App:
                 break
 
         latency = time.monotonic() - started
+        if marker_up is not None:
+            # EVERY door below reads `shown` — the erase, the clear, the
+            # clipboard fallback — so none of them may open before the
+            # marker is up and its own paste has put the clipboard back.
+            # A decode that beat it (2 in 230) waits here for the rest.
+            shown, marker = marker_up()
 
         if text is None:
             # Nothing to paste. Take the marker back down so the user is not
             # left with a stray "..." in their document.
             if shown:
+                self._hands_off()
                 with self._cursor_lock:
-                    injector.clear_placeholder(placeholder, hwnd)
+                    injector.clear_placeholder(placeholder, hwnd,
+                                               marker=marker)
             beep("error")
             self._bump(failures=1)
             if no_model:
@@ -6616,8 +6245,10 @@ class App:
         cleaned = text.strip()
         if not cleaned:
             if shown:
+                self._hands_off()
                 with self._cursor_lock:
-                    injector.clear_placeholder(placeholder, hwnd)
+                    injector.clear_placeholder(placeholder, hwnd,
+                                               marker=marker)
             log.info("empty transcript (no speech heard) — not pasting")
             if item:
                 item.discard()
@@ -6638,8 +6269,10 @@ class App:
             if shown:
                 # The marker was pasted before the window opened; it is
                 # not where the answer is going any more.
+                self._hands_off()
                 with self._cursor_lock:
-                    injector.clear_placeholder(placeholder, hwnd)
+                    injector.clear_placeholder(placeholder, hwnd,
+                                               marker=marker)
             try:
                 cleaned, _applied = self.vocab.apply(cleaned)
             except Exception:
@@ -6837,12 +6470,15 @@ class App:
                           "when": time.strftime("%Y-%m-%d %H:%M:%S"),
                           "wav": str(kept.wav_path) if kept else ""}
 
+        if shown:
+            self._hands_off()
+        pasting = time.monotonic()
         try:
             with self._cursor_lock:
                 if shown:
                     status = injector.replace_placeholder(
                         placeholder, cleaned, self.cfg.paste_chord,
-                        self.cfg.restore_delay_ms, hwnd)
+                        self.cfg.restore_delay_ms, hwnd, marker=marker)
                 elif not hwnd:
                     # NOBODY KNOWS where this belongs. Reachable since the
                     # release-time window stopped being trusted when it is
@@ -6864,14 +6500,33 @@ class App:
                 else:
                     status = injector.inject(cleaned, self.cfg.paste_chord,
                                              self.cfg.restore_delay_ms)
-        except injector.FocusChangedError:
-            # Do NOT fire backspaces into whatever the user switched to.
+        except injector.FocusChangedError as e:
+            # Do NOT fire backspaces into whatever the user switched to —
+            # nor into the same window once a key, a click or another box
+            # may have moved the caret off the marker (MarkerMovedError).
+            #
+            # And do not put the text over something the user COPIED while
+            # it was on its way: a screenshot taken during the wait was
+            # replaced by the transcript here (the second review,
+            # 2026-09-23). The text is on the shelf (Copy) either way.
             with self._cursor_lock:
-                injector.set_text(cleaned)
+                kept_theirs = injector.copied_since(marker)
+                if not kept_theirs:
+                    injector.set_text(cleaned)
             beep("stop")
-            log.warning("you moved to another window — the transcript is on "
-                        "your clipboard, press %s to paste it (%d chars)",
-                        self.cfg.paste_chord, len(cleaned))
+            if kept_theirs:
+                log.warning("%s — you copied something while it was on its "
+                            "way, so that stays on your clipboard; the "
+                            "transcript is on the shelf (%d chars)%s", e,
+                            len(cleaned),
+                            "; the marker was left where it is"
+                            if shown else "")
+            else:
+                log.warning("%s — the transcript is on your clipboard, press "
+                            "%s to paste it (%d chars)%s", e,
+                            self.cfg.paste_chord, len(cleaned),
+                            "; the marker was left where it is"
+                            if shown else "")
             if item:
                 item.discard()
             return
@@ -6888,7 +6543,17 @@ class App:
         # halves are what say whether the decoder or the repair pass was
         # slow. `latency` (the decode) stays the stat and the transcripts
         # line, as it always was.
-        to_paste = time.monotonic() - started
+        #
+        # From the RELEASE, carried on the queue item (_on_stop), to the
+        # transcript's paste CHORD (injector.last_paste_at) — not from
+        # `started` to the end of inject(). Until 2026-09-24 it began after
+        # the marker's 0.35 s and ended after the 0.3 s restore wait that
+        # follows the chord, so it looked about right while measuring the
+        # wrong span (2026-09-23 audit, A32). A caller with no release to
+        # give (the tests, a stand-in injector) gets the old ends.
+        chord = getattr(injector, "last_paste_at", lambda: 0.0)()
+        landed = chord if chord >= pasting else time.monotonic()
+        to_paste = landed - (started if released is None else released)
         self._say(f"{seconds:.1f} s spoken -> {len(cleaned)} chars in "
                   f"{to_paste:.1f} s via {backend}"
                   + (f" ({latency:.1f} s decode + {repair_s:.1f} s repair)"
@@ -7003,85 +6668,6 @@ def word_error_rate(truth: str, guess: str) -> tuple[int, int]:
                            prev[j - 1] + (wa != wb)))
         prev = cur
     return prev[-1], len(a)
-
-
-def benchmark(cfg: config_mod.Config) -> int:
-    """Replay every corrected recording with the vocabulary on and off.
-
-    This is the whole reason recent\\ exists. "It feels better since I added
-    those words" is not evidence, and the vocabulary is the kind of feature
-    that is very easy to believe in and very hard to notice failing. Every
-    recording the user has corrected is a labelled test case: the audio, and
-    what it should have said.
-
-    One model, transcribed twice — building two would double the VRAM for
-    nothing, since the only difference is a prompt.
-    """
-    recent = Spool(paths.RECENT_DIR)
-    cases = [i for i in recent.pending() if i.meta.get("corrected")]
-    if not cases:
-        print("No corrected recordings yet, so there is nothing to measure.")
-        print(f"Dictate, then tap '{cfg.correct_hotkey}' and fix what it got")
-        print("wrong. Each correction becomes a test case here.")
-        if cfg.vocab.keep_audio <= 0:
-            print("\nNote: [vocab] keep_audio = 0, so no audio is being "
-                  "kept — corrections can never be replayed.")
-        return 0
-
-    v = vocab_mod.Vocab(paths.VOCAB_FILE, seed_terms=cfg.vocab.terms,
-                        max_terms=cfg.vocab.max_terms,
-                        replace_after_hits=cfg.vocab.replace_after_hits,
-                        hebrew_after_hits=cfg.vocab.hebrew_after_hits)
-    on = {"enabled": False}
-    from transcribers import local_kwargs
-    from transcribers.local_whisper import LocalWhisperTranscriber
-
-    print(f"{len(cases)} corrected recording(s). Loading the model...")
-    t = LocalWhisperTranscriber(
-        **local_kwargs(cfg, lambda: v.hotwords() if on["enabled"] else ""))
-
-    totals = {False: [0, 0], True: [0, 0]}
-    for item in cases:
-        truth = item.meta["corrected"]
-        audio = item.read()
-        line = {}
-        for flag in (False, True):
-            on["enabled"] = flag
-            guess = t.transcribe(audio)
-            if flag:                       # the repair pass runs in real use
-                guess, _ = v.apply(guess)
-            edits, words = word_error_rate(truth, guess)
-            totals[flag][0] += edits
-            totals[flag][1] += words
-            line[flag] = (edits, words, guess)
-        before = line[False][0] / max(1, line[False][1])
-        after = line[True][0] / max(1, line[True][1])
-        flag = "  " if abs(after - before) < 1e-9 else \
-               ("->" if after < before else "!!")
-        print(f"\n{flag} {item.wav_path.name}  ({item.seconds:.1f}s)  "
-              f"WER {before:.1%} -> {after:.1%}")
-        if after != before:
-            print(f"     off: {line[False][2]}")
-            print(f"     on : {line[True][2]}")
-            print(f"     want: {truth}")
-
-    off_wer = totals[False][0] / max(1, totals[False][1])
-    on_wer = totals[True][0] / max(1, totals[True][1])
-    print(f"\n{'=' * 60}")
-    print(f"vocabulary OFF: {off_wer:.2%} WER over {totals[False][1]} words")
-    print(f"vocabulary ON : {on_wer:.2%} WER over {totals[True][1]} words")
-    if on_wer < off_wer:
-        print(f"\n{(off_wer - on_wer) / off_wer:.0%} relative improvement.")
-    elif on_wer > off_wer:
-        print("\nThe vocabulary made it WORSE on this set. Likely causes: a "
-              "term seeded that you rarely say (Whisper emits prompted words "
-              "unbidden), or too many terms — try lowering max_terms.")
-    else:
-        print("\nNo difference on this set.")
-    print("\nNote: these are the recordings you chose to correct, so they "
-          "are the hard ones by construction — not a sample of normal "
-          "dictation.")
-    return 0
 
 
 def show_vocab(cfg: config_mod.Config) -> int:
@@ -7285,19 +6871,6 @@ def main() -> int:
                              "whose wheels it left under packs\ — no "
                              "window, no network — and exit 0 (the "
                              "installer's last step, 10.4)")
-    parser.add_argument("--benchmark", action="store_true",
-                        help="replay every recording you have corrected, "
-                             "with the learned vocabulary on and off, and "
-                             "report the word error rate of each")
-    parser.add_argument("--study", action="store_true",
-                        help="study every recording in recent\\ that was "
-                             "never corrected: re-decode it several ways, "
-                             "adjudicate, and report what the live pass "
-                             "got wrong (see study.py)")
-    parser.add_argument("--review", action="store_true",
-                        help="run the second reading over every recording a "
-                             "human has labelled and score its proposals "
-                             "against the truth (see review.py)")
     parser.add_argument("--vocab", action="store_true",
                         help="print what the app has learned (vocab.json) "
                              "and the hotword list it builds, then exit")
@@ -7617,43 +7190,6 @@ def main() -> int:
 
     if args.vocab:
         return show_vocab(cfg)
-
-    if (args.benchmark or args.study or args.review) and not paths.DEVELOPER:
-        # The owner's tools (D15): the benchmark, the study pass over the
-        # corpus and the review run belong to the checkout, and an
-        # installed copy has no corpus for them to work on.
-        print("that command is for the developer's checkout only.")
-        return 2
-
-    if args.benchmark:
-        return benchmark(cfg)
-
-    if args.study:
-        try:
-            import study as study_mod
-        except ImportError:
-            # There is one version now (2026-09-08), so this can no
-            # longer be answered with "switch to the other one" — the
-            # module is simply absent from the folder.
-            print("study.py is not in this folder, so there is no study "
-                  "engine to run.")
-            return 2
-        if getattr(cfg, "study", None) is None:
-            print("the settings have no [study] section.")
-            return 2
-        return study_mod.study_all(cfg, paths.DATA_DIR)
-
-    if args.review:
-        try:
-            import review as review_mod
-        except ImportError:
-            print("review.py is not in this folder, so there is no "
-                  "second reading to run.")
-            return 2
-        if getattr(cfg, "review", None) is None:
-            print("the settings have no [review] section.")
-            return 2
-        return review_mod.review_all(cfg, paths.DATA_DIR)
 
     if args.drain:
         return drain(cfg)

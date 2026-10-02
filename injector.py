@@ -28,7 +28,7 @@ import time
 import win32clipboard
 import win32con
 
-from hotkey import send_chord, send_key_times
+from hotkey import keys_sent, keys_typed, send_chord, send_key_times
 
 log = logging.getLogger("app")
 
@@ -428,16 +428,38 @@ def inject(text: str, paste_chord: str, restore_delay_ms: int) -> str:
                 blobs = None        # fall through to the old answer
         mark = claim_mark()
         paste_text(text, paste_chord, restore_delay_ms)
-        # `blobs` empty means the formats on there are not ones this module
-        # knows how to put back (RESTORABLE_FORMATS) — and restore_all([])
-        # would EMPTY the clipboard, which is worse than the honest "cannot
-        # restore it" the text path already answers with.
-        if blobs and not _claimed_since(mark):
-            if restore_all(blobs):
-                return "old clipboard restored"
-            return ("what was on your clipboard could not be put back; "
-                    "the transcript is on it")
-        return restore(state, since=mark)
+        # PASTED from here on, so nothing below may raise: a restore that
+        # could not open the clipboard is a status, not a failed paste.
+        # Raised, it told the worker the text had not landed when it had —
+        # an error cue and "paste failed" over text that was on screen —
+        # and under show_placeholder it left `shown` False over a "..."
+        # that was, so the transcript was pasted after it and the marker
+        # stayed (2026-09-23 audit, A109). Retried on restore_all's
+        # budget: this is the call that owes the user their clipboard.
+        try:
+            # `blobs` empty means the formats on there are not ones this
+            # module knows how to put back (RESTORABLE_FORMATS) — and
+            # restore_all([]) would EMPTY the clipboard, which is worse
+            # than the honest "cannot restore it" the text path answers
+            # with.
+            if blobs and not _claimed_since(mark):
+                if restore_all(blobs):
+                    return "old clipboard restored"
+                return ("what was on your clipboard could not be put "
+                        "back; the transcript is on it")
+            try:
+                return restore(state, since=mark)
+            except ClipboardBusyError:
+                if state[0] == "text" and restore_all(
+                        [(win32con.CF_UNICODETEXT,
+                          ((state[1] or "") + "\0").encode("utf-16-le"))]):
+                    return "old clipboard restored"
+                raise
+        except Exception as e:  # busy, or a pywin32 error out of a close
+            log.info("pasted, but the clipboard would not take its old "
+                     "contents back (%s)", type(e).__name__)
+            return ("pasted; what was on your clipboard could not be put "
+                    "back — the text is on it")
 
 
 def grab(copy_chord: str, select_all_chord: str,
@@ -919,38 +941,365 @@ def read_selection(copy_chord: str, *, timeout_ms: int = 600,
 
 
 def show_placeholder(text: str, paste_chord: str,
-                     restore_delay_ms: int) -> int:
-    """Drop a visible 'working on it' marker at the cursor and return the
-    HWND it landed in.
+                     restore_delay_ms: int) -> "Marker":
+    """Drop a visible 'working on it' marker at the cursor, and return the
+    Marker that remembers what was true when it went there (`.hwnd` is the
+    window it landed in).
 
     The marker reserves the spot: however long transcription takes, the
     transcript replaces this exact text in this exact window, so a slow
-    request cannot scatter output into whatever the user did next.
+    request cannot scatter output into whatever the user did next — and
+    replace_placeholder() erases it only while the Marker can still vouch
+    that the caret is sitting right after it.
     """
-    inject(text, paste_chord, restore_delay_ms)
-    return foreground_window()
+    # Counted from BEFORE the paste: a key typed after the chord lands
+    # after the marker, and it is exactly the key that must be seen.
+    marker = Marker(text)
+    try:
+        inject(text, paste_chord, restore_delay_ms)
+    except BaseException:
+        marker.close()
+        raise
+    marker.landed(foreground_window())
+    return marker
 
 
 def replace_placeholder(placeholder: str, text: str, paste_chord: str,
-                        restore_delay_ms: int, hwnd: int) -> str:
+                        restore_delay_ms: int, hwnd: int,
+                        marker: "Marker | None" = None) -> str:
     """Erase the placeholder and paste the transcript in its place.
 
-    Raises FocusChangedError if the user moved to another window — the
-    caller then falls back to leaving the text on the clipboard rather than
-    firing backspaces into an unrelated app.
+    Raises FocusChangedError if the user moved to another window, and its
+    MarkerMovedError if the window is the same but the caret may not be
+    after the marker any more (see Marker.moved) — the caller then falls
+    back to leaving the text on the clipboard rather than firing
+    backspaces at the user's own text.
     """
-    if hwnd and foreground_window() != hwnd:
-        raise FocusChangedError(
-            "focus moved away from the window holding the placeholder")
+    try:
+        _vouch(hwnd, marker)
+    finally:
+        if marker is not None:
+            marker.close()
     send_key_times("backspace", erase_units(placeholder))
     time.sleep(SETTLE_SECONDS)
     return inject(text, paste_chord, restore_delay_ms)
 
 
-def clear_placeholder(placeholder: str, hwnd: int) -> bool:
+def clear_placeholder(placeholder: str, hwnd: int,
+                      marker: "Marker | None" = None) -> bool:
     """Erase the placeholder with nothing to put back (failed for good).
-    Returns False if focus moved and it was left in place."""
-    if hwnd and foreground_window() != hwnd:
+    Returns False if it was left in place: focus moved, or the Marker can
+    no longer vouch for the caret."""
+    try:
+        _vouch(hwnd, marker)
+    except MarkerMovedError as e:
+        log.info("the marker was left where it is: %s", e)
         return False
+    except FocusChangedError:
+        return False
+    finally:
+        if marker is not None:
+            marker.close()
     send_key_times("backspace", erase_units(placeholder))
     return True
+
+
+def _vouch(hwnd: int, marker: "Marker | None") -> None:
+    """Raise unless the backspaces may go now.
+
+    The hands first, because the wait can be long and everything after it
+    has to be true at the END of it: a Backspace sent while a modifier is
+    physically down arrives as that chord — Ctrl+Backspace deletes a WORD
+    in Chrome, Electron and PowerShell, and the marker's three delete the
+    "..." and one or two of the user's words. Right Ctrl is the default
+    hold key, so this is simply starting the next dictation before the
+    last one has landed: measured off app.log, 1 of 256 erases in five
+    days fell inside a hold (2026-09-23 20:01). Nothing may be sent to
+    lift the key — an injected Right Ctrl up would END that next
+    dictation (hotkey.py stops a recording on the hotkey's key-up,
+    injected or not) — so the erase waits for the hand to come off, and
+    gives up to the clipboard after MODIFIER_WAIT_S.
+    """
+    waited = hands_off(MODIFIER_WAIT_S)
+    if waited is None:
+        raise MarkerMovedError("a modifier key was still held down after "
+                               f"{MODIFIER_WAIT_S:.0f} s")
+    if waited >= 0.05:
+        log.info("waited %.1f s for a held modifier key to come up before "
+                 "erasing the marker", waited)
+    if hwnd and foreground_window() != hwnd:
+        raise FocusChangedError(
+            "focus moved away from the window holding the placeholder")
+    why = marker.moved() if marker is not None else ""
+    if why:
+        raise MarkerMovedError(why)
+
+
+# ------------------------------------------------- is the caret still there
+
+class MarkerMovedError(FocusChangedError):
+    """The window is the one the marker went into, but something could have
+    moved the caret off it — a key, a click, another box taking the focus —
+    so the backspaces would eat the user's own text instead."""
+
+
+# THE BACKSPACES ARE BLIND, so they may only be sent while nothing could
+# have moved the caret. Until 2026-09-23 the one test was the top-level
+# window, and a top-level window is a whole browser, a whole VS Code, a
+# whole Slack: a Ctrl+Tab, a click into another box on the page, or a few
+# letters typed while the text was on its way, and three of the user's
+# own characters went where the marker was meant to be, the transcript
+# landed in the other box and the "..." stayed behind (2026-09-23 audit,
+# A29/A60). The marker stays up through the decode, the repair and up to
+# retry_seconds (45 s) of retries, and on a copy with no cloud key the
+# repair alone is 5-7 s.
+#
+# What is watched, all of it free, none of it touching the target app:
+#   - the keys a HAND sent: hotkey.keys_typed(), counted by the keyboard
+#     hook this app already runs (a key that reached the app, not a
+#     modifier, not a dictation key — see there);
+#   - the keys THIS APP sent: hotkey.keys_sent(). The second reading's
+#     Accept selects the whole field and pastes it back, a translate
+#     replaces a selection — the app's own hands move carets too;
+#   - every press of a mouse button, polled every CLICK_POLL_S while the
+#     marker is up — on our own cards too: a click on a notification card
+#     opens the other conversation in the same Claude window, which no
+#     other signal here can see. Only a press on one of ours that holds
+#     the foreground is not counted (ours_in_front: a screenshot's drag);
+#   - a modifier still held is waited out (main.App._hands_off, _vouch);
+#   - the control that has the keyboard focus inside the window
+#     (GetGUIThreadInfo), for a switch the others would not see. It sees
+#     one only in a classic app: in Chrome and in the Electron apps the
+#     focus IS the top-level window (measured 2026-09-23, the Claude app:
+#     Chrome_WidgetWin_1 both), so there a tab switch is seen by the
+#     Ctrl+Tab or the click that made it.
+# Any of them moved and the backspaces are not sent: the transcript goes to
+# the clipboard, the way a window switch always sent it.
+#
+# MEASURED 2026-09-23 against the real calls: the decision the erase waits
+# on (moved()) 0.10 ms median, 0.17 max; putting the watch up 0.24 ms,
+# before the paste it rides with; the watch itself 0.00 ms of CPU a second.
+#
+# Chosen over reading the marker back off the screen (Shift+Left, copy,
+# compare — the audit's first suggestion): the arrow keys move VISUALLY in
+# a right-to-left line, so in a Hebrew sentence Shift+Left selects forward
+# and finds nothing, and the copy chord it needs is a real interrupt in a
+# terminal (see CONSOLE_CLASSES) — whereas a backspace is logical
+# everywhere, which is why the erase is made of them.
+CLICK_POLL_S = 0.015      # a click holds its button 60-120 ms
+WATCH_MAX_S = 600.0       # a watch nobody closed stops; it vouches no more
+MODIFIER_WAIT_S = 5.0     # under the lock; main.App._hands_off waits first
+_BUTTONS = (0x01, 0x02, 0x04, 0x05, 0x06)   # left, right, middle, X1, X2
+_MODIFIERS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # shift, ctrl, alt, both wins
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_ulong), ("flags", ctypes.c_ulong),
+                ("hwndActive", ctypes.c_void_p),
+                ("hwndFocus", ctypes.c_void_p),
+                ("hwndCapture", ctypes.c_void_p),
+                ("hwndMenuOwner", ctypes.c_void_p),
+                ("hwndMoveSize", ctypes.c_void_p),
+                ("hwndCaret", ctypes.c_void_p),
+                ("rcCaret", ctypes.c_long * 4)]
+
+
+# On this module's own user32 handle, like everything above: see AGENTS.md
+# on argtypes leaking through ctypes.windll.
+user32.GetGUIThreadInfo.argtypes = [ctypes.c_ulong,
+                                    ctypes.POINTER(_GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = ctypes.c_int
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+user32.GetAsyncKeyState.restype = ctypes.c_short
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+user32.GetCursorPos.argtypes = [ctypes.POINTER(_POINT)]
+user32.GetCursorPos.restype = ctypes.c_int
+user32.WindowFromPoint.argtypes = [_POINT]
+user32.WindowFromPoint.restype = ctypes.c_void_p
+
+
+def ours_in_front() -> bool:
+    """One of OUR windows has the foreground and the pointer is over one
+    of ours — the screenshot selector, the capture editor, the ask card.
+    A press there is not a press in the user's field: the drag of a
+    screenshot taken while the text was on its way sent the finished
+    transcript to the clipboard over the picture (the second review,
+    2026-09-23). A card that does NOT take the foreground (the notify
+    card, the shelf, the dot) is exactly the one whose click can switch
+    the conversation under the marker, so it still counts."""
+    try:
+        if not is_our_window(foreground_window()):
+            return False
+        pt = _POINT()
+        if not user32.GetCursorPos(ctypes.byref(pt)):
+            return False
+        return is_our_window(int(user32.WindowFromPoint(pt) or 0))
+    except Exception:
+        return False
+
+
+def _gui_info(hwnd: int) -> "_GUITHREADINFO | None":
+    if not hwnd:
+        return None
+    try:
+        tid = user32.GetWindowThreadProcessId(hwnd, None)
+        if not tid:
+            return None
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if not user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
+            return None
+        return info
+    except Exception:
+        return None
+
+
+def focus_of(hwnd: int) -> int:
+    """The control holding the keyboard focus in `hwnd`'s thread, or 0."""
+    info = _gui_info(hwnd)
+    return int(info.hwndFocus or 0) if info is not None else 0
+
+
+# GUI_INMENUMODE | GUI_SYSTEMMENUMODE | GUI_POPUPMENUMODE
+_MENU_MODE = 0x04 | 0x08 | 0x10
+
+
+def menu_open(hwnd: int) -> bool:
+    """Is a menu open in `hwnd`'s thread? The keys would go to it."""
+    info = _gui_info(hwnd)
+    return info is not None and bool(info.flags & _MENU_MODE)
+
+
+def key_state(vk: int) -> int:
+    """GetAsyncKeyState: 0x8000 held now, 0x0001 pressed since the last
+    time anyone asked."""
+    return int(user32.GetAsyncKeyState(vk))
+
+
+def mouse_since(held: frozenset) -> tuple[frozenset, bool]:
+    """The buttons held now, and whether one went down since `held` was
+    taken: the held bit for a press still going, and Windows' own "pressed
+    since" bit for one that began and ended between two looks. A probe
+    with the held bit alone counted 1 of 20 presses of 1 ms and 7 of 20 of
+    5 ms (2026-09-23): a touchpad tap can be that short."""
+    now, since = set(), False
+    for b in _BUTTONS:
+        state = key_state(b)
+        if state & 0x8000:
+            now.add(b)
+        if state & 0x0001:
+            since = True
+    now = frozenset(now)
+    return now, since or bool(now - held)
+
+
+def modifiers_held() -> bool:
+    """Is Shift, Ctrl, Alt or Win physically down right now?"""
+    return any(key_state(vk) & 0x8000 for vk in _MODIFIERS)
+
+
+def copied_since(marker: "Marker | None") -> bool:
+    """Has anything been copied since `marker` landed? The worker asks it
+    before putting a transcript on the clipboard in the marker's place."""
+    return isinstance(marker, Marker) and \
+        clipboard_sequence() != marker.clip_seq
+
+
+def hands_off(wait_s: float) -> float | None:
+    """Wait until no modifier key is held; the seconds it took, or None if
+    one still was after `wait_s`."""
+    started = time.monotonic()
+    while modifiers_held():
+        if time.monotonic() - started >= wait_s:
+            return None
+        time.sleep(CLICK_POLL_S)
+    return time.monotonic() - started
+
+
+class _ClickWatch:
+    """Counts presses of a mouse button, on a thread of its own, until
+    stopped. A button already down when it starts is not a press."""
+
+    def __init__(self) -> None:
+        self.clicks = 0
+        self.expired = False
+        self.held: frozenset = frozenset()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="marker-clicks")
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            # The first look clears Windows' "pressed since" bits, which
+            # remember presses from before the marker.
+            self.held, _ = mouse_since(frozenset())
+            deadline = time.monotonic() + WATCH_MAX_S
+            while not self._stop.wait(CLICK_POLL_S):
+                if time.monotonic() > deadline:
+                    self.expired = True
+                    return
+                self.held, pressed = mouse_since(self.held)
+                if pressed and not ours_in_front():
+                    self.clicks += 1
+        except Exception:
+            self.expired = True           # a broken watch cannot vouch
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=0.2)
+
+
+class Marker:
+    """The "..." at the cursor, and what was true when it went there."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.hwnd = 0
+        self.focus = 0
+        # Before the marker's own paste: a key typed after its chord lands
+        # after the marker. The app's own sends are counted from landed(),
+        # after that paste, which is the one send that is the marker.
+        self._keys = keys_typed()
+        self._sent = keys_sent()
+        self.clip_seq = -1
+        self._watch = _ClickWatch()
+
+    def landed(self, hwnd: int) -> None:
+        self.hwnd = int(hwnd or 0)
+        self.focus = focus_of(self.hwnd)
+        self._sent = keys_sent()
+        # after the marker's own paste has put the clipboard back
+        self.clip_seq = clipboard_sequence()
+
+    def moved(self) -> str:
+        """"" while nothing could have moved the caret off the marker;
+        otherwise what could have, in words for the log (never the text)."""
+        watch = self._watch
+        watch.stop()
+        if watch.expired:
+            return "it was up too long to vouch for the spot"
+        held, pressed = mouse_since(watch.held)
+        if watch.clicks or ((pressed or held) and not ours_in_front()):
+            return "a mouse button was pressed while the text was on its way"
+        if keys_typed() != self._keys:
+            return "keys were pressed while the text was on its way"
+        if keys_sent() != self._sent:
+            return "the app itself typed in that window meanwhile"
+        now = focus_of(self.hwnd)
+        if self.focus and now and now != self.focus:
+            return "another box in that window has the focus now"
+        if menu_open(self.hwnd):
+            return "a menu is open in that window"
+        return ""
+
+    def close(self) -> None:
+        self._watch.stop()
+
+
