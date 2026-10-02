@@ -5070,11 +5070,30 @@ def test_a_taught_pair_stays_even_where_it_does_not_sound_alike() -> None:
         "תריץ את הבדיקות וה-Dev master עכשיו", [("מאסטר", "master")])
     assert out == "תריץ את הבדיקות והדסקית master עכשיו", out
     assert [u[:2] for u in undone] == [("והדסקית", "וה-Dev")], undone
-    # the same span, untaught: the sound-alike half stays all the same
+    # the same span, untaught: judged whole, and a span that fails goes
+    # back WHOLE — the decoder's own words, never half of a repair
     out, _ = polish_mod._keep_what_was_said(
         "תריץ את הבדיקות והדסקית מאסטר עכשיו",
         "תריץ את הבדיקות וה-Dev master עכשיו", [])
-    assert out == "תריץ את הבדיקות והדסקית master עכשיו", out
+    assert out == "תריץ את הבדיקות והדסקית מאסטר עכשיו", out
+
+
+def test_a_recut_phrase_is_judged_whole_and_never_half_put_back() -> None:
+    """His read-aloud test of 2026-10-02: he said "קונטרול ימני", the
+    decoder wrote "קונטרולים אני" — the same sounds, the word boundary
+    moved. A repair that re-cuts it must stand, because the sounds pass
+    as a WHOLE even though "אני" -> "ימני" alone does not; the first
+    version split the span word by word and would have pasted "קונטרול
+    אני", a word nobody said. And a re-cut that is wrong goes back whole,
+    to the decoder's words, never to a hybrid of the two."""
+    import polish as polish_mod
+    fix = polish_mod._keep_what_was_said
+    said = "לחצתי על קונטרולים אני כדי להתחיל"
+    out, undone = fix(said, "לחצתי על קונטרול ימני כדי להתחיל", [])
+    assert (out, undone) == ("לחצתי על קונטרול ימני כדי להתחיל", []), (out, undone)
+    out, undone = fix(said, "לחצתי על קונטרול שמאלי כדי להתחיל", [])
+    assert out == said, out
+    assert [u[:2] for u in undone] == [("קונטרולים אני", "קונטרול שמאלי")], undone
 
 
 def test_the_repair_puts_back_only_the_bad_span_and_keeps_the_rest() -> None:

@@ -513,9 +513,15 @@ def _atoms(a: list[str], b: list[str], i1: int, i2: int, j1: int, j2: int,
     must license ITSELF and never a neighbour that rode in with it:
     "והדסקית מאסטר" -> "וה-Dev master" with "מאסטר" -> "master" taught is
     one span, and before 2026-10-02's fix that pair waved "וה-Dev" through
-    with it. So a taught pair is cut out wherever it sits, what is left on
-    either side is cut again, equal-length leftovers pair word by word,
-    and anything else is judged whole."""
+    with it. So a taught pair is cut out wherever it sits and what is left
+    on either side is cut again — and whatever remains is judged WHOLE,
+    all or nothing. Word by word was tried and is wrong: the matcher's
+    span is often ONE re-cut phrase ("קונטרולים אני" for "קונטרול ימני",
+    from his own read-aloud test), whose sounds pass as a whole while
+    "אני" -> "ימני" alone does not, and putting back half of it pasted
+    "קונטרול אני", a word nobody said. Put back whole, a span is always
+    the decoder's own words — and that is also what he chose by hand when
+    he turned "dev master" back into "דסקיט מאסטר"."""
     if i1 == i2 and j1 == j2:
         return []
     if i1 < i2 and j1 < j2:
@@ -527,9 +533,6 @@ def _atoms(a: list[str], b: list[str], i1: int, i2: int, j1: int, j2: int,
             return (_atoms(a, b, i1, x, j1, y, glossary)
                     + [(x, x + len(h), y, y + len(m), True)]
                     + _atoms(a, b, x + len(h), i2, y + len(m), j2, glossary))
-        if i2 - i1 == j2 - j1 > 1:
-            return [(i1 + k, i1 + k + 1, j1 + k, j1 + k + 1, False)
-                    for k in range(i2 - i1)]
     return [(i1, i2, j1, j2, False)]
 
 
