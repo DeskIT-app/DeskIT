@@ -2599,6 +2599,32 @@ consented cloud calls and the problem reports). Before every Store submission th
 MSIX through `MakeAppx pack` + a local install with a self-signed test certificate on the runner and
 the same smoke test as step 12, so certification never sees a package that does not start.
 
+*Built 2026-10-02 (branch `store-msix`), and where it left the text above.* The account exists
+(individual, Israel, fee waived — SignPath had declined on 2026-09-28) and "DeskIT" was already
+reserved by someone else, so the Store name is **DeskIT App** (Store ID 9PCJJQV52NVZ; the owner refused
+"DeskIT - Hebrew Dictation", the app will grow past Hebrew); the tile and the Start menu still say DeskIT.
+The identity is written into `packaging\store\AppxManifest.xml` itself, not repository variables — it
+is public, and `test_the_store_package_is_the_reserved_identity_with_three_doors` recomputes the family
+hash (`d0r2ms77220w6`) from the Publisher. `store.yml` does not repeat steps 1-7: it installs the
+PUBLISHED release's installer on the runner (`/CHANNEL=store /NODOWNLOAD`, SHA-256 checked), takes
+python\ and app\ as they verify against that release's manifest, and `packaging\store\build_msix.ps1`
+adds the rest — so the Store bytes are the GitHub bytes. The launcher (`packaging\store\launcher.c`,
+not `packaging\stub\`) is compiled three times: `DeskIT.exe` (the application), `DeskITQuiet.exe`
+(the startup task's `--quiet` start) and `DeskITHook.exe` behind a `deskit-hook.exe` App Execution
+Alias — Claude Code's hook line names the alias in the package (`notify_hook.alias_path`), because a
+python started by path from outside cannot see the package's private AppData where the phone token is,
+and the WindowsApps path changes with every update. The launcher also points `PYTHONPYCACHEPREFIX` at
+`%LOCALAPPDATA%\DeskIT\cache\pycache` (the package folder is read-only). Inside the package
+`paths.PACKAGED` is true (asked of Windows, `GetCurrentPackageFamilyName`), `APP_ID` is the package's
+own `family!DeskIT` for the dot and the desk alike and the desk sets no relaunch line, and
+`autostart.apply` asks the StartupTask through Windows PowerShell, never re-asserted at start. Proven on
+this PC: MakeAppx accepts the manifest, the three launchers pass arguments, the working directory, the
+exit code and the hook's stdin/stdout through (a fake tree, hidden desktop). Not yet proven: the
+runner's install-and-start smoke test, and certification. **One difference a person will meet:**
+AppData writes are virtualised, so the Store copy's data lives under
+`%LOCALAPPDATA%\Packages\YoavShimron.DeskITApp_d0r2ms77220w6\LocalCache` and Windows deletes it with the
+app — there is no Keep on a Store uninstall; the account sync is what survives it.
+
 If the Store rejects the global hook outright (D20 revisit clause), phase 3 ends, GitHub + winget stays
 primary and the SignPath application of 10.8 moves up to phase 3.
 

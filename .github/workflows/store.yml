@@ -1,0 +1,157 @@
+# The Microsoft Store package — DISTRIBUTION_PLAN.md 10.7.
+#
+# Built FROM A PUBLISHED RELEASE, not from the source a second time: the
+# release's own installer (its SHA-256 checked against the release's
+# .sha256) is installed silently on the runner with /CHANNEL=store and
+# /NODOWNLOAD, and the tree it lays down — python\ and app\, which
+# `main.py --verify` checks against the release's MANIFEST.sha256 — is the
+# package's payload. So the Store copy is the GitHub copy byte for byte,
+# plus what packaging/store/build_msix.ps1 adds: the three launchers,
+# the logos, AppxManifest.xml, CHANNEL = store.
+#
+# Then a smoke test on the runner: a COPY of the package signed with a
+# throwaway certificate whose subject is the Store publisher, installed,
+# the family name checked against the one Partner Center gave, the
+# app started the way the Start menu starts it until it writes its log
+# inside the package's private AppData, the Claude Code alias run once,
+# everything removed. The unsigned package is the artifact; the owner
+# uploads it in Partner Center (DeskIT App, 9PCJJQV52NVZ), and the Store
+# signs it.
+#
+# On every published release that is not a pre-release, by hand for any
+# release tag (`gh workflow run store.yml -f tag=v1.0.5`), and on a push
+# that changes the packaging itself — on any branch, wrapping the latest
+# release — because a workflow GitHub has not seen on main cannot be
+# started by hand, and a change here should meet the runner before main.
+name: store
+
+on:
+  release:
+    types: [published]
+  push:
+    paths:
+      - "packaging/store/**"
+      - ".github/workflows/store.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "the release to package (vX.Y.Z); empty = the latest"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  msix:
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      FAMILY: YoavShimron.DeskITApp_d0r2ms77220w6
+      PUBLISHER: CN=F51974FB-3E8A-4445-A554-758D2DCE56BB
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.event.release.tag_name }}"
+          if (-not $tag) { $tag = "${{ inputs.tag }}" }
+          if (-not $tag) { $tag = (gh release view --repo "${{ github.repository }}" --json tagName -q .tagName) }
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw "'$tag' is not a release tag vX.Y.Z" }
+          $version = $Matches[1]
+          gh release download $tag --repo "${{ github.repository }}" --dir dl `
+            -p "DeskIT-Setup-$version.exe" -p "DeskIT-Setup-$version.exe.sha256"
+          $want = ((Get-Content "dl/DeskIT-Setup-$version.exe.sha256" -Raw).Trim() -split "\s+")[0].ToLower()
+          $got = (Get-FileHash "dl/DeskIT-Setup-$version.exe" -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $want) { throw "the installer's SHA-256 is $got, the release says $want" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "packaging DeskIT $version ($tag), installer $got"
+
+      - name: The release's tree
+        run: |
+          $version = "${{ steps.release.outputs.version }}"
+          $log = "$env:RUNNER_TEMP\deskit-setup.log"
+          $p = Start-Process -FilePath "dl/DeskIT-Setup-$version.exe" -Wait -PassThru -ArgumentList `
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOLAUNCH", "/NODOWNLOAD", "/CHANNEL=store", "/LOG=$log"
+          if ($p.ExitCode) { Get-Content $log; throw "the installer exited $($p.ExitCode)" }
+          $app = "$env:LOCALAPPDATA\Programs\DeskIT"
+          # python\ and app\ whole, minus bytecode caches (robocopy: below 8
+          # is success), and the papers beside them minus Inno's
+          # uninstaller. Not one robocopy with /XF unins*: /XF matches at
+          # every depth, and it took pip's commands\uninstall.py out of
+          # site-packages (the first run, 2026-10-02 — --verify caught it).
+          foreach ($part in "python", "app") {
+            robocopy "$app\$part" "pkg\$part" /E /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw "robocopy $part failed ($LASTEXITCODE)" }
+          }
+          $global:LASTEXITCODE = 0
+          Get-ChildItem $app -File | Where-Object { $_.Name -notlike "unins*" } | Copy-Item -Destination pkg
+          Get-ChildItem pkg -File | ForEach-Object { "root: $($_.Name)" }
+          $env:DESKIT_HOME = "$env:RUNNER_TEMP\deskit-verify-home"
+          $verdict = & pkg\python\python.exe -B pkg\app\main.py --verify
+          Remove-Item Env:DESKIT_HOME
+          $verdict
+          if ($LASTEXITCODE) { throw "the tree does not verify against the release's manifest" }
+          $u = Start-Process -FilePath "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($u.ExitCode) { throw "the uninstaller exited $($u.ExitCode)" }
+          Get-ChildItem -Recurse pkg -Include __pycache__ -Directory | Remove-Item -Recurse -Force
+
+      - name: The package
+        run: |
+          ./packaging/store/build_msix.ps1 -Tree pkg -Version "${{ steps.release.outputs.version }}" `
+            -Out dist -Python pkg\python\python.exe
+          Get-ChildItem dist
+
+      - name: Install, start, the alias, remove (a signed copy)
+        run: |
+          $msix = (Get-ChildItem dist -Filter *.msix | Select-Object -First 1).FullName
+          $cert = New-SelfSignedCertificate -Type Custom -Subject $env:PUBLISHER -KeyUsage DigitalSignature `
+            -FriendlyName "DeskIT store smoke" -CertStoreLocation Cert:\CurrentUser\My `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+          Export-Certificate -Cert $cert -FilePath "$env:RUNNER_TEMP\smoke.cer" | Out-Null
+          Import-Certificate -FilePath "$env:RUNNER_TEMP\smoke.cer" -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object { [version]($_.Directory.Parent.Name) } | Select-Object -Last 1
+          $smoke = "$env:RUNNER_TEMP\smoke.msix"
+          Copy-Item $msix $smoke
+          & $signtool.FullName sign /fd SHA256 /sha1 $cert.Thumbprint $smoke
+          if ($LASTEXITCODE) { throw "signtool failed" }
+          Add-AppxPackage -Path $smoke
+          $pkg = Get-AppxPackage -Name YoavShimron.DeskITApp
+          if (-not $pkg) { throw "the package is not installed" }
+          if ($pkg.PackageFamilyName -ne $env:FAMILY) { throw "family $($pkg.PackageFamilyName), Partner Center says $env:FAMILY" }
+          Write-Host "installed $($pkg.PackageFullName) at $($pkg.InstallLocation)"
+          $alias = "$env:LOCALAPPDATA\Microsoft\WindowsApps\deskit-hook.exe"
+          if (-not (Test-Path $alias)) { throw "no deskit-hook.exe alias" }
+          Start-Process explorer.exe -ArgumentList "shell:AppsFolder\$env:FAMILY!DeskIT"
+          $cache = "$env:LOCALAPPDATA\Packages\$env:FAMILY\LocalCache"
+          $deadline = (Get-Date).AddSeconds(120)
+          $log = $null
+          while (-not $log -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            $log = Get-ChildItem -Recurse $cache -Filter app.log -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          Get-Process DeskIT, pythonw -ErrorAction SilentlyContinue | Select-Object Name, Id, Path | Format-Table -AutoSize | Out-String | Write-Host
+          if (-not $log) { throw "no app.log under $cache in 120 s: the app did not start inside the package" }
+          Write-Host "app.log at $($log.FullName):"
+          Get-Content $log.FullName -Tail 25
+          '{"hook_event_name": "Stop"}' | & $alias
+          if ($LASTEXITCODE) { throw "deskit-hook.exe exited $LASTEXITCODE" }
+          Get-Process DeskIT, pythonw -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+          Remove-AppxPackage -Package $pkg.PackageFullName
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskIT-App-${{ steps.release.outputs.version }}-msix
+          path: |
+            dist/*.msix
+            dist/*.msix.sha256
+          retention-days: 30
