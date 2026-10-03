@@ -16295,6 +16295,39 @@ def test_a_shot_is_saved_where_the_config_says_and_reloads(tmp=None) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_pictures_and_recordings_go_to_windows_own_folders() -> None:
+    """Since 2026-10-03 the defaults are Windows' Pictures\\DeskIT and
+    Videos\\DeskIT (the owner's Store walk, item 17): "captures" under the
+    data folder was a place nobody found, and a Store uninstall deleted it
+    with the app. `{pictures}` / `{videos}` resolve through
+    SHGetKnownFolderPath — the real folders on this PC, wherever they were
+    moved — a relative name still means the data folder, and the pictures
+    folder, set by a person, takes the camera's photos with it
+    (config.FOLLOWERS). Nothing here creates a folder."""
+    pictures, videos = paths.known_folder("pictures"), paths.known_folder("videos")
+    assert pictures.is_absolute() and videos.is_absolute() and pictures != videos
+    assert paths.resolve_folder("{pictures}/DeskIT") == pictures / "DeskIT"
+    assert paths.resolve_folder("{Videos}\\DeskIT") == videos / "DeskIT"
+    assert paths.resolve_folder("{pictures}") == pictures
+    assert paths.resolve_folder("captures") == paths.DATA_DIR / "captures", \
+        "a relative name moved"
+    cfg = config_mod.load(REPO / "defaults.toml")
+    assert paths.resolve_folder(cfg.capture.folder) == pictures / "DeskIT"
+    assert paths.resolve_folder(cfg.capture.clip_folder) == videos / "DeskIT"
+    assert cfg.camera.folder == cfg.capture.folder, "two places to look for pictures"
+    assert config_mod.with_followers({"capture.folder": "x"}) == \
+        {"capture.folder": "x", "camera.folder": "x"}
+    assert config_mod.with_followers({"capture.folder": "x", "camera.folder": "y"})["camera.folder"] == "y"
+    assert config_mod.with_followers({"capture.clip_folder": "z"}) == {"capture.clip_folder": "z"}
+    d, s, t = _layer_files()
+    try:
+        config_mod.save({"capture.folder": str(d / "pics")}, settings=s, state=t)
+        written = config_mod.read_settings(s)
+        assert written["capture.folder"] == written["camera.folder"] == str(d / "pics")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_two_settings_that_change_the_gesture_are_actually_read(
 ) -> None:
     """A setting that is declared and never read is a setting that lies.
@@ -16403,7 +16436,8 @@ def test_capture_section_parses_with_defaults_and_overrides() -> None:
             "a recorder that quietly opens the microphone is a surprise"
         assert defaults.hotkey == "ctrl+f11"
         assert defaults.record_hotkey == "ctrl+f12"
-        assert defaults.folder == "captures"
+        assert defaults.folder == "{pictures}/DeskIT"
+        assert defaults.clip_folder == "{videos}/DeskIT"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -16561,7 +16595,8 @@ def test_the_shipped_config_carries_the_capture_section() -> None:
     cfg = config_mod.load(here / "defaults.toml")
     assert cfg.capture.audio == "off", "the shipped default must be off"
     ignored = (here / ".gitignore").read_text("utf-8")
-    assert Path(cfg.capture.folder).is_absolute() \
+    where = paths.resolve_folder(cfg.capture.folder)
+    assert here not in where.parents \
         or f"{cfg.capture.folder}/" in ignored, \
         "pictures of this screen must not be committable"
 
@@ -17755,7 +17790,7 @@ def test_camera_section_parses_with_defaults_and_overrides() -> None:
             "the commonest thing held up to a webcam has writing on it"
         assert defaults.timer == 0
         assert defaults.hotkey == "ctrl+f6"
-        assert defaults.folder == "captures", "one place to look for pictures"
+        assert defaults.folder == "{pictures}/DeskIT", "one place to look for pictures"
 
         for bad, word in ((("timer", "5"), "timer"),
                           (("size", '"720p"'), "size"),
@@ -17791,7 +17826,8 @@ def test_the_shipped_config_carries_the_camera_section() -> None:
     assert cfg.camera.mirror is False
     assert cfg.camera.timer == 0
     ignored = (here / ".gitignore").read_text("utf-8")
-    assert Path(cfg.camera.folder).is_absolute() \
+    where = paths.resolve_folder(cfg.camera.folder)
+    assert here not in where.parents \
         or f"{cfg.camera.folder}/" in ignored, \
         "photographs of this room must not be committable"
 
@@ -32311,8 +32347,8 @@ def test_defaults_toml_carries_no_owner_values():
     flat = config_mod.defaults_flat()
     assert flat["audio.device"] == "" and flat["camera.device"] == ""
     assert flat["visual_qa.voice"] == ""
-    assert flat["capture.folder"] == "captures" and flat["camera.folder"] == "captures"
-    assert flat["capture.clip_folder"] == ""
+    assert flat["capture.folder"] == "{pictures}/DeskIT" and flat["camera.folder"] == "{pictures}/DeskIT"
+    assert flat["capture.clip_folder"] == "{videos}/DeskIT"
     assert flat["vocab.terms"] == []
     assert flat["server.enabled"] is False
     for key in ("dot.x", "dot.y", "hint.x", "hint.y", "notify.x", "notify.y",
@@ -36434,7 +36470,7 @@ def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
     sees the computer page (the owner, 2026-09-19 evening: "I do not
     want the installation page"): Next from the microphone lands on the
     sentence page, Back from there on the microphone, and the counter
-    counts seven. A copy with one thing to download still gets the page."""
+    counts eight. A copy with one thing to download still gets the page."""
     import firstrun
 
     cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
@@ -36458,7 +36494,7 @@ def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
             w.page = firstrun.PAGES.index("say")
             w._show_page()
             assert [c for c in w.body.winfo_children()], "no page drawn"
-            assert "of 7" in _wizard_words(w), "the counter still counts the hidden page"
+            assert "of 8" in _wizard_words(w), "the counter still counts the hidden page"
         finally:
             try:
                 w._close()            # the microphone stream too, not only the window
@@ -36483,7 +36519,7 @@ def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
             w._show_page()
             w._next()
             assert w.name == "computer", "one download, and the page was skipped"
-            assert "of 8" in _wizard_words(w)
+            assert "of 9" in _wizard_words(w)
         finally:
             try:
                 w._close()
@@ -36662,6 +36698,97 @@ def test_the_sentence_page_loads_the_model_before_it_records():
             w.root.destroy()
 
 
+def test_the_sentence_page_asks_before_going_on_untried():
+    """Next on "Say one sentence" with nothing tried asks once, INSIDE the
+    page (the owner's Store walk, 2026-10-03, item 10: the model loaded in
+    2.1 s, nothing recorded, and Next went straight on): his words on a
+    card where the transcript would be, [Try it] puts the page back as it
+    was, [Continue without trying] goes straight to the next page, and
+    Next pressed with the question up is the same answer. A recording
+    made — landed or not — and the page goes on without asking; so does
+    a model that is not there to try. No Skip any more: one way on (his
+    answer)."""
+    import firstrun
+    import steps
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers={"portable": True})
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            assert not hasattr(w, "skip") and "skip" not in firstrun.WORDS, "Skip came back"
+            w.page = firstrun.PAGES.index("say")
+            w._show_page()
+            w._next()
+            assert w.name == "say" and w.ask_card is not None, "Next went on untried"
+            assert firstrun.WORDS["say.ask"] in _wizard_words(w)
+            assert not w.result_card.winfo_manager(), "the question sits where the transcript would"
+            w.ask_try._command()                              # [Try it]
+            assert w.ask_card is None and w.result_card.winfo_manager() == "pack"
+            assert w.name == "say"
+            w._next()
+            assert w.ask_card is not None, "still untried: it asks again"
+            w.ask_go._command()                               # [Continue without trying]
+            assert w.name == "keys", "Continue without trying is one press, not two"
+            w._back()
+            w._next()
+            w._next()                                         # Next, the question up
+            assert w.name == "keys"
+            # the page's own button closes the question before its job
+            w._back()
+            w._next()
+            assert w.ask_card is not None
+            w._load_model = lambda: None
+            w._say_action()
+            assert w.ask_card is None and w.name == "say"
+            # a recording made, whatever came of it: Next goes on
+            w._backend = object()
+            w.listener.record = lambda seconds: (b"", 0.0)
+            w._record()
+            assert w._tried
+            w._busy = False
+            w._next()
+            assert w.name == "keys" and w.ask_card is None
+        finally:
+            try:
+                w._close()
+            except Exception:                                # noqa: BLE001
+                pass
+            w = None
+            gc.collect()
+        # nothing to try yet: a model still to download goes on without asking
+        thing = type("T", (), {"name": "m", "bytes": 5, "repo": "m"})()
+        offers = {"portable": False, "model": thing, "pack": None, "detector": None,
+                  "recording": None, "tier": "gpu"}
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers,
+                                stepper=lambda kind, thing: steps.Step(
+                                    title="t", body="b", size_line="5 B", total=5,
+                                    work=lambda progress, cancel, stage: None, name=kind))
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("computer")       # where the runs are made
+            w._show_page()
+            w.page = firstrun.PAGES.index("say")
+            w._show_page()
+            assert w._model_missing()
+            w._next()
+            assert w.name == "keys" and w.ask_card is None, "asked to try a model that is not there"
+        finally:
+            try:
+                w._close()
+            except Exception:                                # noqa: BLE001
+                pass
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_wizard_leaves_no_tk_object_for_another_thread_to_bury():
     """The stranger's copy died 34 s into its first dictation (2026-09-19,
     spawn.log: "Tcl_AsyncDelete: async handler deleted by the wrong
@@ -36815,18 +36942,26 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             assert w.result.installed_pack
             pump(w, lambda: w.say._enabled, seconds=3)
             assert w.say._enabled
-            w._next()
+            w._next()                     # nothing tried: the page asks once
+            assert w.name == "say" and w.ask_card is not None
+            w._next()                     # Next again, the question up: go on
             assert w.name == "keys"
             w._next()
+            assert w.name == "screen"
+            assert w.screen_switches["snip"].get() is True, "win+shift+s ships"
+            w.screen_switches["snip"].toggle()                # written at once, like a key
+            assert config_mod.read_settings(s).get("capture.capture_hotkey") == "ctrl+f11"
+            w._next()
             assert w.name == "extras"
-            assert set(w.switches) == {"cloud", "awake", "updates", "claude", "snip"}, "D33's five"
+            assert set(w.switches) == {"cloud", "awake", "updates", "claude"}, \
+                "D33's five, the Snipping-Tool row moved to the screen page"
             assert w.switches["updates"].get() is True, "the shipped default is on (D21)"
             assert w.switches["awake"].get() is True, "the default is what the owner runs (D34)"
-            assert w.switches["snip"].get() is True and w.switches["claude"].get() is False
+            assert w.switches["claude"].get() is False
             w.switches["awake"].toggle()
-            w.switches["snip"].toggle()
             w.switches["claude"].toggle()
-            assert w.extras["awake"] is False and w.extras["snip"] is False and w.extras["claude"]
+            assert w.extras["awake"] is False and w.extras["claude"]
+            assert "snip" not in w.extras
             w._next()
             assert w.name == "done"
             written = config_mod.read_settings(s)
@@ -37719,7 +37854,100 @@ def test_the_wizard_rebinds_a_key_on_its_own_page():
             # leaving the page while listening stops listening
             w._rebind("punctuate_hotkey")
             w._next()
-            assert w.name == "extras" and w._capturing is None and not w._key_binds
+            assert w.name == "screen" and w._capturing is None and not w._key_binds
+        finally:
+            try:
+                w._close()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_screen_page_holds_the_two_keys_and_their_folders():
+    """Screenshots and recordings, a page of their own after Keys (the
+    owner's Store walk, 2026-10-03, items 11 and 17 — he chose it over one
+    crowded Keys page): the screenshot key with the Win+Shift+S switch
+    under it (moved off Extras, where it silently replaced a key picked one
+    page before) and the "save every screenshot" switch, the recording
+    key, each with "Saved in <the full path>" and [Browse…]. The defaults
+    are Windows' own Pictures\\DeskIT and Videos\\DeskIT; every change is
+    written the moment it is made; the pictures folder takes the camera's
+    photos with it; a path too long for the row keeps its end."""
+    import tkinter.filedialog as fd
+
+    import firstrun
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    home = Path(r"C:\Users\Dana")                         # never created: only drawn
+    answer = {"path": ""}
+
+    def row(path):
+        return firstrun.short_path(str(path), firstrun.FOLDER_W)
+
+    def known(name):
+        return home / {"pictures": "Pictures", "videos": "Videos"}[name]
+
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(paths, "known_folder", known), \
+            _patched(fd, "askdirectory", lambda **kw: answer["path"]):
+        try:
+            w = firstrun.Wizard(cfg, facts={}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("keys")
+            w._show_page()
+            assert set(w.caps) == {"hotkey", "latch_hotkey", "punctuate_hotkey", "visual_qa_hotkey"}
+            w._next()
+            assert w.name == "screen"
+            assert set(w.caps) == {"capture_hotkey", "record_hotkey"}
+            words = _wizard_words(w)
+            for key in ("keys.shot", "keys.record", "screen.snip", "screen.save_all"):
+                assert firstrun.WORDS[key] in words, key
+            assert w.folder_labels["pictures"].cget("text") == str(home / "Pictures" / "DeskIT")
+            assert w.folder_labels["videos"].cget("text") == str(home / "Videos" / "DeskIT")
+            # the Snipping-Tool switch says what the key is, and moves it
+            snip = w.screen_switches["snip"]
+            assert snip.get() is True and w.cfg.capture_hotkey == firstrun.SNIP_KEY
+            snip.toggle()
+            assert config_mod.read_settings(s).get("capture.capture_hotkey") == firstrun.PLAIN_SNIP_KEY
+            cap = w.caps["capture_hotkey"]
+            assert cap.itemcget(cap._label, "text") == "Ctrl+F11"
+            # a key picked by hand: the switch follows it
+            w._apply_key("capture_hotkey", firstrun.SNIP_KEY)
+            assert snip.get() is True
+            w._apply_key("capture_hotkey", "ctrl+shift+f3")
+            assert snip.get() is False and w.cfg.capture_hotkey == "ctrl+shift+f3"
+            # every screenshot saved, or only the ones Save is pressed on
+            save_all = w.screen_switches["save_all"]
+            assert save_all.get() is False, "the shipped default keeps only what you Save"
+            save_all.toggle()
+            assert config_mod.read_settings(s).get("capture.always_save") is True
+            assert w.cfg.capture.always_save is True
+            # Browse: a cancelled dialog changes nothing
+            w._browse("pictures")
+            assert "capture.folder" not in config_mod.read_settings(s)
+            answer["path"] = str(d / "my pictures")
+            w._browse("pictures")
+            written = config_mod.read_settings(s)
+            assert written.get("capture.folder") == str(d / "my pictures")
+            assert written.get("camera.folder") == str(d / "my pictures"), "the photos stayed behind"
+            assert w.folder_labels["pictures"].cget("text") == row(d / "my pictures")
+            answer["path"] = str(d / "clips")
+            w._browse("videos")
+            assert config_mod.read_settings(s).get("capture.clip_folder") == str(d / "clips")
+            assert w.folder_labels["videos"].cget("text") == row(d / "clips")
+            # a long path keeps the drive and the end — the folder itself
+            long_one = "C:\\" + "\\".join(["a-rather-long-folder-name"] * 12) + "\\DeskIT"
+            shown = firstrun.short_path(long_one, firstrun.FOLDER_W)
+            assert shown.startswith("C:\\\u2026") and shown.endswith("\\DeskIT"), shown
+            assert firstrun.short_path("C:\\x\\DeskIT", firstrun.FOLDER_W) == "C:\\x\\DeskIT"
+            w._next()
+            assert w.name == "extras" and "snip" not in w.switches
         finally:
             try:
                 w._close()
@@ -37825,7 +38053,7 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     assert "import main" not in wiz, "the wizard must not import main.py"
     assert 'config_mod.save({"setup.done": True})' in wiz
     assert firstrun.PAGES == ("welcome", "account", "mic", "computer", "say", "keys",
-                              "extras", "done")
+                              "screen", "extras", "done")
     assert firstrun.GUIDE_PRIVACY_CHECK.startswith(paths.PAGES_URL)
     assert firstrun.PRIVACY_URL == f"{paths.PAGES_URL}/privacy"
 
@@ -38230,6 +38458,15 @@ def test_the_folder_settings_have_a_picker_beside_the_field():
             answer["path"] = str(d / "my pictures")
             board._browse_folder(setting)
             assert config_mod.read_settings(d / "s.toml").get("capture.folder") == str(d / "my pictures")
+            assert config_mod.read_settings(d / "s.toml").get("camera.folder") == str(d / "my pictures"), \
+                "the row says photos land there too, and they stayed behind"
+            # the field shows where the files ARE, never "{pictures}/DeskIT"
+            # or a bare "captures" (the owner's Store walk, item 17)
+            assert dash._shown_for("capture.folder", "{pictures}/DeskIT") == \
+                str(paths.known_folder("pictures") / "DeskIT")
+            assert dash._shown_for("capture.folder", "captures") == str(paths.DATA_DIR / "captures")
+            assert dash._shown_for("capture.clip_folder", "") == ""
+            assert dash._shown_for("capture.quality", "sharp") == "sharp"
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
