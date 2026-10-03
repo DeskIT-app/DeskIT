@@ -925,6 +925,51 @@ def test_gemini_rotates_past_an_exhausted_model() -> None:
     assert calls == ["alive"], calls
 
 
+def test_gemini_passes_over_a_retired_or_busy_model() -> None:
+    """A key made in October 2026 gets 404 "no longer available to new
+    users" from gemini-2.5-flash, the first model on the list: the 404
+    must rest that model and let the next answer, not end the press. A
+    503 "high demand" the same. Every model passed over and none spent
+    → the last error, not a quota message."""
+    import gemini_pool
+    from transcribers.base import RateLimitError, TranscriptionError
+
+    cooldown, strikes, tried = {}, {}, []
+
+    def attempt(model):
+        tried.append(model)
+        if model == "retired":
+            raise gemini_pool.APIError(404, "no longer available to new users")
+        if model == "busy":
+            raise gemini_pool.APIError(503, "high demand")
+        return "ok"
+
+    assert gemini_pool.rotate(["retired", "busy", "alive"], cooldown, strikes,
+                              attempt) == "ok"
+    assert tried == ["retired", "busy", "alive"], tried
+    assert cooldown["retired"] - time.monotonic() > 3600
+    assert 0 < cooldown["busy"] - time.monotonic() <= 60
+    tried.clear()
+    assert gemini_pool.rotate(["retired", "busy", "alive"], cooldown, strikes,
+                              attempt) == "ok"
+    assert tried == ["alive"], tried
+    try:
+        gemini_pool.rotate(["retired", "busy"], {}, {}, attempt)
+    except RateLimitError as e:
+        raise AssertionError(f"a quota message for a busy model: {e}")
+    except TranscriptionError as e:
+        assert "503" in str(e) and "busy" in str(e), e
+    else:
+        raise AssertionError("every model passed over and nothing raised")
+    # any other status still ends the press at once (a 400 is OUR fault)
+    tried.clear()
+    try:
+        gemini_pool.rotate(["bad", "alive"], {}, {}, lambda m: (
+            tried.append(m), (_ for _ in ()).throw(gemini_pool.APIError(400, "bad")))[1])
+    except TranscriptionError as e:
+        assert "400" in str(e) and tried == ["bad"], (e, tried)
+
+
 def test_gemini_reports_when_every_model_is_spent() -> None:
     from transcribers.base import RateLimitError
     from transcribers.gemini import GeminiTranscriber
@@ -5490,8 +5535,9 @@ def test_translator_falls_back_to_ollama_when_quota_is_spent() -> None:
         def translate(self, text):
             return "translated locally"
 
+    t._cfg = _translate_cfg("gemini")
     t._cloud, t._local = Spent(), Local()
-    t._cloud_backend = lambda: t._cloud
+    t._cloud_backend = lambda name="gemini": t._cloud if name == "gemini" else None
     t._local_backend = lambda: t._local
     assert t.translate("שלום") == ("translated locally", "ollama")
 
@@ -5518,9 +5564,67 @@ def test_translator_falls_back_on_a_plain_api_error_too() -> None:
         def translate(self, text):
             return "local answer"
 
-    t._cloud_backend = lambda: Broken()
+    t._cfg = _translate_cfg("gemini")
+    t._cloud_backend = lambda name="gemini": Broken() if name == "gemini" else None
     t._local_backend = lambda: Local()
     assert t.translate("שלום") == ("local answer", "ollama")
+
+
+def _translate_cfg(prefer: str):
+    from types import SimpleNamespace
+    return SimpleNamespace(translate=SimpleNamespace(prefer=prefer))
+
+
+def test_translator_asks_groq_when_gemini_cannot_answer() -> None:
+    """Item 12 of the store walk: one Groq key must be enough to
+    translate. Gemini spent or missing → Groq, BEFORE Ollama (a stranger
+    has no Ollama at all); `prefer = "groq"` puts Groq first; the press
+    reaches Ollama only when neither cloud answers."""
+    import translate as translate_mod
+    from transcribers.base import RateLimitError
+
+    class Leg:
+        def __init__(self, name, fail=None):
+            self.name, self.fail, self.calls = name, fail, 0
+
+        def translate(self, text):
+            self.calls += 1
+            if self.fail:
+                raise self.fail
+            return f"via {self.name}"
+
+    def chain(prefer, gemini, groq):
+        t = translate_mod.Translator.__new__(translate_mod.Translator)
+        t._cfg = _translate_cfg(prefer)
+        legs = {"gemini": gemini, "groq": groq}
+        t._cloud_backend = lambda name="gemini": legs.get(name)
+        t._local_backend = lambda: Leg("ollama")
+        return t
+
+    spent = Leg("gemini", RateLimitError("spent", per_day=True))
+    groq = Leg("groq")
+    assert chain("gemini", spent, groq).translate("שלום") == ("via groq", "groq")
+    assert spent.calls == 1 and groq.calls == 1
+    assert chain("gemini", None, Leg("groq")).translate("שלום") == ("via groq", "groq")
+    first = Leg("gemini")
+    assert chain("groq", first, Leg("groq")).translate("שלום") == ("via groq", "groq")
+    assert first.calls == 0, "prefer = groq still asked Gemini first"
+    assert chain("gemini", None, None).translate("שלום") == ("via ollama", "ollama")
+    assert chain("ollama", Leg("gemini"), Leg("groq")).translate("שלום") == ("via ollama", "ollama")
+    assert translate_mod.ORDER == ("gemini", "groq", "ollama")
+
+
+def test_translator_names_the_missing_keys_without_holding_them() -> None:
+    """missing_keys() is what the Home row is built from: presence only,
+    through secretstore.find_key, and the value never kept."""
+    import translate as translate_mod
+
+    with _test_cred_prefix() as store:
+        assert translate_mod.Translator.missing_keys() == ["gemini", "groq"]
+        store.set("groq", "gsk_fixture_missing_" + "q" * 20)
+        assert translate_mod.Translator.missing_keys() == ["gemini"]
+    src = inspect.getsource(translate_mod.Translator.missing_keys)
+    assert "del key" in src and "secretstore.find_key" in src
 
 
 def test_translate_settings_are_present_in_the_real_config() -> None:

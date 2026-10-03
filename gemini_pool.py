@@ -24,6 +24,10 @@ log = logging.getLogger("app")
 # without restarting the app.
 PER_DAY_COOLDOWN_S = 30 * 60
 MAX_COOLDOWN_S = 60 * 60
+# Answers that say "not this model, try another" (rotate's docstring): a
+# retired model (404) does not come back, so it rests for the life of the
+# process in practice; an overloaded one (503) is asked again a minute on.
+PASS_OVER_S = {404: 24 * 60 * 60, 503: 60}
 
 
 def parse_429(e) -> tuple[float, bool, int | None]:
@@ -86,10 +90,21 @@ def rotate(models: list[str], cooldown: dict[str, float],
     turns a hard stop after 20 requests into a much longer runway at no
     cost. Raises RateLimitError only once EVERY model is spent, so callers
     can treat that as "the cloud is done for today" and fall back locally.
+
+    A model Google has RETIRED (404) or that is overloaded right now (503)
+    is passed over the same way — rested, the next one tried. Measured
+    2026-10-03 with a key made that month: gemini-2.5-flash and
+    gemini-2.5-flash-lite answer 404 "no longer available to new users",
+    and with the 404 raised at once a stranger's Translate never reached
+    the two models on the list that worked; gemini-flash-latest answered
+    503 "high demand" on 5 of 16 requests the same hour. When every model
+    was passed over for one of these and none for quota, the last error
+    is what the caller sees, not "out of free-tier quota".
     """
     now = time.monotonic()
     soonest = None
     tried = False
+    passed_over: TranscriptionError | None = None
     for model in models:
         resting = cooldown.get(model, 0.0)
         if resting > now:
@@ -100,6 +115,14 @@ def rotate(models: list[str], cooldown: dict[str, float],
             return attempt(model)
         except APIError as e:
             code = getattr(e, "code", None)
+            if code in PASS_OVER_S:
+                cooldown[model] = time.monotonic() + PASS_OVER_S[code]
+                log.warning("%s answered %s — resting it %.0f min, trying "
+                            "next model", model, code, PASS_OVER_S[code] / 60)
+                passed_over = TranscriptionError(
+                    f"Gemini API error {code} on {model}: "
+                    f"{getattr(e, 'message', e)}")
+                continue
             if code != 429:
                 raise TranscriptionError(
                     f"Gemini API error {code} on {model}: "
@@ -128,6 +151,8 @@ def rotate(models: list[str], cooldown: dict[str, float],
             raise TranscriptionError(
                 f"Gemini {what} failed on {model}: {e}") from e
 
+    if passed_over is not None and soonest is None:
+        raise passed_over
     wait_s = max(0.0, (soonest or 0.0) - time.monotonic())
     raise RateLimitError(
         f"all {len(models)} Gemini models are out of free-tier quota "

@@ -355,6 +355,9 @@ class TranslateConfig:
     max_chars: int = 5000
     ollama_model: str = "llama3.1:8b"
     ollama_url: str = "http://127.0.0.1:11434"
+    # Which cloud goes first; the other cloud, then Ollama, after it
+    # (translate.ORDER). gemini | groq | ollama.
+    prefer: str = "gemini"
     timeout_s: int = 30
     # Deliberately much larger than timeout_s. Ollama loads the model into
     # VRAM on the first request after it goes idle: measured 2026-08-12,
@@ -1824,6 +1827,8 @@ def build(data: dict) -> Config:
                 "ollama_model", TranslateConfig.ollama_model)).strip(),
             ollama_url=str(translate.get(
                 "ollama_url", TranslateConfig.ollama_url)).strip(),
+            prefer=str(translate.get(
+                "prefer", TranslateConfig.prefer)).strip().lower(),
             timeout_s=int(translate.get("timeout_s",
                                         TranslateConfig.timeout_s)),
             ollama_timeout_s=int(translate.get(
@@ -2162,6 +2167,9 @@ def build(data: dict) -> Config:
     if ((cfg.punctuate_hotkey or cfg.punctuate.auto)
             and cfg.punctuate.max_chars <= 0):
         raise ConfigError("punctuate.max_chars must be positive")
+    if cfg.translate.prefer not in ("groq", "gemini", "ollama"):
+        raise ConfigError('translate.prefer must be "gemini", "groq" or '
+                          f'"ollama", got {cfg.translate.prefer!r}')
     if cfg.punctuate.prefer not in ("groq", "gemini", "ollama"):
         raise ConfigError('punctuate.prefer must be "groq", "gemini" or '
                           f'"ollama", got {cfg.punctuate.prefer!r}')

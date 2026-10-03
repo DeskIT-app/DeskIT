@@ -354,12 +354,23 @@ retry_seconds = 45            # keep retrying this long before spooling to pendi
 [translate]
 # Whisper only transcribes, so translating needs a language model. Gemini
 # goes first (it keeps English technical terms in Latin script and holds
-# the register); when its daily cap is spent this drops to a local Ollama
-# model, so the key never becomes another thing that dies at 20 requests.
+# the register); when its daily cap is spent, or there is no Gemini key,
+# Groq answers, and a local Ollama model after both, so the key never
+# becomes another thing that dies at 20 requests (`prefer` below).
 target = "English"
 max_chars = 5000              # a guard: above this the key refuses, on the
                               # assumption ctrl+a caught a whole document
 ollama_model = "llama3.1:8b"  # the fallback; must be pulled in ollama
+# Which cloud translates first: gemini | groq | ollama. The other cloud
+# comes next, Ollama last, so ONE key of either kind is enough to translate.
+# Groq joined the chain 2026-10-03 after a measurement (dev\measure_translate.py,
+# 16 Hebrew prompts holding 44 English terms — config.toml, useEffect,
+# git rebase — or Hebrew-spelled ones like פוש): Groq gpt-oss-120b kept
+# 43/44 and 44/44 in two runs, p50 0.46-0.53 s, max 0.71 s, no failures;
+# Gemini (flash-latest, a new key) kept 26/26 of what it answered but
+# failed 7 of 16 (503 "high demand", 30 s read timeouts), p50 4.0 s. Its
+# one Groq miss: "ברנץ'" came out "brunch".
+prefer = "gemini"
 # 127.0.0.1 and NOT localhost, and the difference is not cosmetic: this
 # machine's getaddrinfo("localhost") hands back ::1 first, Ollama listens on
 # IPv4 only, and the refused connection takes ~2.05 s to come back before
