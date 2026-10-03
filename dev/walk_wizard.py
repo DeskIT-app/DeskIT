@@ -28,6 +28,7 @@ itself).
 """
 from __future__ import annotations
 
+import ctypes
 import dataclasses
 import os
 import shutil
@@ -44,7 +45,21 @@ sys.path.insert(0, str(ROOT))
 STAND_IN = "זה משפט לדוגמה: בסיור הזה המודל האמיתי לא נטען"
 
 
+#: The walk's own taskbar identity (see main()).
+APP_ID = "DeskIT.Dev.WizardWalk"
+
+
 def main() -> int:
+    # An identity of its own before the first window, the way main.py's
+    # claim_app_identity() does it for the app: without one, Windows
+    # groups the window under python.exe and draws Python's logo on its
+    # taskbar button, whatever icon the window itself carries — he saw
+    # exactly that on his first walk (2026-10-03). With it, the button
+    # shows the window's own icon, which firstrun sets (Corner).
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception:                                    # noqa: BLE001
+        pass
     home = Path(tempfile.mkdtemp(prefix="deskit-wizard-walk-"))
     os.environ["DESKIT_HOME"] = str(home)
     import paths
