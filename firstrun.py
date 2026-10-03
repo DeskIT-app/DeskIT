@@ -107,6 +107,7 @@ if str(APP_DIR) not in sys.path:
 
 import config as config_mod
 import downloads
+import keyrow
 import paths
 import ui
 
@@ -134,7 +135,7 @@ QUIET_S = 6.0
 SPEECH = 0.045
 TEST_S = 3.0                        # how long the sample recording runs
 
-PAGES = ("welcome", "account", "mic", "say", "keys", "screen", "extras", "done")
+PAGES = ("welcome", "account", "mic", "say", "keys", "screen", "cloud", "extras", "done")
 #: The strip's bar in the top row of every page (`_strip`).
 STRIP_W, STRIP_H = 120, 4
 #: The screenshot key when the Snipping-Tool switch is on / off (screen 13;
@@ -144,7 +145,11 @@ SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 #: The keys page: (config field, the label a stranger reads).
 KEY_ROWS = (("hotkey", "keys.hold"), ("latch_hotkey", "keys.latch"),
             ("punctuate_hotkey", "keys.punctuate"),
-            ("visual_qa_hotkey", "keys.screen"))
+            ("visual_qa_hotkey", "keys.screen"),
+            # Translation on day one (store walk item 12, the owner: "it is
+            # what people cannot get anywhere else") — F8, his own binding
+            # since 2026-09-17 and the shipped default since (D34).
+            ("translate_hotkey", "keys.translate"))
 
 #: The "screen" page's two keys (the owner's Store walk, 2026-10-03, items
 #: 11 and 17): each with the folder its files go to, on a page of their
@@ -290,6 +295,7 @@ WORDS = {
     "keys.latch": "Latch — talk without holding",
     "keys.punctuate": "Punctuate what was just pasted",
     "keys.screen": "Ask about the screen",
+    "keys.translate": "Translate what you selected into English",
     "keys.press": "Press a key…",
     "keys.listening": "Press the new key or combination. Esc cancels.",
     "keys.saved": "{label}: {key}",
@@ -313,23 +319,6 @@ WORDS = {
     "extras.sub": ("Each row is one thing that leaves this PC or changes Windows. Nothing "
                    "goes to the cloud until you switch it on; all of it can be changed "
                    "later in Settings."),
-    "extras.cloud": "Fix misheard words with a free cloud model (text only)",
-    "extras.cloud.help": "Needs your own free Groq key; the text of what you said leaves this PC.",
-    "extras.cloud.key": "Paste your free Groq key — it is checked the moment you save it.",
-    "extras.key.have": "A Groq key is already stored on this PC — checking it…",
-    "extras.key.testing": "Checking the key with Groq…",
-    "extras.key.works": "Key works — cloud repair is on.",
-    "extras.key.refused": "Groq did not accept this key — check it and paste it again.",
-    "extras.key.offline": "Could not reach Groq right now — the key was kept and is checked the first time the cloud is used.",
-    "extras.key.notkey": "That does not look like a Groq key — keys start with gsk_ and hold only English letters and digits. Paste it again.",
-    "extras.key.wait": "Turn the cloud switch off, or paste a working key.",
-    "extras.key.checking": "Checking the key…",
-    "extras.key.placeholder": "Paste your Groq API key here",
-    "extras.key.save": "Save key",
-    "extras.key.get": "No key yet? Get a free one at console.groq.com/keys — a minute, no card needed.",
-    "extras.key.stored": "Stored in Windows Credential Manager — checking it with Groq…",
-    "extras.key.empty": "Nothing to save — paste the key first.",
-    "extras.key.failed": "Could not store the key: {error}",
     "extras.awake": "Keep this PC awake while DeskIT runs",
     "extras.awake.help": "Stops Windows from sleeping while it runs; Settings > General turns it off.",
     "extras.updates": "Check for updates weekly",
@@ -352,6 +341,17 @@ WORDS = {
                        "your cloud keys follow you there — what you said and the keys locked "
                        "with a key only your own PCs hold. Never your voice. "
                        "Settings > Privacy > Withdraw turns it off."),
+    "cloud.title": "Cloud keys",
+    "cloud.sub": ("Free keys for the features that need a language model. Only the text "
+                  "leaves this PC, never your voice; Settings > Privacy changes it later."),
+    "cloud.free": "Free · no credit card",
+    "cloud.groq.unlocks": ("Fixes the words it misheard, puts in punctuation ({punctuate}) "
+                           "and translates what you select ({translate})."),
+    "cloud.groq.without": "Without it, what you say is pasted exactly as heard and those two keys do nothing.",
+    "cloud.gemini.unlocks": "Translates what you select into English ({translate}), first and best.",
+    "cloud.gemini.without": "Without it, Groq translates (if it is on); with neither, {translate} does nothing.",
+    "cloud.wait": "Turn the switch off, or save a working key.",
+    "cloud.checking": "Checking the key…",
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
     "done.deferred": ("The speech model is still downloading, in the background — dictation "
@@ -831,10 +831,6 @@ def transcribe_timed(cfg, wav: bytes, backend=None) -> tuple[Heard, object]:
 # background, are downloads.py's (2026-10-03): the wizard only starts
 # the queue, draws its strip and hands what is left to the app.
 
-class KeyRefused(Exception):
-    """Groq answered, and the answer was no (a 4xx): the key is wrong."""
-
-
 def _live_vocab(cfg):
     """The vocabulary the wizard's pull writes into — the app's own
     class on the app's own file, built the way main.App builds it, so
@@ -846,31 +842,6 @@ def _live_vocab(cfg):
         max_terms=int(getattr(v, "max_terms", 40)),
         replace_after_hits=int(getattr(v, "replace_after_hits", 2)),
         hebrew_after_hits=int(getattr(v, "hebrew_after_hits", 3)))
-
-
-def looks_like_key(value: str) -> bool:
-    """What a Groq key can be: printable ASCII with no spaces. Not a
-    check of the key — Groq does that — a check that it CAN be one, so
-    Hebrew or a sentence pasted by mistake is said so at once."""
-    return bool(value) and value.isascii() and value.isprintable() and not any(ch.isspace() for ch in value)
-
-
-def key_probe() -> int:
-    """How many models the stored Groq key can see — the one `key-test`
-    call, the same the desk's Privacy tab makes. KeyRefused on a 4xx
-    (the key itself), any other error for the road (offline, a 5xx)."""
-    import json as json_mod
-
-    import net
-    status, _headers, body = net.request(
-        "GET", "https://api.groq.com/openai/v1/models", "key-test",
-        secret="groq", timeout_s=20)
-    if 400 <= status < 500:
-        raise KeyRefused(f"HTTP {status}")
-    if status != 200:
-        raise RuntimeError(f"HTTP {status}")
-    data = json_mod.loads(body.decode("utf-8"))
-    return len(data.get("data") or [])
 
 
 def _write_key(field: str) -> str:
@@ -1040,6 +1011,10 @@ class Wizard:
             self.extras["cloud"] = bool(privacy.allowed("cloud_text"))
         except Exception:                                  # noqa: BLE001
             pass
+        # The cloud-keys page's two cards: on where the gate is open AND
+        # that key is already saved (a returning copy, a second run).
+        self.clouds = {name: bool(self.extras["cloud"]) and keyrow.stored(name)[0]
+                       for name in ("groq", "gemini")}
         # Whose hook lines Claude Code's settings.json holds: this copy's
         # (the switch on), another DeskIT copy's (off, with the other's
         # folder on the row and a question before it is taken over — see
@@ -2531,21 +2506,139 @@ class Wizard:
         return True
 
     # ---------------------------------------------------------------- extras
+    # ------------------------------------------------------------ cloud keys
+    def _page_cloud(self) -> None:
+        """The two free keys, a card each (store walk item 13, the owner's
+        pick of 2026-10-03 between one card and two: "two places to put
+        the keys, Groq and Gemini, each in its own card"). Each card says
+        what the key UNLOCKS and what is missing without it, because most
+        people skip a page like Extras and then cannot tell why F8 does
+        nothing. THE SWITCH IS THE CONSENT, as on Extras: on is
+        privacy.grant("cloud_text") with the card's text_version; off on
+        both cards withdraws it. Under a switch that is on, the key's row
+        (keyrow.KeyRow: locked dots + Change key once a key works); Next
+        waits while a card is on without a working key."""
+        self._head(WORDS["cloud.title"], WORDS["cloud.sub"])
+        self.switches = {}
+        keys = {"punctuate": _pretty(self.cfg.punctuate_hotkey) or "its key",
+                "translate": _pretty(self.cfg.translate_hotkey) or "its key"}
+        self.cloud_rows: dict[str, object] = {}
+        self.cloud_slots: dict[str, tk.Frame] = {}
+        self.cloud_cards: dict[str, ui.Card] = {}
+        for i, name in enumerate(("groq", "gemini")):
+            card = self._card(pad=16)
+            card.pack(fill="x", pady=(0, 12))
+            self.cloud_cards[name] = card
+            top = tk.Frame(card.body, bg=ui.CARD)
+            top.pack(fill="x")
+            switch = ui.Switch(top, self.clouds[name],
+                               lambda _v=None, n=name: self._cloud_flipped(n), bg=ui.CARD)
+            switch.pack(side="left", padx=(0, 14), pady=(2, 0))
+            self.switches[f"cloud.{name}"] = switch
+            tk.Label(top, text=keyrow.PROVIDERS[name]["label"], bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 12, "bold"), anchor="w").pack(side="left")
+            tk.Label(top, text=WORDS["cloud.free"], bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 9)).pack(side="right")
+            for key, fg, size in ((f"cloud.{name}.unlocks", ui.FG, 10),
+                                  (f"cloud.{name}.without", ui.DIM, 9)):
+                tk.Label(card.body, text=WORDS[key].format(**keys), bg=ui.CARD, fg=fg,
+                         font=(ui.UI, size), anchor="w", justify="left",
+                         wraplength=INNER - 54 - 36).pack(fill="x", padx=(54, 0), pady=(4, 0))
+            slot = tk.Frame(card.body, bg=ui.CARD)
+            slot.pack(fill="x", padx=(54, 0))
+            self.cloud_slots[name] = slot
+            if self.clouds[name]:
+                self._cloud_row(name)
+            self._fit(card)
+        self._cloud_gate()
+
+    def _cloud_row(self, name: str) -> None:
+        slot = self.cloud_slots[name]
+        for child in slot.winfo_children():
+            child.destroy()
+        slot.configure(height=1)          # an emptied frame keeps its size
+        row = keyrow.KeyRow(slot, name, width=INNER - 54 - 36, bg=ui.CARD,
+                            on_state=lambda _s, _v, n=name: self._cloud_changed(n),
+                            probe=self._cloud_probe, check_saved=True)
+        row.pack(fill="x", pady=(8, 0))
+        self.cloud_rows[name] = row
+
+    @staticmethod
+    def _cloud_probe(name: str) -> int:
+        return keyrow.probe(name)
+
+    def _cloud_changed(self, name: str) -> None:
+        card = getattr(self, "cloud_cards", {}).get(name)
+        if card is not None and card.winfo_exists():
+            self._fit(card)
+        self._cloud_gate()
+
+    def _cloud_flipped(self, name: str) -> None:
+        on = self.switches[f"cloud.{name}"].get()
+        if on and not any(self.clouds.values()):
+            try:
+                import consent_card as cc
+                import privacy
+                privacy.grant("cloud_text", cc.card_for("cloud_text")["text_version"])
+            except Exception as e:                         # noqa: BLE001
+                log.warning("the wizard could not record the cloud consent: %s", e)
+                self.switches[f"cloud.{name}"].set(False)
+                return
+        self.clouds[name] = on
+        self.extras["cloud"] = any(self.clouds.values())
+        if on:
+            self._cloud_row(name)
+        else:
+            slot = self.cloud_slots[name]
+            for child in slot.winfo_children():
+                child.destroy()
+            slot.configure(height=1)
+            self.cloud_rows.pop(name, None)
+            if not any(self.clouds.values()):
+                try:
+                    import privacy
+                    privacy.withdraw("cloud_text")
+                except Exception:                          # noqa: BLE001
+                    log.info("the cloud gate was not withdrawn", exc_info=True)
+        self._fit(self.cloud_cards[name])
+        self._cloud_gate()
+
+    def _cloud_gate(self) -> None:
+        """Next waits while a card is on and its key is not saved and
+        working (a check with no answer counts: the cloud checks it on
+        first use, as the Extras row always did)."""
+        if self.name != "cloud":
+            return
+        waiting = testing = False
+        for name, on in self.clouds.items():
+            row = self.cloud_rows.get(name)
+            if not on or row is None:
+                continue
+            if row.state == "testing":
+                testing = waiting = True
+            elif row.state != "locked":
+                waiting = True
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(not waiting)
+        text = WORDS["cloud.checking" if testing else "cloud.wait"] if waiting else ""
+        if self.note.cget("text") != text:
+            self.note.configure(text=text, fg=ui.DIM)
+
     def _page_extras(self) -> None:
         self._head(WORDS["extras.title"], WORDS["extras.sub"])
         self.switches: dict[str, ui.Switch] = {}
         self.help_lines: dict[str, tk.Label] = {}
         card = self._card(pad=18)
         card.pack(fill="x")
-        rows = [("cloud", WORDS["extras.cloud"], WORDS["extras.cloud.help"]),
-                ("awake", WORDS["extras.awake"], WORDS["extras.awake.help"]),
+        rows = [("awake", WORDS["extras.awake"], WORDS["extras.awake.help"]),
                 ("updates", WORDS["extras.updates"], WORDS["extras.updates.help"]),
                 ("claude", WORDS["extras.claude"], WORDS["extras.claude.help"])]
         # The Snipping-Tool row went to the "screen" page on 2026-10-03,
         # under the key it changes (the owner's Store walk, item 11: a key
-        # picked on one page was silently replaced on the next).
+        # picked on one page was silently replaced on the next). The cloud
+        # row went to the "cloud" page the same day, a card per key
+        # (item 13), and its key field with it (keyrow.KeyRow).
         self.extras_card = card
-        self.cloud_slot = None
         self.claude_slot = None
         for i, (key, label, help_) in enumerate(rows):
             help_fg = None
@@ -2559,56 +2652,15 @@ class Wizard:
                 lambda _v=None, k=key: self._extra_flipped(k),
                 parent=card.body, bg=ui.CARD, last=i == len(rows) - 1,
                 help_fg=help_fg, name=key)
-            if key == "cloud":
-                # What the cloud row opens — the consent, then the key —
-                # opens HERE, under the row, inside the card (the owner's
-                # walk of 2026-09-19: not a window somewhere else, not a
-                # square field under the card).
-                self.cloud_slot = tk.Frame(card.body, bg=ui.CARD)
-                self.cloud_slot.pack(fill="x")
             if key == "claude":
                 self.claude_slot = tk.Frame(card.body, bg=ui.CARD)
                 self.claude_slot.pack(fill="x")
         self._fit(card)
-        self.key_panel = None
-        self._key_state = "none"      # none | testing | ok | bad — Next waits for ok
-        if self.extras.get("cloud"):
-            self._show_key_panel()
 
     def _extra_flipped(self, key: str) -> None:
         on = self.switches[key].get()
         if key == "sync":
             self.sync_wanted = on          # written by Start, _save_sync
-            return
-        if key == "cloud":
-            # THE SWITCH IS THE CONSENT here (the owner, 2026-09-19 evening:
-            # "whoever turns it on — that is enough"): the row's own two
-            # lines say what leaves and to whom, and privacy.grant records
-            # the same text_version the card carries, so Settings > Privacy
-            # shows the grant like any other. Off is immediate
-            # (privacy.withdraw), like the Privacy tab's button.
-            if on:
-                granted = False
-                try:
-                    import consent_card as cc
-                    import privacy
-                    privacy.grant("cloud_text", cc.card_for("cloud_text")["text_version"])
-                    granted = True
-                except Exception as e:                     # noqa: BLE001
-                    log.warning("the wizard could not record the cloud consent: %s", e)
-                self.extras["cloud"] = granted
-                if granted:
-                    self._show_key_panel()
-                else:
-                    self.switches[key].set(False)
-            else:
-                self._clear_slot()
-                self.extras["cloud"] = False
-                try:
-                    import privacy
-                    privacy.withdraw("cloud_text")
-                except Exception:                          # noqa: BLE001
-                    log.info("the cloud gate was not withdrawn", exc_info=True)
             return
         if key == "claude" and self._claude_state == "other":
             # Another copy's lines are in the file: on only ASKS, under
@@ -2626,7 +2678,7 @@ class Wizard:
     # ------------------------------------------- the Claude row's question
     def _claude_ask(self) -> None:
         """Under the Claude row, inside the card: the question in amber
-        and its two answers, the way the cloud row opens its key panel —
+        and its two answers, the way a cloud card opens its key row —
         never a window somewhere else (the owner's rule for every
         yes/no, 2026-09-21)."""
         slot = getattr(self, "claude_slot", None)
@@ -2691,167 +2743,9 @@ class Wizard:
             return
         for child in slot.winfo_children():
             child.destroy()
-        slot.configure(height=1)          # see _clear_slot: an emptied frame keeps its size
+        slot.configure(height=1)          # an emptied frame keeps its size (the packer only
+                                          # propagates while it has slaves): back to 1 px
         self._fit(self.extras_card)
-
-    def _clear_slot(self) -> None:
-        """Whatever the cloud row had opened under it, gone; the card
-        shrinks back to its rows."""
-        slot = getattr(self, "cloud_slot", None)
-        if slot is None or not slot.winfo_exists():
-            return
-        for child in slot.winfo_children():
-            child.destroy()
-        # A frame whose last child is gone KEEPS its size (the packer only
-        # propagates while it has slaves): back to the 1 px it was born.
-        slot.configure(height=1)
-        self.key_panel = None
-        self._key_state = "none"
-        self._fit(self.extras_card)
-
-    def _show_key_panel(self) -> None:
-        """The Groq key, asked for under the switch, ON the card (the
-        owner, 1.1.1 walkthrough: "make it clickable, open a field for
-        the key, and a line that sends people to Groq's site"; his
-        stranger walk of 2026-09-19: "inside the card, under the row I
-        flipped, pretty and rounded"): a masked ui.Field, Save, and the
-        way to a free key for anyone who has none. The value goes to
-        secretstore (Credential Manager) and nowhere else."""
-        if self.name != "extras" or getattr(self, "key_panel", None) is not None:
-            return
-        slot = getattr(self, "cloud_slot", None)
-        if slot is None or not slot.winfo_exists():
-            return
-        self._clear_slot()
-        import secretstore
-        panel = tk.Frame(slot, bg=ui.CARD)
-        panel.pack(fill="x", padx=(54, 0), pady=(2, 10))    # under the words, past the switch
-        self.key_panel = panel
-        have = False
-        try:
-            have = bool(secretstore.get("groq"))
-        except Exception:                                  # noqa: BLE001
-            pass
-        # Two lines tall from the start, whatever it says: a note that
-        # grew from one line to two pushed the rows under it and the card
-        # face was never re-fitted, so the last row's help was cut off
-        # (his walk of the built installer, 2026-09-19 night).
-        self.key_note = tk.Label(panel, text=WORDS["extras.key.have"] if have else WORDS["extras.cloud.key"],
-                                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), height=2,
-                                 anchor="nw", justify="left", wraplength=INNER - 110)
-        self.key_note.pack(fill="x")
-        row = tk.Frame(panel, bg=ui.CARD)
-        row.pack(fill="x", pady=(6, 0))
-        self.key_box = ui.Field(row, w=INNER - 110 - 130, h=34, bg=ui.CARD, justify="left",
-                                placeholder=WORDS["extras.key.placeholder"], pt=10)
-        self.key_box.pack(side="left", padx=(0, 10))
-        self.key_field = self.key_box.entry
-        self.key_field.configure(show="\u2022")
-        self.key_box.bind_entry("<Return>", lambda _e: self._save_key())
-        self.key_save = ui.Button(row, WORDS["extras.key.save"], self._save_key,
-                                  bg=ui.CARD, primary=True, w=120, h=34)
-        self.key_save.pack(side="left")
-        self._link(WORDS["extras.key.get"], "https://console.groq.com/keys",
-                   parent=panel, bg=ui.CARD).pack(fill="x", pady=(6, 0))
-        self._fit(self.extras_card)
-        self.key_field.focus_set()
-        if have:
-            self._test_key()
-
-    def _key_say(self, key: str, colour: str, **fmt) -> None:
-        """One line under the row, and the card re-fitted around it —
-        the note's words change height (a wrap), the face must follow."""
-        self.key_note.configure(text=WORDS[key].format(**fmt), fg=colour)
-        self._fit(self.extras_card)
-
-    def _save_key(self) -> None:
-        """The pasted value into the store — never into a file — the
-        field emptied either way, and the key checked with Groq at once
-        (the owner, 2026-09-19: "a quick check that it really exists and
-        works"). Something that cannot be a key — Hebrew, a space — is
-        said so in plain words and never stored: a non-ASCII value put in
-        the Authorization header came back as a codec error dressed as
-        "could not reach Groq" (his walk of the built installer)."""
-        import secretstore
-        value = self.key_field.get().strip()
-        self.key_box.set("")                 # emptied either way; the placeholder returns
-        if not value:
-            self._key_say("extras.key.empty", ui.AMBER)
-            return
-        if not looks_like_key(value):
-            del value
-            self._key_say("extras.key.notkey", ui.RED)
-            return
-        try:
-            secretstore.set("groq", value)
-        except Exception as e:                             # noqa: BLE001
-            self._key_say("extras.key.failed", ui.RED, error=e)
-            return
-        del value
-        self._key_say("extras.key.stored", ui.DIM)
-        self._test_key()
-
-    def _test_key(self) -> None:
-        """One `key-test` request through net.py on a thread — Groq's
-        model list under the stored key; the value never touches this
-        code, net.py attaches it by name. The answer lands through the
-        queue the tick drains."""
-        self._key_state = "testing"
-
-        def work() -> None:
-            try:
-                count = key_probe()
-            except (KeyRefused, UnicodeEncodeError) as e:
-                # a 4xx, or a stored value no header can carry: not a key
-                detail = str(e)               # bound now: `e` is gone once the clause ends
-                self._later(lambda: self._key_tested("bad", detail))
-            except Exception as e:                         # noqa: BLE001
-                detail = str(e)[:120]
-                self._later(lambda: self._key_tested("offline", detail))
-            else:
-                self._later(lambda: self._key_tested("ok", str(count)))
-
-        threading.Thread(target=work, daemon=True, name="setup-key-test").start()
-
-    def _key_tested(self, word: str, detail: str) -> None:
-        """A refused key is taken out of the store again — "turn it off
-        or paste a key" only makes sense while nothing is there."""
-        if self.name != "extras" or getattr(self, "key_note", None) is None:
-            return
-        log.info("setup: the Groq key test said %s (%s)", word, detail)
-        if word == "ok":
-            self._key_state = "ok"
-            self._key_say("extras.key.works", ui.GREEN)
-        elif word == "bad":
-            self._key_state = "bad"
-            try:
-                import secretstore
-                secretstore.delete("groq")
-            except Exception:                              # noqa: BLE001
-                pass
-            self._key_say("extras.key.refused", ui.RED)
-        else:
-            # no answer from Groq: the key stays, and so does the person
-            # — the cloud pass checks it again on its first use; the
-            # reason is in the log, not on the card (plain words)
-            self._key_state = "ok"
-            self._key_say("extras.key.offline", ui.AMBER)
-        self._extras_gate()
-
-    def _extras_gate(self) -> None:
-        """Next waits while the cloud switch is on with no working key
-        (the owner, 2026-09-19: "if I turned it on and put no key it must
-        not let me continue — turn it off or paste a key")."""
-        if self.name != "extras":
-            return
-        waiting = bool(self.extras.get("cloud")) and self._key_state != "ok"
-        for twin in (self.next_loud, self.next_quiet):
-            twin.enable(not waiting)
-        text = ""
-        if waiting:
-            text = WORDS["extras.key.checking" if self._key_state == "testing" else "extras.key.wait"]
-        if self.note.cget("text") != text:
-            self.note.configure(text=text, fg=ui.DIM)
 
     # ----------------------------------------------------------------- ready
     def _page_done(self) -> None:
@@ -2955,8 +2849,6 @@ class Wizard:
             self._strip_tick()
             if self.name == "say":
                 self._say_ready()
-            if self.name == "extras":
-                self._extras_gate()
         except Exception:                                  # noqa: BLE001
             log.debug("the wizard's tick tripped", exc_info=True)
         self.root.after(60, self._tick)
@@ -3096,7 +2988,7 @@ class Wizard:
         everything after the sign-in (its words and settings came down;
         the parts this PC lacks download in the background). There is no
         downloads page to hide any more (2026-10-03)."""
-        return self._returning and name in ("mic", "say", "keys", "screen", "extras", "done")
+        return self._returning and name in ("mic", "say", "keys", "screen", "cloud", "extras", "done")
 
     def _back(self) -> None:
         if self.page == 0:
@@ -3170,7 +3062,7 @@ class Wizard:
         page's, written the moment it moves), the update check a
         privacy switch, autostart a state key plus the Run value, the
         Claude Code door two hook lines in Claude's settings.json; the
-        cloud one was written by its card already."""
+        cloud cards wrote their consent the moment they were switched."""
         if self.path is not None:
             return
         want, shown = self.extras, self._extras_shown

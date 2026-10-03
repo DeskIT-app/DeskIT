@@ -157,6 +157,7 @@ def _pages(out: Path) -> list[Path]:
         w._rebind("punctuate_hotkey"); shot("06-keys-listening")
         w._captured(None)
         show("screen"); shot("06-screen")
+        show("cloud"); shot("06b-cloud")
         show("extras"); shot("07-extras")
         # signed in by now, as a person is: the last page carries the
         # sync row (on by default) above the two switches
