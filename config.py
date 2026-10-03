@@ -587,13 +587,15 @@ class CaptureConfig:
     hotkey: str = "ctrl+f11"
     # Tap: pick a region and record it. Tap again to stop.
     record_hotkey: str = "ctrl+f12"
-    # Relative names are relative to the APP folder, not to whatever
+    # Windows' own Pictures folder (paths.resolve_folder reads {pictures});
+    # other relative names are relative to the DATA folder, not to whatever
     # directory the process was started from — this app is launched from a
     # .vbs, a shortcut and a scheduled task, and all three disagree.
-    folder: str = "captures"
-    # Where screen RECORDINGS (clip *.mp4) go. Empty means the same folder
-    # as the pictures; an absolute path is used as given, like `folder`.
-    clip_folder: str = ""
+    folder: str = "{pictures}/DeskIT"
+    # Where screen RECORDINGS (clip *.mp4) go: Windows' Videos folder. Empty
+    # means the same folder as the pictures; an absolute path is used as
+    # given, like `folder`.
+    clip_folder: str = "{videos}/DeskIT"
     # Win+Shift+S's promise: the capture is pasteable immediately. false
     # still writes the file.
     copy_to_clipboard: bool = True
@@ -738,7 +740,7 @@ class CameraConfig:
     timer: int = 0
     # Same folder as the screen captures by default: one place to look for
     # pictures. The files are named "photo ..." rather than "shot ...".
-    folder: str = "captures"
+    folder: str = "{pictures}/DeskIT"
     copy_to_clipboard: bool = True
     # After the shutter, the photo opens in the SAME editor a screenshot
     # does — crop, draw, arrow, blur, Ask — laid on the screen exactly
@@ -2856,6 +2858,25 @@ def defaults_flat(defaults=None) -> dict[str, object]:
     return flatten(_read_toml(d))
 
 
+#: A key whose value another key takes with it when a person sets it.
+#: The camera's photos go "to the same folder the screen captures go to"
+#: (defaults.toml), and Settings and the wizard show ONE pictures row —
+#: which moved only the screenshots until 2026-10-03, leaving the photos
+#: behind in the old folder.
+FOLLOWERS: dict[str, tuple[str, ...]] = {"capture.folder": ("camera.folder",)}
+
+
+def with_followers(updates: dict[str, object]) -> dict[str, object]:
+    """`updates` with each follower given its leader's value, unless the
+    caller set the follower itself."""
+    out = dict(updates)
+    for leader, followers in FOLLOWERS.items():
+        if leader in updates:
+            for name in followers:
+                out.setdefault(name, updates[leader])
+    return out
+
+
 def save(updates: dict[str, object], *, defaults=None, settings=None,
          state=None, allow_consent: bool = False,
          derived: bool = False) -> None:
@@ -2876,6 +2897,7 @@ def save(updates: dict[str, object], *, defaults=None, settings=None,
     never hides the layer they edit.
     """
     _refuse_consent_keys(updates, allow_consent)
+    updates = with_followers(updates)
     d, s, t = _layer_paths(defaults, settings, state)
     flat_defaults = flatten(_read_toml(d))
     overrides = read_settings(s)

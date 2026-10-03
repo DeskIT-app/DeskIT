@@ -994,6 +994,18 @@ def _shown(value) -> str:
     return str(value)
 
 
+def _shown_for(path: str, value) -> str:
+    """`_shown`, except that a save folder is shown as the FULL path it
+    resolves to — "{pictures}/DeskIT" or a bare "captures" told nobody
+    where the files are (the owner's Store walk, 2026-10-03, item 17)."""
+    if path in FOLDER_SETTINGS and value:
+        try:
+            return str(paths.resolve_folder(str(value)))
+        except Exception:                                    # noqa: BLE001
+            pass
+    return _shown(value)
+
+
 def _parse(raw: str, kind: str):
     """What was typed, as the kind the file holds. An int field refuses a
     fraction rather than rounding it: config.py would int() it silently,
@@ -6454,7 +6466,7 @@ class Dashboard:
                 card.create_window(right, y - 1, window=browse, anchor="ne")
                 self.parts.setdefault("browse", {})[setting.path] = browse
                 x = right - BROWSE_W - 8
-            field = ui.Field(card, _shown(value),
+            field = ui.Field(card, _shown_for(setting.path, value),
                              w=ENTRY_W + (60 if folder else 0), h=ENTRY_H,
                              bg=ui.CARD)
             card.create_window(x, y - 1, window=field, anchor="ne")
@@ -8553,6 +8565,8 @@ class Dashboard:
             return
         if value == current and type(value) is type(current):
             return
+        if setting.path in FOLDER_SETTINGS and str(value).strip() == _shown_for(setting.path, current):
+            return                        # the full path it already shows, unchanged
         self._apply_setting(setting, value)
 
     def _apply_setting(self, setting, value) -> None:
@@ -8613,7 +8627,7 @@ class Dashboard:
                     # Canvas, and Canvas.delete/insert are about canvas
                     # ITEMS. `set` says it without telling anyone, the
                     # way ui.Dropdown.set does.
-                    widget.set(_shown(value))
+                    widget.set(_shown_for(path, value))
                     # A field that is showing its value cut goes back to
                     # cut, or the repaint would put 390 px of device name
                     # into a 264 px box again.

@@ -807,8 +807,9 @@ cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
 #
 # PRIVACY. Unlike [visual_qa], whose screenshot lives in memory and is
 # never written down, this feature exists to write pictures of your screen
-# to disk. So `folder` is treated the way transcripts.log is: beside the
-# app, gitignored, and never uploaded by anything in capture.py. The only
+# to disk. So `folder` is treated the way transcripts.log is: never
+# uploaded by anything in capture.py, and out of the repo (Windows'
+# Pictures folder since 2026-10-03, see `folder` below). The only
 # route from a capture to a model is the editor's Ask button, which hands
 # the pixels to the ask card and obeys [privacy] cloud_screenshots.
 #
@@ -847,18 +848,29 @@ record_hotkey = "ctrl+f12"     # tap to start, tap again to stop. One key
                                # same thought as the first, and a recorder
                                # you have to hunt for with the mouse records
                                # you hunting for it
-folder = "captures"
+folder = "{pictures}/DeskIT"
                                # where screenshots and camera photos go.
-                               # A relative name is relative to the APP
-                               # folder, not to whatever directory the
-                               # process started in — this app is launched
+                               # {pictures} is Windows' own Pictures
+                               # folder (SHGetKnownFolderPath — wherever
+                               # the person moved it). It was "captures"
+                               # under the data folder until 2026-10-03:
+                               # nobody found it, and a Store uninstall
+                               # deleted it with the app (the owner's
+                               # Store walk, item 17). Pictures is where a
+                               # person looks, and it outlives the app;
+                               # if OneDrive backs Pictures up, the files
+                               # you SAVE go with it, as Windows' own
+                               # screenshots do. A relative name is
+                               # relative to the DATA folder, not to the
+                               # working directory — this app is launched
                                # from a .vbs, a shortcut and a scheduled
                                # task, and all three disagree. An absolute
                                # path is used as given
-clip_folder = ""
-                               # where screen RECORDINGS (clip *.mp4) go.
-                               # Empty means the same folder as the
-                               # pictures; an absolute path is used as
+clip_folder = "{videos}/DeskIT"
+                               # where screen RECORDINGS (clip *.mp4) go:
+                               # Windows' Videos folder, for the same
+                               # reasons. Empty means the same folder as
+                               # the pictures; an absolute path is used as
                                # given, like `folder`
 copy_to_clipboard = true       # Win+Shift+S's promise. CF_DIB and the
                                # registered PNG format, so Paint, Word,
@@ -1001,7 +1013,7 @@ announce = true                # say "Recording started" for 2.6 s before
 # opens it for as long as the window is up and not a moment longer: the
 # device is released the instant the shutter fires, not when the editor
 # closes, so the light beside the lens means what it looks like it means.
-# The photo is written to `folder` beside the app, gitignored, and nothing
+# The photo is written to `folder` (Windows' Pictures folder), and nothing
 # here uploads anything anywhere. The one route from a photo to a model is
 # the editor's Ask button, which obeys [privacy] cloud_screenshots like
 # every other question. `enabled = false` unregisters the key.
@@ -1058,10 +1070,11 @@ timer = 0                      # 0, 3 or 10 seconds of self-timer to start
                                # on. `t` cycles it while the window is
                                # open, and Esc cancels a countdown before
                                # it closes the window
-folder = "captures"
+folder = "{pictures}/DeskIT"
                                # the same folder the screen captures go
                                # to, so there is one place to look for
-                               # pictures. The files are named
+                               # pictures (the wizard and Settings write
+                               # both together). The files are named
                                # "photo 2026-08-26 18-45-22.png" rather
                                # than "shot ...", so sorting by name still
                                # groups them
