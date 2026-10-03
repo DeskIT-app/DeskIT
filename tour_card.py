@@ -76,7 +76,7 @@ STOPS = (
               "history, reporting a problem.")},
     {"kind": "done", "tail": False, "picture": None,
      "title": "That is it",
-     "body": ("You can see this tour again from Settings > The app. "
+     "body": ("You can see this tour again from Settings > About. "
               "Enjoy.")},
 )
 

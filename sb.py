@@ -461,6 +461,29 @@ def device_name() -> str:
     return name[:40]
 
 
+def copy_name() -> str:
+    """Which DeskIT this is, in a person's words: the Store's, the
+    website's, winget's, or the owner's checkout."""
+    if paths.DEVELOPER:
+        return "DeskIT Dev"
+    if paths.PACKAGED or paths.CHANNEL == "store":
+        return "DeskIT App (Store)"
+    if paths.CHANNEL == "winget":
+        return "DeskIT (winget)"
+    return "DeskIT (website)"
+
+
+def request_name() -> str:
+    """The name a request to join carries: the PC's, and which copy on
+    it is asking. Two copies on one PC were both "YOAV" on the other's
+    Home (the Store walk, 2026-10-03: the Store copy asking the Dev, side
+    by side); "YOAV · DeskIT App (Store)" says which one to expect. The
+    column holds 40 characters, so the PC's name gives way, not the copy."""
+    copy = copy_name()
+    room = 40 - len(copy) - 3
+    return f"{device_name()[:room].rstrip()} · {copy}"
+
+
 def _app_version() -> str:
     try:
         import version
@@ -818,8 +841,10 @@ def _end_the_others() -> None:
 def sign_out(everywhere: bool = True) -> None:
     """Sign out everywhere (the refresh tokens are revoked server-side),
     then forget the session and the cursors here. The local files stay.
-    ``everywhere=False`` is the wizard's "Not you?": this PC's session
-    only, the person's other PCs keep theirs."""
+    ``everywhere=False`` is this PC's session only, the person's other
+    PCs keep theirs: the wizard's "Not you?" and, since the Store walk of
+    2026-10-03, the desk's own Sign out. The desk's Sign out of every PC
+    is the one caller of the default."""
     session = _load_session()
     if session is not None and configured():
         # every PC: the others first and told (_end_the_others), then
@@ -1969,7 +1994,7 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         code = vault.pairing_code(uid, pid, public)
         status, data = _rest("POST", "pairings", purpose="account",
                              payload={"id": pid, "user_id": uid, "device_id": device_id(),
-                                      "device_name": device_name(),
+                                      "device_name": request_name(),
                                       "code": vault.code_hint(code), "applicant": public},
                              prefer="return=minimal")
         if status not in (200, 201, 204):
@@ -1978,7 +2003,7 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         req = {"id": pid, "code": code, "expires": now + PAIRING_TTL_S, "lock_id": remote}
         log.info("lock: another PC holds the account's key — this PC asks to join (code %s)", code)
         _set_lock(state="waiting", lock_id=remote, pairing=req)
-        _broadcast(event="pairing", extra={"id": pid, "code": code, "name": device_name()})
+        _broadcast(event="pairing", extra={"id": pid, "code": code, "name": request_name()})
     else:
         _set_lock(state="waiting", lock_id=remote, pairing=req)
     return None
@@ -2160,8 +2185,8 @@ def lock_answer(yes: bool) -> str:
     other lock is not taken. Returns "asked".
     [It wasn't me]: nothing moves. The key stays, the sealed stores stay
     paused both ways, and the refusal is written beside the key so a
-    restart does not ask again; Home then points to Sign out (every
-    session of the account, a stolen one too) and offers
+    restart does not ask again; Home then points to Sign out of every PC
+    (every session of the account, a stolen one too) and offers
     ``restore_lock``. Returns "kept"."""
     uid = _fresh()["user"]["id"]
     with _sync_lock:
@@ -2328,7 +2353,7 @@ configure()
 __all__ = [
     "PROJECT_REF", "PUBLISHABLE_KEY", "configure", "configured", "base_url",
     "AccountError", "NotAllowed", "signed_in", "user", "device_id",
-    "device_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
+    "device_name", "copy_name", "request_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
     "set_name", "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
     "start_worker", "nudge", "status", "forget_cache", "REPORT_COLUMNS",
     "REQUIRED", "SIGNED_OUT_HOOKS", "LIVE_ENABLED", "STORES", "stop_live",
