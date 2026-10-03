@@ -13,12 +13,11 @@ done. **הבא** (next) moves on, **דלג** (skip) closes it — and a skipped 
 back by itself. To see it again: Settings > About > **Show the tour**. This page is the
 long version of those four cards.
 
-**The two-sentence version.** The first start opens a seven-page wizard; only three pages ask
-you anything (which microphone, whether to download now, and the optional extras) and every
-other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.
-Since the installer downloads the model and the packs itself ([chapter 1](01-install)), the
-"This computer" page is usually skipped — it appears only for what you unticked there or
-what did not finish.
+**The two-sentence version.** The first start opens a seven-page wizard; only two pages ask
+you anything (which microphone, and the optional extras) and every other page is **Next**.
+It runs once; `main.py --setup` from the install folder runs it again. Everything DeskIT
+needs downloads by itself, in the background, from the first second — see
+[The downloads](#the-downloads).
 
 ![Welcome](../img/02-welcome.png)
 
@@ -77,33 +76,18 @@ Microphone > *Let desktop apps access your microphone*). Turn it on, come back, 
 
 Pick another row if you have more than one microphone. **Next** saves the choice.
 
-## This computer
+## The downloads
 
-![This computer](../img/02-computer.png)
+There is no page for them. The moment the wizard opens, DeskIT starts downloading every part
+this computer can use — the Hebrew model (1.6 GB), the Recording pack for the record and
+camera keys (28 MB), and on an NVIDIA card its libraries (1.4 GB) and, on a larger card, the
+English detector (1.6 GB) — in the background, once. The only sign is a slim bar at the top of
+every page, **Downloading app parts**; it goes when everything has landed, and a click on the
+words opens [the table of what each part is](01-install#downloads). Without a connection the
+bar says so and DeskIT keeps trying by itself.
 
-This page exists only while something is left to download — after an install whose
-Downloads page you left as it was, it is not shown at all, and the counter says "of 6".
-
-The top line is what DeskIT found: an NVIDIA card and its memory ("fast transcription"), a
-small NVIDIA card ("fast, smaller mode"), or no NVIDIA card ("transcription will take about
-as long as you spoke"). Under it, what this PC still needs, each asked before a byte moves:
-
-- **The Hebrew model** — 1.62 GB from huggingface.co into `%LOCALAPPDATA%\DeskIT\models`.
-  Press **Download**; the bar shows bytes, percent and speed, **Pause** keeps what came so far
-  and the next start continues from there. You can press **Next** while it downloads, or skip
-  it and download from **Home** another day — DeskIT starts without it, and a dictation then
-  says the model is missing and keeps the recording.
-- **Use the NVIDIA card** (only on a PC with one): 1.37 GB of NVIDIA's CUDA libraries from
-  PyPI, under NVIDIA's licence (linked). Without them an NVIDIA card runs like a CPU.
-- **Detect English automatically** (only on a larger NVIDIA card): a second, general model
-  that notices when you spoke English and transcribes it as English. 1.60 GB more on disk and
-  in video memory.
-- **Screen recording and the camera**: 28 MB from PyPI — PyAV with FFmpeg, for the record
-  key, the photo key and the phone's audio. On by default, so nothing has to be installed
-  later; the two licences are linked on the card.
-
-The switches queue behind the model: one **Download**, one bar, "1 of 3 · Hebrew model".
-This happens only once.
+Whatever is still coming when you press **Start** goes on downloading in the app, and **Home**
+says how far it is. A copy whose installer already downloaded everything shows no bar at all.
 
 ## Say one sentence
 

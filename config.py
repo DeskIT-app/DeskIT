@@ -259,9 +259,10 @@ class SetupConfig:
     wizard's Done step offers it (chapter 9); never acted on in the
     checkout.
 
-    offer_gpu_pack is the person's answer to the GPU pack step at start
-    (packs.py, plan 6.5): [Not now] writes false to settings.toml and the
-    start stops asking; Settings > Dictation keeps a one-line offer.
+    offer_gpu_pack / offer_recording_pack: whether the background
+    downloads (downloads.py, 2026-10-03) may fetch that pack. True until
+    the person removes it by hand (packs.decline writes false to
+    settings.toml); installing it by hand writes true again.
     """
     done: bool = False
     # The tour after the wizard (D36; overlay.TourCard): a STATE key,
@@ -269,6 +270,7 @@ class SetupConfig:
     tour: bool = False
     autostart: bool = False
     offer_gpu_pack: bool = True
+    offer_recording_pack: bool = True
 
 
 @dataclass(frozen=True)
@@ -1810,6 +1812,8 @@ def build(data: dict) -> Config:
             tour=bool(setup.get("tour", SetupConfig.tour)),
             autostart=bool(setup.get("autostart", SetupConfig.autostart)),
             offer_gpu_pack=bool(setup.get("offer_gpu_pack", SetupConfig.offer_gpu_pack)),
+            offer_recording_pack=bool(setup.get("offer_recording_pack",
+                                                SetupConfig.offer_recording_pack)),
         ),
         updates=UpdatesConfig(
             channel=(str(updates_.get("channel", UpdatesConfig.channel))
