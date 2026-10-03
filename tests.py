@@ -39963,6 +39963,8 @@ def test_the_store_package_carries_unplated_logos_and_a_desktop_shortcut():
     assert app.find("uap:VisualElements", ns).get("BackgroundColor") == "transparent"
     workflow = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
     assert "DeskIT App.lnk" in workflow and "outlived the package" in workflow
+    assert "did not follow the update" in workflow, "an update must carry the shortcut"
+    assert "shell_icon.py" in workflow and (store / "shell_icon.py").exists()
     assert "appcert.exe" in workflow and "dev/make_logo.py" in workflow
 
 
