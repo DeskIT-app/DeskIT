@@ -184,7 +184,12 @@ def test_guide_uses_screen_names():
     """Every "Settings > X" and "Dashboard > X" a page names is a tab or a
     place the app draws (settings.TABS, dashboard.NAV), and the block
     titles named in capitals are ones the tabs carry — so a renamed
-    screen fails the docs build."""
+    screen fails the docs build. The step after a tab is never another
+    tab, and the app's own words exported for the guide (docs/strings)
+    are held to the same: "Settings > Privacy > Account" passed this
+    test for a fortnight after Account became a tab of its own, because
+    only the first step was read and the strings not at all (the Store
+    walk, 2026-10-03)."""
     import settings as settings_mod
     src = (REPO / "dashboard.py").read_text("utf-8")
     nav = re.findall(r'\("([a-z]+)", "([A-Za-z]+)"\)', src.split("NAV = (")[1].split(")\n")[0])
@@ -192,16 +197,25 @@ def test_guide_uses_screen_names():
     tabs = {tab.name for tab in settings_mod.TABS}
     blocks = {g.title for tab in settings_mod.TABS for g in tab.groups}
     blocks |= {"YOUR CLOUD KEYS", "EVERY CONNECTION", "THE LOCK"}
+    # Windows' own Settings pages the guide sends people to
+    windows = {"Apps", "Privacy & security", "System", "Languages & input"}
+    known = sorted(tabs | windows, key=len, reverse=True)
+    pattern = ("Settings > (" + "|".join(re.escape(k) for k in known)
+               + r"|[A-Z][A-Za-z]+)(?: > ([A-Z][A-Za-z]+))?")
+
+    def steps(where: str, text: str) -> None:
+        for m in re.finditer(pattern, text):
+            tab, then = m.group(1), m.group(2)
+            assert tab in known, \
+                f"{where}: Settings > {tab} is not a tab ({sorted(tabs)})"
+            assert not (tab in tabs and then in tabs), \
+                f"{where}: Settings > {tab} > {then} — {then} is a tab of its own"
+
+    for path in sorted((DOCS / "strings").glob("*.json")):
+        steps(f"strings/{path.name}", path.read_text("utf-8"))
     for lang in ("he", "en"):
         for name, text in _pages(lang).items():
-            # Windows' own Settings pages the guide sends people to
-            windows = {"Apps", "Privacy & security", "System", "Languages & input"}
-            known = sorted(tabs | windows, key=len, reverse=True)
-            pattern = "Settings > (" + "|".join(re.escape(k) for k in known) + r"|[A-Z][A-Za-z]+)"
-            for m in re.finditer(pattern, text):
-                tab = m.group(1)
-                assert tab in known, \
-                    f"{lang}/{name}: Settings > {tab} is not a tab ({sorted(tabs)})"
+            steps(f"{lang}/{name}", text)
             for m in re.finditer(r"Dashboard > ([A-Z][A-Za-z]+)", text):
                 assert m.group(1) in places, f"{lang}/{name}: Dashboard > {m.group(1)}"
             for m in re.finditer(r"\*\*([A-Z]{4,}(?: [A-Z]+)+)\*\*", text):
