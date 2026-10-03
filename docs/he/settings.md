@@ -35,8 +35,8 @@ title: הגדרות
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
 |---|---|---|---|
-| `capture.folder` — Where pictures are saved | Screenshots and webcam photos both land here. | `captures` | text |
-| `capture.clip_folder` — Where recordings are saved | Empty means the same folder as the pictures. | (empty) | text |
+| `capture.folder` — Where pictures are saved | Screenshots and webcam photos both land here — Windows' Pictures folder unless you pick another. | `{pictures}/DeskIT` | text |
+| `capture.clip_folder` — Where recordings are saved | Screen recordings land here — Windows' Videos folder unless you pick another. | `{videos}/DeskIT` | text |
 
 ## Dictation
 
