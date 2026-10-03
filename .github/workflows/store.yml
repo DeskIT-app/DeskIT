@@ -175,6 +175,18 @@ jobs:
           # the package's unplated logo, and the desktop holds the shortcut
           Start-Sleep -Seconds 15
           & pkg\python\python.exe -B -c "import sys; from PIL import ImageGrab; im = ImageGrab.grab(all_screens=True); im.save(sys.argv[1]); print('screen', im.size)" "$env:RUNNER_TEMP\smoke-shots\screen.png"
+          # the shortcut's icon again, a minute after the install, beside the
+          # two files it could come from — the first run's shortcut showed
+          # Windows' blank page on this runner while the app's own icon
+          # resolved (on a Windows 11 PC a link into the package draws its
+          # icon), so this says which of the three the shell can read here
+          & pkg\python\python.exe -B packaging\store\shell_icon.py $lnk 32 "$env:RUNNER_TEMP\smoke-shots\shell-shortcut-later-32.png"
+          & pkg\python\python.exe -B packaging\store\shell_icon.py "$($pkg.InstallLocation)\assets\DeskIT.ico" 32 "$env:RUNNER_TEMP\smoke-shots\shell-file-ico-32.png"
+          & pkg\python\python.exe -B packaging\store\shell_icon.py "$($pkg.InstallLocation)\DeskIT.exe" 32 "$env:RUNNER_TEMP\smoke-shots\shell-file-exe-32.png"
+          $item = (New-Object -ComObject Shell.Application).NameSpace((Split-Path $lnk)).ParseName((Split-Path $lnk -Leaf))
+          foreach ($property in "System.AppUserModel.ID", "System.Link.TargetParsingPath", "System.Link.Arguments") {
+            Write-Host "shortcut $property = '$($item.ExtendedProperty($property))'"
+          }
           '{"hook_event_name": "Stop"}' | & $alias
           if ($LASTEXITCODE) { throw "deskit-hook.exe exited $LASTEXITCODE" }
           Get-Process DeskIT, pythonw -ErrorAction SilentlyContinue | Stop-Process -Force
