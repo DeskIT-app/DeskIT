@@ -44899,8 +44899,11 @@ def test_account_command_over_the_pipe():
             reply = app._account_command("signout_all")
             assert reply["ok"] and "every PC" in reply["message"], reply
             assert _until(lambda: not sb.signed_in()), "the sign-out thread did not finish"
+            # every PC: the others first, then this one (session-revoke,
+            # 2026-10-03 — the broadcast between them is
+            # test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second)
             outs = [c for c in fake.calls if c["path"] == "auth/v1/logout"]
-            assert [c["query"].get("scope") for c in outs] == ["local", "global"], outs
+            assert [c["query"].get("scope") for c in outs] == ["local", "others", "local"], outs
         with _patched(sb, "PROJECT_REF", ""):
             assert "not configured" in app._account_command("google")["error"]
 
