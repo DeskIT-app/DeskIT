@@ -2621,6 +2621,7 @@ class Dashboard:
         items += self._waiting_consent()
         items += self._waiting_lock()
         items += self._waiting_update()
+        items += self._waiting_keys()
         items += self._waiting_hardware()
         items += self._waiting_notify()
         items += self._waiting_review()
@@ -2708,6 +2709,51 @@ class Dashboard:
                     "the installer runs; your data folder is untouched.",
             "buttons": buttons,
         }]
+
+    #: The text keys a missing cloud key leaves dead, as Home names them.
+    NEEDS_KEY_WORDS = {"translate": ("Translate", "translate_hotkey"),
+                       "punctuate": ("Punctuate", "punctuate_hotkey")}
+
+    def _waiting_keys(self) -> list[dict]:
+        """A text key pressed with no cloud key to answer it (store walk
+        item 13, 2026-10-03: a person who skipped the keys page must learn
+        on the first press exactly what to add and where — a row here,
+        never a floating card). status()["needs_key"] is feature -> when;
+        it empties itself once either key is saved. [Add a key] opens
+        Settings > Privacy, where YOUR CLOUD KEYS is; Not now keeps the
+        row down until the next such press."""
+        needs = (self.status.get("needs_key") or {}) if self.running else {}
+        later = float(getattr(self, "_needs_key_later", 0.0))
+        pressed = {f: float(t) for f, t in needs.items()
+                   if f in self.NEEDS_KEY_WORDS and float(t) > later}
+        if not pressed:
+            return []
+        keys = self.status.get("keys") or {}
+        named = []
+        for feature in ("translate", "punctuate"):
+            if feature in pressed:
+                word, field = self.NEEDS_KEY_WORDS[feature]
+                binding = str(keys.get(field) or "")
+                named.append(f"{word} ({pretty_key(binding)})" if binding else word)
+        when = max(pressed.values())
+        verb = "needs" if len(named) == 1 else "need"
+        return [{
+            "at": when, "kind": "keys", "mark": "keys", "mark_colour": ui.AMBER,
+            "eyebrow": "Your cloud keys", "eyebrow_right": False,
+            "text": f"{' and '.join(named)} {verb} a free cloud key — Gemini or Groq",
+            "note": (f"Pressed at {time.strftime('%H:%M', time.localtime(when))}; your text "
+                     "was left as it was. A key takes a minute, with no credit card."),
+            "buttons": [("Add a key", "gold", self._needs_key_go),
+                        ("Not now", "quiet", lambda w=when: self._needs_key_dismiss(w))],
+        }]
+
+    def _needs_key_go(self) -> None:
+        self._show("Settings")
+        self._settings_go("Privacy")
+
+    def _needs_key_dismiss(self, when: float) -> None:
+        self._needs_key_later = when
+        self._fill_waiting()
 
     def _waiting_hardware(self) -> list[dict]:
         """The rows of chapter 9's screen 10 and 6.9, on the pile rather

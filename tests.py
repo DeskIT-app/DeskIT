@@ -38516,6 +38516,57 @@ def test_a_saved_key_locks_and_change_then_cancel_keeps_it():
         ui_mod.forget_images()
 
 
+def test_a_text_key_with_no_cloud_key_is_a_row_on_home():
+    """Store walk item 13: a person who skipped the keys page learns on
+    the first press what to add and where. main records the press only
+    when NO cloud key could have answered (a failure with a key is the
+    log's), status() carries it until either key is saved, and Home's
+    pile says it in one row — which keys, when, [Add a key] to Settings >
+    Privacy, Not now until the next press."""
+    import main as main_mod
+    import translate as translate_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    app._needs_key = {}
+    missing = [["gemini", "groq"]]
+    with _patched(translate_mod.Translator, "missing_keys", staticmethod(lambda: list(missing[0]))):
+        app._needs_key_check("translate")
+        assert set(app._needs_key_now()) == {"translate"}
+        missing[0] = ["gemini"]                      # a Groq key, and a failure anyway
+        app._needs_key.clear()
+        app._needs_key_check("punctuate")
+        assert app._needs_key_now() == {}, "a press WITH a key became a row"
+        missing[0] = ["gemini", "groq"]
+        app._needs_key_check("punctuate")
+        missing[0] = []                              # a key saved: the row goes
+        assert app._needs_key_now() == {} and app._needs_key == {}
+
+    with _window() as board:
+        if board is None:
+            return
+        board.running = True
+        now = time.time()
+        board.status = {"stage": "running", "keys": {"translate_hotkey": "f8",
+                                                     "punctuate_hotkey": "ctrl+f2"},
+                        "needs_key": {"translate": now - 60, "punctuate": now - 5}}
+        rows = board._waiting_keys()
+        assert len(rows) == 1, rows
+        row = rows[0]
+        assert row["text"] == "Translate (F8) and Punctuate (Ctrl+F2) need a free cloud key — Gemini or Groq", row
+        assert [b[0] for b in row["buttons"]] == ["Add a key", "Not now"]
+        assert [r["text"] for r in board._waiting_items() if r.get("kind") == "keys"] == [row["text"]]
+        row["buttons"][1][2]()                        # Not now
+        assert board._waiting_keys() == []
+        board.status["needs_key"] = {"translate": now + 1}       # pressed again
+        assert board._waiting_keys()[0]["text"].startswith("Translate (F8) needs")
+        board._waiting_keys()[0]["buttons"][0][2]()  # Add a key
+        board.root.update_idletasks()
+        assert "key_rows" in board.parts, "Add a key did not open YOUR CLOUD KEYS"
+        board.status["needs_key"] = {}
+        assert board._waiting_keys() == []
+        board.running = False
+
+
 def test_the_folder_settings_have_a_picker_beside_the_field():
     """Settings > Screen: "Where pictures are saved" and "Where recordings
     are saved" carry a [Browse…] beside their field (the owner, 2026-09-19
