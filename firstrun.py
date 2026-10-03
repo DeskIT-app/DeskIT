@@ -101,6 +101,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 import config as config_mod
+import keyrow
 import paths
 import steps
 import ui
@@ -129,7 +130,7 @@ QUIET_S = 6.0
 SPEECH = 0.045
 TEST_S = 3.0                        # how long the sample recording runs
 
-PAGES = ("welcome", "account", "mic", "computer", "say", "keys", "extras", "done")
+PAGES = ("welcome", "account", "mic", "computer", "say", "keys", "cloud", "extras", "done")
 #: The screenshot key when the Snipping-Tool switch is on / off (screen 13).
 SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 
@@ -351,6 +352,17 @@ WORDS = {
                        "your cloud keys follow you there — what you said and the keys locked "
                        "with a key only your own PCs hold. Never your voice. "
                        "Settings > Privacy > Withdraw turns it off."),
+    "cloud.title": "Cloud keys",
+    "cloud.sub": ("Free keys for the features that need a language model. Only the text "
+                  "leaves this PC, never your voice; Settings > Privacy changes it later."),
+    "cloud.free": "Free · no credit card",
+    "cloud.groq.unlocks": ("Fixes the words it misheard, puts in punctuation ({punctuate}) "
+                           "and translates what you select ({translate})."),
+    "cloud.groq.without": "Without it, what you say is pasted exactly as heard and those two keys do nothing.",
+    "cloud.gemini.unlocks": "Translates what you select into English ({translate}), first and best.",
+    "cloud.gemini.without": "Without it, Groq translates (if it is on); with neither, {translate} does nothing.",
+    "cloud.wait": "Turn the switch off, or save a working key.",
+    "cloud.checking": "Checking the key…",
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
     "done.deferred": ("DeskIT is installed. The Hebrew model can be downloaded from the desk "
@@ -1094,6 +1106,10 @@ class Wizard:
             self.extras["cloud"] = bool(privacy.allowed("cloud_text"))
         except Exception:                                  # noqa: BLE001
             pass
+        # The cloud-keys page's two cards: on where the gate is open AND
+        # that key is already saved (a returning copy, a second run).
+        self.clouds = {name: bool(self.extras["cloud"]) and keyrow.stored(name)[0]
+                       for name in ("groq", "gemini")}
         # Whose hook lines Claude Code's settings.json holds: this copy's
         # (the switch on), another DeskIT copy's (off, with the other's
         # folder on the row and a question before it is taken over — see
@@ -2405,6 +2421,124 @@ class Wizard:
         log.info("setup: %s is now %r", field, key)
 
     # ---------------------------------------------------------------- extras
+    # ------------------------------------------------------------ cloud keys
+    def _page_cloud(self) -> None:
+        """The two free keys, a card each (store walk item 13, the owner's
+        pick of 2026-10-03 between one card and two: "two places to put
+        the keys, Groq and Gemini, each in its own card"). Each card says
+        what the key UNLOCKS and what is missing without it, because most
+        people skip a page like Extras and then cannot tell why F8 does
+        nothing. THE SWITCH IS THE CONSENT, as on Extras: on is
+        privacy.grant("cloud_text") with the card's text_version; off on
+        both cards withdraws it. Under a switch that is on, the key's row
+        (keyrow.KeyRow: locked dots + Change key once a key works); Next
+        waits while a card is on without a working key."""
+        self._head(WORDS["cloud.title"], WORDS["cloud.sub"])
+        self.switches = {}
+        keys = {"punctuate": _pretty(self.cfg.punctuate_hotkey) or "its key",
+                "translate": _pretty(self.cfg.translate_hotkey) or "its key"}
+        self.cloud_rows: dict[str, object] = {}
+        self.cloud_slots: dict[str, tk.Frame] = {}
+        self.cloud_cards: dict[str, ui.Card] = {}
+        for i, name in enumerate(("groq", "gemini")):
+            card = self._card(pad=16)
+            card.pack(fill="x", pady=(0, 12))
+            self.cloud_cards[name] = card
+            top = tk.Frame(card.body, bg=ui.CARD)
+            top.pack(fill="x")
+            switch = ui.Switch(top, self.clouds[name],
+                               lambda _v=None, n=name: self._cloud_flipped(n), bg=ui.CARD)
+            switch.pack(side="left", padx=(0, 14), pady=(2, 0))
+            self.switches[f"cloud.{name}"] = switch
+            tk.Label(top, text=keyrow.PROVIDERS[name]["label"], bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 12, "bold"), anchor="w").pack(side="left")
+            tk.Label(top, text=WORDS["cloud.free"], bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 9)).pack(side="right")
+            for key, fg, size in ((f"cloud.{name}.unlocks", ui.FG, 10),
+                                  (f"cloud.{name}.without", ui.DIM, 9)):
+                tk.Label(card.body, text=WORDS[key].format(**keys), bg=ui.CARD, fg=fg,
+                         font=(ui.UI, size), anchor="w", justify="left",
+                         wraplength=INNER - 54 - 36).pack(fill="x", padx=(54, 0), pady=(4, 0))
+            slot = tk.Frame(card.body, bg=ui.CARD)
+            slot.pack(fill="x", padx=(54, 0))
+            self.cloud_slots[name] = slot
+            if self.clouds[name]:
+                self._cloud_row(name)
+            self._fit(card)
+        self._cloud_gate()
+
+    def _cloud_row(self, name: str) -> None:
+        slot = self.cloud_slots[name]
+        for child in slot.winfo_children():
+            child.destroy()
+        slot.configure(height=1)          # an emptied frame keeps its size (_clear_slot)
+        row = keyrow.KeyRow(slot, name, width=INNER - 54 - 36, bg=ui.CARD,
+                            on_state=lambda _s, _v, n=name: self._cloud_changed(n),
+                            probe=self._cloud_probe, check_saved=True)
+        row.pack(fill="x", pady=(8, 0))
+        self.cloud_rows[name] = row
+
+    @staticmethod
+    def _cloud_probe(name: str) -> int:
+        return keyrow.probe(name)
+
+    def _cloud_changed(self, name: str) -> None:
+        card = getattr(self, "cloud_cards", {}).get(name)
+        if card is not None and card.winfo_exists():
+            self._fit(card)
+        self._cloud_gate()
+
+    def _cloud_flipped(self, name: str) -> None:
+        on = self.switches[f"cloud.{name}"].get()
+        if on and not any(self.clouds.values()):
+            try:
+                import consent_card as cc
+                import privacy
+                privacy.grant("cloud_text", cc.card_for("cloud_text")["text_version"])
+            except Exception as e:                         # noqa: BLE001
+                log.warning("the wizard could not record the cloud consent: %s", e)
+                self.switches[f"cloud.{name}"].set(False)
+                return
+        self.clouds[name] = on
+        self.extras["cloud"] = any(self.clouds.values())
+        if on:
+            self._cloud_row(name)
+        else:
+            slot = self.cloud_slots[name]
+            for child in slot.winfo_children():
+                child.destroy()
+            slot.configure(height=1)
+            self.cloud_rows.pop(name, None)
+            if not any(self.clouds.values()):
+                try:
+                    import privacy
+                    privacy.withdraw("cloud_text")
+                except Exception:                          # noqa: BLE001
+                    log.info("the cloud gate was not withdrawn", exc_info=True)
+        self._fit(self.cloud_cards[name])
+        self._cloud_gate()
+
+    def _cloud_gate(self) -> None:
+        """Next waits while a card is on and its key is not saved and
+        working (a check with no answer counts: the cloud checks it on
+        first use, as the Extras row always did)."""
+        if self.name != "cloud":
+            return
+        waiting = testing = False
+        for name, on in self.clouds.items():
+            row = self.cloud_rows.get(name)
+            if not on or row is None:
+                continue
+            if row.state == "testing":
+                testing = waiting = True
+            elif row.state != "locked":
+                waiting = True
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(not waiting)
+        text = WORDS["cloud.checking" if testing else "cloud.wait"] if waiting else ""
+        if self.note.cget("text") != text:
+            self.note.configure(text=text, fg=ui.DIM)
+
     def _page_extras(self) -> None:
         self._head(WORDS["extras.title"], WORDS["extras.sub"])
         self.switches: dict[str, ui.Switch] = {}
@@ -3046,7 +3180,7 @@ class Wizard:
         evening: "I do not want the installation page"): the computer
         page when nothing is left to download — a copy whose downloads
         landed, or a portable one."""
-        if self._returning and name in ("mic", "say", "keys", "extras", "done"):
+        if self._returning and name in ("mic", "say", "keys", "cloud", "extras", "done"):
             return True          # a returning person: only what this PC still lacks
         if name != "computer":
             return False

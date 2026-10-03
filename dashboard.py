@@ -6920,70 +6920,68 @@ class Dashboard:
 
     def _keys_block(self, scroller) -> None:
         """YOUR CLOUD KEYS on Settings > Privacy (chapter 9 screen 3, D10-
-        D12): a row per provider — a masked field that takes a paste and
-        never shows the value again, [Save and test] (the key into
-        Windows Credential Manager through secretstore, then one
-        `key-test` call through net.py that lists the provider's models),
-        [Remove] — and under each the fixed storage sentence the guide
-        quotes. The gates on the rows below open only through their
-        cards; a key is what lets a card's [Turn on] mean anything."""
+        D12): a row per provider — keyrow.KeyRow, the wizard's own row
+        (store walk item 14, 2026-10-03): a saved key LOCKS, a fixed row
+        of dots and [Change key]; Change opens the empty field with Save
+        and Cancel, Cancel keeps the saved key, and a key the provider
+        refuses gives the saved one back. [Remove] beside it, and under
+        each the fixed storage sentence the guide quotes. The check is one
+        `key-test` call through net.py by name; the value is never read
+        back. The gates on the rows below open only through their cards;
+        a key is what lets a card's [Turn on] mean anything."""
+        import keyrow
         import secretstore
-        present = {}
-        try:
-            present = secretstore.present()
-        except Exception:                 # noqa: BLE001
-            pass
-        # Each provider is as tall as its storage sentence wraps to —
-        # two lines of the small face at this width — plus the row above
-        # it; a flat 132 per provider left the last sentence's second
-        # line behind the card's edge ("swallowed", the owner, 2026-09-18).
-        sentences = {name: ui.clamp(secretstore.storage_sentence(name),
-                                    ui.UI, 8, CW - 40, 3)
-                     for name, _l, _u, _w in self.KEY_PROVIDERS}
-        heights = {name: 82 + lines * LINE + 14
-                   for name, (_text, lines) in sentences.items()}
-        card = ui.Card(scroller.inner, CW, 36 + 24 + sum(heights.values()),
-                       bg=ui.BG, pad=18)
+        card = ui.Card(scroller.inner, CW, 40, bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
         tk.Label(body, text="Y O U R   C L O U D   K E Y S", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+                 font=(ui.MEDIUM, 8), anchor="w").pack(fill="x")
         self.parts["key_fields"] = {}
         self.parts["key_lines"] = {}
-        y = 24
+        self.parts["key_rows"] = {}
+        remove_w = widgets.button_width("Remove")
         for name, label, url, why in self.KEY_PROVIDERS:
-            tk.Label(body, text=label, bg=ui.CARD, fg=ui.FG,
-                     font=(ui.UI, 11, "bold")).place(x=0, y=y)
-            link = tk.Label(body, text="Get a free key", bg=ui.CARD, fg=ui.ACCENT_TEXT,
+            head = tk.Frame(body, bg=ui.CARD)
+            head.pack(fill="x", pady=(10, 6))
+            tk.Label(head, text=label, bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 11, "bold")).pack(side="left")
+            link = tk.Label(head, text="Get a free key", bg=ui.CARD, fg=ui.ACCENT_TEXT,
                             font=(ui.UI, 9, "underline"), cursor="hand2")
-            link.place(x=80, y=y + 2)
+            link.pack(side="left", padx=(14, 14))
             link.bind("<Button-1>", lambda _e, u=url: self._open_url(u))
-            tk.Label(body, text=why, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                     wraplength=CW - 360, justify="left").place(x=190, y=y + 2)
-            field = ui.Field(body, "", w=320, h=30, justify="left",
-                             placeholder="paste the key here", bg=ui.CARD, pt=10)
-            field.entry.configure(show="•")
-            field.place(x=0, y=y + 28)
-            self.parts["key_fields"][name] = field
-            x = 332
-            for text, command in (("Save and test", lambda n=name: self._key_save(n)),
-                                  ("Remove", lambda n=name: self._key_remove(n))):
-                w = widgets.button_width(text)
-                ui.Button(body, text, command, h=30, w=w, quiet=True,
-                          bg=ui.CARD).place(x=x, y=y + 28)
-                x += w + 8
-            stored = name in present
-            line = tk.Label(body, text=(f"Stored in {present[name]}" if stored
-                                        else "no key"),
-                            bg=ui.CARD, fg=ui.FG if stored else ui.FAINT,
-                            font=(ui.UI, 9), anchor="w")
-            line.place(x=0, y=y + 64)
-            self.parts["key_lines"][name] = line
-            tk.Label(body, text=sentences[name][0], bg=ui.CARD,
-                     fg=ui.FAINT, font=(ui.UI, 8),
-                     justify="left").place(x=0, y=y + 82)
-            y += heights[name]
+            tk.Label(head, text=why, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     anchor="w").pack(side="left")
+            line = tk.Frame(body, bg=ui.CARD)
+            line.pack(fill="x")
+            row = keyrow.KeyRow(line, name, width=CW - 40 - remove_w - 120, bg=ui.CARD,
+                                on_state=lambda state, _v, n=name: self._key_state(n, state, card),
+                                show_link=False)          # the head carries the link here
+            row.pack(side="left", anchor="n")
+            ui.Button(line, "Remove", lambda n=name: self._key_remove(n), h=34, w=remove_w,
+                      quiet=True, bg=ui.CARD).pack(side="left", anchor="n", padx=(8, 0))
+            self.parts["key_rows"][name] = row
+            self.parts["key_fields"][name] = row.field
+            self.parts["key_lines"][name] = row.note
+            sentence, _lines = ui.clamp(secretstore.storage_sentence(name),
+                                        ui.UI, 8, CW - 40, 3)
+            tk.Label(body, text=sentence, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     justify="left", anchor="w").pack(fill="x", pady=(8, 0))
+        self._key_fit(card)
         scroller.bind_wheel(card)
+
+    @staticmethod
+    def _key_fit(card) -> None:
+        if card.winfo_exists():
+            card.body.update_idletasks()
+            card.resize(card.body.winfo_reqheight() + 2 * 18)
+
+    def _key_state(self, name: str, state: str, card) -> None:
+        """A row changed: the card follows its height, and a key just
+        stored is sent on to the account's other PCs, sealed
+        (sb._sync_vault) — at the save, as it always was."""
+        self._key_fit(card)
+        if state == "testing" and self.running:
+            self._ask("account", do="nudge", kind="vault")
 
     # ------------------------------------------- every connection (D12's window)
 
@@ -7711,99 +7709,27 @@ class Dashboard:
         self._busy_until = time.monotonic() + 1
         self._ask("account", then=lambda r: self._announce(r, said), do=do, **args)
 
-    def _key_say(self, name: str, text: str, colour: str | None = None) -> None:
-        line = self.parts.get("key_lines", {}).get(name)
-        if line is not None and line.winfo_exists():
-            line.configure(text=text, fg=colour or ui.FG)
-
     def _key_save(self, name: str) -> None:
-        """The pasted value into the store — never into a file — then
-        the test; the field is emptied either way, so the value is on
-        screen for exactly as long as it takes to press the button."""
-        import secretstore
-        field = self.parts.get("key_fields", {}).get(name)
-        value = field.get().strip() if field is not None else ""
-        if field is not None:
-            field.set("")
-        if not value:
-            self._key_test(name)
-            return
-        try:
-            secretstore.set(name, value)
-        except Exception as e:                                # noqa: BLE001
-            self._key_say(name, f"could not store the key: {e}", ui.RED)
-            return
-        del value
-        self._key_say(name, f"Stored in Windows Credential Manager as "
-                            f"{secretstore.target(name)} — testing…", ui.DIM)
-        self._key_test(name)
-        if self.running:
-            # the account's other PCs get it too, sealed (sb._sync_vault)
-            self._ask("account", do="nudge", kind="vault")
-
-    def _key_test(self, name: str) -> None:
-        """One `key-test` call through net.py, on a thread: the
-        provider's model list under the stored key. The key value never
-        touches this method — net.py attaches it by name."""
-        import secretstore
-        if name not in secretstore.present():
-            self._key_say(name, "no key", ui.FAINT)
-            return
-
-        results: dict = self.__dict__.setdefault("_key_results", {})
-        results.pop(name, None)
-
-        def work() -> None:
-            try:
-                count = self._key_probe(name)
-                results[name] = (f"Works · {count} models visible · stored as "
-                                 f"{secretstore.target(name)}", ui.GREEN)
-            except Exception as e:                            # noqa: BLE001
-                results[name] = (f"stored, but the provider said: {str(e)[:160]}", ui.AMBER)
-        threading.Thread(target=work, daemon=True, name="key-test").start()
-        # Polled from the Tk side rather than root.after from the thread:
-        # a Tk call from another thread needs the main loop, which a test
-        # driving update() does not run.
-        self.root.after(100, lambda: self._key_poll(name))
-
-    def _key_poll(self, name: str) -> None:
-        if self.closing:
-            return
-        said = self.__dict__.get("_key_results", {}).pop(name, None)
-        if said is None:
-            self.root.after(100, lambda: self._key_poll(name))
-            return
-        self._key_say(name, *said)
-
-    @staticmethod
-    def _key_probe(name: str) -> int:
-        """How many models the key can see — the one allowed call."""
-        import json as json_mod
-
-        import net
-        if name == "groq":
-            status, _h, body = net.request(
-                "GET", "https://api.groq.com/openai/v1/models", "key-test",
-                secret="groq", timeout_s=20)
-        else:
-            status, _h, body = net.request(
-                "GET", f"{net.GEMINI_BASE_URL}v1beta/models?pageSize=200", "key-test",
-                secret="gemini", timeout_s=20)
-        if status != 200:
-            detail = body.decode("utf-8", "replace")[:200]
-            raise RuntimeError(f"HTTP {status}: {detail}")
-        data = json_mod.loads(body.decode("utf-8"))
-        items = data.get("data") if name == "groq" else data.get("models")
-        return len(items or [])
+        """What [Save key] does — the row's own save (keyrow.KeyRow.save):
+        the pasted value into the store, the field emptied, the check."""
+        row = self.parts.get("key_rows", {}).get(name)
+        if row is not None and row.winfo_exists():
+            if row.state == "locked":
+                row.change()
+            row.save()
 
     def _key_remove(self, name: str) -> None:
         import secretstore
+        row = self.parts.get("key_rows", {}).get(name)
         try:
             had = secretstore.delete(name)
         except Exception as e:                                # noqa: BLE001
-            self._key_say(name, f"could not remove the key: {e}", ui.RED)
+            if row is not None:
+                row.note.configure(text=f"could not remove the key: {e}", fg=ui.RED)
             return
-        self._key_say(name, "no key" if had else "no key to remove", ui.FAINT)
+        if row is not None and row.winfo_exists():
+            row._open_field()
+            row.note.configure(text="no key" if had else "no key to remove", fg=ui.FAINT)
         self._note(f"{name}: the key is gone from Windows Credential Manager"
                    if had else f"{name}: there was no key")
 

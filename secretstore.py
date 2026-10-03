@@ -254,9 +254,57 @@ def delete(name: str) -> bool:
     return _cred_delete(name) if _check(name) == "cred" else _file_delete(name)
 
 
+# ------------------------------------------------- a key on trial (item 14)
+#
+# [Change key] stores the NEW key under the provider's own name, because
+# the check that follows is a request net.py makes by that name. A key
+# the provider then refuses must not cost the person the key that was
+# working, so the working one waits beside it — in Credential Manager,
+# under `<name>.previous`, never in a variable outside this module — until
+# the verdict: trial_passed drops it, trial_failed puts it back.
+
+def _previous(name: str) -> str:
+    if _check(name) != "cred":
+        raise SecretError(f"{name}: only an API key can be put on trial")
+    return f"{name}.previous"
+
+
+def trial(name: str, value: str) -> bool:
+    """Store ``value`` as ``name`` with the stored one kept aside; True
+    when there was one to keep."""
+    aside = _previous(name)
+    value = (value or "").strip()
+    if not value:
+        raise SecretError(f"{name}: nothing to store")
+    old = _cred_read(name)
+    if old:
+        _cred_write(aside, old)
+    del old
+    _cred_write(name, value)
+    return _cred_read(_previous(name)) is not None
+
+
+def trial_passed(name: str) -> None:
+    _cred_delete(_previous(name))
+
+
+def trial_failed(name: str) -> bool:
+    """The refused key out; the kept one back. True when one came back."""
+    old = _cred_read(_previous(name))
+    if old:
+        _cred_write(name, old)
+        _cred_delete(_previous(name))
+        del old
+        return True
+    _cred_delete(name)
+    return False
+
+
 def delete_all() -> list[str]:
     """Every secret this copy holds — for "Delete everything on this PC"
     and the uninstaller. Returns the names that were present."""
+    for name in CRED_NAMES:
+        _cred_delete(_previous(name))
     gone = [name for name in CRED_NAMES + FILE_NAMES if delete(name)]
     try:
         paths.SECRETS_DIR.rmdir()          # only when empty

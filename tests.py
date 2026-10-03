@@ -32699,6 +32699,36 @@ def test_secrets_backend_by_name():
         raise AssertionError("an unknown secret name was accepted")
 
 
+def test_a_key_on_trial_gives_the_old_one_back_when_refused():
+    """[Change key] (store walk item 14): the new key is stored under the
+    provider's name for its check, the working one kept aside in
+    Credential Manager as `<name>.previous`; refused, the old one comes
+    back; passed, the aside one is gone. delete_all clears both."""
+    import secretstore
+    with _test_cred_prefix() as store:
+        assert store.trial("groq", "gsk_only_fixture_" + "1" * 20) is False
+        assert store.trial_failed("groq") is False and store.get("groq") is None
+        store.set("groq", "gsk_old_fixture_" + "2" * 20)
+        assert store.trial("groq", "gsk_new_fixture_" + "3" * 20) is True
+        assert store.get("groq") == "gsk_new_fixture_" + "3" * 20
+        assert store.trial_failed("groq") is True
+        assert store.get("groq") == "gsk_old_fixture_" + "2" * 20
+        assert store._cred_read("groq.previous") is None
+        store.trial("groq", "gsk_new_fixture_" + "3" * 20)
+        store.trial_passed("groq")
+        assert store.get("groq") == "gsk_new_fixture_" + "3" * 20
+        assert store._cred_read("groq.previous") is None
+        store.trial("groq", "gsk_newer_fixture_" + "4" * 20)
+        store.delete_all()
+        assert store.get("groq") is None and store._cred_read("groq.previous") is None
+        try:
+            store.trial("phone_token", "x" * 20)
+        except secretstore.SecretError:
+            pass
+        else:
+            raise AssertionError("a token file was put on trial")
+
+
 def test_secrets_lookup_order():
     """Credential Manager beats DESKIT_* in the environment, which beats
     the developer's bare GROQ_API_KEY / .env; the bare name and the .env
@@ -36922,6 +36952,9 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             w._next()
             assert w.name == "keys"
             w._next()
+            assert w.name == "cloud"                         # the two keys' cards, both off
+            assert w.next._enabled, "Next shut with both cloud cards off"
+            w._next()
             assert w.name == "extras"
             assert set(w.switches) == {"cloud", "awake", "updates", "claude", "snip"}, "D33's five"
             assert w.switches["updates"].get() is True, "the shipped default is on (D21)"
@@ -37459,6 +37492,91 @@ def test_the_cloud_switch_is_the_consent_and_next_waits_for_a_working_key():
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_the_cloud_keys_page_has_a_card_per_key_and_waits_for_a_working_one():
+    """The wizard's cloud-keys page (store walk item 13, the owner's pick
+    of 2026-10-03: two cards, Groq and Gemini): each card says what the
+    key unlocks and what is missing without it, with the real keys of
+    this config in the words; its switch is the consent (cloud_text, the
+    card's text_version) and opens the key row under it; Next waits while
+    a card is on without a working key; a working key locks (dots +
+    Change key); both off withdraws the consent and opens Next."""
+    import consent_card as cc
+    import firstrun
+    import keyrow
+    import privacy
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+
+    def settle(w, until=lambda: False, seconds=3.0):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not until():
+            w.root.update()
+            time.sleep(0.02)
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t),             _patched(keyrow, "probe", lambda name: 3), _test_cred_prefix() as store:
+        privacy.withdraw("cloud_text")
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("cloud")
+            w._show_page()
+            w.root.update()
+            assert set(w.cloud_cards) == {"groq", "gemini"} and not w.cloud_rows
+            words = [c.cget("text") for card in w.cloud_cards.values()
+                     for c in card.body.winfo_children() if c.winfo_class() == "Label"]
+            assert any("Ctrl+F2" in t_ and "F8" in t_ for t_ in words), words
+            assert any(t_.startswith("Without it") for t_ in words), "no word on what is missing"
+            assert w.next._enabled and w.note.cget("text") == ""
+
+            w.switches["cloud.groq"].toggle()
+            settle(w, seconds=0.2)
+            row = privacy.consent("cloud_text")
+            assert row is not None and row["text_version"] == cc.card_for("cloud_text")["text_version"]
+            assert w.cloud_rows["groq"].state == "open"
+            assert not w.next._enabled and w.note.cget("text") == firstrun.WORDS["cloud.wait"]
+            groq = w.cloud_rows["groq"]
+            groq.field.set("gsk_wizard_fixture_" + "w" * 30)
+            groq.save()
+            settle(w, until=lambda: groq.state == "locked")
+            assert groq.field.get() == keyrow.DOTS and w.next._enabled, (groq.state, w.note.cget("text"))
+            assert store.get("groq") == "gsk_wizard_fixture_" + "w" * 30
+            card = w.cloud_cards["groq"]
+            w.root.update_idletasks()
+            assert card.h == card.body.winfo_reqheight() + 2 * card.pad, "the card did not follow its row"
+
+            # a second card on: Next waits again until it too has a key
+            w.switches["cloud.gemini"].toggle()
+            settle(w, seconds=0.2)
+            assert not w.next._enabled
+            w.switches["cloud.gemini"].toggle()
+            settle(w, seconds=0.2)
+            assert w.next._enabled and "gemini" not in w.cloud_rows
+            assert privacy.consent("cloud_text") is not None, "one card off withdrew the other's consent"
+
+            # back on the page later: the saved key is drawn locked
+            w._show_page()
+            settle(w, until=lambda: w.cloud_rows["groq"].state == "locked")
+            assert w.cloud_rows["groq"].state == "locked" and w.next._enabled
+
+            w.switches["cloud.groq"].toggle()
+            settle(w, seconds=0.2)
+            assert privacy.consent("cloud_text") is None, "both off did not withdraw"
+            assert w.next._enabled and w.extras["cloud"] is False
+        finally:
+            privacy.withdraw("cloud_text")
+            try:
+                w.root.destroy()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_extras_page_asks_before_taking_the_claude_door():
     """The Connect Claude Code row when another DeskIT copy's lines are
     in Claude Code's settings.json (2026-09-22): drawn OFF with the
@@ -37823,7 +37941,7 @@ def test_the_wizard_rebinds_a_key_on_its_own_page():
             # leaving the page while listening stops listening
             w._rebind("punctuate_hotkey")
             w._next()
-            assert w.name == "extras" and w._capturing is None and not w._key_binds
+            assert w.name == "cloud" and w._capturing is None and not w._key_binds
         finally:
             try:
                 w._close()
@@ -37929,7 +38047,7 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     assert "import main" not in wiz, "the wizard must not import main.py"
     assert 'config_mod.save({"setup.done": True})' in wiz
     assert firstrun.PAGES == ("welcome", "account", "mic", "computer", "say", "keys",
-                              "extras", "done")
+                              "cloud", "extras", "done")
     assert firstrun.GUIDE_PRIVACY_CHECK.startswith(paths.PAGES_URL)
     assert firstrun.PRIVACY_URL == f"{paths.PAGES_URL}/privacy"
 
@@ -38224,13 +38342,16 @@ def test_privacy_request_asks_the_card_outside_a_press():
 # the wizard asked once, as switches afterwards.
 
 def test_the_keys_block_stores_tests_and_removes_without_showing_the_value():
-    """Settings > Privacy draws YOUR CLOUD KEYS: a masked field (show=•)
-    per provider, the storage sentence secretstore.storage_sentence()
-    under each; [Save and test] puts the pasted value into the store
-    (the test prefix, never DeskIT/), empties the field, and runs one
-    `key-test` request through net.py that names the secret and never
-    carries the value in the URL; [Remove] deletes it; the line under
-    the field says what stands. Nothing here reads the value back."""
+    """Settings > Privacy draws YOUR CLOUD KEYS: keyrow.KeyRow per
+    provider — a masked field (show=•), the storage sentence
+    secretstore.storage_sentence() under each; Save puts the pasted value
+    into the store (the test prefix, never DeskIT/), empties the field,
+    and runs one `key-test` request through net.py that names the secret
+    and never carries the value in the URL. A key that works LOCKS (the
+    store walk's item 14): the fixed dots, the field shut, [Change key].
+    [Remove] deletes it and opens the field again; a key the provider
+    refuses is not kept. Nothing here reads the value back."""
+    import keyrow
     import net
     import secretstore
     import dashboard as dash
@@ -38244,6 +38365,12 @@ def test_the_keys_block_stores_tests_and_removes_without_showing_the_value():
         payload = b'{"data": [1, 2, 3]}' if secret == "groq" else b'{"models": [1, 2]}'
         return 200, {}, payload
 
+    def wait(row, until):
+        deadline = time.monotonic() + 8
+        while not until() and time.monotonic() < deadline:
+            row.update()
+            time.sleep(0.02)
+
     with _test_cred_prefix(), _patched(net, "request", fake_request), _window() as board:
         if board is None:
             return
@@ -38251,46 +38378,142 @@ def test_the_keys_block_stores_tests_and_removes_without_showing_the_value():
         board._settings_go("Privacy")
         board._finish_settings()
         board.root.update_idletasks()
-        fields = board.parts["key_fields"]
-        assert set(fields) == {"groq", "gemini"}
+        fields, rows = board.parts["key_fields"], board.parts["key_rows"]
+        assert set(fields) == set(rows) == {"groq", "gemini"}
         assert fields["groq"].entry.cget("show") == "•", "the key would be readable on screen"
         sentence = secretstore.storage_sentence("groq")
         # wrapped by measuring (ui.clamp), so the label holds the sentence
         # with line breaks where the card's width put them
+        body = rows["groq"].master.master
         texts = [" ".join(w.cget("text").split())
-                 for w in fields["groq"].master.winfo_children()
-                 if w.winfo_class() == "Label"]
+                 for w in body.winfo_children() if w.winfo_class() == "Label"]
         assert sentence in texts, "the storage sentence is not under the field"
-        assert board.parts["key_lines"]["groq"].cget("text") == "no key"
+        assert rows["groq"].state == "open"
         fields["groq"].set("gsk_test_0123456789abcdef0123456789abcdef0123456789")
         board._key_save("groq")
         assert fields["groq"].get() == "", "the value stayed on screen"
-        deadline = time.monotonic() + 8
-        while "Works" not in board.parts["key_lines"]["groq"].cget("text") \
-                and time.monotonic() < deadline:
-            board.root.update()
-            time.sleep(0.02)
-        line = board.parts["key_lines"]["groq"].cget("text")
-        assert line.startswith("Works · 3 models visible"), line
-        assert secretstore.target("groq") in line and secretstore.TARGET_PREFIX == "DeskIT.test"
+        wait(rows["groq"], lambda: rows["groq"].state == "locked")
+        row = rows["groq"]
+        assert row.state == "locked" and row.verdict == "ok", (row.state, row.verdict)
+        assert "Key works" in board.parts["key_lines"]["groq"].cget("text")
+        assert row.field.get() == keyrow.DOTS and row.field.entry.cget("state") == "disabled"
         assert calls == [("GET", "https://api.groq.com/openai/v1/models", "key-test", "groq")], calls
-        assert secretstore.get("groq") is not None
+        assert secretstore.get("groq") is not None and secretstore.TARGET_PREFIX == "DeskIT.test"
+        board.root.update_idletasks()
+        card = body.master
+        assert card.winfo_height() >= body.winfo_reqheight(), "the rows are off the card"
         board._key_remove("groq")
         assert secretstore.get("groq") is None
-        assert board.parts["key_lines"]["groq"].cget("text") == "no key"
-        # a key the provider refuses: stored, and the line says what it said
+        assert rows["groq"].state == "open" and board.parts["key_lines"]["groq"].cget("text") == "no key"
+        # a key the provider refuses is not kept, and the line says so
         def refused(method, url, purpose, **kw):
             return 401, {}, b'{"error": {"message": "Invalid API Key"}}'
         with _patched(net, "request", refused):
             fields["gemini"].set("AIza_test_key")
             board._key_save("gemini")
-            deadline = time.monotonic() + 8
-            while "provider said" not in board.parts["key_lines"]["gemini"].cget("text") \
-                    and time.monotonic() < deadline:
-                board.root.update()
-                time.sleep(0.02)
-            assert "HTTP 401" in board.parts["key_lines"]["gemini"].cget("text")
-        board._key_remove("gemini")
+            wait(rows["gemini"], lambda: rows["gemini"].verdict == "bad")
+            assert "did not accept" in board.parts["key_lines"]["gemini"].cget("text")
+            assert secretstore.get("gemini") is None and rows["gemini"].state == "open"
+
+
+def test_a_saved_key_locks_and_change_then_cancel_keeps_it():
+    """The store walk's item 14, the row itself (keyrow.KeyRow, the
+    wizard's and Settings' both): a working key LOCKS — the fixed dots,
+    not editable, [Change key]; Change opens the empty field with Save
+    and Cancel and Cancel goes back to the lock with the key still saved;
+    a NEW key the provider refuses gives the saved one back; a key that
+    is already saved is drawn locked when the row is built again. The
+    dots are one fixed string, never derived from the value."""
+    import inspect as inspect_mod
+    import keyrow
+    import ui as ui_mod
+
+    answers = ["ok"]
+
+    def fake_probe(name):
+        word = answers.pop(0)
+        if word == "bad":
+            raise keyrow.KeyRefused("HTTP 401")
+        if word == "offline":
+            raise RuntimeError("HTTP 503")
+        return 3
+
+    def wait(row, until):
+        deadline = time.monotonic() + 5
+        while not until() and time.monotonic() < deadline:
+            row.update()
+            time.sleep(0.02)
+
+    try:
+        root = tk.Tk()
+    except Exception as e:                     # no display: nothing to test
+        print(f"    (skipped: no Tk window — {e})")
+        return
+    seen: list = []
+    try:
+        root.withdraw()
+        with _test_cred_prefix() as store:
+            row = keyrow.KeyRow(root, "groq", width=560, probe=fake_probe,
+                                on_state=lambda st, v: seen.append((st, v)))
+            row.pack()
+            assert row.state == "open" and row.field.entry.cget("show") == "•"
+            assert row.link.winfo_manager() == "pack", "no way to a free key"
+            row.save()                                       # nothing pasted
+            assert "paste the key first" in row.note.cget("text") and store.get("groq") is None
+            row.field.set("שלום")
+            row.save()
+            assert "does not look like" in row.note.cget("text") and store.get("groq") is None
+            row.field.set("gsk_first_fixture_" + "a" * 30)
+            row.save()
+            assert row.field.get() == "" and row.state == "testing"
+            wait(row, lambda: row.state == "locked")
+            assert row.state == "locked" and row.verdict == "ok"
+            assert row.field.get() == keyrow.DOTS and row.field.entry.cget("state") == "disabled"
+            assert "Key works" in row.note.cget("text")
+            assert row.link.winfo_manager() == "", "the free-key line stays under a saved key"
+            # Change, then Cancel: the saved key untouched
+            row.change()
+            assert row.state == "changing" and row.field.get() == ""
+            assert row.field.entry.cget("state") == "normal"
+            assert len(row.buttons.winfo_children()) == 2
+            row.cancel()
+            assert row.state == "locked" and store.get("groq") == "gsk_first_fixture_" + "a" * 30
+            # Change to a key the provider refuses: the first one comes back
+            answers[:] = ["bad"]
+            row.change()
+            row.field.set("gsk_second_fixture_" + "b" * 30)
+            row.save()
+            wait(row, lambda: row.state != "testing")
+            assert row.state == "locked" and row.verdict == "bad"
+            assert store.get("groq") == "gsk_first_fixture_" + "a" * 30, "the working key was lost"
+            assert "the saved one is kept" in row.note.cget("text")
+            # Change to a key that works: it replaces the first, nothing kept aside
+            answers[:] = ["ok"]
+            row.change()
+            row.field.set("gsk_third_fixture_" + "c" * 30)
+            row.save()
+            wait(row, lambda: row.state != "testing")
+            assert store.get("groq") == "gsk_third_fixture_" + "c" * 30
+            assert store._cred_read("groq.previous") is None
+            # built again over a saved key: locked at once
+            again = keyrow.KeyRow(root, "groq", width=560, probe=fake_probe)
+            assert again.state == "locked" and again.field.get() == keyrow.DOTS
+            # a first key the provider refuses is not kept at all
+            store.delete("groq")
+            fresh = keyrow.KeyRow(root, "gemini", width=560, probe=fake_probe)
+            answers[:] = ["bad"]
+            fresh.field.set("AIza_fixture_" + "d" * 30)
+            fresh.save()
+            wait(fresh, lambda: fresh.state != "testing")
+            assert fresh.state == "open" and store.get("gemini") is None
+            assert "did not accept this key" in fresh.note.cget("text")
+        assert ("testing", "") in seen and ("locked", "ok") in seen, seen
+        assert keyrow.DOTS == "•" * 16
+        src = inspect_mod.getsource(keyrow)
+        assert "len(value)" not in src and "value[-" not in src, "the dots come from the value"
+    finally:
+        root.destroy()
+        ui_mod.forget_images()
 
 
 def test_the_folder_settings_have_a_picker_beside_the_field():
