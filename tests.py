@@ -41094,7 +41094,8 @@ def test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second():
     still standing is refreshed and stays, a refused refresh signs it
     out (the lock's hook runs) and closes the socket — in well under the
     two seconds, not at the end of the token's hour. Its own word is
-    ignored."""
+    ignored. A copy that starts after the sign-out asks the server the
+    moment the channel refuses its join, once per run of refusals."""
     import net as net_mod
     import sb
     import secretstore
@@ -41176,9 +41177,52 @@ def test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second():
                 sb._live_stop.set()
                 thread.join(5)
                 assert not thread.is_alive()
+
+            # 5. a copy that starts AFTER the sign-out: the channel refuses its
+            #    join (the server's check, 0006) and it asks the server then
+            #    and there — measured 2026-10-03, a reopened Dev was refused
+            #    at 4 s and still waited for the worker's first pass, 30 s
+            #    after its start. Once per run of refusals: a channel refused
+            #    for another reason does not cost a refresh at every retry.
+            made: list = []
+
+            def refusing(host, port, timeout_s):
+                made.append(_FakeRealtime(refuse_join="Unauthorized: You do not have permissions "
+                                                      "to read from this Channel topic"))
+                return made[-1].connect(host, port, timeout_s)
+
+            signed_in(fake)
+            gone.clear()
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+            with _patched(net_mod, "_ws_connect", refusing):
+                # the session still stands: one question, however many refusals
+                refreshes = fake.refreshes
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: fake.refreshes == refreshes + 1), "a refused join asked nothing"
+                assert _until(lambda: len(made) >= 3), len(made)
+                assert fake.refreshes == refreshes + 1 and sb.signed_in(), fake.refreshes - refreshes
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+                # the session is gone: out right after the refusal
+                sb._live_stop.clear()
+                fake.script["auth/v1/token"] = [(400, b'{"error":"invalid_grant","error_description":'
+                                                      b'"Invalid Refresh Token: Refresh Token Not Found"}')]
+                t0 = time.monotonic()
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: not sb.signed_in()), "a refused join left the copy signed in"
+                took = time.monotonic() - t0
+                assert took < 2.0, f"{took:.2f} s from the start to the lock"
+                assert gone == ["locked"], gone
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
     finally:
         sb._live_stop.clear()
-        sb._live_state.update(on=False, error="")
+        sb._live_state.update(on=False, error="", asked=False)
 
 
 class _pc:

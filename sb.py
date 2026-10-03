@@ -1615,7 +1615,23 @@ def nudge(store: str | None = None) -> None:
 # ------------------------------------------------------------- the live channel
 
 _live_stop = threading.Event()
-_live_state: dict = {"on": False, "error": ""}
+_live_state: dict = {"on": False, "error": "", "asked": False}
+
+
+def _ask_about_this_session(why: str) -> None:
+    """Ask the server about this copy's session NOW, not at the worker's
+    next pass: a refused refresh is ``_account_gone`` and the lock. Two
+    doors call it — another PC's ``signed_out`` on the live channel, and
+    a refused join (since migration 0006 the channel refuses a session
+    that has ended: measured 2026-10-03, a copy reopened after Sign out
+    of every PC was refused at 4 s and still waited for its first pass,
+    30 s after the start, to lock)."""
+    log.info("live: %s — asking the server about this session", why)
+    try:
+        with _lock:
+            _refresh()
+    except AccountError as e:
+        log.info("live: %s", e)
 
 
 def _live_purpose() -> str | None:
@@ -1632,6 +1648,7 @@ def _live_loop(vocab) -> None:
     """Hold the socket for as long as the account and a gate are there;
     reconnect with LIVE_RETRY_S between tries; never raise."""
     tries = 0
+    _live_state["asked"] = False
     while not _live_stop.is_set():
         try:
             if not (configured() and signed_in()) or _live_purpose() is None or net.offline:
@@ -1682,8 +1699,13 @@ def _live_once(vocab) -> bool:
         answer = json.loads(reply) if reply else {}
         if answer.get("event") != "phx_reply" or (answer.get("payload") or {}).get("status") != "ok":
             said = json.dumps((answer.get("payload") or {}).get("response") or answer)[:160]
+            if not _live_state.get("asked"):
+                # once per run of refusals: a channel refused for any
+                # other reason must not cost a refresh at every retry
+                _live_state["asked"] = True
+                _ask_about_this_session("the live channel refused the join")
             raise AccountError(f"the live channel refused the join: {said}")
-        _live_state.update(on=True, error="")
+        _live_state.update(on=True, error="", asked=False)
         log.info("live: listening on the account's channel")
         if _lock_state.get("state") == "have":
             try:
@@ -1740,12 +1762,7 @@ def _live_once(vocab) -> bool:
                 # its token's hour. The event only makes this copy look;
                 # a refused refresh is _account_gone and the lock, and
                 # the loop's next turn closes the socket.
-                log.info("live: another PC signed every PC out — asking the server about this one")
-                try:
-                    with _lock:
-                        _refresh()
-                except AccountError as e:
-                    log.info("live: %s", e)
+                _ask_about_this_session("another PC signed every PC out")
                 continue
             if inner.get("event") != "changed":
                 continue
