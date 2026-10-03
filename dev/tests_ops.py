@@ -717,7 +717,7 @@ def test_export_ignore_covers_forbidden():
     forbidden_files = {
         "tests.py", "tests_quiet.py", "nightly.py", "nightly_tests.ps1",
         "install_nightly_task.ps1", "weekly_review.ps1", "phase1_cutover.ps1",
-        "questions.py", "answer_card.py", "make_icon.py", "audio_check.py",
+        "questions.py", "answer_card.py", "audio_check.py",
         "install_fonts.py", "AGENTS.md", "DISTRIBUTION_PLAN.md",
         "PARALLEL_FEATURES_PLAN.md", "VISUAL_QA_PLAN.md", "SKIN.md",
         ".gitattributes", ".gitignore", "DeskIT.vbs", "Dashboard.vbs",

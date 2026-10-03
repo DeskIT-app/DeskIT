@@ -658,7 +658,7 @@ class Lite(Progress):
         self._plate = plate(LITE_W, LITE_H, LITE_RADIUS, LITE_INSET)
         # the badge's tile is BG, one step under the card's face, so it
         # reads as a tile set INTO the card rather than melting into it
-        self._mark = Mark(LITE_BADGE, LITE_BADGE + 10, "icon", tile_rgb=rgb(BG))
+        self._mark = Mark(LITE_BADGE, LITE_BADGE + 10, tile_rgb=rgb(BG))
         self.f_word = _pil_rubik(600, 15)
         self.f_status = _pil_rubik(400, 13)
         self.f_label = _pil_rubik(600, 10)

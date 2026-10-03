@@ -22,7 +22,21 @@ and the numbers meet by construction — the annulus ends exactly at
 y 10..18 where the top leg begins, and exactly at x 46..54 where the side
 leg begins. There is nothing left to align, at any size.
 
-    .venv\\Scripts\\python.exe dev\\make_logo.py            # both icons
+**Every picture of the app's mark comes from here.** icon.ico, and its
+256 px frame as icon.png (the wizard's mark, the desk's badges, the window
+icon, the sign-in page, the installer's pictures) and as the site's
+docs\\assets\\icon.png; packaging\\store\\assets.py draws the Store
+package's logos with `tile`. On 2026-09-24 this file redrew icon.ico and
+left icon.png alone, and for nine days the wizard, the desk's window and
+the Store copy's taskbar showed the old dalet mark while the listing showed
+this one (the Store walk, 2026-10-03, items 1 and 2) — so the PNGs are
+written in the same call as the .ico, and a test holds them to its 256 px
+frame. The root's make_icon.py, which drew the dalet, is gone.
+skin\\mark.py draws the same corner small for the boot card (the product
+cannot import from dev\\), and a test holds it to `mark`.
+
+    .venv\\Scripts\\python.exe dev\\make_logo.py            # every icon
+    .venv\\Scripts\\python.exe dev\\make_logo.py --app-only # the app's: .ico + both .png
     .venv\\Scripts\\python.exe dev\\make_logo.py --preview out.png
 """
 from __future__ import annotations
@@ -35,6 +49,10 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 APP_ICO = REPO / "icon.ico"                      # the app's own icon
+#: its 256 px frame, for everything that reads a PNG: the app's own
+#: badges and pages (firstrun, dashboard, sb's sign-in page), the
+#: installer's pictures (make_wizard_images.py), and the site
+APP_PNGS = (REPO / "icon.png", REPO / "docs" / "assets" / "icon.png")
 #: the master's icon. The NAME matters: Windows caches a desktop icon
 #: by the path of the .ico, and neither ie4uinit nor deleting
 #: iconcache*.db nor rebuilding the shortcut freed the large sizes
@@ -163,11 +181,17 @@ def tile(size: int, *, master: bool, with_word: bool) -> Image.Image:
     return big.resize((size, size), Image.LANCZOS)
 
 
-def build(path: Path, *, master: bool) -> Path:
+def build(path: Path, *, master: bool, pngs: tuple[Path, ...] = ()) -> Path:
+    """The .ico at every size, and its 256 px frame as each of `pngs` —
+    the same Image object, so the PNG is the frame and not a second
+    drawing of it."""
     frames = [tile(n, master=master, with_word=master and n >= WITH_WORD)
               for n in SIZES]
     frames[-1].save(path, format="ICO", sizes=[(n, n) for n in SIZES],
                     append_images=frames[:-1])
+    for png in pngs:
+        png.parent.mkdir(parents=True, exist_ok=True)
+        frames[-1].save(png, format="PNG", optimize=True)
     return path
 
 
@@ -188,13 +212,16 @@ def preview(path: Path) -> Path:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="draw icon.ico and dev\\master\\master.ico")
+    ap = argparse.ArgumentParser(
+        description="draw icon.ico, icon.png, docs\\assets\\icon.png and the master's icon")
     ap.add_argument("--preview", help="also write a strip of both icons here")
     ap.add_argument("--app-only", action="store_true")
     ap.add_argument("--master-only", action="store_true")
     ns = ap.parse_args()
     if not ns.master_only:
-        print(build(APP_ICO, master=False))
+        print(build(APP_ICO, master=False, pngs=APP_PNGS))
+        for png in APP_PNGS:
+            print(png)
     if not ns.app_only:
         print(build(MASTER_ICO, master=True))
     if ns.preview:

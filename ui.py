@@ -1,8 +1,9 @@
 """Rounded, anti-aliased surfaces for a toolkit that has neither.
 
 Tk 8.6 cannot round a corner and cannot anti-alias one. It can show an
-image, though, and Pillow — already a dependency, `make_icon.py` uses it —
-can draw a rounded rectangle at four times the size and shrink it down.
+image, though, and Pillow — already a dependency, `dev\\make_logo.py` draws
+the icon with it — can draw a rounded rectangle at four times the size and
+shrink it down.
 So every card, pill, button and switch in the dashboard is a Canvas
 holding one pre-rendered bitmap with ordinary Tk widgets placed on top of
 it, the widget's own background set to the same flat colour as the middle
@@ -363,14 +364,16 @@ def lamp(size: int, colour: str, bg: str,
 
 
 def _icon_art(path, size: int):
-    """The right CUT of the mark for the size being asked for.
+    """The mark at the size being asked for, from the best frame there is.
 
-    icon.png is the FULL cut — the lamp with its glow and both arcs — and
-    below 48 px those are a smudge and two grey pixels; that is the whole
-    reason make_icon.py draws two cuts in the first place. The .ico beside
-    it already holds the small cut at 16/24/32, so a small badge takes its
-    frame from there and only the big ones read the .png. Pillow selects an
-    ICO frame by assigning `size` before the pixels are loaded.
+    icon.png is the 256 px frame of icon.ico (dev\\make_logo.py writes both
+    in one call). A badge under 48 px takes the .ico's own frame at its
+    size instead — the mark drawn at that size, rather than 256 px squeezed
+    down twice — and only the big ones read the .png. (The dalet mark that
+    came before Corner had a second, simpler cut below 48 px, which is why
+    this split exists; Corner is one drawing at every size, and the frame
+    is still the sharper picture.) Pillow selects an ICO frame by assigning
+    `size` before the pixels are loaded.
     """
     if size < 48:
         ico = Path(path).with_suffix(".ico")
