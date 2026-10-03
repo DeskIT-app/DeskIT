@@ -365,7 +365,11 @@ def _refresh() -> dict:
         if status in (400, 401, 403, 404):
             # The refresh token was revoked or used elsewhere: the
             # account is gone or signed out from another PC (8.8).
-            _account_gone(f"the session could not be refreshed ({_server_said(status, data if isinstance(data, bytes) else b'')})")
+            # "Refresh Token Not Found" is the session deleted on the
+            # server — Sign out of every PC, or the account deleted.
+            said = _server_said(status, data if isinstance(data, bytes) else b"")
+            _account_gone(f"the session could not be refreshed ({said})",
+                          words=GONE_ELSEWHERE if "not found" in said.lower() else GONE_WORDS)
         raise AccountError(f"the session could not be refreshed ({status})")
     return _store_session(data)
 
@@ -381,14 +385,24 @@ def _fresh() -> dict:
         return session
 
 
-def _account_gone(why: str) -> None:
+#: What the sign-in card says under its button when this PC's session
+#: ended somewhere else. Plain words; the server's own reason goes to
+#: app.log. Until 2026-10-03 the card showed the server's line itself —
+#: "the session could not be refreshed (HTTP 400: Invalid Refresh Token:
+#: Refresh Token Not Found)" — and it said nothing to a person.
+GONE_ELSEWHERE = "Signed out from another PC."
+GONE_WORDS = "This PC was signed out."
+
+
+def _account_gone(why: str, *, words: str = GONE_WORDS) -> None:
     """A second 401, or a dead refresh token: drop the session and the
-    cursors; the next sign-in starts clean. Never a dialog."""
+    cursors; the next sign-in starts clean. Never a dialog: ``why`` goes
+    to the log, ``words`` to the sign-in card."""
     log.warning("account: %s — signed out on this PC", why)
     _clear_session()
     sync.forget_all()
     _forget_lock_state()
-    _status["last_error"] = why
+    _status["last_error"] = words
     _signed_out()
 
 
@@ -1400,11 +1414,17 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True) -> dict
             if changed and signed_in():
                 _broadcast(changed)
             errors = [f"{k}: {v[7:]}" for k, v in out.items() if v.startswith("error: ")]
+            # the account went away under this pass: _account_gone has
+            # said why in plain words, and the stores' errors are its
+            # echo — the log's, not the sign-in card's
+            gone = not signed_in()
             if errors:
-                _status["last_error"] = "; ".join(errors)[:200]
+                if not gone:
+                    _status["last_error"] = "; ".join(errors)[:200]
                 log.info("sync%s: %s", f" ({reason})" if reason else "", "; ".join(errors))
             else:
-                _status["last_error"] = ""
+                if not gone:
+                    _status["last_error"] = ""
                 _status["last_sync"] = _now_iso()
                 log.info("sync%s: %s", f" ({reason})" if reason else "",
                          ", ".join(f"{k} {v}" for k, v in out.items()) or "nothing to do")

@@ -42411,6 +42411,29 @@ def test_a_signed_out_session_is_refused_at_the_door():
         else:
             raise AssertionError("a session the server refused was not an error")
         assert not sb.signed_in() and gone == ["locked"], gone
+        # ...and the sign-in card says why in plain words, the server's
+        # line going to the log
+        assert sb.status()["last_error"] == sb.GONE_ELSEWHERE, sb.status()["last_error"]
+        # a sync pass that meets it does not put its stores' echo there
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        fake.script["rest/v1/"] = [(401, b'{"code":"PT401"}')]
+        fake.script["auth/v1/token"] = [(400, b'{"msg":"Invalid Refresh Token: Refresh Token Not Found"}')]
+        with _consented("settings_sync", "history_sync"):
+            out = sb.sync_now(reason="test")
+        assert not sb.signed_in() and any(v.startswith("error: ") for v in out.values()), out
+        assert sb.status()["last_error"] == sb.GONE_ELSEWHERE, sb.status()["last_error"]
+        # a refresh refused for another reason (an answer lost on a bad
+        # network, the token then "Already Used") does not blame another PC
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        fake.script["rest/v1/profiles"] = [(401, b'{"code":"PT401"}')]
+        fake.script["auth/v1/token"] = [(400, b'{"msg":"Invalid Refresh Token: Already Used"}')]
+        try:
+            sb._rest("GET", "profiles", purpose="account")
+        except sb.AccountError:
+            pass
+        assert not sb.signed_in() and sb.status()["last_error"] == sb.GONE_WORDS, sb.status()["last_error"]
 
 
 def test_redactor_patterns_match_migration():
@@ -43859,6 +43882,29 @@ def test_the_desk_is_a_landing_until_a_sign_in():
                         "account": {"configured": True, "signed_in": False,
                                     "busy": "", "last_error": "the browser never came back"}})
         assert "never came back" in board.parts["landing_line"].cget("text")
+        # signed out from another PC (2026-10-03): sb's plain sentence as
+        # it is, and the card as tall as what it says — the server's HTTP
+        # line used to wrap UNDER the paragraph, and the paragraph's last
+        # line under the card's edge (his screenshot)
+        def laid_out() -> None:
+            line, stored = board.parts["landing_line"], board.parts["landing_stored"]
+            card = board.parts["landing_card"]
+            line_bottom = board.LANDING_LINE_Y + (line.winfo_reqheight() if line.cget("text") else 0)
+            top = int(stored.place_info()["y"])
+            assert line_bottom <= top, (line_bottom, top)
+            assert top + stored.winfo_reqheight() <= card.h - 2 * 36, (top, stored.winfo_reqheight(), card.h)
+        laid_out()
+        board._refresh({"ok": True, "stage": "running", "locked": True,
+                        "account": {"configured": True, "signed_in": False,
+                                    "busy": "", "last_error": sb.GONE_ELSEWHERE}})
+        assert board.parts["landing_line"].cget("text") == sb.GONE_ELSEWHERE
+        laid_out()
+        board._refresh({"ok": True, "stage": "running", "locked": True,
+                        "account": {"configured": True, "signed_in": False, "busy": "",
+                                    "last_error": "the session could not be refreshed (HTTP 400: "
+                                                  "Invalid Refresh Token: Refresh Token Not Found)"}})
+        assert board.parts["landing_line"].winfo_reqheight() > 30, "the long line did not wrap"
+        laid_out()
         # the app's word: signed in — down onto Home, the places back
         board._refresh({"ok": True, "stage": "running", "locked": False,
                         "account": {"configured": True, "signed_in": True}})

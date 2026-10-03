@@ -9331,12 +9331,41 @@ class Dashboard:
         p["landing_line"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
                                      font=(ui.UI, 10), wraplength=inner,
                                      justify="left", anchor="w")
-        p["landing_line"].place(x=0, y=220)
-        tk.Label(body, text=self.LANDING_STORED, bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8), wraplength=inner, justify="left",
-                 anchor="w").place(x=0, y=250)
+        p["landing_line"].place(x=0, y=self.LANDING_LINE_Y)
+        p["landing_stored"] = tk.Label(body, text=self.LANDING_STORED, bg=ui.CARD,
+                                       fg=ui.FAINT, font=(ui.UI, 8), wraplength=inner,
+                                       justify="left", anchor="w")
+        p["landing_card"] = card
         self._landing_seen = None
         self._paint_landing()
+        self._lay_landing()
+
+    #: Where the line under the button starts, and the least room it
+    #: keeps above the paragraph when it is empty.
+    LANDING_LINE_Y, LANDING_LINE_ROOM = 220, 30
+
+    def _lay_landing(self) -> None:
+        """The card as tall as what it says: the line under the button
+        takes the lines its words need, the paragraph moves down under
+        it, and the card grows to the paragraph's last line. Both used to
+        sit at fixed heights in a fixed card (2026-10-03, his screenshot):
+        a reason that wrapped went under the paragraph, and the
+        paragraph's last line under the card's edge. A label's requested
+        height is known the moment its text is set, so nothing here
+        waits for a paint."""
+        p = self.parts
+        card, line, stored = p.get("landing_card"), p.get("landing_line"), p.get("landing_stored")
+        if card is None or line is None or stored is None or not line.winfo_exists():
+            return
+        room = self.LANDING_LINE_ROOM
+        if line.cget("text"):
+            room = max(room, line.winfo_reqheight() + 10)
+        y = self.LANDING_LINE_Y + room
+        stored.place(x=0, y=y)
+        h = y + stored.winfo_reqheight() + 2 * 36 + 6
+        if h != card.h:
+            card.resize(h)
+            card.place(x=(W - card.w) // 2, y=(H - TOP - h) // 2 - 20)
 
     def _paint_landing(self) -> None:
         """Every poll: the line under the button follows the app's
@@ -9353,12 +9382,26 @@ class Dashboard:
             said, colour = ("Waiting for Google's sign-in page in your browser…",
                             ui.DIM)
         elif info.get("last_error"):
-            said, colour = f"Not signed in: {info['last_error']}"[:200], ui.AMBER
+            said = str(info["last_error"])
+            if said not in self._gone_words():
+                said = f"Not signed in: {said}"[:200]    # a sign-in that failed
+            colour = ui.AMBER
         else:
             said, colour = "", ui.DIM
         if (said, colour) != getattr(self, "_landing_seen", None):
             self._landing_seen = (said, colour)
             line.configure(text=said, fg=colour)
+            self._lay_landing()
+
+    @staticmethod
+    def _gone_words() -> tuple[str, ...]:
+        """sb's own sentences for a session that ended elsewhere — said
+        as they are, without "Not signed in:" in front."""
+        try:
+            import sb
+            return (sb.GONE_ELSEWHERE, sb.GONE_WORDS)
+        except Exception:                                    # noqa: BLE001
+            return ()
 
     def _landing_sign_in(self) -> None:
         """[Sign in with Google] on the landing. Through the running app
@@ -9379,6 +9422,7 @@ class Dashboard:
         if line is not None:
             line.configure(text="Waiting for Google's sign-in page in your browser…",
                            fg=ui.DIM)
+            self._lay_landing()
 
         def work() -> None:
             try:
@@ -9402,6 +9446,7 @@ class Dashboard:
         else:
             line.configure(text=(f"Signed in as {who.get('email')}" if who and who.get("email")
                                  else "Signed in"), fg=ui.GREEN)
+        self._lay_landing()
         # the poll takes the landing down on its next tick; no waiting
         self._refresh(None if not self.status else self.status)
 
