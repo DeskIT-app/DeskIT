@@ -36828,7 +36828,8 @@ def test_the_wizard_has_no_downloads_page_and_shows_a_strip_while_they_run():
     the sentence page; Back goes back to it; the counter counts eight."""
     import firstrun
 
-    assert "computer" not in firstrun.PAGES and len(firstrun.PAGES) == 8
+    # 9 with lane 5's cloud-keys page (2026-10-03): "computer" is what is gone
+    assert "computer" not in firstrun.PAGES and len(firstrun.PAGES) == 9
     # the strip's words open the guide's table of the parts (the
     # installer's "More about these downloads")
     assert firstrun.DOWNLOADS_URL == f"{paths.PAGES_URL}/en/01-install#downloads"
