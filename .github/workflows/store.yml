@@ -13,7 +13,8 @@
 # throwaway certificate whose subject is the Store publisher, installed,
 # the family name checked against the one Partner Center gave, the
 # desktop shortcut Windows makes from the manifest found, the app's icon
-# fetched the way the shell resolves it (shell_icon.py), the
+# and the shortcut's fetched the way the shell resolves them
+# (shell_icon.py) and failed if either is Windows' blank page, the
 # app started the way the Start menu starts it until it writes its log
 # inside the package's private AppData, the screen photographed with the
 # app's window up (the smoke artifact is how the logos are looked at
@@ -151,12 +152,15 @@ jobs:
           $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
           Write-Host "desktop shortcut: $lnk -> '$($shortcut.TargetPath)' icon '$($shortcut.IconLocation)'"
           # the icons as the shell resolves them (shell_icon.py): the app's
-          # through resources.pri, and the shortcut's
+          # through resources.pri, and the shortcut's — Windows' blank page
+          # in either is a failure (AppxManifest.xml: the Icon's token)
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\smoke-shots" | Out-Null
           foreach ($size in 24, 32, 48) {
-            & pkg\python\python.exe -B packaging\store\shell_icon.py "shell:AppsFolder\$env:FAMILY!DeskIT" $size "$env:RUNNER_TEMP\smoke-shots\shell-app-$size.png"
+            & pkg\python\python.exe -B packaging\store\shell_icon.py "shell:AppsFolder\$env:FAMILY!DeskIT" $size "$env:RUNNER_TEMP\smoke-shots\shell-app-$size.png" --not-blank
+            if ($LASTEXITCODE) { throw "the app's $size px icon is not the mark (exit $LASTEXITCODE)" }
           }
-          & pkg\python\python.exe -B packaging\store\shell_icon.py $lnk 32 "$env:RUNNER_TEMP\smoke-shots\shell-shortcut-32.png"
+          & pkg\python\python.exe -B packaging\store\shell_icon.py $lnk 32 "$env:RUNNER_TEMP\smoke-shots\shell-shortcut-32.png" --not-blank
+          if ($LASTEXITCODE) { throw "the desktop shortcut's icon is not the mark (exit $LASTEXITCODE)" }
           $alias = "$env:LOCALAPPDATA\Microsoft\WindowsApps\deskit-hook.exe"
           if (-not (Test-Path $alias)) { throw "no deskit-hook.exe alias" }
           Start-Process explorer.exe -ArgumentList "shell:AppsFolder\$env:FAMILY!DeskIT"
@@ -171,22 +175,11 @@ jobs:
           if (-not $log) { throw "no app.log under $cache in 120 s: the app did not start inside the package" }
           Write-Host "app.log at $($log.FullName):"
           Get-Content $log.FullName -Tail 25
-          # the screen with the app's first window up: its taskbar button is
-          # the package's unplated logo, and the desktop holds the shortcut
+          # the screen with the app's first window up, for a person to look
+          # at: the desktop holds the shortcut (on this runner the taskbar
+          # draws even a resolved package icon as a blank page)
           Start-Sleep -Seconds 15
           & pkg\python\python.exe -B -c "import sys; from PIL import ImageGrab; im = ImageGrab.grab(all_screens=True); im.save(sys.argv[1]); print('screen', im.size)" "$env:RUNNER_TEMP\smoke-shots\screen.png"
-          # the shortcut's icon again, a minute after the install, beside the
-          # two files it could come from — the first run's shortcut showed
-          # Windows' blank page on this runner while the app's own icon
-          # resolved (on a Windows 11 PC a link into the package draws its
-          # icon), so this says which of the three the shell can read here
-          & pkg\python\python.exe -B packaging\store\shell_icon.py $lnk 32 "$env:RUNNER_TEMP\smoke-shots\shell-shortcut-later-32.png"
-          & pkg\python\python.exe -B packaging\store\shell_icon.py "$($pkg.InstallLocation)\assets\DeskIT.ico" 32 "$env:RUNNER_TEMP\smoke-shots\shell-file-ico-32.png"
-          & pkg\python\python.exe -B packaging\store\shell_icon.py "$($pkg.InstallLocation)\DeskIT.exe" 32 "$env:RUNNER_TEMP\smoke-shots\shell-file-exe-32.png"
-          $item = (New-Object -ComObject Shell.Application).NameSpace((Split-Path $lnk)).ParseName((Split-Path $lnk -Leaf))
-          foreach ($property in "System.AppUserModel.ID", "System.Link.TargetParsingPath", "System.Link.Arguments") {
-            Write-Host "shortcut $property = '$($item.ExtendedProperty($property))'"
-          }
           '{"hook_event_name": "Stop"}' | & $alias
           if ($LASTEXITCODE) { throw "deskit-hook.exe exited $LASTEXITCODE" }
           Get-Process DeskIT, pythonw -ErrorAction SilentlyContinue | Stop-Process -Force

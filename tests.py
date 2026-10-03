@@ -39959,12 +39959,20 @@ def test_the_store_package_carries_unplated_logos_and_a_desktop_shortcut():
                     "/desktop7:Shortcut", ns)
     assert link is not None, "no desktop shortcut declared"
     assert link.get("File") == "$(Desktop)\\DeskIT App.lnk", link.get("File")
-    assert link.get("Icon") == f"assets\\{assets.SHORTCUT_ICON}"
+    # the token is measured, not style: the bare relative path drew
+    # Windows' blank page for the shortcut (AppxManifest.xml's comment)
+    assert link.get("Icon") == f"[{{Package}}]\\assets\\{assets.SHORTCUT_ICON}", link.get("Icon")
     assert app.find("uap:VisualElements", ns).get("BackgroundColor") == "transparent"
     workflow = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
     assert "DeskIT App.lnk" in workflow and "outlived the package" in workflow
     assert "did not follow the update" in workflow, "an update must carry the shortcut"
     assert "shell_icon.py" in workflow and (store / "shell_icon.py").exists()
+    assert workflow.count("--not-blank") >= 2, "a blank app or shortcut icon must fail the smoke"
+    spec = importlib.util.spec_from_file_location("deskit_shell_icon", store / "shell_icon.py")
+    shell_icon = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shell_icon)
+    assert shell_icon.blank((229, 229, 228)) and shell_icon.blank(None)   # the runner's blank page
+    assert not shell_icon.blank((75, 70, 61))                              # the mark, as resolved there
     assert "appcert.exe" in workflow and "dev/make_logo.py" in workflow
 
 

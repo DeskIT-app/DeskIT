@@ -1,14 +1,17 @@
 """The icon Windows' own shell resolves for a thing, saved as a PNG.
 
-    python shell_icon.py <parsing name> <size> <out.png>
+    python shell_icon.py <parsing name> <size> <out.png> [--not-blank]
 
 `parsing name` is anything the shell can parse: an installed package's
 application (`shell:AppsFolder\\<family>!<app id>` — what the taskbar,
 Start and Alt+Tab draw), a shortcut's path, a file. store.yml runs it on
 the smoke install so the logo can be LOOKED AT as Windows resolves it —
 through resources.pri, the targetsize and unplated names (assets.py) —
-rather than inferred from the package's files, and so that a picture of
-the taskbar that is late to load its icons is not the only evidence.
+rather than inferred from the package's files. It is how the desktop
+shortcut's blank icon was found and fixed (AppxManifest.xml says how):
+on the runner the taskbar drew the app's button as the blank page while
+this call resolved its icon to the mark, at every size, so a screenshot
+of that taskbar is no evidence either way, and this is.
 
 IShellItemImageFactory::GetImage with SIIGBF_ICONONLY, read back with
 GetDIBits as 32-bit top-down BGRA (premultiplied, as the shell hands it
@@ -107,16 +110,26 @@ def shell_icon(name: str, size: int) -> Image.Image:
         release(factory)
 
 
+def blank(mean) -> bool:
+    """Is this Windows' blank page rather than the mark? The page is light
+    grey (229, 229, 228 on the runner); the mark's tile is graphite (75,
+    70, 61). A light icon of our own would need this threshold moved."""
+    return mean is None or sum(mean) / 3 > 170
+
+
 def main(argv: list[str]) -> int:
-    name, size, out = argv[0], int(argv[1]), argv[2]
-    picture = shell_icon(name, size)
+    """`--not-blank` makes Windows' blank page an exit status of 2."""
+    strict = "--not-blank" in argv
+    name, size, out = [a for a in argv if a != "--not-blank"][:3]
+    picture = shell_icon(name, int(size))
     picture.save(out)
     solid = picture.getchannel("A").point(lambda v: 255 if v > 200 else 0)
     count = solid.histogram()[255]
     mean = tuple(round(c) for c in ImageStat.Stat(picture.convert("RGB"), mask=solid).mean) \
         if count else None
-    print(f"{name} at {size}: {picture.size}, {count} opaque pixels, mean colour {mean}")
-    return 0
+    print(f"{name} at {size}: {picture.size}, {count} opaque pixels, mean colour {mean}"
+          + (" — Windows' blank page" if blank(mean) else ""))
+    return 2 if strict and blank(mean) else 0
 
 
 if __name__ == "__main__":

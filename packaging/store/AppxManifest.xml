@@ -30,8 +30,16 @@
   it never collides with the website copy's DeskIT.lnk on a PC that has
   both. desktop7 needs Windows build 19645 (every Windows 11); it is in
   IgnorableNamespaces, so an older Windows 10 skips the shortcut and
-  installs the rest. The logos and the index that makes their targetsize
-  names count are assets.py's and priconfig.xml's.
+  installs the rest. The Icon is written with the [{Package}] token, and
+  that is measured, not style: on the runner (Windows Server 2025, the
+  Windows 11 24H2 shell) a shortcut whose Icon was the bare relative path
+  showed Windows' blank page on the desktop and through the shell's own
+  icon call, while the token form, created first and asked at once, drew
+  the mark; both links report the same IconLocation, so only the drawn
+  icon tells them apart (2026-10-03, two probe runs; a .png Icon is blank
+  either way). store.yml now fails on a blank one. The logos and the
+  index that makes their targetsize names count are assets.py's and
+  priconfig.xml's.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -81,7 +89,7 @@
           </uap3:AppExecutionAlias>
         </uap3:Extension>
         <desktop7:Extension Category="windows.shortcut">
-          <desktop7:Shortcut File="$(Desktop)\DeskIT App.lnk" Icon="assets\DeskIT.ico"
+          <desktop7:Shortcut File="$(Desktop)\DeskIT App.lnk" Icon="[{Package}]\assets\DeskIT.ico"
             Description="Hold a key, speak, release: the text appears at the cursor." />
         </desktop7:Extension>
       </Extensions>
