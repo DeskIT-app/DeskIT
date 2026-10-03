@@ -176,8 +176,9 @@ jobs:
           Write-Host "app.log at $($log.FullName):"
           Get-Content $log.FullName -Tail 25
           # the screen with the app's first window up, for a person to look
-          # at: the desktop holds the shortcut (on this runner the taskbar
-          # draws even a resolved package icon as a blank page)
+          # at: its taskbar button and the desktop shortcut (the button takes
+          # its icon from the shortcut that carries the app's ID, so while the
+          # shortcut drew blank, the button did too)
           Start-Sleep -Seconds 15
           & pkg\python\python.exe -B -c "import sys; from PIL import ImageGrab; im = ImageGrab.grab(all_screens=True); im.save(sys.argv[1]); print('screen', im.size)" "$env:RUNNER_TEMP\smoke-shots\screen.png"
           '{"hook_event_name": "Stop"}' | & $alias

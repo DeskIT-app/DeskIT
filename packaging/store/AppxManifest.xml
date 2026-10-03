@@ -37,7 +37,9 @@
   icon call, while the token form, created first and asked at once, drew
   the mark; both links report the same IconLocation, so only the drawn
   icon tells them apart (2026-10-03, two probe runs; a .png Icon is blank
-  either way). store.yml now fails on a blank one. The logos and the
+  either way). The taskbar button was blank with it: Windows gives a
+  window's button the icon of the shortcut carrying the app's ID. With
+  the token both draw the mark. store.yml now fails on a blank one. The logos and the
   index that makes their targetsize names count are assets.py's and
   priconfig.xml's.
 -->

@@ -9,9 +9,10 @@ the smoke install so the logo can be LOOKED AT as Windows resolves it —
 through resources.pri, the targetsize and unplated names (assets.py) —
 rather than inferred from the package's files. It is how the desktop
 shortcut's blank icon was found and fixed (AppxManifest.xml says how):
-on the runner the taskbar drew the app's button as the blank page while
-this call resolved its icon to the mark, at every size, so a screenshot
-of that taskbar is no evidence either way, and this is.
+the taskbar drew the app's button blank as well, because Windows gives a
+button the icon of the shortcut that carries the app's ID, and only this
+call could tell the two apart: the app's own icon resolved, the
+shortcut's did not.
 
 IShellItemImageFactory::GetImage with SIIGBF_ICONONLY, read back with
 GetDIBits as 32-bit top-down BGRA (premultiplied, as the shell hands it
