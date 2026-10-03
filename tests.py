@@ -7279,7 +7279,7 @@ def test_the_window_carries_the_real_icon() -> None:
     import dashboard as dash
 
     assert (Path(__file__).resolve().parent / "icon.ico").exists(), \
-        "icon.ico is missing — run make_icon.py"
+        "icon.ico is missing — run dev\\make_logo.py --app-only"
     try:
         board = dash.Dashboard()
     except Exception as e:                      # no display: nothing to test
@@ -7308,6 +7308,47 @@ def test_the_window_carries_the_real_icon() -> None:
             board._bury()
         except Exception:
             pass
+
+
+def _make_logo():
+    """dev\\make_logo.py, loaded by its path: the one drawing of the mark.
+    The product never imports from dev\\ (it is not in the build); a test
+    may, to hold the product's pictures to their source."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "deskit_make_logo", REPO / "dev" / "make_logo.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_picture_of_the_mark_is_the_one_drawing() -> None:
+    """The Store walk (2026-10-03), item 1. dev\\make_logo.py redrew
+    icon.ico as Corner on 2026-09-24 and nothing redrew icon.png, so for
+    nine days the wizard's mark, the desk's badges, the sign-in page, the
+    installer's pictures and the Store package's logos (all drawn from
+    icon.png) showed the old dalet while the window icon showed Corner.
+    Now icon.png and the site's icon are the .ico's 256 px frame,
+    make_logo still draws exactly the .ico that is committed, and the
+    tool that drew the dalet is gone."""
+    from PIL import Image, ImageChops
+
+    png = Image.open(REPO / "icon.png").convert("RGBA")
+    assert png.size == (256, 256), png.size
+    ico = Image.open(REPO / "icon.ico")
+    ico.size = (256, 256)
+    frame = ico.convert("RGBA")
+    worst = max(hi for _lo, hi in ImageChops.difference(png, frame).getextrema())
+    assert worst <= 2, f"icon.png is not icon.ico's 256 px frame (off by {worst})"
+    site = REPO / "docs" / "assets" / "icon.png"
+    assert site.read_bytes() == (REPO / "icon.png").read_bytes(), \
+        "the site's icon is not icon.png — run dev\\make_logo.py --app-only"
+    drawn = _make_logo().tile(256, master=False, with_word=False)
+    worst = max(hi for _lo, hi in ImageChops.difference(drawn, frame).getextrema())
+    assert worst <= 2, (f"dev\\make_logo.py no longer draws the committed "
+                        f"icon.ico (off by {worst}) — run it with --app-only")
+    assert not (REPO / "make_icon.py").exists(), "make_icon.py draws the old dalet"
 
 
 def test_the_background_app_says_who_it_is_before_it_shows_anything() -> None:
@@ -19330,6 +19371,49 @@ def test_the_boot_card_never_echoes_a_line_it_does_not_understand() -> None:
     card.status("local model ivrit-ai/whisper-large-v3-turbo-ct2 ready "
                 "on cuda (float16)")
     assert "ivrit" not in card.line and "cuda" not in card.line, card.line
+
+
+def test_the_boot_badge_is_the_logo_drawn_small() -> None:
+    """skin\\mark.py draws the boot card's badge (the card a copy without
+    skia gets) and carries Corner's numbers itself, because the product
+    cannot import dev\\make_logo.py — so the two drawings are held to one
+    shape: drawn at 256 px by each, the stroke covers the same pixels and
+    so does the lamp. Until 2026-10-03 the badge was the old dalet desk
+    (the Store walk, item 1). And the badge's border stays empty, because
+    the card is a layered window and a lit border pixel draws the
+    rectangle (AGENTS.md)."""
+    from PIL import Image, ImageChops
+
+    from skin.mark import Mark
+    from skin.palette import ACCENT, BG, rgb
+
+    # make_logo draws at the size it is given with no smoothing (it draws
+    # its icons at 2048 and resizes), so the reference is drawn the same
+    # way: each part alone at 2048, its coverage resized to 256
+    logo = _make_logo()
+    clear = (0, 0, 0, 0)
+    want_stroke, want_lamp = (
+        logo.mark(2048, ink=ink, lamp=lamp, scale=0.94).getchannel("A")
+        .resize((256, 256), Image.LANCZOS)
+        for ink, lamp in (((255, 255, 255, 255), clear), (clear, (255, 0, 0, 255))))
+    badge = Mark(256, 256)
+
+    def share(a, b):
+        a = a.point(lambda v: 255 if v > 127 else 0)
+        b = b.point(lambda v: 255 if v > 127 else 0)
+        both = ImageChops.multiply(a, b).histogram()[255]
+        either = ImageChops.lighter(a, b).histogram()[255]
+        return both / max(1, either)
+
+    assert share(badge._stroke, want_stroke) >= 0.97, share(badge._stroke, want_stroke)
+    assert share(badge._lamp, want_lamp) >= 0.97, share(badge._lamp, want_lamp)
+    for glow in (0.0, 0.55, 1.0):
+        picture = Mark(44, 54, tile_rgb=rgb(BG)).frame(rgb(ACCENT), glow)
+        a = picture.getchannel("A")
+        w, h = picture.size
+        border = [a.getpixel((x, y)) for x in range(w) for y in (0, h - 1)] + \
+                 [a.getpixel((x, y)) for y in range(h) for x in (0, w - 1)]
+        assert max(border) == 0, f"the badge lights its border at glow {glow}"
 
 
 def test_boot_progress_only_ever_goes_forward() -> None:
@@ -32116,8 +32200,7 @@ def test_no_store_path_is_built_beside_the_code():
         "deskit.pyw",                                      # the installed entry (launch.py, autostart.py)
         "notify_hook.py",                                  # the hook's own script, read-only (firstrun.py)
     }
-    owner_only_files = {"nightly.py", "make_icon.py", "install_fonts.py",
-                        "audio_check.py"}
+    owner_only_files = {"nightly.py", "install_fonts.py", "audio_check.py"}
     pat = re.compile(r'(?:APP_DIR|Path\(__file__\)\.resolve\(\)\.parent)\s*/\s*"([^"]+)"')
     bad = []
     for py in sorted(REPO.glob("*.py")) + sorted((REPO / "transcribers").glob("*.py")) \
@@ -39790,6 +39873,109 @@ def test_the_store_package_is_the_reserved_identity_with_three_doors():
     assert "/CHANNEL=store" in workflow and "/NODOWNLOAD" in workflow and "--verify" in workflow
 
 
+def test_the_store_package_carries_unplated_logos_and_a_desktop_shortcut():
+    """The Store walk (2026-10-03), items 2 and 18. The taskbar showed the
+    44 px logo shrunk onto a plate of the accent colour, because the
+    package had no targetsize-N_altform-unplated files and no
+    resources.pri to find them through; and the Store copy put nothing on
+    the desktop, because an MSIX gets only what its manifest declares.
+    assets.py draws every name Windows asks for, from make_logo — the
+    taskbar's pictures ARE icon.ico's frames; priconfig.xml indexes the
+    assets and nothing else; build_msix.ps1 builds the index and reads it
+    back; the manifest declares the shortcut in a namespace an older
+    Windows may ignore; store.yml finds the shortcut after the install
+    and checks it is gone after the removal."""
+    import importlib.util
+    import xml.etree.ElementTree as ET
+
+    from PIL import Image, ImageChops
+
+    store = REPO / "packaging" / "store"
+    spec = importlib.util.spec_from_file_location("deskit_store_assets",
+                                                  store / "assets.py")
+    assets = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(assets)
+    names = assets.names()
+    for size in (16, 24, 32, 48, 256):
+        for form in ("altform-unplated", "altform-lightunplated"):
+            assert f"Square44x44Logo.targetsize-{size}_{form}.png" in names
+    for base, side in (("StoreLogo", 50), ("Square44x44Logo", 44),
+                       ("Square150x150Logo", 150)):
+        assert names[f"{base}.png"][0] == side
+        for scale, want in ((100, side), (200, side * 2), (400, side * 4)):
+            assert names[f"{base}.scale-{scale}.png"][0] == want, (base, scale)
+    assert names["Square150x150Logo.scale-125.png"][0] == 188     # Microsoft's table
+    assert names["StoreLogo.scale-125.png"][0] == 63
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-store-assets-"))
+    try:
+        written = assets.draw(tmp)
+        assert {p.name for p in written} == set(names) | {assets.SHORTCUT_ICON}
+        ico = Image.open(REPO / "icon.ico")
+        for size in (16, 24, 32, 48, 256):
+            ico.size = (size, size)
+            frame = ico.convert("RGBA")
+            for form in ("altform-unplated", "altform-lightunplated"):
+                got = Image.open(tmp / f"Square44x44Logo.targetsize-{size}_{form}.png")
+                got = got.convert("RGBA")
+                assert got.size == (size, size)
+                worst = max(hi for _lo, hi in ImageChops.difference(got, frame).getextrema())
+                assert worst <= 2, f"the {size} px taskbar logo is not icon.ico's frame ({worst})"
+        for name, (side, _share) in names.items():
+            picture = Image.open(tmp / name).convert("RGBA")
+            assert picture.size == (side, side), name
+            # a plate would be opaque there; the tile's own rounded corner
+            # leaves a few units of antialiasing at 24 px (3/255, as the .ico)
+            assert picture.getpixel((0, 0))[3] <= 8, f"{name} carries a plate"
+            assert (tmp / name).stat().st_size < 204800, f"{name} is over the kit's 200 KB"
+        start = Image.open(tmp / "Square150x150Logo.png").convert("RGBA")
+        assert start.getpixel((20, 75))[3] == 0 and start.getpixel((75, 75))[3] == 255, \
+            "the Start tile's mark is not two thirds of it"
+        assert (tmp / assets.SHORTCUT_ICON).read_bytes() == (REPO / "icon.ico").read_bytes()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    config = ET.parse(store / "priconfig.xml").getroot()
+    index = config.find("index")
+    assert index.get("root") == "\\" and index.get("startIndexAt") == "\\", \
+        "startIndexAt='assets' drops the folder from every name (measured)"
+    assert config.find("packaging") is None, "resource packs are for bundles"
+    folder = index.find("indexer-config")
+    assert folder.get("type") == "folder" and folder.get("filenameAsQualifier") == "true"
+    build = (store / "build_msix.ps1").read_text("utf-8")
+    assert "makepri.exe" in build and "priconfig.xml" in build and "resources.pri" in build
+    assert build.index("assets.py") < build.index("priconfig.xml") < build.index(" pack /d ")
+    assert "Files/assets/Square44x44Logo.png" in build, "the build reads its index back"
+
+    text = (store / "AppxManifest.xml").read_text("utf-8")
+    root = ET.fromstring(text.replace("{VERSION}", "1.2.3.0"))
+    ns = {"m": "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
+          "uap": "http://schemas.microsoft.com/appx/manifest/uap/windows10",
+          "desktop7": "http://schemas.microsoft.com/appx/manifest/desktop/windows10/7"}
+    assert "desktop7" in root.get("IgnorableNamespaces").split(), \
+        "a Windows older than build 19645 must skip the shortcut, not refuse the package"
+    app = root.find("m:Applications/m:Application", ns)
+    link = app.find("m:Extensions/desktop7:Extension[@Category='windows.shortcut']"
+                    "/desktop7:Shortcut", ns)
+    assert link is not None, "no desktop shortcut declared"
+    assert link.get("File") == "$(Desktop)\\DeskIT App.lnk", link.get("File")
+    # the token is measured, not style: the bare relative path drew
+    # Windows' blank page for the shortcut (AppxManifest.xml's comment)
+    assert link.get("Icon") == f"[{{Package}}]\\assets\\{assets.SHORTCUT_ICON}", link.get("Icon")
+    assert app.find("uap:VisualElements", ns).get("BackgroundColor") == "transparent"
+    workflow = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
+    assert "DeskIT App.lnk" in workflow and "outlived the package" in workflow
+    assert "did not follow the update" in workflow, "an update must carry the shortcut"
+    assert "shell_icon.py" in workflow and (store / "shell_icon.py").exists()
+    assert workflow.count("--not-blank") >= 2, "a blank app or shortcut icon must fail the smoke"
+    spec = importlib.util.spec_from_file_location("deskit_shell_icon", store / "shell_icon.py")
+    shell_icon = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shell_icon)
+    assert shell_icon.blank((229, 229, 228)) and shell_icon.blank(None)   # the runner's blank page
+    assert not shell_icon.blank((75, 70, 61))                              # the mark, as resolved there
+    assert "appcert.exe" in workflow and "dev/make_logo.py" in workflow
+
+
 def test_the_store_copy_holds_the_claude_door_through_its_alias():
     """Inside the package the hook line names the deskit-hook.exe alias —
     one path for every version, and a door that runs INSIDE the package,
@@ -40286,7 +40472,7 @@ DEV_MODULES = ("nightly", "questions", "tests_quiet", "tests_ops", "inbox",
 #: The tree's files that are not product modules. (versions.py is gone
 #: since PR 9 — version.py, which reads VERSION, is the product's.)
 DEV_FILES = frozenset({"tests.py", "tests_quiet.py", "nightly.py",
-                       "questions.py", "answer_card.py", "make_icon.py",
+                       "questions.py", "answer_card.py",
                        "audio_check.py", "install_fonts.py"})
 SKIN_DEV_FILES = frozenset({"preview.py", "record.py"})
 
