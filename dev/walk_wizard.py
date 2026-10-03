@@ -16,7 +16,10 @@ of it stubbed:
 - the downloads are pretend (a few seconds each), the speech model is a
   stand-in that "loads" in a second and answers every recording with the
   same sentence — the microphone is real, the transcript is not;
-- a Groq key pasted on Extras is held in memory and always "works";
+- a key pasted on the cloud-keys page is held in memory and always
+  "works" (keyrow's check and secretstore's trial are stubbed too: the
+  page must never see a key from Credential Manager, the environment or
+  the checkout's .env, nor send one to a provider);
 - Connect Claude Code, Start with Windows and the hardware probe write
   nothing.
 
@@ -57,6 +60,7 @@ def main() -> int:
     import config as config_mod
     import firstrun
     import hardware
+    import keyrow
     import notify_hook
     import sb
     import secretstore
@@ -76,12 +80,32 @@ def main() -> int:
     keys: dict[str, str] = {}
     secretstore.get = lambda name, *a, **k: keys.get(name)
     secretstore.set = lambda name, value, *a, **k: keys.__setitem__(name, value)
-    secretstore.delete = lambda name, *a, **k: keys.pop(name, None)
+    secretstore.delete = lambda name, *a, **k: keys.pop(name, None) is not None
+    secretstore.find_key = lambda name: ((keys.get(name), "memory (the walk)")
+                                         if keys.get(name) else (None, "not found"))
 
-    def any_key_works():
+    def trial(name, value):
+        had = name in keys
+        if had:
+            keys[f"{name}.previous"] = keys[name]
+        keys[name] = value
+        return had
+
+    def trial_failed(name):
+        old = keys.pop(f"{name}.previous", None)
+        if old:
+            keys[name] = old
+            return True
+        keys.pop(name, None)
+        return False
+    secretstore.trial = trial
+    secretstore.trial_passed = lambda name: keys.pop(f"{name}.previous", None)
+    secretstore.trial_failed = trial_failed
+
+    def any_key_works(name):
         time.sleep(0.5)
         return 1
-    firstrun.key_probe = any_key_works
+    keyrow.probe = any_key_works
 
     facts = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
     hardware.run_at_start = lambda *a, **k: dict(facts)
