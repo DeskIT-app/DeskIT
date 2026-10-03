@@ -10,7 +10,10 @@ copy and fixed blind in the checkout.
 This starts the checkout's CODE as an INSTALLED copy — paths.STRANGER:
 `DESKIT_STRANGER=1` with a `DESKIT_HOME` of its own — so it looks for
 the model under that home and offers the download, reads no .env and
-no bare key name (the store is `DeskIT.test/`), hides the developer
+no bare key name (the store is `DeskIT.stranger/`, its own: the test
+suite's is `DeskIT.test/`, and a suite run once deleted the Groq key this
+copy had synced in from the account — secretstore.TARGET_PREFIX has the
+story), hides the developer
 surfaces, keeps its own kernel names (`.test`) beside DeskIT Dev's and
 the release's, writes its Start-with-Windows switch to a Run key
 Windows never reads and its Connect-Claude-Code switch to a settings
