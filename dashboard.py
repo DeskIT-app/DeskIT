@@ -7772,8 +7772,6 @@ class Dashboard:
         the pasted value into the store, the field emptied, the check."""
         row = self.parts.get("key_rows", {}).get(name)
         if row is not None and row.winfo_exists():
-            if row.state == "locked":
-                row.change()
             row.save()
 
     def _key_remove(self, name: str) -> None:
