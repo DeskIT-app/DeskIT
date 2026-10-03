@@ -36628,7 +36628,9 @@ def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
             w.page = firstrun.PAGES.index("say")
             w._show_page()
             assert [c for c in w.body.winfo_children()], "no page drawn"
-            assert "of 8" in _wizard_words(w), "the counter still counts the hidden page"
+            # every page but "computer" — counted off PAGES, which grows
+            shown = f"of {len(firstrun.PAGES) - 1}"
+            assert shown in _wizard_words(w), "the counter still counts the hidden page"
         finally:
             try:
                 w._close()            # the microphone stream too, not only the window
@@ -36653,7 +36655,7 @@ def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
             w._show_page()
             w._next()
             assert w.name == "computer", "one download, and the page was skipped"
-            assert "of 9" in _wizard_words(w)
+            assert f"of {len(firstrun.PAGES)}" in _wizard_words(w)
         finally:
             try:
                 w._close()
@@ -44486,11 +44488,15 @@ def test_the_lock_card_on_the_privacy_tab():
             # the Keys page: a saved key nudges the vault store. It is
             # on Privacy since 2026-09-22 — the lock and the account are
             # a page of their own.
-            board._settings_go("Privacy")
-            board._finish_settings()
-            board.root.update_idletasks()
             import secretstore
             with _test_cred_prefix():
+                # drawn inside the test prefix: a key another test left in
+                # DeskIT.test/ would draw the row locked, and a locked
+                # field takes no paste
+                board._settings_go("Privacy")
+                board._finish_settings()
+                board.root.update_idletasks()
+                assert board.parts["key_rows"]["groq"].state == "open"
                 board.parts["key_fields"]["groq"].set("gsk_fixture_card_" + "q" * 30)
                 board._key_save("groq")
                 assert any(a == {"do": "nudge", "kind": "vault"} for _c, a, _t in sent), sent
