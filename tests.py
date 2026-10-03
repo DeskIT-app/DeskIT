@@ -28,6 +28,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Every process this suite starts is the suite's, a stranger copy
+# included: secretstore gives a hatch copy carrying this mark the
+# DeskIT.test/ Credential Manager prefix, never the Stranger's
+# DeskIT.stranger/ — the Stranger is signed in to the owner's real
+# account, and a test that empties its slot empties the account's key on
+# every PC (2026-10-03). Before the first import of ours, so children
+# inherit it from os.environ.
+os.environ["DESKIT_SUITE"] = "1"
+
 import paths as _paths_mod
 
 # THE PERSON'S OWN FILES ARE NEVER A FIXTURE. config.save and load_layered
@@ -32045,17 +32054,30 @@ _STRANGER_PROBE = (
     " 'describe': paths.describe()}))"
 )
 
+#: The Credential Manager prefix and nothing else: no key is looked up,
+#: so a probe of the owner's Stranger never reads what it holds.
+_PREFIX_PROBE = ("import sys; sys.path.insert(0, sys.argv[1]); import secretstore;"
+                 " print(secretstore.TARGET_PREFIX)")
+
 
 def test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy():
     """DESKIT_STRANGER=1 with DESKIT_HOME (dev\\stranger.py): the checkout
     is neither DEVELOPER nor PORTABLE — the model is absent (not the
     cache's), the pack missing, no .env and no bare variable answers for
-    a key, the store prefix is the test one — and its kernel names,
-    port, AppUserModelID, Run key and Claude settings file are its own,
-    beside DeskIT Dev's and the release's, so the copy collides with
-    neither and the owner's hook and Run value are never touched.
-    Without DESKIT_HOME the flag is ignored: the checkout's own folder is
-    never turned into a stranger's."""
+    a key, the store prefix is its own, DeskIT.stranger/, which a child of
+    this suite never gets (DESKIT_SUITE keeps it on DeskIT.test/) — and
+    its kernel names, port, AppUserModelID, Run key and Claude settings
+    file are its own, beside DeskIT Dev's and the release's, so the copy
+    collides with neither and the owner's hook and Run value are never
+    touched. Without DESKIT_HOME the flag is ignored: the checkout's own
+    folder is never turned into a stranger's.
+
+    The prefix is the one that cost something: until 2026-10-03 the
+    Stranger and the suite shared DeskIT.test/, the owner signed the
+    Stranger in to his account (its vault pulled his Groq key into
+    DeskIT.test/groq), and the next suite run deleted it — the e2e key
+    test runs --delete-key as a stranger copy. Signed in, the Stranger's
+    next pass would have pushed that as a removal to every PC."""
     tmp = Path(tempfile.mkdtemp(prefix="deskit-stranger-")).resolve()
     env_file = REPO / ".env"
     had_env = env_file.exists()
@@ -32081,6 +32103,9 @@ def test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy():
         assert got["app_id"] == "DeskIT.Test" and got["mutex"] == r"Local\DeskIT.test.instance", got
         assert got["run_key"] == r"Software\DeskIT.test\Run", got
         assert got["hook_file"] == str(tmp / "claude-settings.json"), got
+        # A child of this suite, stranger or not, is the suite's: tests.py
+        # marks itself before its first import and every child inherits it.
+        assert os.environ.get("DESKIT_SUITE") == "1", "tests.py no longer marks the processes it starts"
         assert got["prefix"] == "DeskIT.test", got
         assert got["groq"] == "not found" and got["gemini"] == "not found", \
             "the stranger's copy read the owner's .env or shell"
@@ -32094,6 +32119,22 @@ def test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy():
         alone = probe({"DESKIT_STRANGER": "1"})
         assert not alone["STRANGER"] and alone["DEVELOPER"] and alone["PORTABLE"], alone
         assert alone["DATA_DIR"] == str(REPO), "the flag without a home moved the checkout's data"
+
+        # Without the mark — dev\stranger.py and dev\stranger.vbs start it
+        # that way — the Stranger has a prefix of its own and the other
+        # hatches keep the test one: three prefixes, no two copies on one.
+        unmarked = {k: v for k, v in base.items() if k != "DESKIT_SUITE"}
+
+        def prefix(extra: dict) -> str:
+            out = subprocess.run([sys.executable, "-c", _PREFIX_PROBE, str(REPO)],
+                                 capture_output=True, encoding="utf-8", errors="replace",
+                                 timeout=120, env={**unmarked, **extra})
+            assert out.returncode == 0, (out.stdout, out.stderr)
+            return out.stdout.strip().splitlines()[-1]
+
+        assert prefix({"DESKIT_HOME": str(tmp), "DESKIT_STRANGER": "1"}) == "DeskIT.stranger"
+        assert prefix({"DESKIT_HOME": str(tmp)}) == "DeskIT.test"
+        assert prefix({}) == "DeskIT"
     finally:
         if not had_env:
             env_file.unlink(missing_ok=True)
@@ -32661,10 +32702,12 @@ def test_secrets_never_on_disk_in_data_dir():
     hatch selects the DeskIT.test/ prefix, so the owner's entries are
     never in play; the stranger hatch beside it makes the copy an
     installed one, so the owner's .env (gemini on his PC) is not read
-    either."""
+    either. The suite's mark is named here as well as inherited: without
+    it a stranger copy is the owner's Stranger, DeskIT.stranger/, and
+    this test is the one that deleted its synced Groq key on 2026-10-03."""
     d = Path(tempfile.mkdtemp(prefix="deskit-secrets-e2e-"))
     fixture = "gsk_fixture_e2e_" + "x" * 24
-    env = {**os.environ, "DESKIT_HOME": str(d), "DESKIT_STRANGER": "1"}
+    env = {**os.environ, "DESKIT_HOME": str(d), "DESKIT_STRANGER": "1", "DESKIT_SUITE": "1"}
     for var in ("DESKIT_PORTABLE", "GROQ_API_KEY", "GEMINI_API_KEY",
                 "DESKIT_GROQ_API_KEY", "DESKIT_GEMINI_API_KEY"):
         env.pop(var, None)          # the owner's shell must not answer
