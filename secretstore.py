@@ -63,7 +63,20 @@ FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
 #: (DESKIT_HOME) gets its own prefix so a suite can never overwrite the
 #: person's real key — a stray ``DeskIT.test/groq`` entry is harmless and
 #: visible, a lost ``DeskIT/groq`` is neither.
-TARGET_PREFIX: str = "DeskIT.test" if paths._HOME_OVERRIDE else "DeskIT"
+#:
+#: The stranger hatch (dev\\stranger.py) is not a test: the owner signs it
+#: in to his real account, so what its prefix holds is his key, synced in
+#: from the vault — and a key emptied there is pushed as a removal to
+#: every PC (sb._sync_vault). Until 2026-10-03 it shared ``DeskIT.test/``
+#: with the suite, and one suite run deleted its synced Groq key (a test
+#: runs ``main.py --set-key / --delete-key`` as a stranger copy). So it
+#: has ``DeskIT.stranger/``, and a process the suite started — which
+#: tests.py marks with DESKIT_SUITE=1, inherited by every child, a
+#: stranger child included — never does.
+_SUITE: bool = os.environ.get("DESKIT_SUITE", "").strip() == "1"
+TARGET_PREFIX: str = ("DeskIT" if not paths._HOME_OVERRIDE
+                      else "DeskIT.stranger" if paths.STRANGER and not _SUITE
+                      else "DeskIT.test")
 
 #: Environment variable per key name — the app's own prefix only.
 ENV_VARS: dict[str, str] = {name: f"DESKIT_{name.upper()}_API_KEY"
