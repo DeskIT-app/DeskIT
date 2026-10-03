@@ -84,12 +84,12 @@ makes the answer true.
 | `ease.py` | the curves, as one-line canonical formulas |
 | `gl.py` | an OpenGL context, so Skia can use the graphics card |
 | `glass.py` | a click-through, never-focusable layered window Skia paints on — or, since 2026-09-19, that `present()` hands a Pillow picture to, so a copy WITHOUT skia (every fresh install: skia is the skin pack) still gets per-pixel alpha |
-| `mark.py` | the mark drawn small by Pillow, on make_icon.py's 64-unit grid: the CARD tile with its drop shadow and hairline rim, the desk, the lamp and its glow. `Mark(tile, box, cut)` bakes the static half once; `frame()` is three pastes. The dot at 28 px, the boot card's badge at 44 |
+| `mark.py` | the mark drawn small by Pillow — Corner, on `dev\make_logo.py`'s 64-unit grid and at its 94 %: a tile with its drop shadow and hairline rim, the corner's stroke as one filled area, the lamp at the centre of its curve and the lamp's light inside the curve. `Mark(tile, box)` bakes the static half once; `frame()` is three pastes. One user: the boot card's badge at 44 px (`boot.Lite`). A test holds its shape to `make_logo.mark` |
 | `boot.py` | the corner card, the waveform, and the thread that drives both — and `Lite`, the card a copy without skia gets: the mark, the wordmark, one line of status and a thin gold progress line, on `face.py`'s plate, the same milestones and the same protocol, no release |
 | `face.py` | a card's face by Pillow — shadow, CARD-to-BG surface, LINE rim, specular hairline — the plate under every painter that cannot assume skia |
 | `reveal.py` | the release, on the GPU |
 | `burst.py` | the release, for machines with no GPU |
-| `dot.py` | the status dot: THE MARK, since 2026-09-19 — a 28 px tile in the 38 px box, and the lamp is the state. Five states, the lamp's glow on the tile gated on `NO_HALO` — paused is the one that casts no light, checked on the rendered pixel 3 px out from the lamp rather than on the colour table, because the rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the tile and HTTRANSPARENT on the shadow and the corners, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default) while `spot()` prefers wherever it was dragged to (`[dot] x/y`), the tile answers HTCAPTION instead while `move()` is armed so Windows drags it, and the shadow is zeroed on the window's border so nothing reaches the edge. Painted by `mark.py`, so it needs no skia |
+| `dot.py` | the status dot: a disc with its halo in the 38 px box, and the disc's colour is the state (the mark's tile stood in for it for one afternoon on 2026-09-19, and he asked for the disc back that evening). Five states, the halo gated on `NO_HALO` — paused is the one that casts no light, checked on the rendered pixel 3 px out from the lamp rather than on the colour table, because the rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the tile and HTTRANSPARENT on the shadow and the corners, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default) while `spot()` prefers wherever it was dragged to (`[dot] x/y`), the tile answers HTCAPTION instead while `move()` is armed so Windows drags it, and the shadow is zeroed on the window's border so nothing reaches the edge. Painted by skia on the glass (`skin.dot_run`); without skia, overlay's Tk disc |
 | `shelf.py` | the glass under the panel beside the dot (`face()` + `run()`): `notify.py`'s recipe with the shelf's geometry and `hint.py`'s shadow put back. Nothing animates, so `run()` caches the composed picture on `(card, hover, scale)` and re-blits it — composing a full panel is 41 ms and the tick is one second |
 | `hint.py` | the key card while a key is held — since 2026-09-19 a Pillow picture (`paint()`) on `face.py`'s plate, the keys in hint.py's three groups under small headings, every key cap one width so the legend is a table, the checkbox row at the foot; `run()` presents it without skia. Its `DOTS` are derived from `DOT_STATES`, so the card and the corner dot cannot disagree |
 | `notify.py`, `review.py` | the glass under the notification column and the second-reading card |
@@ -246,22 +246,27 @@ what can be pressed. The drop is read off the handle with
 `glass.where()`, clamped so the whole 38 px square stays on the virtual
 desktop, and written to `[dot] x/y`.
 
-**The mark.** A dalet drawn as a desk: a tabletop with one leg hanging
-from its right end, the top's edge just past the leg, the lamp-dot above
-the left of the top, and — at 48 px and up only — two light arcs to the
-dot's right. Tile `CARD` with a `rgba(255,255,255,.08)` rim and a radius
-of 15/64; letter `FG`; dot and arcs `ACCENT`, with a glow fading .55→0
-out to r 14 drawn UNDER the desk. Two variants: a **lit tile** (gold
-tile, ground-coloured desk) for a selected state, and **one-colour**
-(`DIM`) for the taskbar and for disabled. The wordmark is "DeskIT" in
-Rubik 700 with the "IT" in `ACCENT_TEXT`. `make_icon.py` draws it on the
-design's own 64-unit grid at 4× and downsamples with LANCZOS; the arcs
-are solved from their SVG arc commands rather than eyeballed, which is
-what puts both of them exactly on the lamp's own centreline. Two cuts:
-`full ≥ 48` with the glow and the arcs, `small < 48` with neither —
-16 px cannot hold what 256 px can, and below 48 the glow is a smudge, so
-`ui._icon_art` takes the small frame out of `icon.ico` rather than
-downsampling the full cut.
+**The mark.** Corner, since 2026-09-23: one rounded corner cut flat at
+both ends, with the lamp — a gold dot — at the exact centre of its curve.
+On its 64-unit grid it is `M10 14 H30 A20 20 0 0 1 50 34 V54`, stroke 8,
+butt caps, and a circle r 10 at (30, 34). The app's tile is graphite lit
+from the top (46, 44, 40 → 22, 21, 19) with a hair of a rim, the stroke
+near-white, the lamp LAMPLIGHT gold; the mark sits at 94 % of the grid.
+The wordmark is "DeskIT" in Rubik 700 with the "IT" in `ACCENT_TEXT`.
+`dev\make_logo.py` draws it, at 2048 px resized down with LANCZOS, into
+`icon.ico` at 16/24/32/48/64/128/256, the same 256 px frame as
+`icon.png` and `docs\assets\icon.png`, and — through
+`packaging\store\assets.py` — every logo the Store package carries. It
+draws the stroke as ONE filled area (the ring r 16..24 kept to the
+quadrant the path turns through, and the two legs as rectangles whose
+edges are the ring's ends), because a thick arc and a thick line drawn
+separately meet with a notch, and he circled both notches (2026-09-24).
+One drawing serves every size: a corner and a dot hold at 16 px, so there
+is no second cut; `ui._icon_art` still takes a small badge's frame out of
+`icon.ico`, which is the drawing made at that size rather than resized
+twice. `skin\mark.py` paints the same corner for the boot card's badge. The
+dalet-as-desk that came before it (the lamp above a tabletop, two light
+arcs) is gone with `make_icon.py`.
 
 **The type.** Rubik, at last actually loaded (see `fonts.py` above), in
 two weights: through GDI only 400 and 700 are real. Every size is the
