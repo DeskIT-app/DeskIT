@@ -50,6 +50,16 @@ one Realtime topic per account that carries nothing but "go and pull".
   regex bound: Postgres caps a bound at 255, and 0004's `{16,7600}`
   made the function refuse every call (measured live an hour after it
   ran, before any row was written).
+- `migrations/0006_signed_out_means_out.sql` — a signed-out session is
+  out at its next request, not at the end of its token's hour. An
+  access token is checked by its signature alone, so "Sign out of every
+  PC" used to leave every other copy working for up to an hour (measured
+  live: 58 minutes, two requests to join approved in them). Now one
+  function, `private.session_ok()`, looks the token's `session_id` up in
+  `auth.sessions`; the Data API runs it before every request
+  (`pgrst.db_pre_request`, HTTP 401 when the session is gone) and the
+  policies Realtime and Storage read carry it too. It reads nothing of
+  your data; a lookup costs about 19 microseconds.
 
 ## How to read it in ten minutes
 
@@ -88,7 +98,8 @@ one Realtime topic per account that carries nothing but "go and pull".
    screenshots and clips have no table.
 5. **Delete means delete.** The app removes your files from the bucket
    (it holds the delete policy), then `delete_me()` removes your rows
-   and your `auth.users` row — which invalidates every refresh token —
+   and your `auth.users` row — which invalidates every refresh token,
+   and since 0006 every access token at its next request —
    and leaves one line in `deletion_requests` with your id and the
    time. The Free plan has no backups; the owner's monthly dump and
    its retention are stated in the privacy policy.
