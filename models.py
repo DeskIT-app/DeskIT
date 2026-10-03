@@ -309,7 +309,15 @@ def download(e: Entry, *, progress=None, cancel=None, stage=None) -> Path:
     gets (bytes_done, bytes_total) as they land, `stage` a word
     ("downloading", "verifying"), `cancel` is a threading.Event that
     pauses — the part stays. Raises DownloadError; a file that fails its
-    hash is deleted and named, and `.complete` is not written."""
+    hash is deleted and named, and `.complete` is not written. One
+    writer per folder, across processes (downloads.part_lock): a second
+    one is refused with Busy while the first holds it."""
+    from downloads import part_lock
+    with part_lock(e.folder):
+        return _download(e, progress=progress, cancel=cancel, stage=stage)
+
+
+def _download(e: Entry, *, progress=None, cancel=None, stage=None) -> Path:
     e.folder.mkdir(parents=True, exist_ok=True)
     (e.folder / COMPLETE).unlink(missing_ok=True)
     total = e.bytes

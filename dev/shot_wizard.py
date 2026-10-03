@@ -137,8 +137,8 @@ def _pages(out: Path) -> list[Path]:
         sb.user = lambda: None
         show("mic"); shot("03-microphone")
         w._warn_silent(); shot("03-microphone-help")
-        show("computer"); shot("04-computer")
-        w._download(); settle(0.3); shot("04-computer-downloading")
+        # no downloads page since 2026-10-03: the parts come down behind
+        # the pages, the strip in the top row says so
         settle(9.5)                                # the four fakes land
         show("say"); shot("05-say")
         # Next with nothing tried: the question, inside the page (item 10)
@@ -171,11 +171,11 @@ def _pages(out: Path) -> list[Path]:
     return shots
 
 
-#: The guide's nine wizard pictures (docs/README.md, chapter 2), by the
+#: The guide's eight wizard pictures (docs/README.md, chapter 2), by the
 #: name each page is taken under here.
 GUIDE = {"02-welcome": "01-welcome", "02-account": "02-account",
          "02-microphone": "03-microphone",
-         "02-computer": "04-computer-downloading", "02-say": "05-say-heard",
+         "02-say": "05-say-heard",
          "02-keys": "06-keys", "02-screen": "06-screen", "02-extras": "07-extras",
          "02-done": "08-ready"}
 

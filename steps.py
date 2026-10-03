@@ -100,6 +100,7 @@ class StepRun:
         self.total = int(step.total)
         self.stage = ""
         self.why = ""
+        self.reason = ""                 # net's word for the last stop: offline, busy, ...
         self.rate = 0.0
         self.started = False
         self._cancel = threading.Event()
@@ -116,6 +117,7 @@ class StepRun:
         self.state = "running"
         self.stage = ""
         self.why = ""
+        self.reason = ""
         self._cancel = threading.Event()
         cancel = self._cancel
 
@@ -174,6 +176,7 @@ class StepRun:
                 landed.append("done")
             elif kind == "failed":
                 reason, self.why = event[1], event[2]
+                self.reason = str(reason)
                 self.state = {"cancelled": "paused", "offline": "offline"}.get(reason, "failed")
                 landed.append(self.state)
                 log.info("step: stopped (%s): %s", reason, self.why)

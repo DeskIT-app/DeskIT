@@ -317,12 +317,19 @@ tour = false
 # entry). A per-installation fact, kept in state.json like `done`.
 # Does nothing in a checkout, which starts from its own shortcut.
 autostart = false
-# On a PC with an NVIDIA card, the start offers NVIDIA's CUDA libraries
-# once (the GPU pack, 1.37 GB from PyPI — packs.py): with them the
-# transcription runs on the card, without them on the processor. "Not
-# now" writes false here and the start stops asking; Settings > The app
-# keeps offering it in one line. Nothing to offer in a checkout.
+# On a PC with an NVIDIA card, NVIDIA's CUDA libraries (the GPU pack,
+# 1.37 GB from PyPI — packs.py) download by themselves, in the
+# background (downloads.py, 2026-10-03): with them the transcription
+# runs on the card, without them on the processor. Removing the pack by
+# hand (Settings > Dictation, Turn off faster dictation) writes false
+# here and nothing downloads it again; installing it by hand writes true.
+# Nothing to download in a checkout.
 offer_gpu_pack = true
+# The Recording pack (PyAV with a GPL FFmpeg, 28 MB — the record key, the
+# photo key, the phone's audio) downloads by itself the same way. Removed
+# by hand (Settings > Screen) writes false here and nothing downloads it
+# again; installed by hand writes true.
+offer_recording_pack = true
 
 [updates]
 # The weekly look at GitHub Releases (the switch is [privacy]
