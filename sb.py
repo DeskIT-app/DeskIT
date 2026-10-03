@@ -794,6 +794,27 @@ def set_name(name: str) -> str:
     return name
 
 
+def _end_the_others() -> None:
+    """Sign out of every PC, the part about the OTHER PCs: their sessions
+    end on the server (scope=others — this one is kept for one more
+    call), then one broadcast on the account's channel, ``signed_out``,
+    makes every copy that is listening ask the server about its own
+    session at once (``_live_once``); a refused refresh is
+    ``_account_gone``, the lock, within the second. Without it a copy
+    went on for the rest of its access token's hour: measured 2026-10-03,
+    the Dev worked 58 minutes past "Sign out of every PC" and approved
+    two requests to join. The order is the point: the broadcast goes
+    after the sessions are gone, so no copy can refresh in between, and
+    under this PC's own session, which the server's check (migration
+    0006) still lets through. A copy that is not listening — offline,
+    sync off, or not ours — meets that check on its next request."""
+    _fresh()
+    status, data = _auth("logout", {}, query="scope=others", bearer=True)
+    if status not in (200, 204):
+        raise AccountError(_server_said(status, data if isinstance(data, bytes) else b""))
+    _broadcast(event="signed_out")
+
+
 def sign_out(everywhere: bool = True) -> None:
     """Sign out everywhere (the refresh tokens are revoked server-side),
     then forget the session and the cursors here. The local files stay.
@@ -801,9 +822,18 @@ def sign_out(everywhere: bool = True) -> None:
     only, the person's other PCs keep theirs."""
     session = _load_session()
     if session is not None and configured():
+        # every PC: the others first and told (_end_the_others), then
+        # this one; if that road fails, the old one — all at once
+        scope = "local"
+        if everywhere:
+            try:
+                _end_the_others()
+            except Exception as e:                           # noqa: BLE001
+                log.info("account: the other PCs were not signed out one by one (%s) — "
+                         "all at once instead", e)
+                scope = "global"
         try:
-            _auth("logout", {}, query="scope=global" if everywhere else "scope=local",
-                  bearer=True)
+            _auth("logout", {}, query=f"scope={scope}", bearer=True)
         except Exception as e:                               # noqa: BLE001
             log.info("account: the sign-out did not reach the server (%s) — "
                      "signed out here", e)
@@ -1263,7 +1293,9 @@ def _broadcast(stores: list[str] | None = None, *, event: str = "changed",
     topic — ``pairing`` (a PC asks to join: its request id, code and
     name) and ``paired`` (a PC approved: the request id) — and carry
     nothing a stranger could use: the code is compared on two screens,
-    the key crosses wrapped inside the table. A failure is a debug line
+    the key crosses wrapped inside the table. ``signed_out`` (Sign out of
+    every PC, ``_end_the_others``) carries the device id alone and only
+    makes the others ask the server. A failure is a debug line
     — the 15-minute pass delivers the rows all the same."""
     try:
         uid = _fresh()["user"]["id"]
@@ -1676,6 +1708,19 @@ def _live_once(vocab) -> bool:
                 if req and str(what.get("id") or "") == req["id"]:
                     log.info("live: this PC was approved — taking the key")
                     sync_now(vocab, reason="paired")
+                continue
+            if inner.get("event") == "signed_out":
+                # another PC signed every PC out (_end_the_others): ask
+                # the server about this session now, not at the end of
+                # its token's hour. The event only makes this copy look;
+                # a refused refresh is _account_gone and the lock, and
+                # the loop's next turn closes the socket.
+                log.info("live: another PC signed every PC out — asking the server about this one")
+                try:
+                    with _lock:
+                        _refresh()
+                except AccountError as e:
+                    log.info("live: %s", e)
                 continue
             if inner.get("event") != "changed":
                 continue

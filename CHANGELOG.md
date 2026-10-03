@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.7
+
+Sign out of every PC now means every PC, at once. Until now my other PCs kept working for up to an hour after I pressed it: the account server ended their sessions straight away, but each copy kept the pass it already held, and that pass was trusted until its hour was over. On the day I found it, one copy went on for 58 minutes and even approved two requests to join my account. Now the server checks that the session behind every request still exists, so a signed-out session is refused at its very next request — whoever holds it, even someone who is not running DeskIT at all. And the PC I press it on tells every running copy of the account, so they lock within a second instead of finding out later.
+
 ## 1.0.6
 
 DeskIT is on its way to the Microsoft Store. A copy from the Store is signed by Microsoft, so Windows will stop warning that it does not recognise the app — the warning everyone sees today on the first run of the installer from this page. This version changes nothing for a copy installed from here; it is the version the Store package is made from. The package is built from this release's own installer, so the Store copy is the same files as this one, file for file, plus a small launcher that starts it. Inside the Store package three things work the way Windows wants them to there: "Start with Windows" goes through Windows' own list of startup apps, Connect Claude Code goes through a command the package adds, and the app's windows sit under its tile in the Start menu. One difference a Store user should know before installing: Windows keeps a Store app's files in a folder of its own and removes them with the app, so uninstalling the Store copy removes what it has learned too — unless the sync with your account is on.

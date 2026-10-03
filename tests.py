@@ -41018,6 +41018,106 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second():
+    """The hour after Sign out of every PC (measured on the live project
+    2026-10-03: the other copy worked 58 minutes on its access token and
+    approved two requests to join). sign_out(everywhere) ends the OTHER
+    sessions first (scope=others), then broadcasts `signed_out` on the
+    account's private topic under this PC's own, still-live session —
+    the device id and nothing else — then ends its own (scope=local);
+    this PC only is one call and no broadcast; a server that refuses
+    `others` gets the old global sign-out. A running copy that hears
+    `signed_out` from another device asks the server at once: a session
+    still standing is refreshed and stays, a refused refresh signs it
+    out (the lock's hook runs) and closes the socket — in well under the
+    two seconds, not at the end of the token's hour. Its own word is
+    ignored."""
+    import net as net_mod
+    import sb
+    import secretstore
+
+    def signed_in(fake):
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+
+    def wire(fake, since):
+        return [(c["path"], c["query"].get("scope")) for c in fake.calls[since:]
+                if c["path"] in ("auth/v1/logout", "realtime/v1/api/broadcast")]
+
+    gone: list[str] = []
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), \
+                _patched(sb, "LIVE_HEARTBEAT_S", 30.0), _patched(sb, "LIVE_RETRY_S", (0.2,)), \
+                _patched(sb, "LIVE_ENABLED", True), \
+                _patched(sb, "SIGNED_OUT_HOOKS", [lambda: gone.append("locked")]):
+            mine = sb.device_id()
+            other = "99999999-8888-7777-6666-555555555555"
+            # 1. every PC: the others, the word, then this one
+            signed_in(fake)
+            n = len(fake.calls)
+            sb.sign_out(everywhere=True)
+            assert wire(fake, n) == [("auth/v1/logout", "others"), ("realtime/v1/api/broadcast", None),
+                                     ("auth/v1/logout", "local")], wire(fake, n)
+            msg = fake.broadcasts[-1]["messages"][0]
+            assert msg == {"topic": f"user:{fake.UID}", "event": "signed_out", "private": True,
+                           "payload": {"device": mine}}, msg
+            assert not sb.signed_in() and gone == ["locked"], gone
+            # 2. this PC only: one call, nobody told
+            signed_in(fake)
+            n, told = len(fake.calls), len(fake.broadcasts)
+            sb.sign_out(everywhere=False)
+            assert wire(fake, n) == [("auth/v1/logout", "local")] and len(fake.broadcasts) == told
+            # 3. a server that refuses `others`: every session at once, as before
+            signed_in(fake)
+            n, told = len(fake.calls), len(fake.broadcasts)
+            fake.script["auth/v1/logout"] = [(400, b'{"msg":"bad scope"}')]
+            sb.sign_out(everywhere=True)
+            assert wire(fake, n) == [("auth/v1/logout", "others"), ("auth/v1/logout", "global")], wire(fake, n)
+            assert len(fake.broadcasts) == told and not sb.signed_in()
+
+            # 4. the copy that hears it
+            signed_in(fake)
+            gone.clear()
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+            server = _FakeRealtime()
+            with _patched(net_mod, "_ws_connect", server.connect):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert server.joined.wait(5), "no join"
+
+                def word(device):
+                    server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                                 "payload": {"type": "broadcast", "event": "signed_out",
+                                             "payload": {"device": device}}})
+
+                # its own: nothing asked
+                refreshes = fake.refreshes
+                word(mine)
+                time.sleep(0.5)
+                assert fake.refreshes == refreshes and sb.signed_in()
+                # another PC's, this session still standing: one refresh, still in
+                word(other)
+                assert _until(lambda: fake.refreshes == refreshes + 1), "the server was not asked"
+                assert sb.signed_in() and gone == [] and not server.closed.is_set()
+                # another PC's, this session ended on the server: out at once
+                fake.script["auth/v1/token"] = [(400, b'{"error":"invalid_grant","error_description":'
+                                                      b'"Invalid Refresh Token: Refresh Token Not Found"}')]
+                t0 = time.monotonic()
+                word(other)
+                assert _until(lambda: not sb.signed_in()), "the copy stayed signed in"
+                took = time.monotonic() - t0
+                assert took < 2.0, f"{took:.2f} s from the word to the lock"
+                assert gone == ["locked"], gone
+                assert server.closed.wait(5), "the socket stayed open on a session that is gone"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="")
+
+
 class _pc:
     """One PC of an account inside a test: its own data folders (the
     session and the account key in secrets\\, the cursors in sync\\, the
@@ -42060,6 +42160,66 @@ def test_migration_has_no_key_column():
     assert fn.count("revoke all on function public.delete_me() from anon;") == 1
     assert "report_replies" not in whole.replace("no report_replies table", "")
     assert "storage.foldername(name))[1] = (select auth.uid())::text" in text
+
+
+def test_a_signed_out_session_is_refused_at_the_door():
+    """0006 (2026-10-03): an access token is good until its hour is over
+    whatever happened to its session — measured on the live project, a
+    copy worked 58 minutes past Sign out of every PC and approved two
+    requests to join. private.session_ok() looks the token's session_id
+    up in auth.sessions (security definer, an empty search_path, plpgsql:
+    one SQL CASE failed on a non-uuid id when it was probed, the planner
+    casting the index key whatever the branch); a token with no session
+    (anon, service role) passes; the Data API runs check_request() before
+    every request (pgrst.db_pre_request) and a session that is gone is
+    401; Realtime and Storage never run the pre-request, so EVERY policy
+    on realtime.messages and storage.objects, by name, carries the check
+    and keeps what it had; the request roles may execute both functions
+    and PUBLIC may not; and the app's side of a 401 is the lock — one
+    refresh, refused, signed out (8.8)."""
+    import sb
+    import secretstore
+    whole = _migrations_text()
+    sql = (REPO / "supabase" / "migrations" / "0006_signed_out_means_out.sql").read_text("utf-8")
+    fn = sql[sql.index("create or replace function private.session_ok()"):]
+    fn = fn[:fn.index("$$;") + 3]
+    head = fn.split("$$")[0]
+    assert "language plpgsql" in head and "security definer" in head and "set search_path = ''" in head, head
+    assert "auth.jwt() ->> 'session_id'" in fn and "from auth.sessions s" in fn and "s.id = sid::uuid" in fn
+    assert "return true;" in fn.split("sid !~")[0], "a token with no session must pass"
+    req = sql[sql.index("create or replace function private.check_request()"):]
+    req = req[:req.index("$$;") + 3]
+    assert "if not private.session_ok() then" in req and "raise sqlstate 'PT401'" in req, req
+    assert "alter role authenticator set pgrst.db_pre_request = 'private.check_request';" in sql
+    assert "notify pgrst, 'reload config';" in sql
+    assert "revoke all on schema private from public;" in sql
+    for name in ("session_ok", "check_request"):
+        assert re.search(rf"revoke all on function private\.{name}\(\)\s+from public;", sql), name
+        assert re.search(rf"grant execute on function private\.{name}\(\)\s+to anon, authenticated, service_role;",
+                         sql), name
+    created = set(re.findall(r"create policy (\w+) on (realtime\.messages|storage\.objects)", whole))
+    assert {n for n, _t in created} == {"live_topic_read", "live_topic_write", "reports_objects_insert",
+                                        "reports_objects_select", "reports_objects_delete"}, created
+    for name, table in created:
+        m = re.search(rf"alter policy {name} on {re.escape(table)}\s+(?:using|with check) \((.*?)\);\s*$",
+                      sql, re.S | re.M)
+        assert m and "(select private.session_ok())" in m.group(1), name
+        assert "(select auth.uid())::text" in m.group(1), name      # still the person's own topic/folder
+    # the app's side: a 401 is one refresh, and a refused refresh is the lock
+    gone: list[str] = []
+    with _fixture_project() as fake, _consented("account"), \
+            _patched(sb, "SIGNED_OUT_HOOKS", [lambda: gone.append("locked")]):
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        fake.script["rest/v1/profiles"] = [(401, b'{"code":"PT401","message":"this session was signed out"}')]
+        fake.script["auth/v1/token"] = [(400, b'{"error_description":"Invalid Refresh Token: Refresh Token Not Found"}')]
+        try:
+            sb._rest("GET", "profiles", purpose="account")
+        except sb.AccountError:
+            pass
+        else:
+            raise AssertionError("a session the server refused was not an error")
+        assert not sb.signed_in() and gone == ["locked"], gone
 
 
 def test_redactor_patterns_match_migration():
