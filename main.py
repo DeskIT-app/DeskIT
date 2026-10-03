@@ -6760,10 +6760,12 @@ def is_elevated() -> bool:
 
 
 def _adopt_downloads() -> int:
-    """The installer's last step (DeskIT.iss, 10.4, 2026-09-19): it
-    downloaded the model files and the packs' wheels itself, with the
-    person's tick and the licences shown, and put them where models.py
-    and packs.py keep theirs. Nothing has hashed the files or run pip.
+    """Finish files placed by hand where models.py and packs.py keep
+    theirs. It was the installer's last step from 2026-09-19 (DeskIT.iss
+    downloaded the model files and the packs' wheels itself); since
+    2026-10-03 the installer downloads nothing — every copy's wizard does
+    it in the background (downloads.py) — and nothing calls this but a
+    person. Nothing has hashed the files or run pip.
     This does both, for every entry of the two locks that is on disk,
     with no window and no network — models.adopt() / packs.adopt()
     fetch nothing when every file is already its size — and prints one

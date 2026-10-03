@@ -39235,25 +39235,17 @@ def test_update_download_sha_mismatch_discards():
 
 def test_inno_script_never_names_data_dir():
     """The installer's [Files] and [InstallDelete] touch APP_DIR only
-    (11.6): the data folder is named in [Code] exactly twice since the
-    Downloads page (2026-09-19) — the DataDir function the download
-    placing reads and writes THROUGH, and the free-space check — and
-    DataDir is used only to read an item's marker and to put a ticked
-    download under models\\ or packs\\; nothing of the person's is
-    deleted or listed, and a silent run (the Update card's) never
-    reaches it."""
+    (11.6), and since 2026-10-03 its [Code] never names the data folder
+    either: the Downloads page that placed files under it (2026-09-19)
+    is gone — every copy's wizard downloads in the background
+    (downloads.py). Nothing of the person's is deleted or listed, and a
+    silent run (the Update card's) never reaches it."""
     iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
     sections = iss[:iss.index("[Code]")]
     assert sections.count("{localappdata}") == sections.count("{localappdata}\\Programs\\DeskIT"), \
         "a section outside [Code] names the data folder"
     code = iss[iss.index("[Code]"):]
-    naming = [ln.strip() for ln in code.splitlines() if "{localappdata}" in ln]
-    assert naming == ["Result := ExpandConstant('{localappdata}\\DeskIT');",
-                      "if GetSpaceOnDisk64(ExpandConstant('{localappdata}'), FreeBytes, TotalBytes) and (FreeBytes < Need + 1073741824) then"], naming
-    uses = [ln.strip() for ln in code.splitlines() if "DataDir" in ln and "function DataDir" not in ln]
-    assert uses == ["Marker := DataDir + '\\' + DlMarker(Item);",
-                    "Dest := DataDir + '\\' + Row[1];"], uses
-    assert "if WizardSilent or NoDownload then" in code
+    assert "{localappdata}" not in code and "DataDir" not in code
     assert "{userappdata}" not in iss and "{userdocs}" not in iss
     assert "updates.py" not in iss, "the script does not do the app's job"
     for key in ("updates.last_check", "updates.latest_seen", "updates.installed_version"):
@@ -39602,106 +39594,46 @@ def _iss_scan(text: str, name: str) -> None:
             in_comment = True
 
 
-def test_the_installer_downloads_what_the_wizard_used_to_and_the_list_is_the_locks():
-    """10.4, 2026-09-19 (the owner: "everything comes the moment I
-    install; no installation page"): the installer has a Downloads page
-    after Welcome — the Hebrew model and the Recording pack always, the
-    CUDA libraries with a card of 4 GB and a driver past 545.84, the
-    English detector with 6 GB, each a ticked box with its size and its
-    licence link — downloads the ticked items against the locks' SHA-256s
-    into the setup's temp folder, places them under the data folder at
-    ssPostInstall and runs `main.py --adopt-downloads`. Nothing when the
-    item is already there (its marker holds the lock's stamps), nothing
-    silent, nothing with /NODOWNLOAD, and a failed download is a Retry or
-    the wizard's — never a failed install. The list itself is generated
-    from models.lock, packs.lock and defaults.toml into downloads.iss,
-    committed, and both builds fail when it is stale."""
-    import importlib.util
-
+def test_the_installer_downloads_nothing_the_wizard_does_it_on_every_copy():
+    """2026-10-03, the owner: the same on every copy. From 2026-09-19 the
+    website installer had a Downloads page of its own (ticked boxes, the
+    files placed and then adopted by `main.py --adopt-downloads`) while the
+    Store copy — whose MSIX cannot download at install — stopped on a
+    wizard page with a Download button. Now neither: the installer
+    downloads nothing, its Welcome says the parts come in the background
+    on the first start, and the first-run wizard fetches every part this
+    PC can use itself (downloads.py), a slim bar at its top. The generated
+    list (downloads.iss) and its generator are gone, and so is their
+    build check. The guide keeps the table of what each part is, its size
+    and its licence — the wizard's strip links there."""
     import models
     import packs
 
-    spec = importlib.util.spec_from_file_location("make_downloads_iss", REPO / "dev" / "make_downloads_iss.py")
-    gen = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gen)
-    generated = (REPO / "packaging" / "downloads.iss").read_text("utf-8")
-    assert gen.render(gen.items()) == generated, "packaging/downloads.iss is stale: run dev/make_downloads_iss.py"
-    _iss_scan(generated, "downloads.iss")
-    assert "GENERATED" in generated.splitlines()[0]
-
-    # every row is a file of the two locks, with the lock's URL, hash and size
-    table = gen.items()
-    hebrew = models.entry(config_mod.defaults_flat()["local.model"])
-    english = models.entry(config_mod.defaults_flat()["local.english_model"])
-    for item, e in (("model", hebrew), ("detector", english)):
-        rows = table[item]["rows"]
-        assert [r[0].split("\\")[-1] for r in rows] == list(e.files), item
-        for rel, url, sha, size in rows:
-            name = rel.split("\\")[-1]
-            assert rel == f"models\\{e.folder.name}\\{name}", rel
-            assert url == e.url(name) and (size, sha) == e.files[name], name
-        assert table[item]["bytes"] == e.bytes and table[item]["stamps"] == [e.revision]
-        assert table[item]["marker"] == f"models\\{e.folder.name}\\{models.COMPLETE}"
-    for item in ("gpu", "recording"):
-        pk = packs.pack(item)
-        rows = table[item]["rows"]
-        assert [(r[1], r[2], r[3]) for r in rows] == [(w.url, w.sha256, w.size) for w in pk.wheels], item
-        assert [r[0] for r in rows] == [f"packs\\{item}\\wheels\\{w.filename}" for w in pk.wheels]
-        assert table[item]["marker"] == f"packs\\{item}\\{packs.RECORD}"
-        assert table[item]["stamps"] == [f'"{w.name}": "{w.version}"' for w in pk.wheels]
-        assert table[item]["licenses"] == list(pk.licenses)
-    for row in [(item, *r) for item in gen.ITEMS for r in table[item]["rows"]]:
-        assert "|" not in "".join(str(x) for x in row) and "'" not in "".join(str(x) for x in row), row
-    assert f"DlCount: Integer; begin Result := {sum(len(table[i]['rows']) for i in gen.ITEMS)}; end;" in generated
-    # the stamps are what models.py / packs.py themselves write, so the
-    # installer's "already there" is the app's own "ready" / "ok"
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    code = iss[iss.index("[Code]"):]
+    for gone in ('#include "downloads.iss"', "CreateInputOptionPage(", "CreateDownloadPage(",
+                 "TDownloadWizardPage", "PlaceDownloads", "--adopt-downloads", "nvidia-smi"):
+        assert gone not in code, gone
+    for gone in (".DlItem_", ".DlCaption=", ".DlMore"):
+        assert gone not in iss, gone
+    assert "SaveStringToFile(ExpandConstant('{app}\\CHANNEL'), ChannelWord(), False);" in code
+    assert not (REPO / "packaging" / "downloads.iss").exists()
+    assert not (REPO / "dev" / "make_downloads_iss.py").exists()
+    for name in (".github/workflows/release.yml", "packaging/build_local.ps1"):
+        assert "make_downloads_iss" not in (REPO / name).read_text("utf-8"), name
+    # the Welcome page promises the background, not a page of downloads
+    assert "The next page downloads" not in iss and "העמוד הבא מוריד" not in iss
+    assert "in the background" in iss and "ברקע" in iss
+    # the stamps the app writes are still what says a part is there
     assert '"repo": e.repo, "revision": e.revision,' in inspect.getsource(models._mark_complete)
     # (install() holds the part lock and hands the work to _install)
     assert '"pack": p.name, "versions": p.versions,' in inspect.getsource(packs._install)
-
-    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
-    code = iss[iss.index("[Code]"):]
-    assert '#include "downloads.iss"' in code
-    assert "CreateInputOptionPage(wpWelcome," in code and "CreateDownloadPage(" in code
-    assert "if WizardSilent or NoDownload then" in code and "{param:NODOWNLOAD|no}" in code
-    assert "nvidia-smi --query-gpu=memory.total,driver_version" in code
-    assert "(Major > 545) or ((Major = 545) and (Minor >= 84))" in code, "hardware.DRIVER_FLOOR"
-    assert "(DlCardVram >= 4096)" in code and "(DlCardVram >= 6144)" in code, "GPU_SMALL_MB / GPU_MB"
-    assert "Result := not DlPresent(Item)" in code
-    assert "Pos(Stamps[I], Content) = 0" in code, "a marker without the lock's stamp is stale"
-    assert "MB_RETRYCANCEL, IDCANCEL) = IDRETRY" in code, "a failed download is Retry or the wizard's"
-    assert "GetSpaceOnDisk64(ExpandConstant('{localappdata}')" in code
-    assert "ExpandConstant('{localappdata}\\DeskIT')" in code, "paths.DATA_DIR of an installed copy"
-    assert "--adopt-downloads" in code and "PlaceDownloads;" in code
-    assert "if not RenameFile(Src, Dest) then" in code and "FileCopy(Src, Dest, False)" in code
-    # plain words on the page (the owner, 2026-09-19: programmer-level text
-    # frightens half the people): what each download does for you and its
-    # size, no licence names, no library names — one link to the guide's
-    # Downloads section, which holds the exact figures and every licence
-    assert "ShellExec('open', CustomMessage('DlMoreUrl')" in code and "Link.OnClick := @MoreClick;" in code
-    assert "DlLicenses(" not in code, "the licence links are the guide's, not the page's"
-    for lang, human_fn in (("english", "DlHuman"), ("hebrew", "DlHumanHe")):
-        for key in ("DlCaption", "DlDescription", "DlSub", "DlItem_model", "DlItem_detector",
-                    "DlItem_gpu", "DlItem_recording", "DlMore", "DlMoreUrl", "DlFailed", "DlNoRoom", "DlFinishing"):
-            assert f"{lang}.{key}=" in iss, f"{lang}.{key}"
-        assert f"Result := {human_fn}(Item)" in code, human_fn
-    items = [ln for ln in iss.splitlines() if ".DlItem_" in ln]
-    assert len(items) == 8
-    for ln in items:
-        text = ln.split("=", 1)[1]
-        assert len(text) <= 48 and "(" not in text, ln
-        for word in ("Apache", "MIT", "GPL", "CUDA", "PyAV", "FFmpeg", "model", "מודל", "libraries", "ספריות"):
-            assert word not in text, (word, ln)
-    assert "en/01-install#downloads" in iss and "he/01-install#downloads" in iss
+    # the guide's table, which the strip's words open, links every licence
     for lang in ("en", "he"):
         guide = (REPO / "docs" / lang / "01-install.md").read_text("utf-8")
-        assert "{#downloads}" in guide, f"the {lang} guide has no Downloads anchor for the installer's link"
+        assert "{#downloads}" in guide, f"the {lang} guide lost its Downloads anchor"
         for _title, url in [pair for it in ("gpu", "recording") for pair in packs.pack(it).licenses]:
             assert url in guide, f"the {lang} guide does not link {url}"
-    assert "1.6 GB download, once" not in iss, "the Welcome text still promises a download at first start"
-    for name in (".github/workflows/release.yml", "packaging/build_local.ps1"):
-        assert "make_downloads_iss.py --check" in (REPO / name).read_text("utf-8"), name
-    assert "--adopt-downloads" in (REPO / "main.py").read_text("utf-8")
 
 
 def test_models_adopt_finishes_what_the_installer_placed_without_the_network():
