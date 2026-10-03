@@ -39,9 +39,10 @@ class AudioConfig:
 class GeminiConfig:
     # Free-tier quota is counted per model, so a list is a longer runway:
     # each entry is tried in order and rested when it reports its cap.
-    models: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest",
-                               "gemini-2.5-flash-lite",
-                               "gemini-flash-lite-latest")
+    # The aliases first: a new key gets 404 from both 2.5 models
+    # (defaults.toml [gemini], 2026-10-03).
+    models: tuple[str, ...] = ("gemini-flash-latest", "gemini-flash-lite-latest",
+                               "gemini-2.5-flash", "gemini-2.5-flash-lite")
     timeout_s: int = 30
 
     @property

@@ -137,7 +137,11 @@ SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 #: The keys page: (config field, the label a stranger reads).
 KEY_ROWS = (("hotkey", "keys.hold"), ("latch_hotkey", "keys.latch"),
             ("punctuate_hotkey", "keys.punctuate"),
-            ("visual_qa_hotkey", "keys.screen"))
+            ("visual_qa_hotkey", "keys.screen"),
+            # Translation on day one (store walk item 12, the owner: "it is
+            # what people cannot get anywhere else") — F8, his own binding
+            # since 2026-09-17 and the shipped default since (D34).
+            ("translate_hotkey", "keys.translate"))
 
 #: Every sentence the wizard shows, in one place so the guide (chapter
 #: 14) can quote it. English throughout; only the person's own sentence
@@ -301,6 +305,7 @@ WORDS = {
     "keys.latch": "Latch — talk without holding",
     "keys.punctuate": "Punctuate what was just pasted",
     "keys.screen": "Ask about the screen",
+    "keys.translate": "Translate what you selected into English",
     "keys.press": "Press a key…",
     "keys.listening": "Press the new key or combination. Esc cancels.",
     "keys.saved": "{label}: {key}",

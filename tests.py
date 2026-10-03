@@ -37897,7 +37897,9 @@ def test_the_wizard_rebinds_a_key_on_its_own_page():
             w.page = firstrun.PAGES.index("keys")
             w._show_page()
             w.root.update()
-            assert set(w.caps) == {"hotkey", "latch_hotkey", "punctuate_hotkey", "visual_qa_hotkey"}
+            assert set(w.caps) == {"hotkey", "latch_hotkey", "punctuate_hotkey", "visual_qa_hotkey",
+                                   "translate_hotkey"}
+            assert w.caps["translate_hotkey"].itemcget(w.caps["translate_hotkey"]._label, "text") == "F8",                 "Translate is not on the keys page with its key (store walk item 12)"
             before = cfg.punctuate_hotkey
             # Esc: nothing written, the chip says what it said
             w._rebind("punctuate_hotkey")
@@ -37918,7 +37920,9 @@ def test_the_wizard_rebinds_a_key_on_its_own_page():
             # F8 is Translate's: refused by name, nothing written
             w._rebind("punctuate_hotkey")
             w._key_down(Event("F8", 0x77))
-            assert w.note.cget("text") == firstrun.WORDS["keys.taken"].format(key="F8", other="Translate (tap)"), w.note.cget("text")
+            # named the way the page names it, now that Translate is a row here
+            assert w.note.cget("text") == firstrun.WORDS["keys.taken"].format(
+                key="F8", other=firstrun.WORDS["keys.translate"]), w.note.cget("text")
             assert config_mod.read_settings(s).get("punctuate_hotkey") == "f7"
             # the hold key, pressed for the latch: refused, nothing written
             w._rebind("latch_hotkey")
