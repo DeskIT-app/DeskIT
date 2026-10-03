@@ -29,15 +29,20 @@ title: 5. תכונות ענן
 
 ## להשיג מפתח חינמי
 
-**Groq קודם.** מפתח Groq אחד פותח את מעבר התיקון, הפיסוק, החיפוש, ובמחשב בלי כרטיס אנבידיה
-— תמלול בענן. יוצרים אותו ב־[console.groq.com](https://console.groq.com) (מסלול חינמי, בלי
-כרטיס אשראי).
+**Groq קודם.** מפתח Groq אחד פותח את מעבר התיקון, הפיסוק, החיפוש, התרגום, ובמחשב בלי
+כרטיס אנבידיה — תמלול בענן. יוצרים אותו ב־[console.groq.com](https://console.groq.com)
+(מסלול חינמי, בלי כרטיס אשראי).
 
-**Gemini** רק לתרגום ולשאלה על המסך, ב־[aistudio.google.com](https://aistudio.google.com).
+**Gemini** לתרגום (כשיש את שני המפתחות הוא הראשון בתור; Groq נכנס כשהוא עמוס או שנגמרה
+לו המכסה) ולשאלה על המסך, ב־[aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+(חינם, בלי כרטיס אשראי).
 
-ואז **Settings > Privacy > YOUR CLOUD KEYS**: מדביקים את המפתח בשדה המוסתר (הוא לא מוצג
-שוב לעולם), לוחצים **Save and test** — "Works · N models visible" או השגיאה של הספק עצמו — והמפתח נשמר. **Remove** מוחק
-אותו. המשפט מתחת לכל שדה:
+האשף מבקש את שניהם בדף **מפתחות ענן** שלו ([פרק 2](02-first-run)). אחר כך:
+**Settings > Privacy > YOUR CLOUD KEYS**. מדביקים את המפתח בשדה המוסתר ולוחצים
+**Save key**: המפתח נשמר ונבדק מול הספק מיד. מפתח שעובד מוצג כשורת נקודות — לעולם לא
+המפתח עצמו — ולידה **Change key**; ההחלפה פותחת שדה ריק עם **Save** ו־**Cancel**, הביטול
+משאיר את המפתח השמור, ומפתח חדש שהספק דוחה מחזיר את השמור. **Remove** מוחק אותו. המשפט
+מתחת לכל שדה:
 
 > This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 

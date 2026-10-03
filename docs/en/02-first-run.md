@@ -13,9 +13,9 @@ done. **הבא** (next) moves on, **דלג** (skip) closes it — and a skipped 
 back by itself. To see it again: Settings > About > **Show the tour**. This page is the
 long version of those four cards.
 
-**The two-sentence version.** The first start opens a seven-page wizard; only three pages ask
-you anything (which microphone, whether to download now, and the optional extras) and every
-other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.
+**The two-sentence version.** The first start opens a short wizard; only a few pages ask
+you anything (which microphone, whether to download now, the cloud keys and the optional
+extras) and every other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.
 Since the installer downloads the model and the packs itself ([chapter 1](01-install)), the
 "This computer" page is usually skipped — it appears only for what you unticked there or
 what did not finish.
@@ -118,9 +118,30 @@ still downloading; **Skip** goes on without it.
 
 ![Keys](../img/02-keys.png)
 
-The keyboard keys DeskIT listens to — hold, latch, punctuate, ask the screen — as they are
-now. These are hotkeys, not API keys; the cloud keys come in [chapter 5](05-cloud). Change
-them later on the dashboard's **Keys** place.
+The keyboard keys DeskIT listens to — hold, latch, punctuate, ask the screen, translate — as
+they are now. These are hotkeys, not API keys; the cloud keys are the next page. Change them
+later on the dashboard's **Keys** place.
+
+## Cloud keys
+
+![Cloud keys](../img/02-cloud.png)
+
+Two cards, **Groq** and **Gemini**, one free key each (no credit card). Each card says what
+its key unlocks and what you do without it:
+
+- **Groq** fixes the words it misheard, puts in punctuation (Ctrl+F2) and translates what you
+  select (F8). Without it, what you say is pasted exactly as heard and those two keys do
+  nothing.
+- **Gemini** translates what you select (F8) and goes first for it. Without it, Groq
+  translates; with neither key, F8 does nothing.
+
+A card's switch is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens
+the key's field under it, with the way to a free key. **Save key** checks the key with the
+provider at once; a key that works is drawn as a row of dots with **Change key** beside it.
+**Change key** opens an empty field with **Save** and **Cancel** — Cancel keeps the saved key,
+and a new key the provider refuses gives the saved one back. **Next** waits while a card is on
+without a working key. Skip both and the keys can be added later in **Settings > Privacy**;
+the first time you press F8 or Ctrl+F2 without one, Home says which key to add and where.
 
 ## Optional extras
 

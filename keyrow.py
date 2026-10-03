@@ -183,7 +183,9 @@ class KeyRow(tk.Frame):
         for child in self.buttons.winfo_children():
             child.destroy()
         for i, (text, command, primary) in enumerate(specs):
-            w = self.buttons_w if len(specs) == 1 else (self.buttons_w - 8) // 2
+            # one button at the width the owner approved in the picture
+            # (2026-10-03); two share the room the field leaves them
+            w = 122 if len(specs) == 1 else (self.buttons_w - 8) // 2
             ui.Button(self.buttons, text, command, bg=self._bg, primary=primary,
                       quiet=not primary, w=w, h=34).pack(
                 side="left", padx=(0, 8 if i < len(specs) - 1 else 0))

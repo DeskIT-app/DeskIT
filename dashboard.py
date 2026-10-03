@@ -6960,7 +6960,7 @@ class Dashboard:
 
     KEY_PROVIDERS = (("groq", "Groq", "https://console.groq.com",
                       "recommended first: one key unlocks the repair pass, punctuation, "
-                      "lookup and, without an NVIDIA card, cloud transcription"),
+                      "lookup, translation and, without an NVIDIA card, cloud transcription"),
                      ("gemini", "Gemini", "https://aistudio.google.com",
                       "for translation and ask-the-screen"))
 
