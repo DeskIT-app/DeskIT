@@ -35987,6 +35987,7 @@ def test_the_speed_page_and_the_home_rows():
             cleared: list = []
             with _patched(dash.packs_mod, "clear_failure", lambda n: cleared.append(("clear", n))), \
                     _patched(dash.packs_mod, "remove", lambda n: cleared.append(("remove", n)) or True), \
+                    _patched(dash.packs_mod, "decline", lambda n: cleared.append(("decline", n))), \
                     _patched(dash.hardware_mod, "clear_change", lambda: cleared.append(("seen",))), \
                     _patched(dash.launch, "run_step", lambda flag, name=None: cleared.append((flag, name)) or True):
                 board._hardware_retry()
@@ -35994,8 +35995,53 @@ def test_the_speed_page_and_the_home_rows():
                 board._hardware_seen()
                 board._hardware_step("--download-model")
                 board._hardware_step("--install-pack", "gpu")
-            assert cleared == [("clear", "gpu"), ("remove", "gpu"), ("seen",),
+            # removed by hand is turned down: the background downloads
+            # (downloads.py) never fetch it again
+            assert cleared == [("clear", "gpu"), ("remove", "gpu"), ("decline", "gpu"), ("seen",),
                                ("--download-model", None), ("--install-pack", "gpu")], cleared
+
+
+def test_home_says_the_parts_are_downloading_instead_of_offering_a_second_download():
+    """2026-10-03: while the running app downloads the parts in the
+    background (status()["downloads"], downloads.py), Home's pile carries
+    one quiet row — how far it is, nothing to press — in place of the
+    model row's Download, which would only start a second downloader on
+    the same part (part_lock refuses it); without a connection it says
+    so; once the app is not downloading, the model row and its button
+    are back."""
+    import dashboard as dash
+
+    with _window() as board:
+        if board is None:
+            return
+        with _patched(paths, "PORTABLE", False), \
+                _patched(dash.models_mod, "state", lambda repo: "absent"), \
+                _patched(dash.packs_mod, "standing", lambda name: "missing"), \
+                _patched(dash.hardware_mod, "recorded", lambda: _facts(tier="cpu")):
+            was = (board.running, board.status)
+            try:
+                board.running = True
+                board.status = {"downloads": {
+                    "state": "running", "fraction": 0.452, "offline": False,
+                    "here": 0, "total": 0, "part": "model",
+                    "parts": {"model": "running", "recording": "idle"}}}
+                rows = board._waiting_hardware()
+                assert len(rows) == 1 and rows[0]["buttons"] == [], rows
+                assert rows[0]["text"] == "Downloading app parts — 45%", rows[0]["text"]
+                assert "Hebrew model lands" in rows[0]["note"]
+                # Settings > Dictation's card says the same, no Download
+                lines, buttons = board._model_lines()
+                assert lines[0][1].startswith("downloading in the background"), lines
+                assert not any("model" in label for label, _c in buttons), buttons
+                board.status["downloads"].update(state="waiting", offline=True)
+                assert "waiting for the connection" in board._waiting_hardware()[0]["text"]
+                board.status["downloads"]["parts"]["model"] = "done"
+                assert "nothing to press" in board._waiting_hardware()[0]["note"]
+                board.status["downloads"].update(state="done")
+                rows = board._waiting_hardware()
+                assert [b[0] for b in rows[0]["buttons"]] == ["Download"], rows
+            finally:
+                board.running, board.status = was
 
 
 def test_tts_probe_no_hebrew_voice():
@@ -36429,37 +36475,87 @@ def test_step_run_state_machine():
     assert run.state == "failed" and run.said() == ("נכשל: disk full", "red")
 
 
-def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
-    """A copy whose downloads have all landed — or a portable one — never
-    sees the computer page (the owner, 2026-09-19 evening: "I do not
-    want the installation page"): Next from the microphone lands on the
-    sentence page, Back from there on the microphone, and the counter
-    counts seven. A copy with one thing to download still gets the page."""
+class _Part:
+    """A stand-in for a models.Entry / packs.Pack in the downloads tests."""
+
+    def __init__(self, name: str, size: int):
+        self.name, self.bytes, self.repo = name, size, name
+
+
+def _gated_stepper(gate: threading.Event, done: list | None = None):
+    """Steps whose work goes half way, waits for `gate`, then lands —
+    pausable, as net.download is."""
+    import net
+    import steps
+
+    def stepper(kind, thing):
+        def work(progress, cancel, stage):
+            progress(thing.bytes // 2, thing.bytes)
+            while not gate.is_set():
+                if cancel.is_set():
+                    raise net.Cancelled()
+                time.sleep(0.01)
+            progress(thing.bytes, thing.bytes)
+            if done is not None:
+                done.append(kind)
+        return steps.Step(title=kind, body="", size_line="", total=thing.bytes,
+                          work=work, name=kind)
+    return stepper
+
+
+def test_the_wizard_has_no_downloads_page_and_shows_a_strip_while_they_run():
+    """The owner, 2026-10-03, walking the Store copy (item 6): no page
+    about downloads. Every part starts downloading the moment the wizard
+    opens — nothing to press, on every copy — and the one sign of it is a
+    few words and a slim bar in the top row of every page, gone once
+    everything has landed. Seven pages; Next from the microphone lands on
+    the sentence page; Back goes back to it; the counter counts seven."""
     import firstrun
 
+    assert "computer" not in firstrun.PAGES and len(firstrun.PAGES) == 7
+    # the strip's words open the guide's table of the parts (the
+    # installer's "More about these downloads")
+    assert firstrun.DOWNLOADS_URL == f"{paths.PAGES_URL}/en/01-install#downloads"
     cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
                               setup=config_mod.SetupConfig(done=False))
     d, s, t = _layer_files()
-    nothing = {"portable": False, "model": None, "pack": None, "detector": None,
-               "recording": None, "tier": "gpu"}
+    gate = threading.Event()
+    running = firstrun.WORDS["strip.running"]
+
+    def settle(w, until, seconds=8.0):
+        deadline = time.monotonic() + seconds
+        while not until() and time.monotonic() < deadline:
+            w.root.update()
+            time.sleep(0.02)
+
     with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
         try:
-            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=nothing)
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"},
+                                offers={"recording": _Part("av", 1000)},
+                                stepper=_gated_stepper(gate))
         except Exception as err:                             # noqa: BLE001
             print(f"    (skipped: no Tk window — {err})")
             return
         try:
+            assert w.downloads.state == "running", "the download waited for a press"
+            assert w.name == "welcome" and running in _wizard_words(w), _wizard_words(w)
             w.page = firstrun.PAGES.index("mic")
             w._show_page()
+            assert running in _wizard_words(w), "the strip is not in the top row"
             w._next()
             assert w.name == "say", w.name
+            assert "of 7" in _wizard_words(w)
             w._back()
             assert w.name == "mic", w.name
-            w.page = firstrun.PAGES.index("say")
+            gate.set()
+            settle(w, lambda: w.downloads.done)
+            assert w.downloads.done
+            settle(w, lambda: w.strip is None, seconds=2.0)
+            assert w.strip is None and running not in _wizard_words(w), "the strip outlived the downloads"
             w._show_page()
-            assert [c for c in w.body.winfo_children()], "no page drawn"
-            assert "of 7" in _wizard_words(w), "the counter still counts the hidden page"
+            assert running not in _wizard_words(w)
         finally:
+            gate.set()
             try:
                 w._close()            # the microphone stream too, not only the window
             except Exception:                                # noqa: BLE001
@@ -36469,27 +36565,22 @@ def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
             # violation on the audio thread — measured here, 2026-09-19)
             w = None
             gc.collect()
-        one = dict(nothing, recording=type("T", (), {"name": "recording", "bytes": 5})())
         try:
-            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=one,
-                                stepper=lambda kind, thing: __import__("steps").Step(
-                                    title="t", body="b", size_line="5 B", total=5,
-                                    work=lambda progress, cancel, stage: None, name=kind))
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers={"portable": True})
         except Exception as err:                             # noqa: BLE001
             print(f"    (skipped: no Tk window — {err})")
             return
         try:
-            w.page = firstrun.PAGES.index("mic")
-            w._show_page()
-            w._next()
-            assert w.name == "computer", "one download, and the page was skipped"
-            assert "of 8" in _wizard_words(w)
+            assert w.downloads.order == [] and w.strip is None
+            assert running not in _wizard_words(w), "a strip with nothing to download"
         finally:
             try:
                 w._close()
             except Exception:                                # noqa: BLE001
                 pass
-        shutil.rmtree(d, ignore_errors=True)
+            w = None
+            gc.collect()
+    shutil.rmtree(d, ignore_errors=True)
 
 
 def _wizard_words(w) -> str:
@@ -36506,15 +36597,14 @@ def _wizard_words(w) -> str:
     return " | ".join(out)
 
 
-def test_the_wizard_offers_the_recording_pack_until_it_is_there():
-    """The fourth offer on the computer page (the owner, 2026-09-19
-    evening: "the software comes with everything; nobody installs things
-    in the middle"): the Recording pack, on by default, queued after the
-    others — offered while packs.lock names it and it is not installed,
-    never on a portable copy, never when the lock does not know it. It
-    stays a download rather than a line in the installer: PyAV's wheel
-    carries a GPL FFmpeg (D24)."""
-    import firstrun
+def test_every_copy_downloads_the_recording_pack_until_it_is_there():
+    """The Recording pack (the owner, 2026-09-19 evening: "the software
+    comes with everything; nobody installs things in the middle") is one
+    of the parts downloads.wanted() always asks for — while packs.lock
+    names it and it is not installed, never on a portable copy, never
+    when the lock does not know it. It stays a download rather than a
+    line in the installer: PyAV's wheel carries a GPL FFmpeg (D24)."""
+    import downloads
     import models
     import packs
 
@@ -36522,36 +36612,55 @@ def test_the_wizard_offers_the_recording_pack_until_it_is_there():
     gpu = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
     tmp = Path(tempfile.mkdtemp(prefix="deskit-wizard-rec-"))
     try:
-        with _patched(paths, "PORTABLE", False),                 _patched(paths, "MODELS_DIR", tmp / "models"),                 _patched(paths, "MODELS_LOCK", tmp / "models.lock"),                 _patched(paths, "PACKS_DIR", tmp / "packs"),                 _patched(paths, "PACKS_LOCK", tmp / "packs.lock"):
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(paths, "PACKS_LOCK", tmp / "packs.lock"):
             models.write_lock([models.Entry(cfg.local.model, "b" * 40, {"model.bin": (5, "0" * 64)})],
                               tmp / "models.lock")
             gpu_pack = _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a" * 5})
-            assert firstrun.downloads_for(cfg, gpu)["recording"] is None, "offered without a lock entry"
+            assert "recording" not in downloads.wanted(cfg, gpu), "wanted without a lock entry"
             rec = _pack_lock(tmp, "recording", {"av-18.0.0-cp311-abi3-win_amd64.whl": b"v" * 9})
             packs.write_lock([gpu_pack, rec], tmp / "packs.lock")
-            out = firstrun.downloads_for(cfg, gpu)
-            assert out["recording"] is not None and out["recording"].name == "recording", out
-            assert firstrun.WORDS["computer.recording.help"].format(size="28 MB").startswith("28 MB")
-            assert firstrun.english_step("recording", packs.step(rec), rec.bytes).title ==                 firstrun.WORDS["step.recording.title"]
+            out = downloads.wanted(cfg, gpu)
+            assert out["recording"].name == "recording", out
+            assert downloads.NAMES["recording"] == "Screen recording"
+            # removed by hand on the desk (packs.decline): never fetched
+            # again — its FFmpeg is a GPL build, and that is theirs to
+            # turn down (D24); installed by hand (packs.accept): back on
+            declined = dataclasses.replace(cfg, setup=dataclasses.replace(
+                cfg.setup, offer_recording_pack=False))
+            assert "recording" not in downloads.wanted(declined, gpu)
+            assert config_mod.defaults_flat()["setup.offer_recording_pack"] is True
+            written: list = []
+            with _patched(config_mod, "save", lambda values, **kw: written.append(values)):
+                packs.decline("recording")
+                packs.accept("recording")
+                packs.decline("gpu")
+                packs.decline("skin")                        # no switch: nothing written
+            assert written == [{"setup.offer_recording_pack": False},
+                               {"setup.offer_recording_pack": True},
+                               {"setup.offer_gpu_pack": False}], written
         with _patched(paths, "PORTABLE", True):
-            assert firstrun.downloads_for(cfg, gpu)["recording"] is None
+            assert downloads.wanted(cfg, gpu) == {}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_the_wizard_offers_what_this_copy_lacks():
-    """firstrun.downloads_for: nothing on a portable copy; the model
-    when the local backend has none ready; the pack when packs.wanted
-    says so; the detector only on the gpu tier and only while it is not
-    on disk. hardware_line: the three sentences of 9.2."""
+def test_the_background_downloads_want_what_this_copy_lacks():
+    """downloads.wanted: nothing on a portable copy; the model when the
+    local backend has none ready; NVIDIA's libraries when packs.wanted
+    says so; the detector with the card the full tier needs, and only
+    while it is not on disk."""
+    import downloads
     import firstrun
     import models
 
     cfg = config_mod.load(REPO / "defaults.toml")
     gpu = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
     with _patched(paths, "PORTABLE", True):
-        out = firstrun.downloads_for(cfg, gpu)
-        assert out["portable"] and out["model"] is None and out["pack"] is None
+        assert downloads.wanted(cfg, gpu) == {}
     tmp = Path(tempfile.mkdtemp(prefix="deskit-wizard-"))
     try:
         with _patched(paths, "PORTABLE", False), \
@@ -36563,37 +36672,156 @@ def test_the_wizard_offers_what_this_copy_lacks():
             second = models.Entry(cfg.local.english_model, "c" * 40, {"model.bin": (7, "0" * 64)})
             models.write_lock([first, second], tmp / "models.lock")
             _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a" * 5})
-            out = firstrun.downloads_for(cfg, gpu)
-            assert out["model"] is not None and out["model"].repo == cfg.local.model
-            assert out["pack"] is not None and out["pack"].name == "gpu"
-            assert out["detector"] is not None and out["detector"].repo == cfg.local.english_model
+            out = downloads.wanted(cfg, gpu)
+            assert out["model"].repo == cfg.local.model
+            assert out["pack"].name == "gpu"
+            assert out["detector"].repo == cfg.local.english_model
             small = dict(gpu, tier="gpu-small", vram_mb=4096)
-            assert firstrun.downloads_for(cfg, small)["detector"] is None, "no detector on 4 GB"
+            assert "detector" not in downloads.wanted(cfg, small), "no detector on 4 GB"
             # a first start: the pack is not there yet, so the tier says
             # cpu — the detector goes with the card all the same
             first = dict(gpu, tier="cpu", gpu_pack="missing")
-            assert firstrun.downloads_for(cfg, first)["detector"] is not None, "the detector went with the tier"
-            assert firstrun.hardware_line(first).startswith("NVIDIA card, 16 GB — fast")
+            assert "detector" in downloads.wanted(cfg, first), "the detector went with the tier"
             cpu = {"tier": "cpu", "cuda_devices": 0}
-            out = firstrun.downloads_for(cfg, cpu)
-            assert out["pack"] is None and out["detector"] is None and out["model"] is not None
+            out = downloads.wanted(cfg, cpu)
+            assert "pack" not in out and "detector" not in out and "model" in out
             cloud = dataclasses.replace(cfg, backend="gemini")
-            assert firstrun.downloads_for(cloud, gpu)["model"] is None
+            assert "model" not in downloads.wanted(cloud, gpu)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    assert firstrun.hardware_line(gpu).startswith("NVIDIA card, 16 GB — fast")
-    assert "smaller mode" in firstrun.hardware_line(
-        {"tier": "gpu-small", "vram_mb": 4096, "cuda_devices": 1, "driver_ok": True})
-    assert firstrun.hardware_line({"tier": "cpu", "cuda_devices": 0}).startswith("No NVIDIA card")
-    assert "too old" in firstrun.hardware_line({"tier": "cpu", "cuda_devices": 1, "driver_ok": False})
-    assert firstrun.hardware_line(None) == "This computer has not been probed yet"
-    # the detector's own words, and a name on every step for the queue line
+    assert downloads.card_tier(gpu) == "gpu"
+    assert downloads.card_tier({"vram_mb": 4096, "cuda_devices": 1, "driver_ok": True}) == "gpu-small"
+    assert downloads.card_tier({"vram_mb": 2048, "cuda_devices": 1, "driver_ok": True}) == ""
+    assert downloads.card_tier({"cuda_devices": 1, "driver_ok": False}) == ""
+    assert downloads.card_tier(None) == ""
+    # the detector's own words, and a name on every step for the log
     e = models.Entry("x/y", "c" * 40, {"model.bin": (1_600_000_000, "0" * 64)})
     st = models.step(e, downloader=lambda *a, **k: None, words=models.DETECTOR_TEXT)
     assert st.title == models.DETECTOR_TEXT["title"] and "1.60 GB" in st.body
     assert st.name == "English detector"
     assert models.step(e, downloader=lambda *a, **k: None).name == "Hebrew model"
     assert firstrun.microphone_allowed() in (True, False, None)
+
+
+def test_the_background_queue_retries_waits_out_a_second_writer_and_gives_up_last():
+    """downloads.Queue, with no window: the parts one after another;
+    offline is waited out for as long as it takes; a part another
+    downloader holds (part_lock -> Busy) too; any other failure is
+    tried len(RETRY_S) more times and then the queue gives up and says
+    so; on_landed hears every part that arrived; carry_on pumps it on a
+    thread of its own to the end. And part_lock: one writer per part,
+    the second refused with Busy, the lock gone with its holder."""
+    import downloads
+    import net
+    import steps
+
+    def scripted(outcomes: dict[str, list]):
+        """kind -> what each try does: None lands, an exception is raised."""
+        def stepper(kind, thing):
+            def work(progress, cancel, stage):
+                what = outcomes[kind].pop(0) if outcomes[kind] else None
+                if what is not None:
+                    raise what
+                progress(thing.bytes, thing.bytes)
+            return steps.Step(title=kind, body="", size_line="", total=thing.bytes,
+                              work=work, name=kind)
+        return stepper
+
+    def drive(q, until, clock):
+        """Pump with a clock that jumps a minute each turn: the retries'
+        waits pass at once, the threads still really run."""
+        deadline = time.monotonic() + 10
+        while not until() and time.monotonic() < deadline:
+            clock[0] += 61.0
+            q.pump(now=clock[0])
+            time.sleep(0.01)
+
+    landed: list[str] = []
+    outcomes = {"model": [net.DownloadError("offline", "no route")] * 6,
+                "recording": [downloads.Busy("held")] * 5}
+    q = downloads.Queue({"model": _Part("m", 100), "recording": _Part("av", 10)},
+                        stepper=scripted(outcomes), on_landed=landed.append)
+    assert q.state == "idle" and q.fraction == 0.0 and q.total == 110
+    clock = [time.monotonic()]
+    assert q.start() and q.state == "running"
+    drive(q, lambda: q.done, clock)
+    assert q.done and q.state == "done" and not q.gave_up, (q.state, q.status())
+    assert landed == ["model", "recording"], landed
+    assert q.fraction == 1.0 and q.status()["parts"] == {"model": "done", "recording": "done"}
+
+    # anything else: len(RETRY_S) more tries, then it gives up
+    outcomes = {"model": [net.DownloadError("http", "500")] * 10}
+    q = downloads.Queue({"model": _Part("m", 100)}, stepper=scripted(outcomes))
+    q.start()
+    drive(q, lambda: q.gave_up, clock)
+    assert q.gave_up and q.state == "failed", q.status()
+    assert len(outcomes["model"]) == 10 - (len(downloads.RETRY_S) + 1), outcomes
+
+    # a part this build cannot prepare is left out, the rest goes on
+    def picky(kind, thing):
+        if kind == "pack":
+            raise KeyError("not in the lock")
+        return scripted({kind: []})(kind, thing)
+    q = downloads.Queue({"pack": _Part("gpu", 5), "recording": _Part("av", 5)}, stepper=picky)
+    assert q.order == ["recording"], q.order
+
+    # carry_on: the app's thread, to the end
+    q = downloads.Queue({"model": _Part("m", 5), "recording": _Part("av", 5)},
+                        stepper=scripted({"model": [], "recording": []}))
+    thread = downloads.carry_on(q, every=0.01)
+    thread.join(10)
+    assert not thread.is_alive() and q.done
+
+    # part_lock: the second writer is refused; the lock goes with its holder
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-partlock-"))
+    try:
+        folder = tmp / "models" / "x--y"
+        with downloads.part_lock(folder):
+            try:
+                with downloads.part_lock(folder):
+                    raise AssertionError("two writers held one part")
+            except downloads.Busy as err:
+                assert err.reason == "busy" and "x--y" in str(err)
+        with downloads.part_lock(folder):
+            pass                                             # free again
+        assert not (folder / downloads.LOCK_NAME).exists(), "the lock file landed in the model's folder"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_model_download_and_a_pack_install_take_the_part_lock():
+    """models.download and packs.install are the two writers of a part,
+    and both run under downloads.part_lock: with the part held (the
+    app's background queue, say), a second call — the desk's own
+    Download button in a process of its own — is refused with Busy
+    before a byte is written."""
+    import downloads
+    import models
+    import packs
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-partlock-"))
+    try:
+        with _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"):
+            e = models.Entry("x/y", "b" * 40, {"model.bin": (5, "0" * 64)})
+            with downloads.part_lock(e.folder):
+                try:
+                    models.download(e)
+                except downloads.Busy:
+                    pass
+                else:
+                    raise AssertionError("models.download ran under a held lock")
+            assert not (e.folder / "model.bin").exists()
+            p = _pack_lock(tmp, "recording", {"av-18.0.0-cp311-abi3-win_amd64.whl": b"v" * 9})
+            with downloads.part_lock(p.folder):
+                try:
+                    packs.install(p)
+                except downloads.Busy:
+                    pass
+                else:
+                    raise AssertionError("packs.install ran under a held lock")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_the_sentence_page_loads_the_model_before_it_records():
@@ -36724,39 +36952,26 @@ def test_the_wizard_leaves_no_tk_object_for_another_thread_to_bury():
                       "the next collection on a decode thread aborts the app")
 
 
-def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
-    """The seven pages walked with Next: the queue pressed on page 2 runs
-    the model, then the pack, then the detector, one after the other,
-    while the wizard is on later pages (the pane is rebuilt on the
-    sentence page and the record button waits for the model); the pack
-    landing re-probes the hardware; the extras page's switches write
-    through their own writers; the last page writes setup.done into
-    state.json and [Open the desk] is reported to main."""
+def test_the_wizard_downloads_in_the_background_and_hands_the_rest_to_the_app():
+    """The seven pages walked with Next while the parts come down by
+    themselves (2026-10-03): the queue starts with the window — the
+    model, then NVIDIA's libraries, then the detector, one after the
+    other, with nothing pressed; the record button waits for the model;
+    the pack landing re-probes the hardware; the extras page's switches
+    write through their own writers; the last page writes setup.done and
+    [Start] reports the desk to main. Start pressed with a part still
+    coming hands the queue over unpaused (Result.downloads); the X
+    pauses it and hands nothing."""
     import firstrun
     import hardware
-    import steps
 
     cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
                               setup=config_mod.SetupConfig(done=False))
     d, s, t = _layer_files()
     order: list[str] = []
-
-    class Thing:
-        def __init__(self, name, size):
-            self.name, self.bytes, self.repo = name, size, name
-
-    def stepper(kind, thing):
-        def work(progress, cancel, stage):
-            for i in range(4):
-                progress((i + 1) * thing.bytes // 4, thing.bytes)
-                time.sleep(0.03)
-            order.append(kind)
-        return steps.Step(title=f"כותרת {kind}", body="גוף",
-                          size_line=f"{thing.bytes} B from x into y",
-                          total=thing.bytes, work=work, name=kind)
-
-    offers = {"portable": False, "model": Thing("m", 400), "pack": Thing("gpu", 300),
-              "detector": Thing("e", 200), "tier": "gpu"}
+    gate = threading.Event()
+    offers = {"model": _Part("m", 400), "pack": _Part("gpu", 300),
+              "detector": _Part("e", 200)}
     facts = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
     probed = []
 
@@ -36773,6 +36988,13 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
                 break
             time.sleep(0.02)
 
+    def bury(w):
+        try:
+            w._close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        gc.collect()
+
     import notify_hook
     hooked: list[str] = []
     claude_settings = d / "claude-settings.json"
@@ -36782,39 +37004,31 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             _patched(notify_hook, "install_hook", lambda *a, **k: hooked.append("install")), \
             _patched(notify_hook, "uninstall_hook", lambda *a, **k: hooked.append("uninstall")):
         try:
-            w = firstrun.Wizard(cfg, facts=facts, offers=offers, stepper=stepper)
+            w = firstrun.Wizard(cfg, facts=facts, offers=offers,
+                                stepper=_gated_stepper(gate, order))
         except Exception as err:                             # noqa: BLE001
             print(f"    (skipped: no Tk window — {err})")
             return
         try:
             assert w.name == "welcome"
+            assert w.downloads.order == ["model", "pack", "detector"]
+            assert w.downloads.runs["model"].running, "nothing started with the window"
             w._next()
             assert w.name == "account"
             w._next()                     # REQUIRED is off in this file
             assert w.name == "mic"
             w._next()
-            assert w.name == "computer" and w.pane is not None
-            assert w.pane.run is w.runs["model"] and w.active == -1
-            assert w.want == {"pack": True, "detector": True, "recording": False}
-            w._download()
-            assert w.queue == ["model", "pack", "detector"] and w.active == 0
-            assert w.runs["model"].running
-            w._computer_gate()                               # what the tick does
-            assert not w.next_loud._enabled and not w.next_quiet._enabled,                 "Next stayed live under a running bar (the owner's 1.1.1 walkthrough)"
-            assert w.note.cget("text") == firstrun.WORDS["computer.wait"]
-            w.runs["model"].state = "paused"                 # Pause opens the way on
-            w._computer_gate()
-            assert w.next._enabled and w.note.cget("text") == ""
-            w.runs["model"].state = "running"
-            w._next()                                        # programmatically, while it runs
-            assert w.name == "say" and w.pane is not None and w.pane.compact
+            assert w.name == "say", "a downloads page stood between the microphone and the sentence"
             assert not w.say._enabled, "the record button ran before the model landed"
-            pump(w, lambda: w.active == 2 and w.runs["detector"].ended, seconds=12)
+            assert firstrun.WORDS["say.waiting"] in _wizard_words(w)
+            gate.set()
+            pump(w, lambda: w.downloads.done, seconds=12)
             assert order == ["model", "pack", "detector"], order
             assert probed == [1], "the pack landing did not re-probe"
             assert w.result.installed_pack
             pump(w, lambda: w.say._enabled, seconds=3)
             assert w.say._enabled
+            assert firstrun.WORDS["say.waiting"] not in _wizard_words(w)
             w._next()
             assert w.name == "keys"
             w._next()
@@ -36842,14 +37056,59 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             assert "setup.done" not in config_mod.read_state(t)
             w._open_desk()
             assert w.result.saved and w.result.open_desk
+            assert w.result.downloads is None, "a finished queue was handed to the app"
             assert config_mod.read_state(t).get("setup.done") is True
             assert config_mod.read_settings(s).get("server.enabled") is True
             assert bool(w.result) is True
         finally:
-            try:
-                w.root.destroy()
-            except Exception:                                # noqa: BLE001
-                pass
+            gate.set()
+            bury(w)
+            w = None
+
+        # Start with a part still coming: handed over, still running
+        held = threading.Event()
+        (t).unlink(missing_ok=True)
+        try:
+            w = firstrun.Wizard(cfg, facts=facts, offers={"recording": _Part("av", 50)},
+                                stepper=_gated_stepper(held))
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            w._open_desk()
+            q = w.result.downloads
+            assert q is not None and q.runs["recording"].running, "Start paused what was coming"
+        finally:
+            held.set()
+            bury(w)
+            w = None
+        pump_until = time.monotonic() + 5
+        while not q.done and time.monotonic() < pump_until:
+            q.pump()
+            time.sleep(0.02)
+        assert q.done, "the handed-over queue did not finish"
+
+        # the X: paused, nothing handed over
+        held = threading.Event()
+        try:
+            w = firstrun.Wizard(cfg, facts=facts, offers={"recording": _Part("av", 50)},
+                                stepper=_gated_stepper(held))
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        q = w.downloads
+        try:
+            w._close()
+            assert w.result.closed and w.result.downloads is None
+            assert q.join(5), "the X left the download running"
+            q.pump()
+            assert q.runs["recording"].state == "paused", q.runs["recording"].state
+        finally:
+            held.set()
+            w = None
+            gc.collect()
             shutil.rmtree(d, ignore_errors=True)
 
 
@@ -36863,8 +37122,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
     text_version, runs the first sync, and — nothing left to download —
     does Start's work at once (the app, the desk, setup.done), the
     microphone, sentence, keys, extras and Ready pages never shown; with
-    a download still missing only the computer page stands between the
-    account and the desk. A no, or a server that could not be asked, is
+    a part still downloading the desk opens all the same and the app
+    gets the part (2026-10-03). A no, or a server that could not be asked, is
     the ordinary wizard. Nothing here names the server to the person."""
     import consent_card as cc
     import firstrun
@@ -36948,27 +37207,35 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
             assert config_mod.read_state(t).get("setup.done") is True
             bury(w)
 
-            # 2. a returning person with a download missing: the computer
-            #    page, then the desk — no other page
+            # 2. a returning person with a part still downloading: the
+            #    desk at once — no downloads page since 2026-10-03 — and
+            #    the part handed to the app, still coming
             for _k in privacy.SYNC_KINDS:
                 privacy.withdraw(_k)
             answer.update(has=True, asked=0, synced=[])
             (t).unlink(missing_ok=True)
-            w = wizard({**nothing, "portable": False, "recording": type("T", (), {"name": "av", "bytes": 27_556_236, "repo": "av"})()})
-            w.page = firstrun.PAGES.index("account")
-            w._show_page()
-            settle(w, until=lambda: w._returning)
-            assert w._returning
-            w._next()
-            settle(w, until=lambda: w.name == "computer")
-            assert w.name == "computer" and not w.result.saved, w.name
-            assert not w._hidden("computer") and w._hidden("say")
-            shown = [n for n in firstrun.PAGES if not w._hidden(n)]
-            assert shown == ["welcome", "account", "computer"], shown
-            w._next()                                        # past the downloads
-            settle(w, until=lambda: w.result.saved)
-            assert w.result.open_desk and w.result.saved, "the desk did not follow the downloads"
-            bury(w)
+            held = threading.Event()
+            try:
+                w = firstrun.Wizard(cfg, facts={"tier": "gpu"},
+                                    offers={"recording": _Part("av", 27_556_236)},
+                                    stepper=_gated_stepper(held))
+            except Exception as err:                         # noqa: BLE001
+                print(f"    (skipped: no Tk window — {err})")
+                return
+            try:
+                w.page = firstrun.PAGES.index("account")
+                w._show_page()
+                settle(w, until=lambda: w._returning)
+                assert w._returning
+                shown = [n for n in firstrun.PAGES if not w._hidden(n)]
+                assert shown == ["welcome", "account"], shown
+                w._next()
+                settle(w, until=lambda: w.result.saved)
+                assert w.result.open_desk and w.result.saved, "the desk waited for a download"
+                assert w.result.downloads is w.downloads, "the part was not handed to the app"
+            finally:
+                held.set()
+                bury(w)
 
             # 3. a new person, or a server that could not be asked: the
             #    ordinary wizard, Continue, every page
@@ -37806,17 +38073,26 @@ def test_the_claude_door_says_whose_it_is():
 
 
 def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
-    """Static, main.py: the two standalone step windows are shown only
-    when the wizard is not due (a set-up copy whose model went missing);
-    the wizard gets the probe's facts; its result opens the desk once
-    the app is up; --setup returns after it."""
+    """Static, main.py: the two standalone step windows are the desk's
+    explicit buttons only (--download-model, --install-pack) — at every
+    other start a missing part downloads in the background, after the
+    app is up (2026-10-03); the wizard gets the probe's facts and hands
+    over what it did not finish; --setup lets it stop cleanly; its
+    result opens the desk once the app is up."""
     import firstrun
 
     src = (REPO / "main.py").read_text("utf-8")
     assert "wizard_due = args.setup or (firstrun.needed(cfg) and not args.fake)" in src
-    assert "not wizard_due" in src.split("models_mod.wanted(cfg)")[0][-200:]
-    assert "not wizard_due" in src.split("packs_mod.wanted(cfg, facts)")[0][-200:]
+    assert "if args.download_model:" in src.split("models_mod.offer(cfg.local.model)")[0][-120:]
+    assert "if args.install_pack:" in src.split("packs_mod.offer(args.install_pack)")[0][-120:]
+    assert src.count("models_mod.offer(") == 1 and src.count("packs_mod.offer(") == 1
+    assert "models_mod.wanted(cfg)" not in src and "packs_mod.wanted(cfg, facts)" not in src
     assert "facts=facts)" in src and "outcome.installed_pack" in src
+    assert 'carried = getattr(outcome, "downloads", None)' in src
+    started = src.index("    try:\n        app.start()")
+    assert src.index("carried.pause()") < src.index("carried.join()") < started
+    assert started < src.index("app.carry_downloads(carried)")
+    assert "downloads_mod.wanted(cfg, facts)" in src
     # the desk after --setup, and after app.start() — where a plain
     # launch (the shortcut, no flags) opens it too (2026-09-20)
     assert src.count("if open_desk:") == 1
@@ -37824,7 +38100,7 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     wiz = (REPO / "firstrun.py").read_text("utf-8")
     assert "import main" not in wiz, "the wizard must not import main.py"
     assert 'config_mod.save({"setup.done": True})' in wiz
-    assert firstrun.PAGES == ("welcome", "account", "mic", "computer", "say", "keys",
+    assert firstrun.PAGES == ("welcome", "account", "mic", "say", "keys",
                               "extras", "done")
     assert firstrun.GUIDE_PRIVACY_CHECK.startswith(paths.PAGES_URL)
     assert firstrun.PRIVACY_URL == f"{paths.PAGES_URL}/privacy"
@@ -39380,7 +39656,8 @@ def test_the_installer_downloads_what_the_wizard_used_to_and_the_list_is_the_loc
     # the stamps are what models.py / packs.py themselves write, so the
     # installer's "already there" is the app's own "ready" / "ok"
     assert '"repo": e.repo, "revision": e.revision,' in inspect.getsource(models._mark_complete)
-    assert '"pack": p.name, "versions": p.versions,' in inspect.getsource(packs.install)
+    # (install() holds the part lock and hands the work to _install)
+    assert '"pack": p.name, "versions": p.versions,' in inspect.getsource(packs._install)
 
     iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
     code = iss[iss.index("[Code]"):]
@@ -43433,7 +43710,11 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     main_src = (REPO / "main.py").read_text("utf-8")
     assert 'parser.add_argument("--no-model"' in main_src
     assert "model=not no_model" in main_src
-    assert "and not no_model" in main_src, "the download offer runs for a --no-model start"
+    # no start opens a download window any more — --no-model included:
+    # the parts come down in the background (downloads.py, 2026-10-03);
+    # the window is the desk's own --download-model button only
+    assert "models_mod.wanted(cfg)" not in main_src
+    assert "if args.download_model:" in main_src.split("models_mod.offer(")[0][-200:]
     assert 'no_model = args.no_model or not bool(getattr(cfg.local, "load_at_start", True))' in main_src
     cfg = config_mod.load(REPO / "defaults.toml")
     assert cfg.local.load_at_start is True, "the model comes with the app by default"

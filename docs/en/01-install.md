@@ -48,16 +48,16 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
   **Downloads**, then **Finish** with "Start DeskIT now" ticked. The app itself is English
   chrome with Hebrew text.
 - **Downloads**: a few big files DeskIT needs, fetched now so the first start is ready — the
-  boxes are ticked; untick what you do not want and DeskIT offers it again later. What each
+  boxes are ticked; what you untick, DeskIT downloads by itself on the first start instead. What each
   one is, its exact size and its licence: [below](#downloads).
 - Puts the program in `%LOCALAPPDATA%\Programs\DeskIT`, the downloads in
   `%LOCALAPPDATA%\DeskIT\models` and `\packs`, and a shortcut in the Start menu and on the
   desktop. The shortcut opens the desk, with DeskIT starting behind it (the dot, the model);
   when DeskIT is already running it only brings the desk up.
-- Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)), whose
-  computer page is skipped when the downloads all landed.
+- Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)), which
+  downloads whatever is still missing in the background.
 - Never bundles a speech model or NVIDIA's libraries: they are downloaded, with your tick,
-  by the installer — or, if you unticked them, by the wizard on the first run.
+  by the installer — or, if you unticked them, in the background from the first start.
 
 ## Downloads {#downloads}
 
@@ -73,9 +73,12 @@ installer. Ticking a box is your acceptance of that item's licence.
 | Screen recording | PyAV with FFmpeg, for the record key, the photo key and the phone's audio | 28 MB | [PyAV (BSD-3)](https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt), [FFmpeg — this build is GPL: x264, x265](https://ffmpeg.org/legal.html) |
 
 Anything already on the PC is not offered again. A download that fails asks to retry or is left
-for the first start, which offers exactly what is still missing — it never fails the install.
+for the first start, which downloads exactly what is still missing, in the background — it
+never fails the install.
 The files land in `%LOCALAPPDATA%\DeskIT\models` and `\packs`. A silent install (winget,
-`/VERYSILENT`) and `/NODOWNLOAD` download nothing; the first start offers everything instead.
+`/VERYSILENT`) and `/NODOWNLOAD` download nothing; the first start downloads everything
+instead, in the background. The Microsoft Store copy is one of these: an MSIX package cannot
+download anything while it installs.
 
 ## Updating
 

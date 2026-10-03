@@ -1824,6 +1824,11 @@ class App:
             "uptime_s": round(time.monotonic() - self._started_at, 1),
             "backend": self.transcriber.name,
             "model": self._model_state,
+            # The parts downloading in the background (carry_downloads):
+            # the desk's Home row says so instead of offering a button
+            # that would start a second downloader. None when nothing is.
+            "downloads": (self._downloads.status()
+                          if getattr(self, "_downloads", None) is not None else None),
             "mic": self._mic_label,
             "keys": {name: getattr(self.cfg, name)
                      for name, _label in config_mod.HOTKEY_FIELDS},
@@ -2483,6 +2488,39 @@ class App:
         self._set_state("paused")          # no dot: alive, not listening
         self._say("model off — Start loads it again; every other key works")
         log.info("model unloaded — the keys that need no model keep working")
+
+    def carry_downloads(self, queue) -> None:
+        """The parts still coming (downloads.Queue), pumped on a thread of
+        this app until they are all here — the wizard's queue after Start,
+        or what a start found missing. status()["downloads"] is what the
+        desk draws from it; nothing here is a window (the owner,
+        2026-10-03: the parts come by themselves, in the background)."""
+        import downloads as downloads_mod
+        queue.on_landed = self._download_landed
+        self._downloads = queue
+        downloads_mod.carry_on(queue)
+        log.info("background downloads: %s", ", ".join(queue.order))
+
+    def _download_landed(self, kind: str) -> None:
+        """One part arrived while the app runs (the downloads thread).
+        The Hebrew model needs nothing here: the stand-in backend
+        (transcribers/missing.py) builds the real one at the next
+        dictation. PyAV is live at once (packs.activate, no restart);
+        NVIDIA's libraries and the detector are the next start's — the
+        probe runs again now so that start knows the card's tier."""
+        import packs as packs_mod
+        if kind == "recording":
+            packs_mod.activate("recording")
+            self._say("screen recording is ready")
+        elif kind == "pack":
+            try:
+                import hardware as hardware_mod
+                hardware_mod.run_at_start()
+            except Exception:                                # noqa: BLE001
+                log.warning("the hardware probe failed after the pack", exc_info=True)
+            self._say("faster dictation on the NVIDIA card from the next start")
+        elif kind == "model":
+            self._say("the Hebrew model is here — the next dictation loads it")
 
     def load_model(self) -> dict:
         """Start, with the process already up: the model back (about 25 s,
@@ -6730,8 +6768,9 @@ def _adopt_downloads() -> int:
     with no window and no network — models.adopt() / packs.adopt()
     fetch nothing when every file is already its size — and prints one
     line per item. Always exit 0: an item that is partial or failed is
-    left to the wizard's computer page, which offers exactly what is
-    still missing; the installer must never fail over a download."""
+    left to the first start, which downloads exactly what is still
+    missing in the background (downloads.py); the installer must never
+    fail over a download."""
     import packs as packs_mod
 
     try:
@@ -7035,49 +7074,34 @@ def main() -> int:
         except Exception:                     # noqa: BLE001
             log.warning("the hardware probe failed; running as before",
                         exc_info=True)
-    # The Hebrew model (models.py, plan 6.4): an installed copy downloads
-    # it here, once, with the size on the screen and [Not now] — never as
-    # a side effect of loading. Declined or offline, the app still
-    # starts: every key that needs no model works, a dictation says why,
-    # the recording is kept. When the WIZARD is due it hosts this step
-    # and the pack's as pages of its own (chapter 9.2), so the two
-    # standalone windows are for a set-up copy whose model went missing.
+    # The parts an installed copy downloads (the Hebrew model, the
+    # English detector, NVIDIA's libraries, PyAV — models.py, packs.py)
+    # come down BY THEMSELVES, in the background, on every copy
+    # (downloads.py; the owner, 2026-10-03: no page and no button — every
+    # user gets every part this computer can use). The wizard starts them
+    # the moment it opens; a start with a part still missing resumes it
+    # on a thread of the running app (below, after app.start()). The two
+    # windows here are only the desk's explicit buttons now
+    # (--download-model, --install-pack through launch.run_step).
     wizard_due = args.setup or (firstrun.needed(cfg) and not args.fake)
     # The model with the app — [local] load_at_start, on by default —
     # unless this start said --no-model (the tests, a hand start).
     no_model = args.no_model or not bool(getattr(cfg.local, "load_at_start", True))
-    if args.download_model or (not args.fake and not wizard_due
-                               and not no_model
-                               and models_mod.wanted(cfg)):
+    if args.download_model:
         outcome = models_mod.offer(cfg.local.model)
         log.info("model download step: %s", outcome)
-        if args.download_model:
-            return 0 if outcome == "done" else 1
-    # The GPU pack (packs.py, plan 6.5): an NVIDIA card without NVIDIA's
-    # libraries is a cpu tier, so the same step, once, right after the
-    # model — [Not now] is written down and the start stops asking.
-    # Installed, the probe runs again so the tier and its defaults are
-    # the card's before any model loads.
+        return 0 if outcome == "done" else 1
     import packs as packs_mod
     # PyAV, when the Recording pack brought it (13.4): its site goes on
     # sys.path now, before faster_whisper's `import av` at the model's
     # construction, so the vendor stub hands over instead of answering.
     packs_mod.activate("recording")
-    if args.install_pack or (not args.fake and not wizard_due
-                             and packs_mod.wanted(cfg, facts)):
-        outcome = packs_mod.offer(args.install_pack or "gpu")
-        log.info("pack step (%s): %s", args.install_pack or "gpu", outcome)
-        if args.install_pack:
-            return 0 if outcome == "done" else 1
-        if outcome == "done":
-            import hardware as hardware_mod
-            try:
-                facts = hardware_mod.run_at_start()
-                cfg = _load_config(args.config)
-            except Exception:                 # noqa: BLE001
-                log.warning("the hardware probe failed after the pack",
-                            exc_info=True)
+    if args.install_pack:
+        outcome = packs_mod.offer(args.install_pack)
+        log.info("pack step (%s): %s", args.install_pack, outcome)
+        return 0 if outcome == "done" else 1
     open_desk = False
+    carried = None                    # the wizard's queue, when Start left parts coming
     if wizard_due:
         outcome = firstrun.run(cfg, Path(args.config) if args.config else None,
                                facts=facts)
@@ -7097,7 +7121,15 @@ def main() -> int:
             # start shows the wizard again (setup.done was not written).
             log.info("the wizard was closed; nothing started")
             return 0
+        carried = getattr(outcome, "downloads", None)
         if args.setup:
+            if carried is not None:
+                # --setup from a running copy's desk: this process ends
+                # here, so the parts stop where they stand — the threads
+                # are let finish their write first, and the next start
+                # resumes them in the background.
+                carried.pause()
+                carried.join()
             if open_desk:
                 open_dashboard()
             return 0
@@ -7319,6 +7351,20 @@ def main() -> int:
         return fail(str(e))
     stage["app"] = app
     stage["stage"] = "running"
+    # The parts still missing, downloading on a thread of this app
+    # (downloads.py): what the wizard handed over at Start, or — at any
+    # other start of an installed copy — whatever the last session did
+    # not finish. Nothing on a portable copy or a --fake start.
+    if not args.fake:
+        try:
+            import downloads as downloads_mod
+            if carried is None:
+                missing = downloads_mod.wanted(cfg, facts)
+                carried = downloads_mod.Queue(missing) if missing else None
+            if carried is not None:
+                app.carry_downloads(carried)
+        except Exception:                     # noqa: BLE001
+            log.warning("the background downloads did not start", exc_info=True)
     # A plain launch — the shortcut, DeskIT.vbs, nothing on the line — is
     # a person who wants to see the app (the owner on his installed
     # copy, 2026-09-20: "the first double-click lights the model, the
