@@ -7351,6 +7351,42 @@ def test_every_picture_of_the_mark_is_the_one_drawing() -> None:
     assert not (REPO / "make_icon.py").exists(), "make_icon.py draws the old dalet"
 
 
+def test_the_phone_and_the_shelf_wear_the_mark_too() -> None:
+    """The rest of the old dalet, found on 2026-10-04 when the guide's
+    wizard pictures were refreshed: the phone app's launcher icon and its
+    notification icon were make_icon.py's dalet (drawn 2026-09-13), and
+    the shelf's door to the desk drew the dalet by hand. The phone's
+    icons are now written by dev\\make_logo.py and must be exactly what it
+    draws; the shelf's glyph is the same area on the same grid."""
+    from PIL import Image, ImageChops
+
+    import shelf_card as sc
+
+    logo = _make_logo()
+    res = REPO / "android" / "app" / "src" / "main" / "res"
+    for density, (back, fore) in logo.android_layers().items():
+        for layer, drawn in (("background", back), ("foreground", fore)):
+            path = res / f"mipmap-{density}" / f"ic_launcher_{layer}.png"
+            disk = Image.open(path).convert("RGBA")
+            assert disk.size == drawn.size, (path, disk.size)
+            worst = max(hi for _lo, hi in
+                        ImageChops.difference(disk, drawn.convert("RGBA")).getextrema())
+            assert worst <= 2, (f"{path.relative_to(REPO)} is not make_logo's "
+                                f"(off by {worst}) — run dev\\make_logo.py --android-only")
+    launcher = (res / "mipmap-anydpi-v26" / "ic_launcher.xml").read_text("utf-8")
+    assert '@mipmap/ic_launcher_background' in launcher, launcher
+    assert '@mipmap/ic_launcher_foreground' in launcher, launcher
+    status = logo.ANDROID_STATUS.read_text("utf-8").replace("\r\n", "\n")
+    assert status == logo.STATUS_XML.format(corner=logo.CORNER_PATH, dot=logo.DOT_PATH), \
+        "ic_stat_lamp.xml is not make_logo's — run dev\\make_logo.py --android-only"
+
+    for size in (26, 64):
+        glyph = sc._glyph({}, "desk", size, colour="accent_text").getchannel("A")
+        mark = logo.mark(size * 4, scale=1.0).resize((size, size), Image.LANCZOS)
+        worst = ImageChops.difference(glyph, mark.getchannel("A")).getextrema()[1]
+        assert worst <= 8, f"the shelf's door is not the mark at {size} px (off by {worst})"
+
+
 def test_the_background_app_says_who_it_is_before_it_shows_anything() -> None:
     """The dashboard has claimed an app identity since it first had a
     window; main.py — the half of DeskIT that is ALWAYS up — never did, so
