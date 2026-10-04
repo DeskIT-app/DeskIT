@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Store package's resource index: build_msix.ps1 hands this to
+  makepri new, and assets.py says why the index has to exist at all (the
+  taskbar's plate). makepri runs on a scratch folder holding a copy of
+  assets\ and nothing else, so everything it finds is a logo and every
+  name comes out as Files/assets/..., the path the manifest names. Not
+  the package's own root: python\ and app\ are thousands of files whose
+  folder and file names makepri would try to read as qualifiers. And not
+  startIndexAt="assets" either: measured 2026-10-03, that names the logos
+  Files/Square44x44Logo.png, without the folder, and the manifest's
+  assets\Square44x44Logo.png would find no candidates at all. There is no
+  packaging element, so makepri writes ONE resources.pri and no resource
+  packs: this is a single .msix, not a bundle. The defaults are
+  createconfig's own, with en-US for the language.
+-->
+<resources targetOsVersion="10.0.0" majorVersion="1">
+  <index root="\" startIndexAt="\">
+    <default>
+      <qualifier name="Language" value="en-US"/>
+      <qualifier name="Contrast" value="standard"/>
+      <qualifier name="Scale" value="100"/>
+      <qualifier name="HomeRegion" value="001"/>
+      <qualifier name="TargetSize" value="256"/>
+      <qualifier name="LayoutDirection" value="LTR"/>
+      <qualifier name="Theme" value="dark"/>
+      <qualifier name="AlternateForm" value=""/>
+      <qualifier name="DXFeatureLevel" value="DX9"/>
+      <qualifier name="Configuration" value=""/>
+      <qualifier name="DeviceFamily" value="Universal"/>
+      <qualifier name="Custom" value=""/>
+    </default>
+    <indexer-config type="folder" foldernameAsQualifier="true" filenameAsQualifier="true" qualifierDelimiter="."/>
+  </index>
+</resources>

@@ -153,18 +153,15 @@ from size and from the accent, never from a Medium that does not exist.
 The dashboard can start *and* stop the app, so it can replace both Desktop
 shortcuts on its own; autostart is a separate shortcut in the Startup
 folder and is unaffected either way. Its icon is `icon.ico` — run
-`make_icon.py` (needs Pillow) to regenerate it. **The mark is a dalet
-drawn as a desk**: a tabletop with one leg hanging from its right end,
-the top's edge just past the leg, and the lamp — the same gold dot the
-status dot is — sitting above the left of the top, with two light arcs to
-its right. It is the app in one letter: a desk with a lamp on it, and the
-lamp is the part that is lit. There are **two cuts** of that one drawing
-in the file, because 16 px cannot hold what 256 px can: at 48 px and up
-the lamp keeps its glow and the two arcs; below 48 both go, and what is
-left is the desk and the dot. The whole thing is solved on the design's
-own 64-unit grid, drawn at 4× and downsampled with LANCZOS, into
-`icon.ico` at 16/24/32/48/64/128/256 and `icon.png`. The alef that used
-to be knocked out of a microphone is gone with the microphone.
+`dev\make_logo.py --app-only` to redraw it, which writes `icon.png` and
+the site's `docs\assets\icon.png` from the same frame in the same call
+(SKIN.md, "The mark"). **The mark is Corner** (since 2026-09-23): one
+rounded corner cut flat at both ends, with the lamp — the same gold the
+status dot is — at the exact centre of its curve. The dalet drawn as a
+desk that came before it, and the alef knocked out of a microphone before
+that, are gone; `make_icon.py`, which drew the dalet and would have
+written it back over `icon.ico` the next time anyone ran it, went on
+2026-10-03, together with the dalet `icon.png` it had left behind.
 
 Because there is no window, the app enforces one instance at a time
 (launching twice would paste every transcript twice) and writes its status

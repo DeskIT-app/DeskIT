@@ -21,7 +21,6 @@ weekly_review.ps1       export-ignore
 phase1_cutover.ps1      export-ignore
 questions.py            export-ignore
 answer_card.py          export-ignore
-make_icon.py            export-ignore
 audio_check.py          export-ignore
 install_fonts.py        export-ignore
 skin/preview.py         export-ignore

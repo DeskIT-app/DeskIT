@@ -12,17 +12,28 @@
 # Then a smoke test on the runner: a COPY of the package signed with a
 # throwaway certificate whose subject is the Store publisher, installed,
 # the family name checked against the one Partner Center gave, the
+# desktop shortcut Windows makes from the manifest found, the app's icon
+# and the shortcut's fetched the way the shell resolves them
+# (shell_icon.py) and failed if either is Windows' blank page, the
 # app started the way the Start menu starts it until it writes its log
-# inside the package's private AppData, the Claude Code alias run once,
-# everything removed. The unsigned package is the artifact; the owner
-# uploads it in Partner Center (DeskIT App, 9PCJJQV52NVZ), and the Store
-# signs it.
+# inside the package's private AppData, the screen photographed with the
+# app's window up (the smoke artifact is how the logos are looked at
+# before a Store update carries them), the Claude Code alias run once, the
+# same tree packed one patch number up and installed over it — the
+# shortcut has to follow the update to the new version's folder —
+# everything removed and the shortcut checked gone with it. Then the
+# Windows App Certification Kit —
+# the Store's own technical checks — on the same signed copy, as advice:
+# its report is an artifact and its verdict never blocks the package.
+# The unsigned package is the artifact; the owner uploads it in Partner
+# Center (DeskIT App, 9PCJJQV52NVZ), and the Store signs it.
 #
 # On every published release that is not a pre-release, by hand for any
 # release tag (`gh workflow run store.yml -f tag=v1.0.5`), and on a push
-# that changes the packaging itself — on any branch, wrapping the latest
-# release — because a workflow GitHub has not seen on main cannot be
-# started by hand, and a change here should meet the runner before main.
+# that changes the packaging itself or the mark it draws its logos from —
+# on any branch, wrapping the latest release — because a workflow GitHub
+# has not seen on main cannot be started by hand, and a change here should
+# meet the runner before main.
 name: store
 
 on:
@@ -32,6 +43,8 @@ on:
     paths:
       - "packaging/store/**"
       - ".github/workflows/store.yml"
+      - "dev/make_logo.py"
+      - "icon.ico"
   workflow_dispatch:
     inputs:
       tag:
@@ -46,7 +59,7 @@ jobs:
   msix:
     if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     defaults:
       run:
         shell: pwsh
@@ -128,6 +141,26 @@ jobs:
           if (-not $pkg) { throw "the package is not installed" }
           if ($pkg.PackageFamilyName -ne $env:FAMILY) { throw "family $($pkg.PackageFamilyName), Partner Center says $env:FAMILY" }
           Write-Host "installed $($pkg.PackageFullName) at $($pkg.InstallLocation)"
+          # the desktop shortcut the manifest declares (desktop7:Shortcut)
+          $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "DeskIT App.lnk"
+          $deadline = (Get-Date).AddSeconds(30)
+          while (-not (Test-Path $lnk) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $lnk)) {
+            Get-ChildItem ([Environment]::GetFolderPath("Desktop")) | Format-Table Name | Out-String | Write-Host
+            throw "no 'DeskIT App' shortcut on the desktop after the install"
+          }
+          $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+          Write-Host "desktop shortcut: $lnk -> '$($shortcut.TargetPath)' icon '$($shortcut.IconLocation)'"
+          # the icons as the shell resolves them (shell_icon.py): the app's
+          # through resources.pri, and the shortcut's — Windows' blank page
+          # in either is a failure (AppxManifest.xml: the Icon's token)
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\smoke-shots" | Out-Null
+          foreach ($size in 24, 32, 48) {
+            & pkg\python\python.exe -B packaging\store\shell_icon.py "shell:AppsFolder\$env:FAMILY!DeskIT" $size "$env:RUNNER_TEMP\smoke-shots\shell-app-$size.png" --not-blank
+            if ($LASTEXITCODE) { throw "the app's $size px icon is not the mark (exit $LASTEXITCODE)" }
+          }
+          & pkg\python\python.exe -B packaging\store\shell_icon.py $lnk 32 "$env:RUNNER_TEMP\smoke-shots\shell-shortcut-32.png" --not-blank
+          if ($LASTEXITCODE) { throw "the desktop shortcut's icon is not the mark (exit $LASTEXITCODE)" }
           $alias = "$env:LOCALAPPDATA\Microsoft\WindowsApps\deskit-hook.exe"
           if (-not (Test-Path $alias)) { throw "no deskit-hook.exe alias" }
           Start-Process explorer.exe -ArgumentList "shell:AppsFolder\$env:FAMILY!DeskIT"
@@ -142,11 +175,41 @@ jobs:
           if (-not $log) { throw "no app.log under $cache in 120 s: the app did not start inside the package" }
           Write-Host "app.log at $($log.FullName):"
           Get-Content $log.FullName -Tail 25
+          # the screen with the app's first window up, for a person to look
+          # at: its taskbar button and the desktop shortcut (the button takes
+          # its icon from the shortcut that carries the app's ID, so while the
+          # shortcut drew blank, the button did too)
+          Start-Sleep -Seconds 15
+          & pkg\python\python.exe -B -c "import sys; from PIL import ImageGrab; im = ImageGrab.grab(all_screens=True); im.save(sys.argv[1]); print('screen', im.size)" "$env:RUNNER_TEMP\smoke-shots\screen.png"
           '{"hook_event_name": "Stop"}' | & $alias
           if ($LASTEXITCODE) { throw "deskit-hook.exe exited $LASTEXITCODE" }
           Get-Process DeskIT, pythonw -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 2
-          Remove-AppxPackage -Package $pkg.PackageFullName
+          # an update must carry the shortcut to the new version's folder —
+          # its target names the versioned install folder, and a Store user
+          # gets an update every week or two: the same tree packed one
+          # patch number up, signed, installed over this one
+          $v = [version]"${{ steps.release.outputs.version }}"
+          $next = "$($v.Major).$($v.Minor).$($v.Build + 1)"
+          ./packaging/store/build_msix.ps1 -Tree pkg -Version $next -Out dist-next -Python pkg\python\python.exe | Select-Object -Last 1
+          $update = (Get-ChildItem dist-next -Filter *.msix | Select-Object -First 1).FullName
+          & $signtool.FullName sign /fd SHA256 /sha1 $cert.Thumbprint $update
+          if ($LASTEXITCODE) { throw "signtool failed on the update" }
+          Add-AppxPackage -Path $update
+          $updated = Get-AppxPackage -Name YoavShimron.DeskITApp
+          if ($updated.Version -ne "$next.0") { throw "the update installed $($updated.Version), not $next.0" }
+          $deadline = (Get-Date).AddSeconds(30)
+          do {
+            Start-Sleep -Milliseconds 500
+            $target = if (Test-Path $lnk) { (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath } else { "" }
+          } while ($target -notlike "*_$next.0_*" -and (Get-Date) -lt $deadline)
+          Write-Host "after the update to $next.0 the shortcut points at '$target'"
+          if ($target -notlike "*_$next.0_*") { throw "the desktop shortcut did not follow the update to $next.0" }
+          Remove-AppxPackage -Package $updated.PackageFullName
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Test-Path $lnk) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path $lnk) { throw "the desktop shortcut outlived the package" }
+          Write-Host "the desktop shortcut went with the package"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -154,4 +217,47 @@ jobs:
           path: |
             dist/*.msix
             dist/*.msix.sha256
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DeskIT-App-${{ steps.release.outputs.version }}-smoke
+          path: ${{ runner.temp }}/smoke-shots
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # The Store's own technical checks (Microsoft Learn: "Windows App
+      # Certification Kit"), on the signed copy the smoke step installed and
+      # removed. Advice, not a gate: a check the Store applies differently,
+      # or a kit that misbehaves on a runner, must not hold the package
+      # back — the report is read, and its result printed here.
+      - name: Windows App Certification Kit
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          $appcert = "${env:ProgramFiles(x86)}\Windows Kits\10\App Certification Kit\appcert.exe"
+          if (-not (Test-Path $appcert)) { Write-Host "no App Certification Kit on this runner"; exit 0 }
+          $out = "$env:RUNNER_TEMP\wack"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          & $appcert reset | Out-Null
+          & $appcert test -appxpackagepath "$env:RUNNER_TEMP\smoke.msix" -reportoutputpath "$out\report.xml"
+          Write-Host "appcert exited $LASTEXITCODE"
+          if (-not (Test-Path "$out\report.xml")) { throw "the kit wrote no report" }
+          $report = [xml](Get-Content "$out\report.xml" -Raw)
+          Write-Host "OVERALL: $($report.REPORT.OVERALL_RESULT)"
+          foreach ($test in $report.SelectNodes("//TEST")) {
+            $result = ($test.RESULT.InnerText, $test.RESULT, "?" | Where-Object { $_ } | Select-Object -First 1)
+            "{0,-8} {1}" -f $result, $test.NAME
+            if ($result -ne "PASS") {
+              foreach ($message in $test.SelectNodes(".//MESSAGE")) { "           " + ($message.TEXT, $message.InnerText | Where-Object { $_ } | Select-Object -First 1) }
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DeskIT-App-${{ steps.release.outputs.version }}-wack
+          path: ${{ runner.temp }}/wack
+          if-no-files-found: ignore
           retention-days: 30
