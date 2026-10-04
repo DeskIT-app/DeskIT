@@ -133,6 +133,14 @@ def apply() -> str | None:
     steps = pending(have)
     if not steps and have >= version.CONFIG_VERSION and _stamped():
         return None
+    if have > version.CONFIG_VERSION:
+        # Files a NEWER build wrote (one DeskIT per PC, onecopy.py: a Store
+        # copy a week behind the website copy it replaces reads that
+        # copy's folder). Never stamp them down — the newer build would
+        # run its steps a second time over files already past them.
+        log.info("settings are from a newer DeskIT (config_version %d, this "
+                 "build knows %d); left as they are", have, version.CONFIG_VERSION)
+        return None
     for number, step in steps:
         try:
             step()

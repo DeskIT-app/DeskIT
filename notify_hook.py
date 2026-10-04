@@ -561,8 +561,13 @@ def this_copy(script: str | None = None) -> str:
     return alias_path() if paths.PACKAGED else (script or str(HERE / "notify_hook.py"))
 
 
-def hook_entries(python: str, script: str) -> dict:
-    command = (f'"{alias_path()}"' if paths.PACKAGED
+def hook_entries(python: str, script: str, alias: bool | None = None) -> dict:
+    """The two entries. `alias` says whose they are: the Store copy's
+    (its alias) or a copy's python and script; left unsaid it is THIS
+    copy's kind — said only when one released copy hands the door to the
+    other on its way out (onecopy.move_claude_door)."""
+    use_alias = paths.PACKAGED if alias is None else alias
+    command = (f'"{alias_path()}"' if use_alias
                else f'"{python}" "{script}"')
     hook = {"type": "command", "command": command, "timeout": 10}
     return {
@@ -613,7 +618,7 @@ def _same_file(a: str, b: str) -> bool:
 
 
 def install_hook(settings_path, python: str | None = None,
-                 script: str | None = None) -> bool:
+                 script: str | None = None, alias: bool | None = None) -> bool:
     """Write our two hook entries into settings.json; True if the file
     changed. Idempotent: an entry naming notify_hook.py is replaced,
     everything else in the file is kept byte for byte in meaning.
@@ -638,7 +643,7 @@ def install_hook(settings_path, python: str | None = None,
     if not isinstance(hooks, dict):
         hooks = {}
         data["hooks"] = hooks
-    for event, entries in hook_entries(python, script).items():
+    for event, entries in hook_entries(python, script, alias).items():
         existing = hooks.get(event)
         if not isinstance(existing, list):
             existing = []

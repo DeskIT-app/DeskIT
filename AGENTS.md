@@ -459,6 +459,21 @@ exactly what classic did.
   key use the `DeskIT.test/` Credential Manager prefix (`DESKIT_HOME`
   selects it) or the DPAPI files under the tests' scratch home — a test
   that touches `DeskIT/groq` is a test that can delete the owner's key.
+- **The website's and the Store's DeskIT are one app, never two on one PC
+  — and two would share more than Microsoft's page says.** Measured
+  2026-10-04 inside the Store package (onecopy.py's docstring has the
+  list): it reads, appends to and even CREATES files in a real
+  `%LOCALAPPDATA%\DeskIT` the website copy made, and the `Local\` kernel
+  names are shared. So each released copy asks for the other before its
+  first write (`onecopy.other_copy()`, first thing in main.py's start;
+  `one_copy.iss`, first thing in Setup). Two traps for anyone touching
+  it: a CHILD process of the Store copy writes HKCU into the package's
+  private hive — its delete of the website copy's Uninstall key left the
+  real key standing while the files went — so anything that must change
+  the real registry starts through `onecopy.start_outside` (WMI); and
+  on this PC the coding tools' own shells write `%LOCALAPPDATA%` (not
+  Temp) and HKCU into a layer NO other process sees, so a fixture
+  another program must see is made by a WMI-started process.
 - **Every personal-store path comes from `paths.py`, never from
   `Path(__file__)`.** Since 2026-09-17 the app has two roots: `APP_DIR`
   (code, read-only once installed) and `DATA_DIR` (everything a person

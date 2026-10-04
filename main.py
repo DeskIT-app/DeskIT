@@ -54,6 +54,7 @@ import awake as awake_mod
 import models as models_mod
 import notify as notify_mod
 import notify_watch as notify_watch_mod
+import onecopy
 import popup as popup_mod
 import problems as problems_mod
 import reading as reading_mod
@@ -6759,6 +6760,38 @@ def _adopt_downloads() -> int:
     return 0
 
 
+#: The flags that end in an answer printed or a window of their own and
+#: never start the app; every other start (none, --quiet, --no-model,
+#: --setup) asks onecopy first.
+_NOT_THE_APP = ("adopt_downloads", "dashboard", "diagnose", "test_sound", "stop",
+                "list_devices", "check", "translate", "punctuate", "vocab", "drain",
+                "download_model", "install_pack", "fake", "config")
+
+
+def _starts_the_app(args) -> bool:
+    if getattr(args, "lookup", None) is not None:
+        return False
+    return not any(getattr(args, name, None) for name in _NOT_THE_APP)
+
+
+def _one_copy_gate(args) -> str | None:
+    """None: no other copy, start. "quit": the person chose, or closed the
+    window — this process ends. Any other string: the other copy was
+    dealt with and this one starts; the line is logged once logging is up.
+    Never a reason not to start: a check that fails is no other copy."""
+    try:
+        other = onecopy.other_copy()
+    except Exception:                                        # noqa: BLE001
+        return None
+    if other is None:
+        return None
+    import onecopy_window
+    outcome = onecopy_window.run(other, waiting=bool(getattr(args, "waiting_for_store", False)))
+    if outcome != "start":
+        return "quit"
+    return f"one copy: the {other.kind} copy ({other.version}) was removed; this one starts"
+
+
 def main() -> int:
     # Before argparse, because every mode below can end up showing a
     # window — the splash, a lookup popup, the setup wizard, a fatal
@@ -6881,6 +6914,10 @@ def main() -> int:
     parser.add_argument("--dashboard", action="store_true",
                         help="open the control window (start/pause/stop and "
                              "the keys), then exit")
+    # The Store copy's "Keep the website's" starts the website copy with
+    # this: its one-copy window opens already waiting for DeskIT App to go.
+    parser.add_argument(onecopy.WAITING_FLAG, action="store_true",
+                        dest="waiting_for_store", help=argparse.SUPPRESS)
     args = parser.parse_args()
     # The two housekeeping commands run before a single log handler
     # opens a file: --reset-data has to be able to delete app.log.
@@ -6917,8 +6954,17 @@ def main() -> int:
         if args.withdraw:
             return privacy.cli_withdraw(args.withdraw.lower())
         return privacy.cli_list()
+    # One DeskIT per PC (onecopy.py): a released copy that finds the other
+    # one installed asks which to keep BEFORE the first folder, log line or
+    # migration — the two would share %LOCALAPPDATA%\DeskIT whole, the
+    # DeskIT/ key slot and the kernel names (measured 2026-10-04).
+    one_copy = _one_copy_gate(args) if _starts_the_app(args) else None
+    if one_copy == "quit":
+        return 0
     paths.ensure()
     setup_logging()
+    if one_copy:
+        log.info("%s", one_copy)
     # An installed copy tells huggingface_hub where its home is and that
     # it is offline BEFORE anything imports it (models.py): the loader
     # is given a folder, so the library never needs the network, and

@@ -38656,6 +38656,28 @@ def test_migrations_bring_the_files_forward_and_never_half_way():
     assert 'machine["config_version"] = version.CONFIG_VERSION' in mig
 
 
+def test_migrations_never_stamp_a_newer_builds_files_down():
+    """Files a NEWER build stamped (a Store copy a week behind the website
+    copy it replaces reads that copy's folder — onecopy.py) are left at
+    their number: an older build writing its own lower number over them
+    would make the newer one run its steps twice."""
+    import migrations
+    import version
+
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            ahead = version.CONFIG_VERSION + 3
+            config_mod.save({"config_version": ahead})
+            ran: list[int] = []
+            with _patched(migrations, "STEPS", [(version.CONFIG_VERSION, lambda: ran.append(1))]):
+                assert migrations.apply() is None
+            assert ran == [] and config_mod.read_state(t).get("config_version") == ahead
+            assert not migrations.too_old_for(version.CONFIG_VERSION)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases
@@ -39788,6 +39810,351 @@ def test_the_store_package_is_the_reserved_identity_with_three_doors():
     workflow = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
     assert f"FAMILY: {family}" in workflow and f"PUBLISHER: {publisher}" in workflow
     assert "/CHANNEL=store" in workflow and "/NODOWNLOAD" in workflow and "--verify" in workflow
+
+
+def test_one_copy_names_the_store_package_by_its_family_and_version():
+    """onecopy.store_copy asks Windows for the Store package family and
+    reads the version out of the full name: `_1.0.6.0_` is 1.0.6 (the
+    Store's fourth number is always 0); no package is no copy, and a
+    family nobody has really answers nothing on this Windows."""
+    import onecopy
+
+    seen = []
+
+    def packages(family):
+        seen.append(family)
+        return ["YoavShimron.DeskITApp_1.0.6.0_x64__d0r2ms77220w6",
+                "YoavShimron.DeskITApp_1.0.10.0_x64__d0r2ms77220w6"]
+    copy = onecopy.store_copy(packages)
+    assert seen == [onecopy.STORE_FAMILY]
+    assert copy.kind == "store" and copy.version == "1.0.10", copy
+    assert copy.name == "DeskIT App, from the Microsoft Store"
+    assert onecopy.store_copy(lambda _f: []) is None
+    assert onecopy.version_of("YoavShimron.DeskITApp_1.2.3.4_x64__x") == "1.2.3.4"
+    assert onecopy.version_of("nonsense") == ""
+    assert onecopy._packages("Nobody.NoSuchDeskIT_0000000000000") == []
+
+
+def test_one_copy_finds_the_website_copy_only_with_its_uninstaller():
+    """onecopy.website_copy is the Inno install's HKCU Uninstall entry AND
+    its uninstaller still on the disk — an entry whose folder was deleted
+    by hand is nobody's copy. The CHANNEL word beside it says whether it
+    came from the website or through winget."""
+    import onecopy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "Programs" / "DeskIT"
+        folder.mkdir(parents=True)
+        uninstaller = folder / "unins000.exe"
+        entry = {"DisplayVersion": "1.0.7", "InstallLocation": str(folder) + "\\",
+                 "UninstallString": f'"{uninstaller}"'}
+        assert onecopy.website_copy(lambda: entry) is None          # no uninstaller yet
+        uninstaller.write_bytes(b"MZ")
+        copy = onecopy.website_copy(lambda: entry)
+        assert copy.kind == "website" and copy.version == "1.0.7", copy
+        assert copy.folder == str(folder) and copy.uninstaller == str(uninstaller)
+        assert copy.channel == "github" and copy.name == "DeskIT, from the website"
+        (folder / "CHANNEL").write_text("winget", "utf-8")
+        assert onecopy.website_copy(lambda: entry).name == "DeskIT, installed with winget"
+        assert onecopy.website_copy(lambda: None) is None
+    assert onecopy._unquote(r'"C:\P\DeskIT\unins000.exe" /SILENT') == r"C:\P\DeskIT\unins000.exe"
+    assert onecopy._unquote(r"C:\P\DeskIT\unins000.exe /SILENT") == r"C:\P\DeskIT\unins000.exe"
+
+
+def test_one_copy_never_looks_from_a_copy_with_its_own_data():
+    """The checkout (DeskIT Dev), the Stranger, a portable copy, a
+    DESKIT_HOME and anything the suite starts keep their own data and
+    their own key slot: they never look for "the other copy", so the
+    suite on the owner's PC — where the Store copy IS installed — never
+    meets one."""
+    import onecopy
+
+    assert onecopy.checks_here() is False          # this checkout, and DESKIT_SUITE
+    assert onecopy.other_copy() is None
+    saved = {name: getattr(onecopy.paths, name) for name in ("DEVELOPER", "STRANGER", "PORTABLE")}
+    env = {name: os.environ.get(name) for name in ("DESKIT_HOME", "DESKIT_SUITE")}
+    try:
+        for name in saved:
+            setattr(onecopy.paths, name, False)
+        for name in env:
+            os.environ.pop(name, None)
+        assert onecopy.checks_here() is True       # a released copy
+        os.environ["DESKIT_SUITE"] = "1"
+        assert onecopy.checks_here() is False
+        os.environ.pop("DESKIT_SUITE")
+        os.environ["DESKIT_HOME"] = "x"
+        assert onecopy.checks_here() is False
+        os.environ.pop("DESKIT_HOME")
+        onecopy.paths.STRANGER = True
+        assert onecopy.checks_here() is False
+    finally:
+        for name, value in saved.items():
+            setattr(onecopy.paths, name, value)
+        for name, value in env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def test_one_copy_names_the_same_package_and_installer_as_the_packaging():
+    """The family onecopy asks for is the one AppxManifest.xml and
+    store.yml build, the Uninstall key is DeskIT.iss's AppId, and the
+    installer's half (packaging/one_copy.iss) asks for the same family
+    and opens the same Settings page — one typo would make each side
+    blind to the other, silently."""
+    import onecopy
+
+    workflow = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
+    assert f"FAMILY: {onecopy.STORE_FAMILY}" in workflow
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    assert f"AppId={{{onecopy.INNO_APP_ID}" in iss, onecopy.INNO_APP_ID
+    assert onecopy.UNINSTALL_KEY.endswith("\\" + onecopy.INNO_APP_ID + "_is1")
+    half = (REPO / "packaging" / "one_copy.iss").read_text("utf-8")
+    assert f"StoreFamily = '{onecopy.STORE_FAMILY}'" in half
+    assert f"StoreSettings = '{onecopy.STORE_SETTINGS_URI}'" in half
+    for language in ("english", "hebrew"):
+        for word in ("OneCopyTitle", "OneCopyText", "OneCopyKeep", "OneCopyRemove",
+                     "OneCopyWaitTitle", "OneCopyWaitText", "OneCopyContinue",
+                     "OneCopyCancel", "OneCopySilent"):
+            assert f"{language}.{word}=" in half, (language, word)
+    # ...and the real installer asks it first, before the downgrade check
+    assert '#include "one_copy.iss"' in iss
+    init = iss[iss.index("function InitializeSetup: Boolean;"):]
+    assert init.index("OneCopyOk(Have <> '')") < init.index("VersionNumber(Have) >"), \
+        "the Store copy is asked about before anything else"
+
+
+def test_one_copy_answers_remove_open_and_start_the_right_things():
+    """The answers, with the outside world faked: remove_website quits a
+    running DeskIT, starts the website copy's own uninstaller SILENTLY (the
+    data kept) and waits for its entry to go; the website copy's give-way
+    is one cmd that waits, uninstalls, waits for the entry and opens DeskIT
+    App; the website copy is started outside the package already waiting;
+    a command line quotes a path and a cmd script as they stand."""
+    import onecopy
+    import singleton
+
+    site = onecopy.Copy("website", "1.0.7", folder=r"C:\Users\x y\AppData\Local\Programs\DeskIT",
+                        uninstaller=r"C:\Users\x y\AppData\Local\Programs\DeskIT\unins000.exe")
+    # NOTHING here may reach the real singleton: in a checkout the kernel
+    # names carry .dev, and the DeskIT a real request_quit reaches is the
+    # owner's running Dev copy (a run of this test quit it, 2026-10-04,
+    # before quit_running refused to act where checks_here says no).
+    def refuse(*_a, **_k):
+        raise AssertionError("the real singleton was reached")
+    started: list[list[str]] = []
+    quits: list[int] = []
+
+    def no_quit(**_k):
+        return True
+    with _patched(singleton, "is_running", refuse), _patched(singleton, "request_quit", refuse):
+        assert onecopy.quit_running() is True, "a checkout or a test asks nothing to quit"
+        gone = iter([site, site, None])
+        assert onecopy.remove_website(site, start=lambda argv: started.append(argv) or True,
+                                      find=lambda: next(gone), sleep=lambda _s: None,
+                                      quit=lambda **_k: quits.append(1) or True)
+        assert quits == [1]
+        assert started == [[site.uninstaller, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]]
+        assert not onecopy.remove_website(site, start=lambda argv: False, find=lambda: site,
+                                          sleep=lambda _s: None, quit=no_quit), \
+            "an uninstaller that never started"
+        assert not onecopy.remove_website(site, start=lambda argv: True, find=lambda: site,
+                                          wait_s=1, sleep=lambda _s: None, quit=no_quit), \
+            "an entry that stays"
+    # a released copy's quit_running asks once and waits for the mutex to go
+    running = iter([True, True, False])
+    with _patched(onecopy, "checks_here", lambda: True), \
+            _patched(singleton, "is_running", lambda: next(running)), \
+            _patched(singleton, "request_quit", lambda: quits.append(2) or True):
+        assert onecopy.quit_running(sleep=lambda _s: None)
+    assert quits == [1, 2]
+
+    with _patched(onecopy, "start_outside", lambda argv: started.append(argv) or True):
+        assert onecopy.uninstall_self_then_open_store(site)
+        assert onecopy.start_website_waiting(site, start=onecopy.start_outside)
+    helper, waiting = started[-2], started[-1]
+    assert helper[:4] == ["cmd.exe", "/d", "/s", "/c"], helper
+    script = helper[4]
+    assert script.index("ping -n 3") < script.index(f'"{site.uninstaller}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART') \
+        < script.index(f'reg query "HKCU\\{onecopy.UNINSTALL_KEY}"') < script.index(f"explorer.exe {onecopy.STORE_LAUNCH}")
+    assert waiting == [site.folder + r"\python\pythonw.exe", site.folder + r"\app\deskit.pyw",
+                       onecopy.WAITING_FLAG]
+    line = onecopy.command_line(helper)
+    assert line.startswith('cmd.exe /d /s /c "ping') and line.endswith('ping -n 2 127.0.0.1 >nul)"'), line
+    assert onecopy.command_line([site.uninstaller, "/VERYSILENT"]) == f'"{site.uninstaller}" /VERYSILENT'
+    assert onecopy.STORE_LAUNCH == f"shell:AppsFolder\\{onecopy.STORE_FAMILY}!{paths.PACKAGE_APP}"
+
+
+def test_one_copy_hands_claude_codes_door_to_the_copy_that_is_kept():
+    """When one of the two released copies holds Claude Code's hook lines,
+    the kept one takes them — the Store copy's alias or the website copy's
+    python and script — so no line names a program about to be gone; the
+    checkout's lines (DeskIT Dev) and other hooks are never touched."""
+    import notify_hook
+    import onecopy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Path(tmp) / "settings.json"
+        folder = Path(tmp) / "Programs" / "DeskIT"
+        site = onecopy.Copy("website", "1.0.7", folder=str(folder),
+                            uninstaller=str(folder / "unins000.exe"))
+        other_hook = {"matcher": "x", "hooks": [{"type": "command", "command": "echo hi"}]}
+        settings.write_text(json.dumps({"hooks": {"Stop": [other_hook]}}), "utf-8")
+        assert not onecopy.move_claude_door("store", site, settings), "nobody's door"
+        notify_hook.install_hook(settings, python=str(folder / "python" / "pythonw.exe"),
+                                 script=str(folder / "app" / "notify_hook.py"), alias=False)
+        assert onecopy.move_claude_door("store", site, settings)
+        assert notify_hook._same_file(notify_hook.hook_script(settings), notify_hook.alias_path())
+        assert other_hook in json.loads(settings.read_text("utf-8"))["hooks"]["Stop"]
+        assert onecopy.move_claude_door("website", site, settings)
+        assert notify_hook._same_file(notify_hook.hook_script(settings),
+                                      str(folder / "app" / "notify_hook.py"))
+        stop = json.loads(settings.read_text("utf-8"))["hooks"]["Stop"]
+        assert any(f'"{folder / "python" / "pythonw.exe"}"' in h["command"]
+                   for e in stop for h in e["hooks"]), stop
+        dev = str(REPO / "notify_hook.py")
+        notify_hook.install_hook(settings, python=sys.executable, script=dev, alias=False)
+        assert not onecopy.move_claude_door("store", site, settings), "the checkout's door"
+        assert notify_hook._same_file(notify_hook.hook_script(settings), dev)
+
+
+def test_one_copy_window_does_what_each_keep_says():
+    """onecopy_window.Window, each answer with the actions faked: the Store
+    copy keeping itself removes the website copy and starts once it is
+    gone (or says it is still there); the Store copy giving way hands the
+    door over, starts the website copy waiting, opens Settings and quits;
+    the website copy giving way hands the door over and uninstalls itself;
+    the website copy keeping itself opens Settings and starts once the
+    package is gone. The Store copy's Keep is the gold one, whichever copy
+    shows the window; closing it is Quit."""
+    import onecopy
+    import onecopy_window
+
+    site = onecopy.Copy("website", "1.0.7", folder=r"C:\P\DeskIT", uninstaller=r"C:\P\DeskIT\unins000.exe")
+    store = onecopy.Copy("store", "1.0.6")
+
+    class Fake:
+        def __init__(self, removed=True, store_left=(object(), None)):
+            self.calls: list[tuple] = []
+            self.removed, self.store_left = removed, list(store_left)
+
+        def __getattr__(self, name):
+            def call(*args, **_kw):
+                self.calls.append((name, *args))
+                if name == "remove_website":
+                    return self.removed
+                if name == "store_copy":
+                    return self.store_left.pop(0) if self.store_left else None
+                return True
+            return call
+
+        def names(self):
+            return [c[0] for c in self.calls]
+
+    def pump(window, until, seconds=5.0):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                window.root.update()
+            except tk.TclError:
+                return True
+            if until():
+                return True
+            time.sleep(0.02)
+        return until()
+
+    import tkinter as tk
+
+    # the Store copy keeps itself
+    fake = Fake()
+    w = onecopy_window.Window("store", site, actions=fake, poll_ms=20)
+    assert w.face == "choose" and w.buttons["keep.store"]._primary and not w.buttons["keep.website"]._primary
+    w._keep("store")
+    assert pump(w, lambda: w.result == "start")
+    assert fake.names()[:2] == ["move_claude_door", "remove_website"] and fake.calls[0][1] == "store"
+    # ...and the website copy will not go
+    fake = Fake(removed=False)
+    w = onecopy_window.Window("store", site, actions=fake, poll_ms=20)
+    w._keep("store")
+    assert pump(w, lambda: w.face == "failed") and w.result == "quit"
+    w._quit()
+
+    # the Store copy gives way
+    fake = Fake()
+    w = onecopy_window.Window("store", site, actions=fake, poll_ms=20)
+    w._keep("website")
+    assert fake.names() == ["move_claude_door", "start_website_waiting", "open_store_settings"], fake.calls
+    assert fake.calls[0][1] == "website" and w.result == "quit"
+
+    # the website copy gives way
+    fake = Fake()
+    w = onecopy_window.Window("website", store, site, actions=fake, poll_ms=20)
+    assert w.buttons["keep.store"]._primary
+    w._keep("store")
+    assert fake.names() == ["quit_running", "move_claude_door", "uninstall_self_then_open_store"], fake.calls
+    assert fake.calls[1][1] == "store" and fake.calls[2][1] is site and w.result == "quit"
+
+    # the website copy keeps itself: Settings, then the wait
+    fake = Fake(store_left=(object(), object(), None))
+    w = onecopy_window.Window("website", store, site, actions=fake, poll_ms=20)
+    w._keep("website")
+    assert w.face == "waiting" and fake.names()[:2] == ["move_claude_door", "open_store_settings"]
+    assert pump(w, lambda: w.result == "start")
+    assert fake.names().count("store_copy") == 3
+
+    # opened already waiting (the Store copy's give-way starts it so); closed = Quit
+    fake = Fake(store_left=[object()] * 500)
+    w = onecopy_window.Window("website", store, site, actions=fake, waiting=True, poll_ms=20)
+    assert w.face == "waiting"
+    w.root.tk.eval(w.root.protocol("WM_DELETE_WINDOW"))
+    assert w.result == "quit"
+    assert all(word.strip() for word in onecopy_window.WORDS.values())
+
+
+def test_the_app_asks_about_the_other_copy_before_it_touches_a_file():
+    """main.py asks onecopy before paths.ensure(), the first log line and
+    the migrations — on the starts that run the app, not on a command that
+    prints an answer — and "quit" from the window ends the process with
+    nothing started; no other copy, or a check that fails, starts as
+    always. The window's flag is main.py's own."""
+    import argparse
+
+    import main
+    import onecopy
+
+    src = (REPO / "main.py").read_text("utf-8")
+    body = src[src.index("def main() -> int:"):]
+    assert body.index("_one_copy_gate(args)") < body.index("paths.ensure()") \
+        < body.index("setup_logging()") < body.index("migrations.apply()")
+    assert "onecopy.WAITING_FLAG" in body and 'dest="waiting_for_store"' in body
+
+    def args(**on):
+        base = dict.fromkeys(main._NOT_THE_APP, False)
+        base.update(lookup=None, waiting_for_store=False)
+        base.update(on)
+        return argparse.Namespace(**base)
+    assert main._starts_the_app(args())
+    assert main._starts_the_app(args(quiet=True, no_model=True, setup=True))
+    for flag in main._NOT_THE_APP:
+        assert not main._starts_the_app(args(**{flag: True})), flag
+    assert not main._starts_the_app(args(lookup="שלום"))
+
+    import onecopy_window
+    site = onecopy.Copy("website", "1.0.7")
+    asked: list[bool] = []
+    with _patched(onecopy, "other_copy", lambda: None):
+        assert main._one_copy_gate(args()) is None
+    with _patched(onecopy, "other_copy", lambda: (_ for _ in ()).throw(OSError("no"))):
+        assert main._one_copy_gate(args()) is None
+    with _patched(onecopy, "other_copy", lambda: site), \
+            _patched(onecopy_window, "run", lambda other, waiting=False: asked.append(waiting) or "quit"):
+        assert main._one_copy_gate(args(waiting_for_store=True)) == "quit"
+    with _patched(onecopy, "other_copy", lambda: site), \
+            _patched(onecopy_window, "run", lambda other, waiting=False: "start"):
+        line = main._one_copy_gate(args())
+        assert line and "website copy (1.0.7) was removed" in line
+    assert asked == [True]
 
 
 def test_the_store_copy_holds_the_claude_door_through_its_alias():
