@@ -577,6 +577,11 @@ class App:
         self.text_queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._translator = None
         self._punctuator = None
+        # A text key pressed with no cloud key to answer it: feature ->
+        # when. status()["needs_key"] carries it to Home's pile, which says
+        # what to add and where (store walk item 13); it goes as soon as a
+        # key is saved (_needs_key_now).
+        self._needs_key: dict[str, float] = {}
         self._text_busy = threading.Event()
         self.text_worker = threading.Thread(
             target=self._text_key_worker, daemon=True, name="text-worker")
@@ -1850,6 +1855,7 @@ class App:
                       "hotwords": (len(self.vocab.terms())
                                    if self.cfg.vocab.enabled else 0)},
             "pending": len(self.spool.pending()),
+            "needs_key": self._needs_key_now(),
             "phone": (self.phone.url or "") if self.phone else "",
             # The sentence the Read aloud tab has up, and what came back
             # for it — text only, and short: one sentence each way.
@@ -5354,6 +5360,7 @@ class App:
                 beep("error")
                 log.error("translation failed: %s — your text is untouched",
                           e)
+                self._needs_key_check("translate")
                 return
             latency = time.monotonic() - started
             transcript_log.info("TRANSLATE-OUT | %.1fs | %s | %s", latency,
@@ -5389,6 +5396,34 @@ class App:
                     injector.restore(state, "translation", since=kept)
                 except injector.ClipboardBusyError as e:
                     log.warning("could not restore your clipboard: %s", e)
+
+    def _needs_key_check(self, feature: str) -> None:
+        """A text key failed: when no cloud key at all could have answered
+        it, Home says so (store walk item 13: "a key press whose feature
+        needs a missing key must SAY so" — a row on the pile, never a
+        floating card). Presence only; a failure WITH a key (offline, a
+        quota) is the log's, not a row's."""
+        import translate as translate_mod
+        try:
+            missing = translate_mod.Translator.missing_keys()
+        except Exception:                                  # noqa: BLE001
+            return
+        if "groq" in missing and "gemini" in missing:
+            self._needs_key[feature] = time.time()
+            log.info("%s pressed with no cloud key — Home says what to add", feature)
+
+    def _needs_key_now(self) -> dict[str, float]:
+        """What status() carries: gone the moment either key is saved."""
+        if not self._needs_key:
+            return {}
+        import translate as translate_mod
+        try:
+            missing = translate_mod.Translator.missing_keys()
+        except Exception:                                  # noqa: BLE001
+            return dict(self._needs_key)
+        if not ("groq" in missing and "gemini" in missing):
+            self._needs_key.clear()
+        return dict(self._needs_key)
 
     def _punctuate(self, hwnd: int) -> None:
         """Put the punctuation into the selection — or the whole field.
@@ -5478,6 +5513,7 @@ class App:
                 beep("error")
                 self._say(f"could not punctuate: {e}")
                 log.error("punctuation failed: %s — your text is untouched", e)
+                self._needs_key_check("punctuate")
                 return
             latency = time.monotonic() - started
             transcript_log.info("PUNCTUATE-OUT | %.1fs | %s | %s", latency,

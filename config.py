@@ -39,9 +39,10 @@ class AudioConfig:
 class GeminiConfig:
     # Free-tier quota is counted per model, so a list is a longer runway:
     # each entry is tried in order and rested when it reports its cap.
-    models: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest",
-                               "gemini-2.5-flash-lite",
-                               "gemini-flash-lite-latest")
+    # The aliases first: a new key gets 404 from both 2.5 models
+    # (defaults.toml [gemini], 2026-10-03).
+    models: tuple[str, ...] = ("gemini-flash-latest", "gemini-flash-lite-latest",
+                               "gemini-2.5-flash", "gemini-2.5-flash-lite")
     timeout_s: int = 30
 
     @property
@@ -355,6 +356,9 @@ class TranslateConfig:
     max_chars: int = 5000
     ollama_model: str = "llama3.1:8b"
     ollama_url: str = "http://127.0.0.1:11434"
+    # Which cloud goes first; the other cloud, then Ollama, after it
+    # (translate.ORDER). gemini | groq | ollama.
+    prefer: str = "gemini"
     timeout_s: int = 30
     # Deliberately much larger than timeout_s. Ollama loads the model into
     # VRAM on the first request after it goes idle: measured 2026-08-12,
@@ -583,13 +587,15 @@ class CaptureConfig:
     hotkey: str = "ctrl+f11"
     # Tap: pick a region and record it. Tap again to stop.
     record_hotkey: str = "ctrl+f12"
-    # Relative names are relative to the APP folder, not to whatever
+    # Windows' own Pictures folder (paths.resolve_folder reads {pictures});
+    # other relative names are relative to the DATA folder, not to whatever
     # directory the process was started from — this app is launched from a
     # .vbs, a shortcut and a scheduled task, and all three disagree.
-    folder: str = "captures"
-    # Where screen RECORDINGS (clip *.mp4) go. Empty means the same folder
-    # as the pictures; an absolute path is used as given, like `folder`.
-    clip_folder: str = ""
+    folder: str = "{pictures}/DeskIT"
+    # Where screen RECORDINGS (clip *.mp4) go: Windows' Videos folder. Empty
+    # means the same folder as the pictures; an absolute path is used as
+    # given, like `folder`.
+    clip_folder: str = "{videos}/DeskIT"
     # Win+Shift+S's promise: the capture is pasteable immediately. false
     # still writes the file.
     copy_to_clipboard: bool = True
@@ -734,7 +740,7 @@ class CameraConfig:
     timer: int = 0
     # Same folder as the screen captures by default: one place to look for
     # pictures. The files are named "photo ..." rather than "shot ...".
-    folder: str = "captures"
+    folder: str = "{pictures}/DeskIT"
     copy_to_clipboard: bool = True
     # After the shutter, the photo opens in the SAME editor a screenshot
     # does — crop, draw, arrow, blur, Ask — laid on the screen exactly
@@ -1824,6 +1830,8 @@ def build(data: dict) -> Config:
                 "ollama_model", TranslateConfig.ollama_model)).strip(),
             ollama_url=str(translate.get(
                 "ollama_url", TranslateConfig.ollama_url)).strip(),
+            prefer=str(translate.get(
+                "prefer", TranslateConfig.prefer)).strip().lower(),
             timeout_s=int(translate.get("timeout_s",
                                         TranslateConfig.timeout_s)),
             ollama_timeout_s=int(translate.get(
@@ -2162,6 +2170,9 @@ def build(data: dict) -> Config:
     if ((cfg.punctuate_hotkey or cfg.punctuate.auto)
             and cfg.punctuate.max_chars <= 0):
         raise ConfigError("punctuate.max_chars must be positive")
+    if cfg.translate.prefer not in ("groq", "gemini", "ollama"):
+        raise ConfigError('translate.prefer must be "gemini", "groq" or '
+                          f'"ollama", got {cfg.translate.prefer!r}')
     if cfg.punctuate.prefer not in ("groq", "gemini", "ollama"):
         raise ConfigError('punctuate.prefer must be "groq", "gemini" or '
                           f'"ollama", got {cfg.punctuate.prefer!r}')
@@ -2847,6 +2858,25 @@ def defaults_flat(defaults=None) -> dict[str, object]:
     return flatten(_read_toml(d))
 
 
+#: A key whose value another key takes with it when a person sets it.
+#: The camera's photos go "to the same folder the screen captures go to"
+#: (defaults.toml), and Settings and the wizard show ONE pictures row —
+#: which moved only the screenshots until 2026-10-03, leaving the photos
+#: behind in the old folder.
+FOLLOWERS: dict[str, tuple[str, ...]] = {"capture.folder": ("camera.folder",)}
+
+
+def with_followers(updates: dict[str, object]) -> dict[str, object]:
+    """`updates` with each follower given its leader's value, unless the
+    caller set the follower itself."""
+    out = dict(updates)
+    for leader, followers in FOLLOWERS.items():
+        if leader in updates:
+            for name in followers:
+                out.setdefault(name, updates[leader])
+    return out
+
+
 def save(updates: dict[str, object], *, defaults=None, settings=None,
          state=None, allow_consent: bool = False,
          derived: bool = False) -> None:
@@ -2867,6 +2897,7 @@ def save(updates: dict[str, object], *, defaults=None, settings=None,
     never hides the layer they edit.
     """
     _refuse_consent_keys(updates, allow_consent)
+    updates = with_followers(updates)
     d, s, t = _layer_paths(defaults, settings, state)
     flat_defaults = flatten(_read_toml(d))
     overrides = read_settings(s)
