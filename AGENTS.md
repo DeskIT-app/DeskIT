@@ -332,8 +332,10 @@ exactly what classic did.
   Anyone who trusted the old line moved dictation onto the slow path.
 - Ollama at `http://127.0.0.1:11434` — **127.0.0.1, never localhost**
   (localhost resolves ::1 first and costs ~2 s of refused connection).
-- Keys: Windows Credential Manager first (`DeskIT/groq`, `DeskIT/gemini`
-  — `main.py --set-key groq`, `--keys` lists what is where), then
+- Keys: Windows Credential Manager first (`<prefix>/groq`, `<prefix>/gemini`
+  — `main.py --set-key groq`, `--keys` lists what is where; the prefix is
+  the COPY's own since 2026-10-04: `DeskIT.dev/` in this checkout,
+  `DeskIT.store/` in the Store package, `DeskIT/` for the website's), then
   `DESKIT_GROQ_API_KEY` / `DESKIT_GEMINI_API_KEY` in the environment, then
   the gitignored `.env` beside `main.py` — read in THIS checkout only
   (portable/developer mode). `secretstore.py` is the one reader; every
@@ -468,6 +470,21 @@ exactly what classic did.
   `DESKIT_SUITE=1` before its first import and every child inherits
   it; a marked process is on `DeskIT.test/` even as a stranger. A test
   that builds a child's environment from scratch must carry the mark.
+  **And no two copies share a slot** (2026-10-04, `secretstore.prefix_for`).
+  Until then the Dev checkout, the Store copy and the website's all used
+  `DeskIT/groq`: on 2026-10-03 the Store copy's wizard, signed in to a
+  TEST account, saved that account's key over the one the Dev used; the
+  Dev's next vault pass (15:38:40, "vault pulled 0, pushed 1") sealed the
+  foreign key into the owner's account and the Stranger pulled it
+  (16:36:28); the test key was deleted at console.groq.com and all three
+  got 401 from 20:09 on, silently. The checkout is `DeskIT.dev/`, the
+  Store package `DeskIT.store/`, the website's `DeskIT/`. A new kind of
+  copy gets a prefix of its own in `prefix_for`, and the vault cursor keeps
+  one record per prefix (`sb._sync_vault`, `vault_slots`) — a slot that is
+  new and empty must read as a fresh PC, never as "the key was removed".
+  A process carrying DESKIT_SUITE is on `DeskIT.test/` with or without a
+  hatch, so an in-process test that forgets the fixture can no longer
+  reach the checkout's own slot.
 - **Every personal-store path comes from `paths.py`, never from
   `Path(__file__)`.** Since 2026-09-17 the app has two roots: `APP_DIR`
   (code, read-only once installed) and `DATA_DIR` (everything a person

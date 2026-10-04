@@ -32134,11 +32134,145 @@ def test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy():
 
         assert prefix({"DESKIT_HOME": str(tmp), "DESKIT_STRANGER": "1"}) == "DeskIT.stranger"
         assert prefix({"DESKIT_HOME": str(tmp)}) == "DeskIT.test"
-        assert prefix({}) == "DeskIT"
+        # the checkout is DeskIT Dev and has a slot of its own since
+        # 2026-10-04: DeskIT/ is the website's copy's (test below)
+        assert prefix({}) == "DeskIT.dev"
+        assert prefix({"DESKIT_SUITE": "1"}) == "DeskIT.test", "a marked process without a hatch"
     finally:
         if not had_env:
             env_file.unlink(missing_ok=True)
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_every_kind_of_copy_keeps_its_keys_in_a_slot_of_its_own():
+    """secretstore.prefix_for: the website's install (winget's is the
+    same install) is DeskIT/, the Store package DeskIT.store/ — by its
+    package identity or by its CHANNEL word —, the checkout DeskIT.dev/,
+    a portable copy DeskIT.portable/, the Stranger DeskIT.stranger/, and
+    the suite and the test hatch DeskIT.test/; no two kinds share one.
+    Until 2026-10-04 the first three did, and a Store copy signed in to
+    a test account replaced the Dev copy's Groq key (2026-10-03 15:11:48;
+    the Dev then pushed it to the owner's account and the Stranger pulled
+    it). The copies that moved are the ones that adopt DeskIT/ once; the
+    hatches never read it. Each copy's storage sentence names its own
+    entry, and the guide's names the website's."""
+    import secretstore as ss
+
+    def kind(**over):
+        base = dict(hatch=False, stranger=False, suite=False, developer=False,
+                    packaged=False, channel="github", portable=False)
+        base.update(over)
+        return ss.prefix_for(**base)
+
+    kinds = {"website": kind(), "winget": kind(channel="winget"),
+             "store": kind(packaged=True, channel="store"),
+             "store-by-package": kind(packaged=True),
+             "store-by-word": kind(channel="store"),
+             "dev": kind(developer=True, portable=True),
+             "portable": kind(portable=True),
+             "stranger": kind(hatch=True, stranger=True),
+             "test hatch": kind(hatch=True, developer=True, portable=True),
+             "suite": kind(suite=True, developer=True, portable=True),
+             "suite stranger": kind(suite=True, hatch=True, stranger=True)}
+    assert kinds["website"] == kinds["winget"] == ss.RELEASE_PREFIX == "DeskIT", kinds
+    assert kinds["store"] == kinds["store-by-package"] == kinds["store-by-word"] == "DeskIT.store"
+    assert kinds["dev"] == "DeskIT.dev" and kinds["portable"] == "DeskIT.portable"
+    assert kinds["stranger"] == "DeskIT.stranger"
+    assert kinds["test hatch"] == kinds["suite"] == kinds["suite stranger"] == "DeskIT.test"
+    copies = {k: v for k, v in kinds.items()
+              if k in ("website", "store", "dev", "portable", "stranger", "test hatch")}
+    assert len(set(copies.values())) == len(copies), f"two kinds of copy share a slot: {copies}"
+    assert ss.TARGET_PREFIX == "DeskIT.test", "the suite's own process is not on the test slot"
+    assert set(ss.ADOPTERS) == {kinds["dev"], kinds["store"], kinds["portable"]}
+    assert ss.RELEASE_PREFIX not in ss.ADOPTERS
+    assert not {"DeskIT.test", "DeskIT.stranger"} & set(ss.ADOPTERS)
+    for name in ss.CRED_NAMES:
+        assert f"Windows Credentials > {ss.target(name)})" in ss.storage_sentence(name)
+        assert f"Windows Credentials > DeskIT.store/{name})" in ss.storage_sentence(name, "DeskIT.store")
+        assert f"Windows Credentials > DeskIT/{name})" in ss.storage_sentence(name, ss.RELEASE_PREFIX)
+    keys = json.loads((REPO / "docs" / "strings" / "keys.json").read_text("utf-8"))
+    assert keys["groq"] == ss.storage_sentence("groq", ss.RELEASE_PREFIX), \
+        "the guide quotes another copy's entry"
+
+
+def _wipe_slots(*prefixes: str) -> None:
+    """Every API key under these (test) prefixes, gone."""
+    import secretstore as ss
+    for prefix in prefixes:
+        assert prefix.startswith("DeskIT.test"), prefix
+        for name in ss.CRED_NAMES:
+            ss._cred_delete(name, prefix)
+
+
+def test_a_copy_that_moved_out_of_the_shared_slot_takes_its_key_once():
+    """Migrations step 6 (secretstore.adopt_release_keys): a copy that
+    moved out of DeskIT/ and was set up before takes one copy of each key
+    DeskIT/ holds, where its own slot holds none, so the update never
+    costs a person a working key. DeskIT/ is only read: the website's
+    copy on the same PC may be the one using it. A copy never set up
+    takes nothing (a fresh Store install beside a website copy signed in
+    to another account must not start with that account's key); a slot
+    that already holds a key keeps it; from then on a write to either
+    slot is not the other's; the hatches never adopt; and the suite
+    adopts between DeskIT.test prefixes only, so no test can reach a real
+    slot. Fixture prefixes stand in for DeskIT/ and DeskIT.dev/."""
+    import migrations
+    import secretstore as ss
+    import version
+
+    shared, mine = "DeskIT.test.shared", "DeskIT.test.dev"
+    first, second, own = ("gsk_fixture_shared_" + "s" * 30, "gsk_fixture_later_" + "l" * 30,
+                          "gsk_fixture_own_" + "o" * 30)
+    home = Path(tempfile.mkdtemp(prefix="deskit-adopt-"))
+    state = home / "state.json"
+    _wipe_slots(shared, mine)
+    try:
+        with _patched(ss, "RELEASE_PREFIX", shared), _patched(ss, "ADOPTERS", (mine,)), \
+                _patched(ss, "TARGET_PREFIX", mine), _patched(paths, "STATE_FILE", state), \
+                _patched(paths, "SETUP_MARKER", home / ".setup-done"):
+            ss._cred_write("groq", first, shared)
+            # never set up: nothing comes over
+            migrations._each_copy_its_own_key_slot()
+            assert ss.get("groq") is None, "a fresh copy took the shared slot's key"
+            # set up before the update: the key comes over, the source stays
+            config_mod.write_state(state, {"setup.done": True})
+            migrations._each_copy_its_own_key_slot()
+            assert ss.get("groq") == first and ss._cred_read("groq", shared) == first
+            assert ss.get("gemini") is None and ss._cred_read("gemini", shared) is None
+            assert ss.present()["groq"] == f"Windows Credential Manager ({mine}/groq)"
+            # from here on the two slots are two
+            ss._cred_write("groq", second, shared)
+            assert ss.get("groq") == first, "a write to the shared slot reached this copy"
+            ss.set("groq", own)
+            assert ss._cred_read("groq", shared) == second, "this copy's write reached the shared slot"
+            # a slot that holds a key keeps it, whatever the shared one says
+            assert ss.adopt(shared, mine) == [] and ss.get("groq") == own
+            # the marker file of an older copy is "set up" too
+            ss.delete("groq")
+            config_mod.write_state(state, {})
+            (home / ".setup-done").write_text("done", "utf-8")
+            migrations._each_copy_its_own_key_slot()
+            assert ss.get("groq") == second
+            # a hatch's slot never adopts
+            ss.delete("groq")
+            with _patched(ss, "TARGET_PREFIX", "DeskIT.test"):
+                assert ss.adopt_release_keys(set_up=True) == []
+            assert ss.get("groq") is None
+        # the suite's guard: a real slot on either side is refused before
+        # anything is read or written
+        for source, dest in (("DeskIT", "DeskIT.test.x"), ("DeskIT.test.x", "DeskIT.dev"),
+                             ("DeskIT", "DeskIT.store")):
+            try:
+                ss.adopt(source, dest)
+            except ss.SecretError as e:
+                assert "DeskIT.test prefixes only" in str(e), e
+            else:
+                raise AssertionError(f"the suite adopted {source} -> {dest}")
+        assert (6, migrations._each_copy_its_own_key_slot) in migrations.STEPS
+        assert version.CONFIG_VERSION >= 6
+    finally:
+        _wipe_slots(shared, mine)
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def test_no_store_path_is_built_beside_the_code():
@@ -41562,6 +41696,133 @@ def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
             pc.gone()
 
 
+def _vault_value(fake, key: bytes, name: str = "groq") -> str:
+    """What the account's vault row for ``name`` opens to (a fixture)."""
+    import vault
+    row = next(r for r in fake.tables["vault"] if r["name"] == name)
+    return vault.open_json(key, row["cipher"], vault.AAD_VAULT.format(uid=fake.UID, name=name))["v"]
+
+
+def test_a_copy_signed_in_elsewhere_never_changes_the_key_this_copy_syncs():
+    """The 2026-10-03 incident, against the fake project. D (the Dev
+    copy) is signed in to the account and its Groq key is in the vault.
+    S is another copy on the same Windows account (the Store's), signed
+    in somewhere else, whose wizard saves THAT account's key. With S on a
+    slot of its own (secretstore.prefix_for, since 2026-10-04) D's key and
+    the account's row are untouched and D's pass moves nothing. With the
+    two on one slot — how it was — the same save IS D's key, and D's next
+    pass seals it into the account ("vault pulled 0, pushed 1", 15:38:40
+    in the owner's Dev log) for every PC of his to pull; when the test
+    key was deleted at the provider every one of them got 401."""
+    import sb
+    import secretstore
+    import vault
+
+    d, s, one_slot = (_pc("D", "DeskIT.test.dev"), _pc("S", "DeskIT.test.store"),
+                      _pc("S-shared", "DeskIT.test.dev"))
+    mine, theirs = "gsk_fixture_dev_" + "d" * 30, "gsk_fixture_review_" + "r" * 30
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with d:
+                secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+                sb.forget_cache()
+                for n in secretstore.CRED_NAMES:
+                    secretstore.delete(n)
+                secretstore.set("groq", mine)
+                assert sb.sync_now()["vault"] == "pulled 0, pushed 1"
+                key = vault.key(fake.UID)
+            assert _vault_value(fake, key) == mine
+            with s:
+                secretstore.set("groq", theirs)         # the Store copy's wizard saves
+            with d:
+                assert secretstore.get("groq") == mine, "another copy's save reached this copy"
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 0, pushed 0", out
+            assert _vault_value(fake, key) == mine
+            # how it was until 2026-10-04: one slot for both copies
+            with one_slot:
+                secretstore.set("groq", theirs)
+            with d:
+                assert secretstore.get("groq") == theirs
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 0, pushed 1", out
+            assert _vault_value(fake, key) == theirs, "the control did not reproduce the incident"
+    finally:
+        for pc in (d, s, one_slot):
+            pc.gone()
+
+
+def test_a_slot_that_moved_reads_as_a_fresh_pc_never_as_a_removal():
+    """sb._sync_vault keeps one cursor record per Credential Manager
+    prefix (vault_slots). D synced its key under the old prefix and its
+    cursor is the flat one the build before wrote; then D's prefix is a
+    new, empty slot (the copy moved and nothing was adopted). Read with
+    the flat record, the empty slot is "the person removed the key here"
+    and the pass pushes a removal to every PC. Read per slot, it is a
+    fresh PC: the account's key comes down into the new slot, nothing
+    goes up, the flat record is gone. A second program sharing D's folder
+    and session under another prefix (a Store copy over the website's
+    files) keeps a record of its own: its first pass is a fresh PC's, its
+    key change reaches D, and D's record stays D's."""
+    import sb
+    import secretstore
+    import sync as sync_mod
+    import vault
+
+    d = _pc("D", "DeskIT.test.old")
+    s = _pc("S", "DeskIT.test.store")
+    spare = s.home
+    s.home = d.home
+    first, second = "gsk_fixture_first_" + "f" * 30, "gsk_fixture_second_" + "z" * 30
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with d:
+                secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+                sb.forget_cache()
+                for n in secretstore.CRED_NAMES:
+                    secretstore.delete(n)
+                secretstore.set("groq", first)
+                assert sb.sync_now()["vault"] == "pulled 0, pushed 1"
+                key = vault.key(fake.UID)
+                cur = sync_mod.read_cursor()
+                rec = cur.pop("vault_slots")["DeskIT.test.old"]
+                assert set(rec) == {"pulled_at", "pushed", "digest"}, rec
+                # the cursor as the build before this one wrote it
+                cur.update(vault_pulled_at=rec["pulled_at"], vault_pushed=rec["pushed"],
+                           vault_digest=rec["digest"])
+                sync_mod.write_cursor(cur)
+            d.prefix = "DeskIT.test.new"
+            with d:
+                assert secretstore.get("groq") is None
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 1, pushed 0", out
+                assert secretstore.get("groq") == first
+                cur = sync_mod.read_cursor()
+                assert not set(sb._VAULT_FLAT) & set(cur), cur
+                assert set(cur["vault_slots"]) == {"DeskIT.test.new"}, cur["vault_slots"]
+            assert _vault_value(fake, key) == first, "the moved slot pushed a removal"
+            with s:
+                assert secretstore.get("groq") is None
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 1, pushed 0", out
+                assert secretstore.get("groq") == first
+                secretstore.set("groq", second)
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 0, pushed 1", out
+                assert set(sync_mod.read_cursor()["vault_slots"]) == {"DeskIT.test.new",
+                                                                      "DeskIT.test.store"}
+            with d:
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 1, pushed 0", out
+                assert secretstore.get("groq") == second
+            assert _vault_value(fake, key) == second
+    finally:
+        s.home = spare
+        _wipe_slots("DeskIT.test.old")
+        for pc in (d, s):
+            pc.gone()
+
+
 def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him():
     """The PC is the lock's trust anchor, not the server (2026-09-23, the
     audit's A15: one write of profiles.lock_id made every PC delete its
@@ -41926,9 +42187,9 @@ def test_the_sync_follows_the_account():
             privacy.grant("history_sync", "deskit-terms-0+en-2020-01-01")
         migrations._the_lock_asks_nothing_new()                  # another old version: not carried
         assert privacy.consent("history_sync") is None
-        assert [n for n, _fn in migrations.STEPS] == [2, 3, 4, 5]
+        assert [n for n, _fn in migrations.STEPS] == [2, 3, 4, 5, 6]
         import version
-        assert version.CONFIG_VERSION == 5
+        assert version.CONFIG_VERSION == 6
         for kind in privacy.SYNC_KINDS:
             words = " ".join(t for _l, t in cc.card_for(kind)["blocks"]).lower()
             assert "technically" not in words and "cannot" in words, (kind, words)

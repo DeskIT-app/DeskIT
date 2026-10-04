@@ -13,7 +13,9 @@ whole app and for eleven files in the venv.
 Two backends, chosen by NAME, never by the caller:
 
 Windows Credential Manager (``win32cred``) — the two API keys.
-    Generic credentials ``DeskIT/groq`` and ``DeskIT/gemini``, persisted
+    Generic credentials ``DeskIT/groq`` and ``DeskIT/gemini`` for the
+    website's copy — every other copy under a prefix of its own
+    (``TARGET_PREFIX`` below) — persisted
     for this Windows account. A person can SEE them and DELETE them in
     Control Panel > Credential Manager > Windows Credentials, which is
     part of the proof that the app keeps no copy anywhere else (D12).
@@ -59,10 +61,35 @@ FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
                                "supabase_session", "phone_key", "phone_tokens",
                                "account_key", "account_key_aside")
 
-#: The Credential Manager target is ``<prefix>/<name>``. The test hatch
-#: (DESKIT_HOME) gets its own prefix so a suite can never overwrite the
-#: person's real key — a stray ``DeskIT.test/groq`` entry is harmless and
-#: visible, a lost ``DeskIT/groq`` is neither.
+#: The Credential Manager target is ``<prefix>/<name>``, and the prefix is
+#: THIS COPY's own. Until 2026-10-04 every copy that was not a hatch — the
+#: Dev checkout, the Store's and the website's — read and wrote one
+#: ``DeskIT/groq``. On 2026-10-03 at 15:11:48 the Store copy's wizard,
+#: signed in to a test account, saved that account's Groq key there; the
+#: Dev copy, signed in to the owner's, read it as its own from then on,
+#: and its next pass (15:38:40, "vault pulled 0, pushed 1") sealed it into
+#: HIS account's vault, from which the Stranger pulled it (16:36:28). The
+#: test key was deleted at console.groq.com that evening and every one of
+#: them got 401 "Invalid API Key" from 20:09 on, silently. A key belongs to
+#: the session it syncs under, and the session lives in the copy's data
+#: folder, so the slot follows the copy (``prefix_for``):
+#:
+#: ``DeskIT``           the website's install — winget runs the same
+#:                      installer into the same folder, so one copy, one
+#:                      slot; the name the guide has always shown
+#: ``DeskIT.store``     the Microsoft Store package, its own even beside
+#:                      the website's on one PC: the two can be signed in
+#:                      to different accounts (the package's AppData is
+#:                      virtualised — it shares only the files the
+#:                      website's copy made first), and between copies of
+#:                      ONE account the vault carries the key
+#: ``DeskIT.dev``       the checkout, DeskIT Dev (its kernel names' mark)
+#: ``DeskIT.portable``  a portable copy that is not the checkout
+#: ``DeskIT.stranger``  the stranger hatch (below)
+#: ``DeskIT.test``      the test hatch (DESKIT_HOME), and every process the
+#:                      suite started (DESKIT_SUITE=1) — a stray
+#:                      ``DeskIT.test/groq`` entry is harmless and visible,
+#:                      a lost real key is neither
 #:
 #: The stranger hatch (dev\\stranger.py) is not a test: the owner signs it
 #: in to his real account, so what its prefix holds is his key, synced in
@@ -74,9 +101,40 @@ FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
 #: tests.py marks with DESKIT_SUITE=1, inherited by every child, a
 #: stranger child included — never does.
 _SUITE: bool = os.environ.get("DESKIT_SUITE", "").strip() == "1"
-TARGET_PREFIX: str = ("DeskIT" if not paths._HOME_OVERRIDE
-                      else "DeskIT.stranger" if paths.STRANGER and not _SUITE
-                      else "DeskIT.test")
+
+#: The website's slot, and where every copy that was not a hatch kept its
+#: keys until 2026-10-04.
+RELEASE_PREFIX = "DeskIT"
+
+
+def prefix_for(*, hatch: bool, stranger: bool, suite: bool, developer: bool,
+               packaged: bool, channel: str, portable: bool) -> str:
+    """The Credential Manager prefix of a copy of this kind (the table
+    above). Pure, so a test can walk every kind from one process."""
+    if suite or (hatch and not stranger):
+        return "DeskIT.test"
+    if stranger:
+        return "DeskIT.stranger"
+    if developer:
+        return "DeskIT.dev"
+    if packaged or channel == "store":
+        return "DeskIT.store"
+    if portable:
+        return "DeskIT.portable"
+    return RELEASE_PREFIX
+
+
+TARGET_PREFIX: str = prefix_for(hatch=bool(paths._HOME_OVERRIDE), stranger=paths.STRANGER,
+                                suite=_SUITE, developer=paths.DEVELOPER,
+                                packaged=paths.PACKAGED, channel=paths.CHANNEL,
+                                portable=paths.PORTABLE)
+
+#: The copies that kept their keys under RELEASE_PREFIX until 2026-10-04
+#: and have a slot of their own since. Each takes one copy of what is
+#: there, once (``adopt_release_keys``, migrations step 6), so the update
+#: never costs a person a working key; the entry itself stays where it is,
+#: because the website's copy on the same PC may be the one reading it.
+ADOPTERS: tuple[str, ...] = ("DeskIT.dev", "DeskIT.store", "DeskIT.portable")
 
 #: Environment variable per key name — the app's own prefix only.
 ENV_VARS: dict[str, str] = {name: f"DESKIT_{name.upper()}_API_KEY"
@@ -111,8 +169,8 @@ def _check(name: str) -> str:
 
 # ------------------------------------------------- Windows Credential Manager
 
-def target(name: str) -> str:
-    return f"{TARGET_PREFIX}/{name}"
+def target(name: str, prefix: str | None = None) -> str:
+    return f"{TARGET_PREFIX if prefix is None else prefix}/{name}"
 
 
 #: The host each key travels to, for the sentence beside the field.
@@ -120,10 +178,11 @@ KEY_HOSTS: dict[str, str] = {"groq": "api.groq.com",
                              "gemini": "generativelanguage.googleapis.com"}
 
 
-def storage_sentence(name: str) -> str:
+def storage_sentence(name: str, prefix: str | None = None) -> str:
     """The fixed wording next to every key field (plan arch-B section 4,
-    D12): the Privacy tab's block draws it, the guide quotes it from
-    docs/strings/keys.json, and a test holds the two equal.
+    D12): the Privacy tab's block draws it with this copy's own entry, the
+    guide quotes it from docs/strings/keys.json with the website's
+    (``prefix=RELEASE_PREFIX``), and a test holds the two equal.
 
     Until 2026-09-23 it said the key was "never sent to the developer",
     while the settings sync puts a sealed copy in the account's vault
@@ -132,24 +191,24 @@ def storage_sentence(name: str) -> str:
     halves now: as it is, only to its provider; locked, to the account."""
     return (f"This key is stored in Windows Credential Manager on this PC "
             f"(Control Panel > Credential Manager > Windows Credentials > "
-            f"{target(name)}). DeskIT sends it as it is only to {KEY_HOSTS[name]}. "
+            f"{target(name, prefix)}). DeskIT sends it as it is only to {KEY_HOSTS[name]}. "
             f"While your settings sync to your account, a copy goes to your account "
             f"too, locked with a key only your own PCs hold. It is never written to "
             f"a file, a log or a report — see Settings > Privacy > EVERY CONNECTION "
             f"for every request.")
 
 
-def _cred_read(name: str) -> str | None:
+def _cred_read(name: str, prefix: str | None = None) -> str | None:
     import pywintypes
     import win32cred
     try:
-        cred = win32cred.CredRead(TargetName=target(name),
+        cred = win32cred.CredRead(TargetName=target(name, prefix),
                                   Type=win32cred.CRED_TYPE_GENERIC)
     except pywintypes.error as e:
         if e.winerror == _ERROR_NOT_FOUND:
             return None
         raise SecretError(f"Credential Manager refused to read "
-                          f"{target(name)}: {e.strerror}") from e
+                          f"{target(name, prefix)}: {e.strerror}") from e
     blob = cred.get("CredentialBlob") or b""
     # CredWrite from Python stores a str as UTF-16-LE; read it back the
     # same way, and tolerate a blob another tool wrote as UTF-8.
@@ -161,13 +220,13 @@ def _cred_read(name: str) -> str | None:
     return value or None
 
 
-def _cred_write(name: str, value: str) -> None:
+def _cred_write(name: str, value: str, prefix: str | None = None) -> None:
     import pywintypes
     import win32cred
     try:
         win32cred.CredWrite({
             "Type": win32cred.CRED_TYPE_GENERIC,
-            "TargetName": target(name),
+            "TargetName": target(name, prefix),
             "UserName": "DeskIT",
             "CredentialBlob": value,
             "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
@@ -176,21 +235,21 @@ def _cred_write(name: str, value: str) -> None:
         }, 0)
     except pywintypes.error as e:
         raise SecretError(f"Credential Manager refused to store "
-                          f"{target(name)}: {e.strerror}") from e
+                          f"{target(name, prefix)}: {e.strerror}") from e
 
 
-def _cred_delete(name: str) -> bool:
+def _cred_delete(name: str, prefix: str | None = None) -> bool:
     import pywintypes
     import win32cred
     try:
-        win32cred.CredDelete(TargetName=target(name),
+        win32cred.CredDelete(TargetName=target(name, prefix),
                              Type=win32cred.CRED_TYPE_GENERIC)
         return True
     except pywintypes.error as e:
         if e.winerror == _ERROR_NOT_FOUND:
             return False
         raise SecretError(f"Credential Manager refused to delete "
-                          f"{target(name)}: {e.strerror}") from e
+                          f"{target(name, prefix)}: {e.strerror}") from e
 
 
 # ------------------------------------------------------------- DPAPI files
@@ -265,6 +324,49 @@ def set(name: str, value: str) -> None:  # noqa: A001 — the plan's verb
 def delete(name: str) -> bool:
     """Remove it; True if something was there."""
     return _cred_delete(name) if _check(name) == "cred" else _file_delete(name)
+
+
+# ------------------------------------- the shared slot a copy moved out of
+
+def adopt(source: str, dest: str) -> list[str]:
+    """Every API key ``source`` holds, copied into ``dest`` wherever
+    ``dest`` holds none; the names copied. ``source`` is only read —
+    never written, never emptied. The value passes through this module
+    and nowhere else. A process the suite started adopts between
+    ``DeskIT.test`` prefixes only, so no test can touch a real slot."""
+    if source == dest:
+        return []
+    if _SUITE and not (source.startswith("DeskIT.test") and dest.startswith("DeskIT.test")):
+        raise SecretError(f"the suite adopts between DeskIT.test prefixes only, "
+                          f"not {source} -> {dest}")
+    copied: list[str] = []
+    for name in CRED_NAMES:
+        if _cred_read(name, dest):
+            continue
+        value = _cred_read(name, source)
+        if value:
+            _cred_write(name, value, dest)
+            copied.append(name)
+        del value
+    return copied
+
+
+def adopt_release_keys(set_up: bool) -> list[str]:
+    """Migrations step 6: a copy in ADOPTERS that was set up before its
+    slot was its own takes what ``DeskIT/`` holds, once. A copy that was
+    never set up takes nothing — a fresh Store install on a PC whose
+    website copy is signed in to another account must not start life
+    with that account's key — and gets its keys from its own wizard or
+    its own account's vault. The hatches (test, stranger) never had
+    ``DeskIT/`` and never read it."""
+    if TARGET_PREFIX not in ADOPTERS or not set_up:
+        return []
+    copied = adopt(RELEASE_PREFIX, TARGET_PREFIX)
+    for name in copied:
+        log.info("keys: %s copied from %s to %s, this copy's own from now on; "
+                 "%s stays where it was", name, target(name, RELEASE_PREFIX),
+                 target(name), target(name, RELEASE_PREFIX))
+    return copied
 
 
 def delete_all() -> list[str]:
