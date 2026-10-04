@@ -711,9 +711,11 @@ def unwrap_recovery(wrapped: str, recovery: str, aad: str) -> bytes:
 # ------------------------------------------- the cloud keys' narrow door
 
 def export_keys(account_key: bytes, uid: str, only=None) -> dict[str, str]:
-    """Every cloud key this PC keeps in Windows Credential Manager (only
-    there — a developer's .env or shell variable is that machine's
-    affair), each sealed under the account key: {name: v1.…}; ``only``
+    """Every cloud key this copy keeps in Windows Credential Manager —
+    under its own prefix, secretstore.TARGET_PREFIX, never another copy's
+    on the same PC (only there: a developer's .env or shell variable is
+    that machine's affair), each sealed under the account key:
+    {name: v1.…}; ``only``
     narrows it to some names. A name with no key is a sealed empty
     value, so a key removed here is removed on the other PCs too (sb.py
     decides when an empty one travels)."""

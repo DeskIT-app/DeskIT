@@ -17,7 +17,8 @@ checks take ten minutes together; two more are for the sceptic with an afternoon
 - **Your data:** `%LOCALAPPDATA%\DeskIT` — the model, your learned words, history, the last
   recordings, reports. One folder ([chapter 8](08-your-data)).
 - **Your cloud keys**, if you add any: Windows Credential Manager, as `DeskIT/groq` and
-  `DeskIT/gemini` — never in a DeskIT file ([chapter 5](05-cloud)).
+  `DeskIT/gemini` (`DeskIT.store/groq` and `DeskIT.store/gemini` for the Microsoft Store
+  copy) — never in a DeskIT file ([chapter 5](05-cloud)).
 - **Every connection:** the dashboard's **Network** place and `logs\network.log` in your
   folder. `NETWORK.md` beside the program lists every host DeskIT is allowed to talk to, and
   the code refuses any other before a socket exists.
@@ -28,7 +29,7 @@ The wording next to every key field, so you have seen it before you paste a key:
 
 ## The checks
 
-1. **Storage (2 minutes).** Paste a key on the Keys page. Open Control Panel > Credential Manager > Windows Credentials > Generic Credentials and find `DeskIT/groq`. Delete it there; the Keys page now shows "no key". Search the folder `%LOCALAPPDATA%\DeskIT` for the first eight characters of the key: no hit. What this proves: the key is in Windows' store, not in any DeskIT file. What it does not prove: that another program running as you cannot read it (Credential Manager and DPAPI are per-user, not per-app), which is why the wording is "never leaves your PC to us", not "unreadable on your PC".
+1. **Storage (2 minutes).** Paste a key on the Keys page. Open Control Panel > Credential Manager > Windows Credentials > Generic Credentials and find `DeskIT/groq` (`DeskIT.store/groq` in the Store copy). Delete it there; the Keys page now shows "no key". Search the folder `%LOCALAPPDATA%\DeskIT` for the first eight characters of the key: no hit. What this proves: the key is in Windows' store, not in any DeskIT file. What it does not prove: that another program running as you cannot read it (Credential Manager and DPAPI are per-user, not per-app), which is why the wording is "never leaves your PC to us", not "unreadable on your PC".
 2. **Egress during plain dictation (3 minutes).** Open Settings > Privacy > EVERY CONNECTION > Open the Network screen, dictate three sentences with every cloud switch off. The table shows nothing, or only `127.0.0.1` rows if Ollama is installed. Then turn on Offline mode and press the repair or translate key: the feature says it is offline, and a refused row appears naming the host it would have used.
 3. **Offline refuses (2 minutes).** With a key saved and cloud text consented, switch Offline on: every cloud feature refuses; switch it off: they work. The gate is code, not a prompt.
 4. **The schema (3 minutes).** Open `supabase/migrations/0001_init.sql` in the repository. Read the column list of every table: no column named or shaped for a key, and the CHECK constraints that reject key-shaped strings are in the same file. RLS is enabled on every table in the same file.

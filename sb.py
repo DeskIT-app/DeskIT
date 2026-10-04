@@ -1232,6 +1232,11 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
     return word + (f", {unopened} not opened" if unopened else "")
 
 
+#: The keys' cursor as it was before each slot kept its own record — read
+#: by nothing, dropped on the next pass (``_sync_vault``).
+_VAULT_FLAT: tuple[str, ...] = ("vault_pulled_at", "vault_pushed", "vault_digest")
+
+
 def _sync_vault(cursor: dict, push: bool = True) -> str:
     """The cloud keys, one sealed row per name, under the words-and-
     settings gate (a key is a setting). Down: a row newer than the
@@ -1241,15 +1246,30 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     sealed; a name that is empty here and was never synced is NOT
     pushed (a fresh PC must not wipe the account's keys), an emptied
     one is (a key removed here is removed everywhere). Last writer wins
-    per name. ``push=False`` is the live pull."""
+    per name. ``push=False`` is the live pull.
+
+    The cursor's half for the keys is the SLOT's, not the folder's: one
+    record per Credential Manager prefix (``vault_slots``). Until
+    2026-10-04 it was one record and every copy shared ``DeskIT/``; when
+    each copy got a prefix of its own (secretstore.TARGET_PREFIX), a
+    record that remembered a digest for a slot that is now empty would
+    have read as "the person removed the key here" and pushed the removal
+    to every PC. A slot with no record is a fresh PC's: everything the
+    account holds comes down, and only a name the account has never had
+    goes up. Two programs that share one data folder (a Store copy over
+    the website's files) keep a record each."""
     uid = _fresh()["user"]["id"]
     key = _lock_key(uid)
     if key is None:
         return _lock_wait_word()
-    pushed_ciphers: dict = dict(cursor.get("vault_pushed") or {})
-    known: dict = dict(cursor.get("vault_digest") or {})
+    for legacy in _VAULT_FLAT:
+        cursor.pop(legacy, None)
+    slots: dict = cursor.setdefault("vault_slots", {})
+    mine: dict = dict(slots.get(secretstore.TARGET_PREFIX) or {})
+    pushed_ciphers: dict = dict(mine.get("pushed") or {})
+    known: dict = dict(mine.get("digest") or {})
     # down
-    since = str(cursor.get("vault_pulled_at") or "")
+    since = str(mine.get("pulled_at") or "")
     query = "select=name,cipher,updated_at&order=updated_at.asc"
     if since:
         query += "&updated_at=gt." + urllib.parse.quote(since)
@@ -1260,15 +1280,16 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
                 if r.get("cipher") and str(r.get("cipher")) != pushed_ciphers.get(str(r.get("name")))}
     changed = vault.import_keys(key, uid, incoming) if incoming else []
     if rows:
-        cursor["vault_pulled_at"] = str(rows[-1].get("updated_at") or since)
+        mine["pulled_at"] = str(rows[-1].get("updated_at") or since)
     if changed or incoming:
         digests, _present = vault.digest_keys(key)
         for name in incoming:
             known[name] = digests.get(name, "")
-        cursor["vault_digest"] = known
+        mine["digest"] = known
         for name in incoming:
             pushed_ciphers.pop(name, None)
-        cursor["vault_pushed"] = pushed_ciphers
+        mine["pushed"] = pushed_ciphers
+    slots[secretstore.TARGET_PREFIX] = mine
     # up
     pushed = 0
     if push:
@@ -1286,12 +1307,13 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
             pushed = len(payload)
             stamps = [str(r.get("updated_at") or "") for r in (data or []) if isinstance(r, dict)]
             if stamps:
-                cursor["vault_pulled_at"] = max([cursor.get("vault_pulled_at") or ""] + stamps)
+                mine["pulled_at"] = max([mine.get("pulled_at") or ""] + stamps)
             pushed_ciphers.update(sealed)
-            cursor["vault_pushed"] = pushed_ciphers
+            mine["pushed"] = pushed_ciphers
             for n in to_push:
                 known[n] = digests[n]
-            cursor["vault_digest"] = known
+            mine["digest"] = known
+            slots[secretstore.TARGET_PREFIX] = mine
     return f"pulled {len(changed)}, pushed {pushed}"
 
 
@@ -1954,8 +1976,7 @@ def _cursor_follows_lock(cursor: dict, key: bytes) -> None:
         return
     if cursor.get("lock"):
         log.info("lock: the account's key changed — what was said syncs again from the start")
-    for name in ("history_pulled_at", "history_pushed_ts", "vault_pulled_at",
-                 "vault_pushed", "vault_digest"):
+    for name in ("history_pulled_at", "history_pushed_ts", "vault_slots") + _VAULT_FLAT:
         cursor.pop(name, None)
     sync.forget_remote()
     cursor["lock"] = fp
