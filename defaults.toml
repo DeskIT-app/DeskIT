@@ -1347,22 +1347,17 @@ rows = 5                       # how many waiting things it lists before
                                # the rest become one "+N more" line that
                                # opens the window instead (1 .. 8)
 corner = "dot"                 # dot | top-right | top-left | bottom-right | bottom-left.
-                               # Where it opens before you have dragged
-                               # it. "dot" = the status dot's own corner
+                               # Where it opens. "dot" = the status
+                               # dot's own corner
                                # ([dot] corner), where it opens beside the
                                # dot - above it at the bottom, to its left
                                # at the top - and never covers it
-x = -100000                    # the left edge of the PANEL where you last
-                               # dragged it, in screen pixels. -100000 =
-                               # never moved: use `corner`. Not read while
-                               # `corner` says dot: a panel that follows the
-                               # dot opens beside it every time, and a drag
-                               # moves it for that opening only. The sentinel
-                               # is a number no desktop can reach, because
-                               # a negative coordinate is real on a
-                               # monitor to the left of the primary
-y = -100000                    # the top edge of that same panel, in
-                               # screen pixels. -100000 = never dragged
+x = -100000                    # NOT READ since 2026-10-04: where a drag
+                               # of the panel was recorded, and the panel
+                               # is not dragged any more - it opens beside
+                               # the dot (or in `corner`), and Move moves
+                               # the dot. Kept so an old file still loads
+y = -100000                    # not read either; see x
 scale = 1.0                    # how big it is drawn (0.6 .. 1.4)
 hush_notifications = true      # while the panel is open the notification
                                # column steps aside - the same cards are

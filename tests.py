@@ -20648,7 +20648,7 @@ def test_the_panel_opens_beside_the_dot_wherever_he_dragged_it() -> None:
         # The shelf is a BUBBLE since 2026-09-21 (shelf.ShelfCard.origin):
         # the same beside_dot, with its own gap (the tail's length) and a
         # field inset by its margin — see
-        # test_the_shelf_is_anchored_to_the_dot_and_forgets_a_drag.
+        # test_the_shelf_is_anchored_to_the_dot_and_cannot_be_dragged.
         shelf = shelf_mod.ShelfCard(corner="bottom-right", margin=m,
                                     dot_corner="bottom-right", dot_at=here)
         at = shelf.origin(win_w, win_h, screen, inset, desktop, work)
@@ -21327,9 +21327,18 @@ def test_the_shelf_takes_the_mouse_where_it_is_painted_and_nowhere_else():
     window, and a hole that swallowed a click aimed at it is the trap the
     status dot paid for once already; it opens above the dot in the
     bottom-right now and the rule is kept.
+
+    NOTHING ON IT DRAGS IT (2026-10-04). The head strip answered
+    HTCAPTION, so Windows moved the panel by it; he dragged it to the
+    middle of the screen and asked for that to go — Move moves the dot,
+    and the panel opens beside the dot. The module has no HTCAPTION to
+    answer with, and the head band — where the handle was — is scanned
+    across: a button or nothing. (Every pixel of the panel is 56 s at one
+    scale, measured; hit_test lays the panel out per call.)
     """
     import shelf_card as sc
 
+    assert not hasattr(sc, "HTCAPTION") and not hasattr(sc, "DRAG")
     for scale in (0.6, 1.0, 1.4):
         for waiting in (0, 1, 5, 12):
             card = sc.card_for({"mode": "listening", "uptime_s": 90},
@@ -21344,11 +21353,23 @@ def test_the_shelf_takes_the_mouse_where_it_is_painted_and_nowhere_else():
                     (name, boxes[name], width, height)
                 code, what = sc.hit_test(card, scale, (x0 + x1) / 2,
                                          (y0 + y1) / 2)
-                if name == sc.DRAG:
-                    continue            # the head strip is under the buttons
                 assert what == name, (scale, waiting, name, what)
                 assert code == sc.HTCLIENT, (name, code)
-            names = [n for n in boxes if n != sc.DRAG]
+            head_top, head_h = sc._bands(card, scale)["head"]
+            if scale == 1.0:
+                cache: dict = {}
+                for y in (pad + head_top + 1, pad + head_top + head_h / 2,
+                          pad + head_top + head_h - 1):
+                    for x in range(pad, pad + width, 8):
+                        code, what = sc.hit_test(card, scale, x, y, cache)
+                        assert (code, what is None) in (
+                            (sc.HTCLIENT, False), (sc.HTTRANSPARENT, True)), \
+                            (waiting, x, y, code, what)
+            # the head strip itself, left of its buttons: not a handle
+            assert sc.hit_test(card, scale, pad + sc.PAD * scale + 1,
+                               pad + head_top + head_h / 2) == \
+                (sc.HTTRANSPARENT, None)
+            names = list(boxes)
             for i, one in enumerate(names):
                 ax0, ay0, ax1, ay1 = boxes[one]
                 for two in names[i + 1:]:
@@ -44737,7 +44758,7 @@ def test_the_bubble_is_one_curve_on_every_edge_and_out_of_every_corner() -> None
     assert isinstance(path, skia.Path)
 
 
-def test_the_shelf_is_anchored_to_the_dot_and_forgets_a_drag() -> None:
+def test_the_shelf_is_anchored_to_the_dot_and_cannot_be_dragged() -> None:
     """shelf.ShelfCard since 2026-09-21: the dot first and always.
 
     His words, with the dot dragged to the middle of the screen and the
@@ -44747,11 +44768,16 @@ def test_the_shelf_is_anchored_to_the_dot_and_forgets_a_drag() -> None:
     beat the dot. So: a panel that follows a dot opens beside it whether
     or not the dot was dragged, whether or not the panel was; its field
     is the monitor's work area inset by its margin; its gap is the
-    tail's (DOT_GAP = TAIL_L + TAIL_CLEAR); a drag of the panel is NOT
-    remembered (placed writes nothing) — and a panel whose file names a
-    corner keeps every old rule, drag included. main.App._dot_rect hands
-    the shelf the dot's rectangle in its corner too, and the key card
-    still gets _dot_beside.
+    tail's (DOT_GAP = TAIL_L + TAIL_CLEAR). main.App._dot_rect hands the
+    shelf the dot's rectangle in its corner too, and the key card still
+    gets _dot_beside.
+
+    And since 2026-10-04 it is not dragged at all. He dragged it by its
+    head to the middle of the screen, where it floated with its tail
+    pointing at nothing, and asked for that to go: Move is the only way
+    it moves, and then it moves with the dot. `placed` writes nothing and
+    moves nothing, for a follower and for a panel with a corner of its
+    own, and an old `shelf.x/y` record pins nothing.
     """
     import shelf as shelf_mod
     from skin import bubble
@@ -44785,7 +44811,9 @@ def test_the_shelf_is_anchored_to_the_dot_and_forgets_a_drag() -> None:
                 assert m <= face[0] and face[2] <= 2560 - m, face
                 # and the bubble has a tail toward this dot
                 assert bubble.tail_for(face, dot) is not None, (dot, face)
-        # a drag is not remembered while following
+        # nothing moves it and nothing is written — following a dot or
+        # not (2026-10-04: the panel is not dragged at all, and Move is
+        # the only way it goes anywhere: with the dot)
         wrote: list = []
         card = shelf_mod.ShelfCard(corner="bottom-right", margin=m,
                                    dot_corner="bottom-right",
@@ -44793,12 +44821,19 @@ def test_the_shelf_is_anchored_to_the_dot_and_forgets_a_drag() -> None:
                                    on_change=wrote.append)
         card.placed(500, 300)
         assert wrote == [] and not card.moved(), (wrote, card.moved())
-        # ...and is, for a panel with a corner of its own
         pinned = shelf_mod.ShelfCard(corner="top-left", margin=m,
                                      on_change=wrote.append)
         pinned.placed(500, 300)
-        assert wrote == [{"x": 500, "y": 300}] and pinned.moved()
-        # without a dot to follow, the old rules exactly
+        assert wrote == [] and not pinned.moved(), (wrote, pinned.moved())
+        # and an old record of a drag (this PC's state.json held
+        # shelf.x = 2068, shelf.y = 82) pins nothing: a panel with a
+        # corner of its own opens in that corner
+        old = shelf_mod.ShelfCard(corner="top-left", margin=m, x=2068, y=82)
+        fresh = shelf_mod.ShelfCard(corner="top-left", margin=m)
+        assert not old.moved()
+        assert old.origin(win_w, win_h, screen, inset, desktop, work) == \
+            fresh.origin(win_w, win_h, screen, inset, desktop, work)
+        # without a dot to follow, the corner rules exactly
         plain = overlay_mod.HintCard(corner="bottom-right", margin=m,
                                      dot_corner="bottom-right")
         alone = shelf_mod.ShelfCard(corner="bottom-right", margin=m,

@@ -36,8 +36,8 @@ while a Whisper model wants the GPU.
 
 WHAT IT NEVER DOES: decide. A click on a row's answer becomes
 `shelf.pressed(<region name>)`; a click on Pause becomes
-`shelf.pressed("pause")`; a drag becomes `shelf.placed(x, y)`. What those
-MEAN is shelf.ShelfCard's business and main.py's.
+`shelf.pressed("pause")`. There is no drag (2026-10-04, shelf.py). What
+those MEAN is shelf.ShelfCard's business and main.py's.
 
 Reached through `skin.shelf_run(card)` — named with the `_run` suffix for
 the reason skin\\__init__.paint_wave spells out at length: a hook called
@@ -60,8 +60,6 @@ FACE_A = 202              # the face's alpha — skin\hint.py's glass weight
 BLUR = 11                 # px, the frost behind it
 TICK_S = 0.02             # the loop; a click must feel immediate
 UPTIME_S = 1.0            # how often the one line that changes is redrawn
-CLICK_PX = 4              # a release that travelled less is a click, not a
-                          # drag — overlay.NotifyCard's rule and its number
 
 
 def _to_skia(img):
@@ -188,7 +186,6 @@ def run(shelf) -> None:
     frost = None
     hover = None
     cache: dict = {}
-    placed_at = (0, 0)
     pressing = False               # a click was already turned into a press
     dirty = False
     hushed = False
@@ -226,13 +223,15 @@ def run(shelf) -> None:
         """Every pixel of the window, in window coordinates.
 
         HTCLIENT for a button or an answer (the X on the head band is
-        one), HTCAPTION for the head strip (so Windows itself does the
-        drag) and HTTRANSPARENT for everything else INCLUDING THE SHADOW
+        one) and HTTRANSPARENT for everything else INCLUDING THE SHADOW
         MARGIN — which is what keeps a click aimed at whatever is
         underneath landing there. This panel opened in the top-right
         corner until 2026-09-07, where the close button of every
         maximised window is, so it was never a hypothetical; it opens
         above the dot in the bottom-right now and the rule is kept.
+        Never HTCAPTION: the head strip was a handle Windows dragged the
+        panel by until 2026-10-04, and the panel is not dragged any more
+        (shelf.py's docstring).
 
         It doubles as the hover tracker: WM_NCHITTEST arrives on every
         mouse move over the window, and leaving the panel always crosses
@@ -246,23 +245,6 @@ def run(shelf) -> None:
         if want != hover:
             hover, dirty = want, True
         return code
-
-    def on_move():
-        """A press on the head strip was let go — a drag, or a click that
-        never moved. overlay.NotifyCard.on_move's rule and its constant:
-        travelled less than CLICK_PX and it is a click on the head, which
-        this panel treats as nothing at all (the head is a handle, not a
-        button); travelled more and it is where the owner wants it."""
-        nonlocal placed_at
-        if glass is None or shown is None:
-            return
-        x, y = glass.where()
-        if abs(x - placed_at[0]) + abs(y - placed_at[1]) < CLICK_PX:
-            return
-        placed_at = (x, y)
-        shelf.placed(x + SHADOW, y + SHADOW)
-        shelf.rect = (x + SHADOW, y + SHADOW,
-                      x + glass.width - SHADOW, y + glass.height - SHADOW)
 
     def on_click(x, y):
         """A left click on an HTCLIENT pixel — a button or one of a row's
@@ -317,7 +299,7 @@ def run(shelf) -> None:
         dirty = False
 
     def put_up(item):
-        nonlocal glass, shown, frost, placed_at, hover, pressing
+        nonlocal glass, shown, frost, hover, pressing
         s = sc.clamp_scale(shelf.scale)
         width, height = sc.measure(item, s)
         win_w, win_h = width + SHADOW * 2, height + SHADOW * 2
@@ -342,9 +324,7 @@ def run(shelf) -> None:
             x, y = shelf.origin(win_w, win_h, primary_screen(), SHADOW,
                                 virtual_screen(), work_area())
             frost = _frost(x, y, win_w, win_h)
-            glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
-                          clicked=on_click)
-            placed_at = (x, y)
+            glass = Glass(x, y, win_w, win_h, hit=on_hit, clicked=on_click)
             paint()                # painted before it is shown, so the
             glass.show()           # panel is never an empty layer
             glass.raise_()
