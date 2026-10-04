@@ -481,9 +481,10 @@ def _disc(cache: dict, size: float, colour, alpha: int = 255):
 def _glyph(cache: dict, kind: str, size: float, colour="dim", weight=1.6):
     """One small line glyph, drawn at 4x and shrunk.
 
-    `desk` is the mark the owner said he loves: a dalet drawn as a desk —
-    the letter's top bar is the desk top, its right-hand leg is the desk's
-    leg — with a lamp dot sitting on the bar.
+    `desk` is the app's mark on the door to the desk: Corner, the rounded
+    corner with the lamp at the centre of its curve (chosen 2026-09-23).
+    Until 2026-10-04 it was the dalet drawn as a desk that the mark was
+    before, ten days after every icon file had moved on.
     """
     key = ("glyph", kind, int(size), colour, round(weight, 2))
     got = cache.get(key)
@@ -547,12 +548,28 @@ def _glyph(cache: dict, kind: str, size: float, colour="dim", weight=1.6):
         d.ellipse((m * .38, m * .37, m * .49, m * .48),
                   fill=(255, 255, 255, 110))
     elif kind == "desk":
-        # ד as a desk: the bar, the leg, the lamp.
-        d.line([(m * .16, m * .34), (m * .84, m * .34)], fill=c,
-               width=int(lw * 1.4))
-        d.line([(m * .68, m * .34), (m * .68, m * .86)], fill=c,
-               width=int(lw * 1.4))
-        d.ellipse((m * .24, m * .16, m * .40, m * .32),
+        # Corner on the 64-unit grid dev\make_logo.py draws every icon on,
+        # the grid filling the box. The stroke is ONE filled area, for the
+        # reason make_logo gives (a thick arc and a thick line drawn apart
+        # meet with a notch at each join): the ring r 16..24 round the
+        # lamp, kept to the quadrant x >= 30, y <= 34, and the two legs,
+        # whose edges are the ring's own ends. `weight` does not apply —
+        # the mark's stroke is its own.
+        u = m / 64
+
+        def box(x0, y0, x1, y1):
+            return (x0 * u, y0 * u, x1 * u, y1 * u)
+
+        area = Image.new("L", (m, m), 0)
+        a = ImageDraw.Draw(area)
+        a.ellipse(box(30 - 24, 34 - 24, 30 + 24, 34 + 24), fill=255)
+        a.ellipse(box(30 - 16, 34 - 16, 30 + 16, 34 + 16), fill=0)
+        a.rectangle(box(-2, -2, 30, 66), fill=0)
+        a.rectangle(box(-2, 34, 66, 66), fill=0)
+        a.rectangle(box(10, 10, 30, 18), fill=255)      # the flat top
+        a.rectangle(box(46, 34, 54, 54), fill=255)      # the flat side
+        img.paste(Image.new("RGBA", (m, m), c), (0, 0), area)
+        d.ellipse(box(30 - 10, 34 - 10, 30 + 10, 34 + 10),
                   fill=tuple(INK["accent"]) + (255,))
     got = img.resize((n, n), Image.LANCZOS)
     cache[key] = got

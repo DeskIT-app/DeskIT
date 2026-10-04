@@ -1,15 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The mark for the status bar: the desk and the lamp, white on nothing,
-     on the same 64-unit grid as make_icon.py. Android tints it. -->
+<!-- The mark for the status bar: the corner and its dot, white on nothing.
+     Written by dev\make_logo.py from the mark's 64-unit grid; edit that,
+     not this. The viewport is the mark's 44 units and 2 on each side, so
+     it fills the 22 dp a status icon is drawn in. Android tints it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="64"
-    android:viewportHeight="64">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M14 28H51a2 2 0 0 1 2 2v8h-3v13a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2V38H12v-8a2 2 0 0 1 2-2Z" />
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M22 13a6 6 0 1 1 0 12a6 6 0 1 1 0-12Z" />
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <group
+        android:translateX="-8"
+        android:translateY="-8">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M10 10H30A24 24 0 0 1 54 34V54H46V34A16 16 0 0 0 30 18H10Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M20 34a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z" />
+    </group>
 </vector>

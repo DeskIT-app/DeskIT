@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- palette.py's ladder, for the theme and the icon. Skin.kt holds
-         the same values for everything drawn in code. -->
-    <color name="ic_launcher_background">#24201A</color>
+    <!-- palette.py's ladder, for the theme. Skin.kt holds the same
+         values for everything drawn in code. The launcher icon's ground
+         is a picture now (mipmap/ic_launcher_background, make_logo.py). -->
     <color name="bg">#14110C</color>
     <color name="card">#24201A</color>
     <color name="card_hi">#2E2921</color>
