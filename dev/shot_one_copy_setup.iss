@@ -1,9 +1,11 @@
 ; A Setup that installs nothing and only asks packaging\one_copy.iss's
-; question — the prototype's picture of the installer's half
-; (dev\proto_one_copy.py --installer compiles it and photographs it on the
-; hidden desktop). /SHOW=wait shows the second dialog instead of the first.
+; question, for its picture: dev\shot_one_copy.py --installer photographs
+; it, once compiled, on the hidden desktop. /SHOW=wait shows the second
+; dialog instead of the first; /SHOW=detect /OUT=<file> writes what the
+; kernel32 call answered and shows nothing; /SHOW=gate /OUT=<file>, run
+; /VERYSILENT, writes OneCopyOk's silent answers.
 ;
-;     ISCC.exe dev\proto_one_copy_setup.iss /O<folder>
+;     ISCC.exe dev\shot_one_copy_setup.iss /O<folder>
 
 [Setup]
 AppId={{2B0C8E4A-0D5B-4C1E-9B7E-5F0E0C0DE5C0}
@@ -38,6 +40,12 @@ begin
     that the kernel32 call answers inside Inno's 32-bit Setup }
   if ExpandConstant('{param:SHOW|ask}') = 'detect' then
     SaveStringToFile(ExpandConstant('{param:OUT}'), Format('store installed: %d', [Ord(StoreCopyInstalled)]), False)
+  { /SHOW=gate /OUT=<file>, silently: OneCopyOk's answer for a fresh
+    install and for an upgrade (run /VERYSILENT: no dialog may show) }
+  else if ExpandConstant('{param:SHOW|ask}') = 'gate' then
+    { one line: a line that begins with "[" is a section tag to the
+      compiler, even inside [Code] (DeskIT.iss, dry run #3) }
+    SaveStringToFile(ExpandConstant('{param:OUT}'), Format('fresh: %d upgrade: %d', [Ord(OneCopyOk(False)), Ord(OneCopyOk(True))]), False)
   else if ExpandConstant('{param:SHOW|ask}') = 'wait' then
     SuppressibleTaskDialogMsgBox(CustomMessage('OneCopyWaitTitle'), CustomMessage('OneCopyWaitText'),
       mbInformation, MB_OKCANCEL, [CustomMessage('OneCopyContinue'), CustomMessage('OneCopyCancel')],

@@ -2625,7 +2625,7 @@ AppData writes are virtualised, so the Store copy's data lives under
 `%LOCALAPPDATA%\Packages\YoavShimron.DeskITApp_d0r2ms77220w6\LocalCache` and Windows deletes it with the
 app — there is no Keep on a Store uninstall; the account sync is what survives it.
 
-*One copy per PC (2026-10-04, branch `one-copy`, a prototype awaiting the owner's OK).* The website's,
+*One copy per PC (2026-10-04, branch `one-copy`; the owner approved the pictures and the Store copy as the default the same day).* The website's,
 winget's and the Store's DeskIT are one app (the owner's rule), and two on one PC are not two apps:
 measured on his PC with the Store package 1.0.6 and test names only, a process inside the package reads an
 HKCU Uninstall entry made outside it, reads and appends to a file in the real `%LOCALAPPDATA%`, creates a
@@ -2635,8 +2635,13 @@ shares its `%LOCALAPPDATA%\DeskIT` whole, its `DeskIT/` key slot, and its kernel
 second click opens the first one's desk). `onecopy.py` detects the other copy read-only — the Store copy
 asks for the Inno install's Uninstall entry with its uninstaller on disk, the website copy asks Windows for
 the package family (`GetPackagesByPackageFamily`, 3.5 ms) — and `packaging\one_copy.iss` is the
-installer's half, the same call from Inno's 32-bit Setup (verified on the owner's PC). Neither is wired in;
-`dev\proto_one_copy.py` photographs the proposed window and dialogs on the hidden desktop.
+installer's half, the same call from Inno's 32-bit Setup (verified on the owner's PC), first in DeskIT.iss's
+InitializeSetup. main.py asks before `paths.ensure()` and `onecopy_window.py` offers Keep this one per copy — the
+Store copy's gold: the website copy's own uninstaller, silent, KEEPS its data and the Store copy goes on with it.
+Started from the Store copy that uninstaller must run OUTSIDE the package (`onecopy.start_outside`, WMI): measured,
+a child of the package deleted the Uninstall key only in the package's private hive — the real entry stayed while
+the files went. `migrations.apply` no longer stamps a newer build's files down. `dev\shot_one_copy.py`
+photographs every face and the installer's dialogs on the hidden desktop.
 
 If the Store rejects the global hook outright (D20 revisit clause), phase 3 ends, GitHub + winget stays
 primary and the SignPath application of 10.8 moves up to phase 3.

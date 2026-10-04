@@ -47,8 +47,11 @@ The checkout (DeskIT Dev), the Stranger, a portable copy, a test hatch
 and the suite each keep their own data and their own key slot, and are
 never "the other copy" nor asked to look for one (`checks_here`).
 
-Nothing here shows a window or removes anything: what the person is told
-and what each answer does is the owner's to approve first (2026-10-04).
+main.py asks `other_copy()` before `paths.ensure()` on every start of the
+app; when there is one, onecopy_window.py says so and the answers below
+do what the person picked. The installer asks the same question before it
+installs (packaging/one_copy.iss). The owner approved the words, the
+pictures and the Store copy as the gold Keep on 2026-10-04.
 """
 from __future__ import annotations
 
@@ -224,3 +227,180 @@ def other_copy() -> Copy | None:
     if not checks_here():
         return None
     return website_copy() if paths.PACKAGED else store_copy()
+
+
+# -------------------------------------------------------------- the answers
+#
+# What the window's buttons do (onecopy_window.py; the owner approved the
+# words and the Store copy as the gold Keep on 2026-10-04):
+#
+#   from the Store copy,   Keep the Store's   -> remove_website, then start
+#   from the Store copy,   Keep the website's -> the hook lines go to the
+#                                                website copy, Settings opens
+#                                                at DeskIT App, the website
+#                                                copy starts waiting for it
+#                                                (start_website_waiting), quit
+#   from the website copy, Keep the Store's   -> the hook lines go to the
+#                                                Store copy, then
+#                                                uninstall_self_then_open_store
+#   from the website copy, Keep the website's -> Settings opens, the window
+#                                                waits for the package to go,
+#                                                then start
+#
+# Nothing is deleted by DeskIT itself but the website copy's program, by
+# its own uninstaller, silently — and a silent Inno uninstall KEEPS the
+# data (DeskIT.iss: Keep is the only answer a silent uninstall gives), so
+# the Store copy goes on with it. The Store copy is removed by Windows'
+# own Uninstall button, never by us.
+
+#: A silent uninstall, data kept, no reboot, no window.
+UNINSTALL_ARGS = ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+#: Main.py's flag: open the window already waiting for the Store copy to go.
+WAITING_FLAG = "--waiting-for-store"
+
+
+def command_line(argv: list[str]) -> str:
+    """One Windows command line: an argument with a space (or nothing) in
+    it is put in quotes as it stands — paths, and a cmd /s script whose
+    own quotes cmd reads between the first and the last."""
+    return " ".join(f'"{a}"' if (" " in a or not a) else a for a in argv)
+
+
+def start_outside(argv: list[str]) -> bool:
+    """Start a program OUTSIDE this package, through WMI (Win32_Process.
+    Create, so WmiPrvSE is its parent). Measured 2026-10-04 inside the
+    Store package: a plain child process's HKCU delete went to the
+    package's private hive and the REAL Uninstall entry stayed — a
+    website copy uninstalled by a child of the Store copy would lose its
+    files and keep its entry in Installed apps — while a WMI-started one
+    deleted the real key; WMI's process lands on the person's own desktop
+    (WinSta0\\Default, the session's). Outside the package a detached
+    Popen is the same thing and is what runs."""
+    line = command_line(argv)
+    if not paths.PACKAGED:
+        import subprocess
+        try:
+            # the line as written, not list2cmdline's: cmd.exe /s reads
+            # its script between the first and the last quote, and a
+            # backslash-escaped quote inside it means nothing to cmd.
+            # A HIDDEN console, not none (DETACHED_PROCESS): measured, a
+            # cmd with no console at all ran its `ping` pauses in no time
+            # and finished its wait before the entry went, and each
+            # console child would get a window of its own on the screen.
+            subprocess.Popen(line, close_fds=True,
+                             creationflags=0x08000000)       # CREATE_NO_WINDOW
+            return True
+        except OSError:
+            return False
+    try:
+        import win32com.client
+        svc = win32com.client.Dispatch("WbemScripting.SWbemLocator").ConnectServer(".", r"root\cimv2")
+        cls = svc.Get("Win32_Process")
+        params = cls.Methods_("Create").InParameters.SpawnInstance_()
+        params.Properties_.Item("CommandLine").Value = line
+        result = cls.ExecMethod_("Create", params)
+        return int(result.Properties_.Item("ReturnValue").Value) == 0
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
+def quit_running(wait_s: float = 15.0, *, sleep=None) -> bool:
+    """Ask a running DeskIT to quit and wait for it to go. The kernel
+    names are shared between the two copies (measured), so this reaches
+    the website copy from inside the Store package too. True when
+    nothing runs any more.
+
+    Never from a copy with its own data (`checks_here` False): in the
+    checkout, and in every test, the kernel names carry `.dev`, so the
+    DeskIT this would reach is the owner's running Dev copy — a suite
+    run quit it once (2026-10-04, 22:02:35) before this guard."""
+    import time
+
+    import singleton
+    sleep = sleep or time.sleep
+    if not checks_here():
+        return True
+    if not singleton.is_running():
+        return True
+    singleton.request_quit()
+    for _ in range(int(wait_s * 4)):
+        sleep(0.25)
+        if not singleton.is_running():
+            return True
+    return False
+
+
+def remove_website(copy: Copy, wait_s: float = 120.0, *, start=start_outside,
+                   find=website_copy, sleep=None, quit=None) -> bool:
+    """The Store copy keeps itself: the website copy's own uninstaller,
+    silently (its data is KEPT), started outside the package; then wait
+    for its Uninstall entry to go. True once it has."""
+    import time
+    sleep = sleep or time.sleep
+    (quit or quit_running)(sleep=sleep)
+    if not start([copy.uninstaller, *UNINSTALL_ARGS]):
+        return False
+    for _ in range(int(wait_s * 2)):
+        sleep(0.5)
+        if find() is None:
+            return True
+    return False
+
+
+def uninstall_self_then_open_store(copy: Copy, *, key: str = "",
+                                   opener: str = "") -> bool:
+    """The website copy gives way to the Store copy: one detached cmd
+    waits two seconds for this process to be gone, runs this copy's
+    uninstaller silently (the data is kept), waits for its Uninstall
+    entry to go and opens DeskIT App — which finds no other copy and
+    goes on with the same data. The caller quits at once. (`key` and
+    `opener` are a test's: another entry to wait for, another program
+    to start at the end.)"""
+    key = key or "HKCU\\" + UNINSTALL_KEY
+    opener = opener or f"explorer.exe {STORE_LAUNCH}"
+    script = (f'ping -n 3 127.0.0.1 >nul & "{copy.uninstaller}" {" ".join(UNINSTALL_ARGS)} & '
+              f'for /l %i in (1,1,90) do (reg query "{key}" >nul 2>&1 || '
+              f'(start "" {opener} & exit /b) & ping -n 2 127.0.0.1 >nul)')
+    return start_outside(["cmd.exe", "/d", "/s", "/c", script])
+
+
+def open_store_settings() -> bool:
+    """Windows' own page for DeskIT App: Uninstall is at its foot."""
+    try:
+        os.startfile(STORE_SETTINGS_URI)                     # noqa: S606
+        return True
+    except OSError:
+        return False
+
+
+def start_website_waiting(copy: Copy, *, start=start_outside) -> bool:
+    """The Store copy is going and the website copy is kept: start the
+    website copy outside the package (a child would die with it),
+    already waiting for the package to go."""
+    folder = Path(copy.folder)
+    return start([str(folder / "python" / "pythonw.exe"),
+                  str(folder / "app" / "deskit.pyw"), WAITING_FLAG])
+
+
+def move_claude_door(to: str, website: Copy, settings_path=None) -> bool:
+    """When one of the two released copies holds Claude Code's hook
+    lines, the copy being kept takes them, so no line is left naming a
+    program that is about to be gone. `to` is "store" or "website".
+    Lines naming the checkout (DeskIT Dev) or nobody's are left alone.
+    True if the file changed."""
+    import notify_hook
+    settings_path = settings_path or notify_hook.DEFAULT_SETTINGS
+    found = notify_hook.hook_script(settings_path)
+    if found is None:
+        return False
+    store_line = notify_hook._same_file(found, notify_hook.alias_path())
+    website_line = bool(website.folder) and os.path.normcase(
+        os.path.normpath(found)).startswith(os.path.normcase(os.path.normpath(website.folder)) + os.sep)
+    if not (store_line or website_line):
+        return False
+    folder = Path(website.folder)
+    if to == "store":
+        return notify_hook.install_hook(settings_path, python=str(folder / "python" / "pythonw.exe"),
+                                        script=str(folder / "app" / "notify_hook.py"), alias=True)
+    return notify_hook.install_hook(settings_path, python=str(folder / "python" / "pythonw.exe"),
+                                    script=str(folder / "app" / "notify_hook.py"), alias=False)

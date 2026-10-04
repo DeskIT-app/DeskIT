@@ -17,8 +17,9 @@
 ; update must never stall here; the app asks at its next start), a fresh
 ; silent install (winget) stops with a line in the log.
 ;
-; A PROTOTYPE, not yet included by DeskIT.iss: the words wait for the
-; owner's OK (dev\proto_one_copy.py photographs them).
+; Included by DeskIT.iss, which calls OneCopyOk first in InitializeSetup.
+; The owner approved the words on 2026-10-04 from pictures of them
+; (dev\shot_one_copy.py --installer photographs them on the hidden desktop).
 
 [CustomMessages]
 english.OneCopyTitle=DeskIT is already on this PC, from the Microsoft Store

@@ -150,6 +150,10 @@ hebrew.DlFailed=ההורדה לא הסתיימה: %1%n%nנסה שוב, או בט
 hebrew.DlNoRoom=אין די מקום להורדות: נדרשים %1 מגה־בייט, פנויים %2 מגה־בייט בכונן הזה. DeskIT יציע אותן שוב בהפעלה הראשונה.
 hebrew.DlFinishing=בודק את ההורדות ומניח אותן במקומן...
 
+; One DeskIT per PC: the Store copy is asked about before anything is
+; installed (its words, its kernel32 call and OneCopyOk are in there).
+#include "one_copy.iss"
+
 [Files]
 ; Everything the build staged: python\, app\, MANIFEST.sha256. ignoreversion
 ; because .py files carry no version resource and must always be replaced.
@@ -587,7 +591,8 @@ begin
     Result := '';
 end;
 
-{ A downgrade is refused by name (D21: rollback is uninstall, then the
+{ The Store copy first (one_copy.iss: one DeskIT per PC), then a
+  downgrade is refused by name (D21: rollback is uninstall, then the
   older installer, whose link the release notes carry). }
 function InitializeSetup: Boolean;
 var
@@ -595,6 +600,11 @@ var
 begin
   Result := True;
   Have := InstalledVersion;
+  if not OneCopyOk(Have <> '') then
+  begin
+    Result := False;
+    Exit;
+  end;
   if (Have <> '') and (VersionNumber(Have) > VersionNumber('{#Version}')) then
   begin
     SuppressibleMsgBox(FmtMessage(CustomMessage('Downgrade'), [Have, '{#Version}']), mbError, MB_OK, IDOK);
