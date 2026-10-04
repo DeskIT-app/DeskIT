@@ -57,7 +57,7 @@ title: 8. הנתונים שלך
 - **הסרה** שואלת "Remove my data too?" — כן מריץ את אותו איפוס ומסיר את רשומת ההפעלה עם
   חלונות; ברירת המחדל לשמור.
 - **מפתחות:** **Settings > Privacy > YOUR CLOUD KEYS > Remove**, או מוחקים `DeskIT/groq`
-  ו־`DeskIT/gemini` (בעותק מהחנות: `DeskIT.store/…`) בעצמכם בלוח הבקרה > מנהל האישורים.
+  ו־`DeskIT/gemini` בעצמכם בלוח הבקרה > מנהל האישורים.
 - **שורות ה־hook של Claude Code:** המתג תחת **Settings > About** מסיר את שתי השורות מ־
   `~/.claude/settings.json`.
 

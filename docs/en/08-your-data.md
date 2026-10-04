@@ -57,8 +57,7 @@ on the Settings page, and `history.keep_days = 0` turns the history off.
 - **Uninstalling** asks "Remove my data too?" — Yes runs the same reset and removes the
   Start-with-Windows entry; the default is to keep.
 - **Keys:** **Settings > Privacy > YOUR CLOUD KEYS > Remove**, or delete `DeskIT/groq` and
-  `DeskIT/gemini` (`DeskIT.store/…` for the Store copy) yourself in Control Panel >
-  Credential Manager.
+  `DeskIT/gemini` yourself in Control Panel > Credential Manager.
 - **Claude Code's hook lines:** the switch under **Settings > Messages & sounds** removes the two lines
   from `~/.claude/settings.json`.
 

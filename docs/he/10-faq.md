@@ -52,8 +52,7 @@ Home מציג את שורת המודל עם הכפתור שלה; הורדה ממ
 ההתקן תחת **Settings > General**. האשף (`main.py --setup`) מציג את הפס שוב.
 
 **איפה המפתחות שלי, ואתם יכולים לראות אותם?**
-לוח הבקרה > מנהל האישורים > אישורי Windows > `DeskIT/groq`, `DeskIT/gemini` (בעותק מחנות
-מיקרוסופט: `DeskIT.store/groq`, `DeskIT.store/gemini`). הם הולכים רק
+לוח הבקרה > מנהל האישורים > אישורי Windows > `DeskIT/groq`, `DeskIT/gemini`. הם הולכים רק
 ל־api.groq.com / generativelanguage.googleapis.com תחת החשבון שלך; [פרק 4](04-privacy) מראה
 איך לאמת זאת בעצמך.
 

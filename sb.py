@@ -1187,8 +1187,8 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     have read as "the person removed the key here" and pushed the removal
     to every PC. A slot with no record is a fresh PC's: everything the
     account holds comes down, and only a name the account has never had
-    goes up. Two programs that share one data folder (a Store copy over
-    the website's files) keep a record each."""
+    goes up. Two programs that share one data folder under different
+    prefixes keep a record each."""
     uid = _fresh()["user"]["id"]
     key = _lock_key(uid)
     if key is None:

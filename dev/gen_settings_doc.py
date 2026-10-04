@@ -207,8 +207,8 @@ def string_tables() -> dict[str, dict]:
               for k, v in firstrun.WORDS.items()}
     cards = {kind: consent_card.card_for(kind) for kind in consent_card.TEXTS}
     import secretstore
-    # the website's entry name, whichever copy runs this: the guide is
-    # read by every copy's owner, and only the website's says DeskIT/
+    # the released app's entry name, whichever copy runs this (the
+    # checkout's own is DeskIT.dev/, which no reader of the guide has)
     keys = {name: secretstore.storage_sentence(name, secretstore.RELEASE_PREFIX)
             for name in secretstore.KEY_HOSTS}
     return {"wizard": wizard, "consent": cards, "keys": keys}

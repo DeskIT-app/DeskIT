@@ -14,8 +14,8 @@ Two backends, chosen by NAME, never by the caller:
 
 Windows Credential Manager (``win32cred``) — the two API keys.
     Generic credentials ``DeskIT/groq`` and ``DeskIT/gemini`` for the
-    website's copy — every other copy under a prefix of its own
-    (``TARGET_PREFIX`` below) — persisted
+    released app — the checkout and the hatches under a prefix of their
+    own (``TARGET_PREFIX`` below) — persisted
     for this Windows account. A person can SEE them and DELETE them in
     Control Panel > Credential Manager > Windows Credentials, which is
     part of the proof that the app keeps no copy anywhere else (D12).
@@ -61,9 +61,9 @@ FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
                                "supabase_session", "phone_key", "phone_tokens",
                                "account_key", "account_key_aside")
 
-#: The Credential Manager target is ``<prefix>/<name>``, and the prefix is
-#: THIS COPY's own. Until 2026-10-04 every copy that was not a hatch — the
-#: Dev checkout, the Store's and the website's — read and wrote one
+#: The Credential Manager target is ``<prefix>/<name>``, and no two copies
+#: share a prefix. Until 2026-10-04 every copy that was not a hatch — the
+#: Dev checkout and the released app — read and wrote one
 #: ``DeskIT/groq``. On 2026-10-03 at 15:11:48 the Store copy's wizard,
 #: signed in to a test account, saved that account's Groq key there; the
 #: Dev copy, signed in to the owner's, read it as its own from then on,
@@ -74,15 +74,12 @@ FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
 #: the session it syncs under, and the session lives in the copy's data
 #: folder, so the slot follows the copy (``prefix_for``):
 #:
-#: ``DeskIT``           the website's install — winget runs the same
-#:                      installer into the same folder, so one copy, one
-#:                      slot; the name the guide has always shown
-#: ``DeskIT.store``     the Microsoft Store package, its own even beside
-#:                      the website's on one PC: the two can be signed in
-#:                      to different accounts (the package's AppData is
-#:                      virtualised — it shares only the files the
-#:                      website's copy made first), and between copies of
-#:                      ONE account the vault carries the key
+#: ``DeskIT``           the released app, however it came: the website's
+#:                      installer, winget (the same installer) or the
+#:                      Microsoft Store package. They are ONE app downloaded
+#:                      three ways, never two copies on one PC (the owner,
+#:                      2026-10-04: "the app is the same app"), so they keep
+#:                      one slot, the name the guide has always shown
 #: ``DeskIT.dev``       the checkout, DeskIT Dev (its kernel names' mark)
 #: ``DeskIT.portable``  a portable copy that is not the checkout
 #: ``DeskIT.stranger``  the stranger hatch (below)
@@ -102,13 +99,13 @@ FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
 #: stranger child included — never does.
 _SUITE: bool = os.environ.get("DESKIT_SUITE", "").strip() == "1"
 
-#: The website's slot, and where every copy that was not a hatch kept its
-#: keys until 2026-10-04.
+#: The released app's slot (website, winget, Store), and where every copy
+#: that was not a hatch kept its keys until 2026-10-04.
 RELEASE_PREFIX = "DeskIT"
 
 
 def prefix_for(*, hatch: bool, stranger: bool, suite: bool, developer: bool,
-               packaged: bool, channel: str, portable: bool) -> str:
+               portable: bool) -> str:
     """The Credential Manager prefix of a copy of this kind (the table
     above). Pure, so a test can walk every kind from one process."""
     if suite or (hatch and not stranger):
@@ -117,8 +114,6 @@ def prefix_for(*, hatch: bool, stranger: bool, suite: bool, developer: bool,
         return "DeskIT.stranger"
     if developer:
         return "DeskIT.dev"
-    if packaged or channel == "store":
-        return "DeskIT.store"
     if portable:
         return "DeskIT.portable"
     return RELEASE_PREFIX
@@ -126,15 +121,14 @@ def prefix_for(*, hatch: bool, stranger: bool, suite: bool, developer: bool,
 
 TARGET_PREFIX: str = prefix_for(hatch=bool(paths._HOME_OVERRIDE), stranger=paths.STRANGER,
                                 suite=_SUITE, developer=paths.DEVELOPER,
-                                packaged=paths.PACKAGED, channel=paths.CHANNEL,
                                 portable=paths.PORTABLE)
 
 #: The copies that kept their keys under RELEASE_PREFIX until 2026-10-04
 #: and have a slot of their own since. Each takes one copy of what is
 #: there, once (``adopt_release_keys``, migrations step 6), so the update
 #: never costs a person a working key; the entry itself stays where it is,
-#: because the website's copy on the same PC may be the one reading it.
-ADOPTERS: tuple[str, ...] = ("DeskIT.dev", "DeskIT.store", "DeskIT.portable")
+#: because the released app on the same PC may be the one reading it.
+ADOPTERS: tuple[str, ...] = ("DeskIT.dev", "DeskIT.portable")
 
 #: Environment variable per key name — the app's own prefix only.
 ENV_VARS: dict[str, str] = {name: f"DESKIT_{name.upper()}_API_KEY"
@@ -181,7 +175,7 @@ KEY_HOSTS: dict[str, str] = {"groq": "api.groq.com",
 def storage_sentence(name: str, prefix: str | None = None) -> str:
     """The fixed wording next to every key field (plan arch-B section 4,
     D12): the Privacy tab's block draws it with this copy's own entry, the
-    guide quotes it from docs/strings/keys.json with the website's
+    guide quotes it from docs/strings/keys.json with the released app's
     (``prefix=RELEASE_PREFIX``), and a test holds the two equal.
 
     Until 2026-09-23 it said the key was "never sent to the developer",
@@ -354,10 +348,10 @@ def adopt(source: str, dest: str) -> list[str]:
 def adopt_release_keys(set_up: bool) -> list[str]:
     """Migrations step 6: a copy in ADOPTERS that was set up before its
     slot was its own takes what ``DeskIT/`` holds, once. A copy that was
-    never set up takes nothing — a fresh Store install on a PC whose
-    website copy is signed in to another account must not start life
-    with that account's key — and gets its keys from its own wizard or
-    its own account's vault. The hatches (test, stranger) never had
+    never set up takes nothing — a fresh checkout on a PC whose released
+    app is signed in to another account must not start life with that
+    account's key — and gets its keys from its own wizard or its own
+    account's vault. The hatches (test, stranger) never had
     ``DeskIT/`` and never read it."""
     if TARGET_PREFIX not in ADOPTERS or not set_up:
         return []

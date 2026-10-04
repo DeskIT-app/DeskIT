@@ -100,8 +100,8 @@ def test_key_field_sentence_quoted():
     """The storage sentence quoted in 04-privacy.md and 05-cloud.md (both
     languages) equals docs/strings/keys.json's, which the generator
     exported from secretstore.storage_sentence — the string the Privacy
-    tab draws on the website's copy (each other copy names its own entry,
-    DeskIT.store/groq on the Store's)."""
+    tab draws in the released app, however it was downloaded (the Dev
+    checkout names its own entry, DeskIT.dev/groq)."""
     import secretstore
     keys = json.loads((DOCS / "strings" / "keys.json").read_text("utf-8"))
     assert keys["groq"] == secretstore.storage_sentence("groq", secretstore.RELEASE_PREFIX)
