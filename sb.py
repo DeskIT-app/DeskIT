@@ -365,7 +365,11 @@ def _refresh() -> dict:
         if status in (400, 401, 403, 404):
             # The refresh token was revoked or used elsewhere: the
             # account is gone or signed out from another PC (8.8).
-            _account_gone(f"the session could not be refreshed ({_server_said(status, data if isinstance(data, bytes) else b'')})")
+            # "Refresh Token Not Found" is the session deleted on the
+            # server — Sign out of every PC, or the account deleted.
+            said = _server_said(status, data if isinstance(data, bytes) else b"")
+            _account_gone(f"the session could not be refreshed ({said})",
+                          words=GONE_ELSEWHERE if "not found" in said.lower() else GONE_WORDS)
         raise AccountError(f"the session could not be refreshed ({status})")
     return _store_session(data)
 
@@ -381,14 +385,24 @@ def _fresh() -> dict:
         return session
 
 
-def _account_gone(why: str) -> None:
+#: What the sign-in card says under its button when this PC's session
+#: ended somewhere else. Plain words; the server's own reason goes to
+#: app.log. Until 2026-10-03 the card showed the server's line itself —
+#: "the session could not be refreshed (HTTP 400: Invalid Refresh Token:
+#: Refresh Token Not Found)" — and it said nothing to a person.
+GONE_ELSEWHERE = "Signed out from another PC."
+GONE_WORDS = "This PC was signed out."
+
+
+def _account_gone(why: str, *, words: str = GONE_WORDS) -> None:
     """A second 401, or a dead refresh token: drop the session and the
-    cursors; the next sign-in starts clean. Never a dialog."""
+    cursors; the next sign-in starts clean. Never a dialog: ``why`` goes
+    to the log, ``words`` to the sign-in card."""
     log.warning("account: %s — signed out on this PC", why)
     _clear_session()
     sync.forget_all()
     _forget_lock_state()
-    _status["last_error"] = why
+    _status["last_error"] = words
     _signed_out()
 
 
@@ -459,6 +473,29 @@ def device_name() -> str:
     if not name:
         name = (platform.node() or "this PC").strip()
     return name[:40]
+
+
+def copy_name() -> str:
+    """Which DeskIT this is, in a person's words: the Store's, the
+    website's, winget's, or the owner's checkout."""
+    if paths.DEVELOPER:
+        return "DeskIT Dev"
+    if paths.PACKAGED or paths.CHANNEL == "store":
+        return "DeskIT App (Store)"
+    if paths.CHANNEL == "winget":
+        return "DeskIT (winget)"
+    return "DeskIT (website)"
+
+
+def request_name() -> str:
+    """The name a request to join carries: the PC's, and which copy on
+    it is asking. Two copies on one PC were both "YOAV" on the other's
+    Home (the Store walk, 2026-10-03: the Store copy asking the Dev, side
+    by side); "YOAV · DeskIT App (Store)" says which one to expect. The
+    column holds 40 characters, so the PC's name gives way, not the copy."""
+    copy = copy_name()
+    room = 40 - len(copy) - 3
+    return f"{device_name()[:room].rstrip()} · {copy}"
 
 
 def _app_version() -> str:
@@ -794,16 +831,48 @@ def set_name(name: str) -> str:
     return name
 
 
+def _end_the_others() -> None:
+    """Sign out of every PC, the part about the OTHER PCs: their sessions
+    end on the server (scope=others — this one is kept for one more
+    call), then one broadcast on the account's channel, ``signed_out``,
+    makes every copy that is listening ask the server about its own
+    session at once (``_live_once``); a refused refresh is
+    ``_account_gone``, the lock, within the second. Without it a copy
+    went on for the rest of its access token's hour: measured 2026-10-03,
+    the Dev worked 58 minutes past "Sign out of every PC" and approved
+    two requests to join. The order is the point: the broadcast goes
+    after the sessions are gone, so no copy can refresh in between, and
+    under this PC's own session, which the server's check (migration
+    0006) still lets through. A copy that is not listening — offline,
+    sync off, or not ours — meets that check on its next request."""
+    _fresh()
+    status, data = _auth("logout", {}, query="scope=others", bearer=True)
+    if status not in (200, 204):
+        raise AccountError(_server_said(status, data if isinstance(data, bytes) else b""))
+    _broadcast(event="signed_out")
+
+
 def sign_out(everywhere: bool = True) -> None:
     """Sign out everywhere (the refresh tokens are revoked server-side),
     then forget the session and the cursors here. The local files stay.
-    ``everywhere=False`` is the wizard's "Not you?": this PC's session
-    only, the person's other PCs keep theirs."""
+    ``everywhere=False`` is this PC's session only, the person's other
+    PCs keep theirs: the wizard's "Not you?" and, since the Store walk of
+    2026-10-03, the desk's own Sign out. The desk's Sign out of every PC
+    is the one caller of the default."""
     session = _load_session()
     if session is not None and configured():
+        # every PC: the others first and told (_end_the_others), then
+        # this one; if that road fails, the old one — all at once
+        scope = "local"
+        if everywhere:
+            try:
+                _end_the_others()
+            except Exception as e:                           # noqa: BLE001
+                log.info("account: the other PCs were not signed out one by one (%s) — "
+                         "all at once instead", e)
+                scope = "global"
         try:
-            _auth("logout", {}, query="scope=global" if everywhere else "scope=local",
-                  bearer=True)
+            _auth("logout", {}, query=f"scope={scope}", bearer=True)
         except Exception as e:                               # noqa: BLE001
             log.info("account: the sign-out did not reach the server (%s) — "
                      "signed out here", e)
@@ -1263,7 +1332,9 @@ def _broadcast(stores: list[str] | None = None, *, event: str = "changed",
     topic — ``pairing`` (a PC asks to join: its request id, code and
     name) and ``paired`` (a PC approved: the request id) — and carry
     nothing a stranger could use: the code is compared on two screens,
-    the key crosses wrapped inside the table. A failure is a debug line
+    the key crosses wrapped inside the table. ``signed_out`` (Sign out of
+    every PC, ``_end_the_others``) carries the device id alone and only
+    makes the others ask the server. A failure is a debug line
     — the 15-minute pass delivers the rows all the same."""
     try:
         uid = _fresh()["user"]["id"]
@@ -1343,11 +1414,17 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True) -> dict
             if changed and signed_in():
                 _broadcast(changed)
             errors = [f"{k}: {v[7:]}" for k, v in out.items() if v.startswith("error: ")]
+            # the account went away under this pass: _account_gone has
+            # said why in plain words, and the stores' errors are its
+            # echo — the log's, not the sign-in card's
+            gone = not signed_in()
             if errors:
-                _status["last_error"] = "; ".join(errors)[:200]
+                if not gone:
+                    _status["last_error"] = "; ".join(errors)[:200]
                 log.info("sync%s: %s", f" ({reason})" if reason else "", "; ".join(errors))
             else:
-                _status["last_error"] = ""
+                if not gone:
+                    _status["last_error"] = ""
                 _status["last_sync"] = _now_iso()
                 log.info("sync%s: %s", f" ({reason})" if reason else "",
                          ", ".join(f"{k} {v}" for k, v in out.items()) or "nothing to do")
@@ -1558,7 +1635,23 @@ def nudge(store: str | None = None) -> None:
 # ------------------------------------------------------------- the live channel
 
 _live_stop = threading.Event()
-_live_state: dict = {"on": False, "error": ""}
+_live_state: dict = {"on": False, "error": "", "asked": False}
+
+
+def _ask_about_this_session(why: str) -> None:
+    """Ask the server about this copy's session NOW, not at the worker's
+    next pass: a refused refresh is ``_account_gone`` and the lock. Two
+    doors call it — another PC's ``signed_out`` on the live channel, and
+    a refused join (since migration 0006 the channel refuses a session
+    that has ended: measured 2026-10-03, a copy reopened after Sign out
+    of every PC was refused at 4 s and still waited for its first pass,
+    30 s after the start, to lock)."""
+    log.info("live: %s — asking the server about this session", why)
+    try:
+        with _lock:
+            _refresh()
+    except AccountError as e:
+        log.info("live: %s", e)
 
 
 def _live_purpose() -> str | None:
@@ -1575,6 +1668,7 @@ def _live_loop(vocab) -> None:
     """Hold the socket for as long as the account and a gate are there;
     reconnect with LIVE_RETRY_S between tries; never raise."""
     tries = 0
+    _live_state["asked"] = False
     while not _live_stop.is_set():
         try:
             if not (configured() and signed_in()) or _live_purpose() is None or net.offline:
@@ -1625,8 +1719,13 @@ def _live_once(vocab) -> bool:
         answer = json.loads(reply) if reply else {}
         if answer.get("event") != "phx_reply" or (answer.get("payload") or {}).get("status") != "ok":
             said = json.dumps((answer.get("payload") or {}).get("response") or answer)[:160]
+            if not _live_state.get("asked"):
+                # once per run of refusals: a channel refused for any
+                # other reason must not cost a refresh at every retry
+                _live_state["asked"] = True
+                _ask_about_this_session("the live channel refused the join")
             raise AccountError(f"the live channel refused the join: {said}")
-        _live_state.update(on=True, error="")
+        _live_state.update(on=True, error="", asked=False)
         log.info("live: listening on the account's channel")
         if _lock_state.get("state") == "have":
             try:
@@ -1676,6 +1775,14 @@ def _live_once(vocab) -> bool:
                 if req and str(what.get("id") or "") == req["id"]:
                     log.info("live: this PC was approved — taking the key")
                     sync_now(vocab, reason="paired")
+                continue
+            if inner.get("event") == "signed_out":
+                # another PC signed every PC out (_end_the_others): ask
+                # the server about this session now, not at the end of
+                # its token's hour. The event only makes this copy look;
+                # a refused refresh is _account_gone and the lock, and
+                # the loop's next turn closes the socket.
+                _ask_about_this_session("another PC signed every PC out")
                 continue
             if inner.get("event") != "changed":
                 continue
@@ -1924,7 +2031,7 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         code = vault.pairing_code(uid, pid, public)
         status, data = _rest("POST", "pairings", purpose="account",
                              payload={"id": pid, "user_id": uid, "device_id": device_id(),
-                                      "device_name": device_name(),
+                                      "device_name": request_name(),
                                       "code": vault.code_hint(code), "applicant": public},
                              prefer="return=minimal")
         if status not in (200, 201, 204):
@@ -1933,7 +2040,7 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         req = {"id": pid, "code": code, "expires": now + PAIRING_TTL_S, "lock_id": remote}
         log.info("lock: another PC holds the account's key — this PC asks to join (code %s)", code)
         _set_lock(state="waiting", lock_id=remote, pairing=req)
-        _broadcast(event="pairing", extra={"id": pid, "code": code, "name": device_name()})
+        _broadcast(event="pairing", extra={"id": pid, "code": code, "name": request_name()})
     else:
         _set_lock(state="waiting", lock_id=remote, pairing=req)
     return None
@@ -2115,8 +2222,8 @@ def lock_answer(yes: bool) -> str:
     other lock is not taken. Returns "asked".
     [It wasn't me]: nothing moves. The key stays, the sealed stores stay
     paused both ways, and the refusal is written beside the key so a
-    restart does not ask again; Home then points to Sign out (every
-    session of the account, a stolen one too) and offers
+    restart does not ask again; Home then points to Sign out of every PC
+    (every session of the account, a stolen one too) and offers
     ``restore_lock``. Returns "kept"."""
     uid = _fresh()["user"]["id"]
     with _sync_lock:
@@ -2283,7 +2390,7 @@ configure()
 __all__ = [
     "PROJECT_REF", "PUBLISHABLE_KEY", "configure", "configured", "base_url",
     "AccountError", "NotAllowed", "signed_in", "user", "device_id",
-    "device_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
+    "device_name", "copy_name", "request_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
     "set_name", "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
     "start_worker", "nudge", "status", "forget_cache", "REPORT_COLUMNS",
     "REQUIRED", "SIGNED_OUT_HOOKS", "LIVE_ENABLED", "STORES", "stop_live",

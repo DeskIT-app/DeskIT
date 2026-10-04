@@ -12916,6 +12916,29 @@ def test_a_door_that_lands_on_a_tab_shows_nothing_but_the_old_screen_and_the_new
                 assert field.winfo_ismapped(), "the field is not open on the screen"
                 assert board.root.focus_lastfor() == field.entry, "the caret is not in the field"
 
+            # the changed lock's [Sign out of every PC]: the same one switch,
+            # and the account card already asking — one press from done,
+            # never pressed for him (the Store walk, 2026-10-03)
+            board.nav._hit("Home")
+            waiting = account["lock"]
+            account["lock"] = {"state": "changed", "id": "d8de920c", "code": "", "pending": [],
+                               "recovery": True, "error": "",
+                               "changed": {"server": "00ff00ff", "mine": "", "refused": True}}
+            _let_the_switch_land(board)
+            rows = board._waiting_lock()
+            assert rows and [b[0] for b in rows[0]["buttons"]] == ["Sign out of every PC"], rows
+            door = rows[0]["buttons"][0][2]
+            assert door == board._lock_go_account
+            press(door)
+            assert board.screen == "Settings" and board._settings_tab == settings_mod.ACCOUNT, \
+                (board.screen, board._settings_tab)
+            assert fills == [settings_mod.ACCOUNT], ("one press, one build", fills)
+            labels = [w.itemcget(w._label, "text")
+                      for w in board.parts["account_strip"].winfo_children() if hasattr(w, "_label")]
+            assert board._account_asking == "everywhere" and \
+                labels == ["Stay signed in", "Sign out of every PC"], labels
+            account["lock"] = waiting
+
             # the same two calls anyone might still make in one callback
             board.nav._hit("Home")
             board._settings_tab = settings_mod.GENERAL
@@ -22657,6 +22680,46 @@ def test_the_plain_words_name_lines_the_file_has() -> None:
                             (row.path, row.names, setting.choices)
     assert seen == settings_mod.friendly_paths()
     assert settings_mod.groups_for("Everything") == ()
+
+
+def test_every_settings_path_a_person_reads_names_a_real_tab() -> None:
+    """Every "Settings > X" the app SAYS — a string it shows, not a
+    comment or a docstring — names a tab the Settings place draws, and
+    the step after a tab is never another tab. The Store walk of
+    2026-10-03: the wizard's lock card sent him to "Settings > Privacy >
+    Account", he went to Privacy and found nothing (Account has been a
+    tab of its own since 2026-09-22), and the tour's last card still
+    said "Settings > The app". Windows' own pages ("Windows Settings >
+    Time & Language", "Settings > Privacy & security") are not ours."""
+    import ast
+    import settings as settings_mod
+
+    tabs = {tab.name for tab in settings_mod.TABS}
+    windows = {"Apps", "Privacy & security", "System", "Time & Language",
+               "Languages & input", "Bluetooth & devices"}
+    known = sorted(tabs | windows, key=len, reverse=True)
+    pattern = re.compile(r"(Windows )?Settings\s*[>›]\s*("
+                         + "|".join(re.escape(k) for k in known)
+                         + r"|[A-Z][A-Za-z]*)(?:\s*[>›]\s*([A-Z][A-Za-z]*))?")
+    root = Path(__file__).resolve().parent
+    files = [p for p in sorted(root.glob("*.py")) if not p.name.startswith("tests")]
+    files += sorted((root / "skin").glob("*.py")) + sorted((root / "transcribers").glob("*.py"))
+    wrong: list[str] = []
+    for path in files:
+        tree = ast.parse(path.read_text("utf-8"))
+        prose = {id(n.value) for n in ast.walk(tree)
+                 if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)) \
+                    or id(node) in prose:
+                continue
+            for m in pattern.finditer(node.value):
+                windows_own, tab, then = m.group(1), m.group(2), m.group(3)
+                if windows_own:
+                    continue
+                if tab not in known or (tab in tabs and then in tabs):
+                    wrong.append(f"{path.name}:{node.lineno}: {m.group(0)!r}")
+    assert not wrong, f"not a tab the Settings place draws ({sorted(tabs)}): {wrong}"
 
 
 def test_the_screen_draws_the_short_list_and_the_file_keeps_the_rest() -> None:
@@ -41385,6 +41448,150 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second():
+    """The hour after Sign out of every PC (measured on the live project
+    2026-10-03: the other copy worked 58 minutes on its access token and
+    approved two requests to join). sign_out(everywhere) ends the OTHER
+    sessions first (scope=others), then broadcasts `signed_out` on the
+    account's private topic under this PC's own, still-live session —
+    the device id and nothing else — then ends its own (scope=local);
+    this PC only is one call and no broadcast; a server that refuses
+    `others` gets the old global sign-out. A running copy that hears
+    `signed_out` from another device asks the server at once: a session
+    still standing is refreshed and stays, a refused refresh signs it
+    out (the lock's hook runs) and closes the socket — in well under the
+    two seconds, not at the end of the token's hour. Its own word is
+    ignored. A copy that starts after the sign-out asks the server the
+    moment the channel refuses its join, once per run of refusals."""
+    import net as net_mod
+    import sb
+    import secretstore
+
+    def signed_in(fake):
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+
+    def wire(fake, since):
+        return [(c["path"], c["query"].get("scope")) for c in fake.calls[since:]
+                if c["path"] in ("auth/v1/logout", "realtime/v1/api/broadcast")]
+
+    gone: list[str] = []
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), \
+                _patched(sb, "LIVE_HEARTBEAT_S", 30.0), _patched(sb, "LIVE_RETRY_S", (0.2,)), \
+                _patched(sb, "LIVE_ENABLED", True), \
+                _patched(sb, "SIGNED_OUT_HOOKS", [lambda: gone.append("locked")]):
+            mine = sb.device_id()
+            other = "99999999-8888-7777-6666-555555555555"
+            # 1. every PC: the others, the word, then this one
+            signed_in(fake)
+            n = len(fake.calls)
+            sb.sign_out(everywhere=True)
+            assert wire(fake, n) == [("auth/v1/logout", "others"), ("realtime/v1/api/broadcast", None),
+                                     ("auth/v1/logout", "local")], wire(fake, n)
+            msg = fake.broadcasts[-1]["messages"][0]
+            assert msg == {"topic": f"user:{fake.UID}", "event": "signed_out", "private": True,
+                           "payload": {"device": mine}}, msg
+            assert not sb.signed_in() and gone == ["locked"], gone
+            # 2. this PC only: one call, nobody told
+            signed_in(fake)
+            n, told = len(fake.calls), len(fake.broadcasts)
+            sb.sign_out(everywhere=False)
+            assert wire(fake, n) == [("auth/v1/logout", "local")] and len(fake.broadcasts) == told
+            # 3. a server that refuses `others`: every session at once, as before
+            signed_in(fake)
+            n, told = len(fake.calls), len(fake.broadcasts)
+            fake.script["auth/v1/logout"] = [(400, b'{"msg":"bad scope"}')]
+            sb.sign_out(everywhere=True)
+            assert wire(fake, n) == [("auth/v1/logout", "others"), ("auth/v1/logout", "global")], wire(fake, n)
+            assert len(fake.broadcasts) == told and not sb.signed_in()
+
+            # 4. the copy that hears it
+            signed_in(fake)
+            gone.clear()
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+            server = _FakeRealtime()
+            with _patched(net_mod, "_ws_connect", server.connect):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert server.joined.wait(5), "no join"
+
+                def word(device):
+                    server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                                 "payload": {"type": "broadcast", "event": "signed_out",
+                                             "payload": {"device": device}}})
+
+                # its own: nothing asked
+                refreshes = fake.refreshes
+                word(mine)
+                time.sleep(0.5)
+                assert fake.refreshes == refreshes and sb.signed_in()
+                # another PC's, this session still standing: one refresh, still in
+                word(other)
+                assert _until(lambda: fake.refreshes == refreshes + 1), "the server was not asked"
+                assert sb.signed_in() and gone == [] and not server.closed.is_set()
+                # another PC's, this session ended on the server: out at once
+                fake.script["auth/v1/token"] = [(400, b'{"error":"invalid_grant","error_description":'
+                                                      b'"Invalid Refresh Token: Refresh Token Not Found"}')]
+                t0 = time.monotonic()
+                word(other)
+                assert _until(lambda: not sb.signed_in()), "the copy stayed signed in"
+                took = time.monotonic() - t0
+                assert took < 2.0, f"{took:.2f} s from the word to the lock"
+                assert gone == ["locked"], gone
+                assert server.closed.wait(5), "the socket stayed open on a session that is gone"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+
+            # 5. a copy that starts AFTER the sign-out: the channel refuses its
+            #    join (the server's check, 0006) and it asks the server then
+            #    and there — measured 2026-10-03, a reopened Dev was refused
+            #    at 4 s and still waited for the worker's first pass, 30 s
+            #    after its start. Once per run of refusals: a channel refused
+            #    for another reason does not cost a refresh at every retry.
+            made: list = []
+
+            def refusing(host, port, timeout_s):
+                made.append(_FakeRealtime(refuse_join="Unauthorized: You do not have permissions "
+                                                      "to read from this Channel topic"))
+                return made[-1].connect(host, port, timeout_s)
+
+            signed_in(fake)
+            gone.clear()
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+            with _patched(net_mod, "_ws_connect", refusing):
+                # the session still stands: one question, however many refusals
+                refreshes = fake.refreshes
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: fake.refreshes == refreshes + 1), "a refused join asked nothing"
+                assert _until(lambda: len(made) >= 3), len(made)
+                assert fake.refreshes == refreshes + 1 and sb.signed_in(), fake.refreshes - refreshes
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+                # the session is gone: out right after the refusal
+                sb._live_stop.clear()
+                fake.script["auth/v1/token"] = [(400, b'{"error":"invalid_grant","error_description":'
+                                                      b'"Invalid Refresh Token: Refresh Token Not Found"}')]
+                t0 = time.monotonic()
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: not sb.signed_in()), "a refused join left the copy signed in"
+                took = time.monotonic() - t0
+                assert took < 2.0, f"{took:.2f} s from the start to the lock"
+                assert gone == ["locked"], gone
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+
+
 class _pc:
     """One PC of an account inside a test: its own data folders (the
     session and the account key in secrets\\, the cursors in sync\\, the
@@ -41632,7 +41839,10 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 assert vault.key(fake.UID) is None
                 assert len(fake.tables["history"]) == 1, "B pushed while waiting"
                 req = fake.tables["pairings"][0]
-                assert req["device_name"] == "laptop" and req["code"] == lock["code"].replace("-", "")[:8] \
+                # the PC's name and which copy on it asks (the Store walk,
+                # 2026-10-03: two copies on one PC were both "YOAV")
+                b_name = f"laptop · {sb.copy_name()}"
+                assert req["device_name"] == b_name and req["code"] == lock["code"].replace("-", "")[:8] \
                     and req["applicant"].startswith("p1.") and req.get("handed") is None, req
                 assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"])
                 assert set(req) == {"id", "user_id", "device_id", "device_name", "code", "applicant", "updated_at"}
@@ -41648,13 +41858,13 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
             with a:
                 assert asked == [], "a hook before the request was read"
                 pending = sb.pending_pairings()
-                assert [(p["name"], p["code"]) for p in pending] == [("laptop", b_code)], pending
+                assert [(p["name"], p["code"]) for p in pending] == [(b_name, b_code)], pending
                 assert [p["code"] for p in asked] == [b_code], asked
                 sb.pending_pairings()
                 assert len(asked) == 1, "the hook was called twice for one request"
-                assert sb.status()["lock"]["pending"][0]["name"] == "laptop"
+                assert sb.status()["lock"]["pending"][0]["name"] == b_name
                 name = sb.approve_pairing(pending[0]["id"])
-                assert name == "laptop"
+                assert name == b_name
                 req = fake.tables["pairings"][0]
                 assert req["handed"].startswith("w1.") and req["approved_at"], req
                 assert sb.status()["lock"]["pending"] == []
@@ -41876,7 +42086,7 @@ def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
                     raise AssertionError("approved a request whose key changed after it was shown")
                 assert row.get("handed") is None
                 row["applicant"] = real["applicant"]
-                assert sb.approve_pairing(real["id"]) == "laptop"
+                assert sb.approve_pairing(real["id"]) == f"laptop · {sb.copy_name()}"
             with b:
                 sb.sync_now()
                 assert sb.status()["lock"]["state"] == "have", sb.status()["lock"]
@@ -41884,6 +42094,36 @@ def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
         vault.drop("twin")
         for pc in (a, b):
             pc.gone()
+
+
+def test_a_request_to_join_says_which_copy_asks():
+    """The Store walk, 2026-10-03: the Store copy asked to join and the
+    Dev copy's Home said "Yoav asks to join your account" — this PC is
+    called YOAV, and so were both copies on it. A request carries the
+    PC's name and which DeskIT on it is asking; the column holds 40
+    characters (0004_account_lock.sql), so a long PC name gives way and
+    the copy's words stay whole."""
+    import sb
+
+    sql = (REPO / "supabase" / "migrations" / "0004_account_lock.sql").read_text("utf-8")
+    assert "char_length(device_name) <= 40" in sql, "the column's limit moved: request_name must follow it"
+    cases = [
+        ({"DEVELOPER": True, "PACKAGED": False, "CHANNEL": "github"}, "DeskIT Dev"),
+        ({"DEVELOPER": False, "PACKAGED": True, "CHANNEL": "github"}, "DeskIT App (Store)"),
+        ({"DEVELOPER": False, "PACKAGED": False, "CHANNEL": "store"}, "DeskIT App (Store)"),
+        ({"DEVELOPER": False, "PACKAGED": False, "CHANNEL": "winget"}, "DeskIT (winget)"),
+        ({"DEVELOPER": False, "PACKAGED": False, "CHANNEL": "github"}, "DeskIT (website)"),
+    ]
+    for flags, copy in cases:
+        with contextlib.ExitStack() as stack:
+            for name, value in flags.items():
+                stack.enter_context(_patched(paths, name, value))
+            assert sb.copy_name() == copy, (flags, sb.copy_name())
+            with _patched(sb, "device_name", lambda: "YOAV"):
+                assert sb.request_name() == f"YOAV · {copy}", sb.request_name()
+            with _patched(sb, "device_name", lambda: "DESKTOP-" + "X" * 32):
+                long = sb.request_name()
+                assert len(long) <= 40 and long.endswith(f" · {copy}"), long
 
 
 def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him():
@@ -42055,12 +42295,13 @@ def test_a_changed_lock_is_a_row_on_home_and_one_knock():
     account["lock"]["changed"]["refused"] = True
     rows = board._waiting_lock()
     assert len(rows) == 1 and rows[0]["text"].startswith("Not you"), rows
-    assert [b[0] for b in rows[0]["buttons"]] == ["Put my lock back", "Sign out"]
+    assert [b[0] for b in rows[0]["buttons"]] == ["Put my lock back", "Sign out of every PC"]
+    assert "every PC" in rows[0]["note"] and "Settings > Account:" not in rows[0]["note"], rows[0]["note"]
     rows[0]["buttons"][0][2]()
     assert sent[-1] == ("lock_restore", {})
     assert rows[0]["buttons"][1][2] == board._lock_go_account, "Sign out does more than show the way"
     account["lock"]["changed"]["mine"] = ""        # its key was set aside already: nothing to put back
-    assert [b[0] for b in board._waiting_lock()[0]["buttons"]] == ["Sign out"]
+    assert [b[0] for b in board._waiting_lock()[0]["buttons"]] == ["Sign out of every PC"]
     account["lock"] = {"state": "have", "id": "d8de920c", "code": "", "recovery": True, "error": "",
                        "changed": None,
                        "pending": [{"id": "req-9", "name": "laptop", "code": "", "twins": 2, "created_at": ""}]}
@@ -42102,6 +42343,56 @@ def test_a_changed_lock_is_a_row_on_home_and_one_knock():
     with _patched(sb, "configured", lambda: True):
         reply = app._account_command("lock_answer", kind="maybe")
         assert not reply["ok"] and "yes or no" in reply["error"], reply
+
+
+def test_a_join_request_is_one_row_on_home():
+    """The Store walk, 2026-10-03: Home showed the request to join twice —
+    the lock's row "… asks to join your account — its screen must show
+    GJXRR-RDPG7 [Approve] [Not now]" and, right under it, the app's own
+    knock for the same request, "… asks to join your account [Go there]
+    ×". While the lock row asks (a request waiting, or the lock changed
+    somewhere else), the pile drops the notification whose source is
+    `account`; every other notification stays, and with no app to read
+    the lock from the knock is the one row there is and stays too."""
+    import dashboard
+
+    class Store:
+        def recent(self, n):
+            return [{"id": "n1", "source": "account", "kind": "input", "seen": False,
+                     "title": "YOAV · DeskIT App (Store) asks to join your account",
+                     "body": "Its screen must show GJXRR-RDPG7.", "at": "2026-10-03T15:20:00"},
+                    {"id": "n2", "source": "claude-code", "kind": "done", "seen": False,
+                     "title": "Claude finished", "body": "", "at": "2026-10-03T15:21:00"}]
+
+    board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    for source in ("_waiting_consent", "_waiting_update", "_waiting_hardware", "_waiting_review"):
+        setattr(board, source, lambda: [])
+    board._notify_store = lambda: Store()
+    board._lock_do = lambda do, said, **args: None
+    board.running = True
+    ask = {"id": "req-9", "name": "YOAV · DeskIT App (Store)", "code": "GJXRR-RDPG7", "created_at": ""}
+    lock = {"state": "have", "id": "d8de920c", "code": "", "recovery": True, "error": "",
+            "changed": None, "pending": [ask]}
+    board.status = {"account": {"signed_in": True, "lock": lock}}
+
+    def kinds():
+        return [(row["kind"], row.get("source", "")) for row in board._waiting_items()]
+    assert kinds().count(("lock", "")) == 1 and ("notify", "account") not in kinds(), kinds()
+    assert ("notify", "claude-code") in kinds(), "another notification went with it"
+    lock_row = next(row for row in board._waiting_items() if row["kind"] == "lock")
+    assert lock_row["text"].startswith("YOAV · DeskIT App (Store) asks to join"), lock_row["text"]
+    # the lock changed somewhere else: the same — its row asks, the knock goes
+    board.status["account"]["lock"] = dict(lock, pending=[], state="changed",
+                                           changed={"server": "00ff00ff", "mine": "d8de920c",
+                                                    "refused": False})
+    assert ("notify", "account") not in kinds(), kinds()
+    # answered: no lock row asks, and the knock is the app's to take down
+    board.status["account"]["lock"] = dict(lock, pending=[])
+    assert ("notify", "account") in kinds(), kinds()
+    # no app running: nothing to read the lock from, the knock is the row
+    board.status["account"]["lock"] = lock
+    board.running = False
+    assert ("notify", "account") in kinds(), kinds()
 
 
 def test_sb_imports_are_narrow():
@@ -42427,6 +42718,89 @@ def test_migration_has_no_key_column():
     assert fn.count("revoke all on function public.delete_me() from anon;") == 1
     assert "report_replies" not in whole.replace("no report_replies table", "")
     assert "storage.foldername(name))[1] = (select auth.uid())::text" in text
+
+
+def test_a_signed_out_session_is_refused_at_the_door():
+    """0006 (2026-10-03): an access token is good until its hour is over
+    whatever happened to its session — measured on the live project, a
+    copy worked 58 minutes past Sign out of every PC and approved two
+    requests to join. private.session_ok() looks the token's session_id
+    up in auth.sessions (security definer, an empty search_path, plpgsql:
+    one SQL CASE failed on a non-uuid id when it was probed, the planner
+    casting the index key whatever the branch); a token with no session
+    (anon, service role) passes; the Data API runs check_request() before
+    every request (pgrst.db_pre_request) and a session that is gone is
+    401; Realtime and Storage never run the pre-request, so EVERY policy
+    on realtime.messages and storage.objects, by name, carries the check
+    and keeps what it had; the request roles may execute both functions
+    and PUBLIC may not; and the app's side of a 401 is the lock — one
+    refresh, refused, signed out (8.8)."""
+    import sb
+    import secretstore
+    whole = _migrations_text()
+    sql = (REPO / "supabase" / "migrations" / "0006_signed_out_means_out.sql").read_text("utf-8")
+    fn = sql[sql.index("create or replace function private.session_ok()"):]
+    fn = fn[:fn.index("$$;") + 3]
+    head = fn.split("$$")[0]
+    assert "language plpgsql" in head and "security definer" in head and "set search_path = ''" in head, head
+    assert "auth.jwt() ->> 'session_id'" in fn and "from auth.sessions s" in fn and "s.id = sid::uuid" in fn
+    assert "return true;" in fn.split("sid !~")[0], "a token with no session must pass"
+    req = sql[sql.index("create or replace function private.check_request()"):]
+    req = req[:req.index("$$;") + 3]
+    assert "if not private.session_ok() then" in req and "raise sqlstate 'PT401'" in req, req
+    assert "alter role authenticator set pgrst.db_pre_request = 'private.check_request';" in sql
+    assert "notify pgrst, 'reload config';" in sql
+    assert "revoke all on schema private from public;" in sql
+    for name in ("session_ok", "check_request"):
+        assert re.search(rf"revoke all on function private\.{name}\(\)\s+from public;", sql), name
+        assert re.search(rf"grant execute on function private\.{name}\(\)\s+to anon, authenticated, service_role;",
+                         sql), name
+    created = set(re.findall(r"create policy (\w+) on (realtime\.messages|storage\.objects)", whole))
+    assert {n for n, _t in created} == {"live_topic_read", "live_topic_write", "reports_objects_insert",
+                                        "reports_objects_select", "reports_objects_delete"}, created
+    for name, table in created:
+        m = re.search(rf"alter policy {name} on {re.escape(table)}\s+(?:using|with check) \((.*?)\);\s*$",
+                      sql, re.S | re.M)
+        assert m and "(select private.session_ok())" in m.group(1), name
+        assert "(select auth.uid())::text" in m.group(1), name      # still the person's own topic/folder
+    # the app's side: a 401 is one refresh, and a refused refresh is the lock
+    gone: list[str] = []
+    with _fixture_project() as fake, _consented("account"), \
+            _patched(sb, "SIGNED_OUT_HOOKS", [lambda: gone.append("locked")]):
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        fake.script["rest/v1/profiles"] = [(401, b'{"code":"PT401","message":"this session was signed out"}')]
+        fake.script["auth/v1/token"] = [(400, b'{"error_description":"Invalid Refresh Token: Refresh Token Not Found"}')]
+        try:
+            sb._rest("GET", "profiles", purpose="account")
+        except sb.AccountError:
+            pass
+        else:
+            raise AssertionError("a session the server refused was not an error")
+        assert not sb.signed_in() and gone == ["locked"], gone
+        # ...and the sign-in card says why in plain words, the server's
+        # line going to the log
+        assert sb.status()["last_error"] == sb.GONE_ELSEWHERE, sb.status()["last_error"]
+        # a sync pass that meets it does not put its stores' echo there
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        fake.script["rest/v1/"] = [(401, b'{"code":"PT401"}')]
+        fake.script["auth/v1/token"] = [(400, b'{"msg":"Invalid Refresh Token: Refresh Token Not Found"}')]
+        with _consented("settings_sync", "history_sync"):
+            out = sb.sync_now(reason="test")
+        assert not sb.signed_in() and any(v.startswith("error: ") for v in out.values()), out
+        assert sb.status()["last_error"] == sb.GONE_ELSEWHERE, sb.status()["last_error"]
+        # a refresh refused for another reason (an answer lost on a bad
+        # network, the token then "Already Used") does not blame another PC
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        fake.script["rest/v1/profiles"] = [(401, b'{"code":"PT401"}')]
+        fake.script["auth/v1/token"] = [(400, b'{"msg":"Invalid Refresh Token: Already Used"}')]
+        try:
+            sb._rest("GET", "profiles", purpose="account")
+        except sb.AccountError:
+            pass
+        assert not sb.signed_in() and sb.status()["last_error"] == sb.GONE_WORDS, sb.status()["last_error"]
 
 
 def test_redactor_patterns_match_migration():
@@ -43875,6 +44249,29 @@ def test_the_desk_is_a_landing_until_a_sign_in():
                         "account": {"configured": True, "signed_in": False,
                                     "busy": "", "last_error": "the browser never came back"}})
         assert "never came back" in board.parts["landing_line"].cget("text")
+        # signed out from another PC (2026-10-03): sb's plain sentence as
+        # it is, and the card as tall as what it says — the server's HTTP
+        # line used to wrap UNDER the paragraph, and the paragraph's last
+        # line under the card's edge (his screenshot)
+        def laid_out() -> None:
+            line, stored = board.parts["landing_line"], board.parts["landing_stored"]
+            card = board.parts["landing_card"]
+            line_bottom = board.LANDING_LINE_Y + (line.winfo_reqheight() if line.cget("text") else 0)
+            top = int(stored.place_info()["y"])
+            assert line_bottom <= top, (line_bottom, top)
+            assert top + stored.winfo_reqheight() <= card.h - 2 * 36, (top, stored.winfo_reqheight(), card.h)
+        laid_out()
+        board._refresh({"ok": True, "stage": "running", "locked": True,
+                        "account": {"configured": True, "signed_in": False,
+                                    "busy": "", "last_error": sb.GONE_ELSEWHERE}})
+        assert board.parts["landing_line"].cget("text") == sb.GONE_ELSEWHERE
+        laid_out()
+        board._refresh({"ok": True, "stage": "running", "locked": True,
+                        "account": {"configured": True, "signed_in": False, "busy": "",
+                                    "last_error": "the session could not be refreshed (HTTP 400: "
+                                                  "Invalid Refresh Token: Refresh Token Not Found)"}})
+        assert board.parts["landing_line"].winfo_reqheight() > 30, "the long line did not wrap"
+        laid_out()
         # the app's word: signed in — down onto Home, the places back
         board._refresh({"ok": True, "stage": "running", "locked": False,
                         "account": {"configured": True, "signed_in": True}})
@@ -43969,17 +44366,39 @@ def test_account_block_on_the_privacy_tab():
             board._paint_account()
             assert "person@example.com" in line.cget("text")
             assert "2 reports waiting" in board.parts["account_sub"].cget("text")
-            assert labels() == ["Sign out", "Delete my account"], labels()
+            assert labels() == ["Sign out", "Sign out of every PC", "Delete my account"], labels()
             sent: list = []
             board._ask = lambda command, then=None, **args: sent.append((command, args))
-            board.parts["account_strip"].winfo_children()[1]._command()
+            press = lambda i: board.parts["account_strip"].winfo_children()[i]._command()  # noqa: E731
+            press(2)
             assert board._account_asking and labels() == ["Keep it", "Delete"], labels()
             assert "Delete your account" in line.cget("text") and sent == []
-            board.parts["account_strip"].winfo_children()[0]._command()
+            press(0)
             assert not board._account_asking and labels()[0] == "Sign out"
+            # Sign out is this PC, at once; every PC asks first, and Stay
+            # signed in sends nothing (the Store walk, 2026-10-03)
+            press(0)
+            assert sent == [("account", {"do": "signout"})], sent
+            press(1)
+            assert labels() == ["Stay signed in", "Sign out of every PC"], labels()
+            assert line.cget("text").startswith("Sign out of every PC?") and len(sent) == 1
+            press(0)
+            assert not board._account_asking and len(sent) == 1, sent
+            press(1)
+            press(1)
+            assert sent[-1] == ("account", {"do": "signout_all"}) and not board._account_asking, sent
+            sent.clear()
+            board._paint_account()
             board.status["account"].update(anonymous=True, email="")
             board._paint_account()
-            assert labels() == ["Sign in with Google", "Sign out", "Delete my account"]
+            assert labels() == ["Sign in with Google", "Sign out", "Sign out of every PC",
+                                "Delete my account"], labels()
+            # the four sit inside the card's width
+            board.root.update_idletasks()
+            last = board.parts["account_strip"].winfo_children()[-1]
+            right = int(last.place_info()["x"]) + last.winfo_reqwidth()
+            assert right <= board.parts["account_strip"].winfo_reqwidth(), \
+                ("the last button runs past the card", right)
             # the shut sync rows: [Turn on] asks the app for that one card
             import privacy
             for kind in privacy.SYNC_KINDS + ("cloud_text",):
@@ -44030,6 +44449,20 @@ def test_account_command_over_the_pipe():
             assert reply["ok"]
             assert _until(lambda: not sb.signed_in()), \
                 "the sign-out thread did not finish"
+            # Sign out is THIS PC (the Store walk, 2026-10-03: the desk's
+            # Sign out on one copy locked the other); every PC is its own verb
+            outs = [c for c in fake.calls if c["path"] == "auth/v1/logout"]
+            assert [c["query"].get("scope") for c in outs] == ["local"], outs
+            reply = app._account_command("anonymous")
+            assert reply["ok"] and _until(sb.signed_in), reply
+            reply = app._account_command("signout_all")
+            assert reply["ok"] and "every PC" in reply["message"], reply
+            assert _until(lambda: not sb.signed_in()), "the sign-out thread did not finish"
+            # every PC: the others first, then this one (session-revoke,
+            # 2026-10-03 — the broadcast between them is
+            # test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second)
+            outs = [c for c in fake.calls if c["path"] == "auth/v1/logout"]
+            assert [c["query"].get("scope") for c in outs] == ["local", "others", "local"], outs
         with _patched(sb, "PROJECT_REF", ""):
             assert "not configured" in app._account_command("google")["error"]
 

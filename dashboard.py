@@ -2624,6 +2624,17 @@ class Dashboard:
         items += self._waiting_hardware()
         items += self._waiting_notify()
         items += self._waiting_review()
+        if self._lock_asks():
+            # The app's own knock for the same question (main._pairing_asked,
+            # the changed lock in _pairing_settled) is the card at the edge of
+            # the screen; on Home it was a second row under the lock's own —
+            # "asks to join your account [Go there]" right under "asks to
+            # join … [Approve] [Not now]" (the Store walk, 2026-10-03). The
+            # lock row answers it; the notification comes down with the
+            # answer (sb.LOCK_HOOKS). With no app to read the lock from, the
+            # knock stays the one row there is.
+            items = [row for row in items
+                     if not (row.get("kind") == "notify" and row.get("source") == "account")]
         items.sort(key=lambda row: row.get("at", 0.0), reverse=True)
         # ONE GOLD BUTTON PER SURFACE, across the whole pile and not per
         # row: with three proposals waiting, three lit Yes buttons are three
@@ -2817,7 +2828,7 @@ class Dashboard:
             # out of, so neither ends mid-word.
             rows.append({
                 "at": self._stamp_of(item.get("at", ""), "%Y-%m-%dT%H:%M:%S"),
-                "kind": "notify", "mark": "notify",
+                "kind": "notify", "mark": "notify", "source": str(item.get("source") or ""),
                 "mark_colour": {"done": ui.GREEN, "input": ui.ACCENT,
                                 "error": ui.RED}.get(
                     str(item.get("kind") or "info"),
@@ -7035,16 +7046,17 @@ class Dashboard:
     # ------------------------------------------------ the account (screen 16)
 
     def _account_block(self, scroller) -> None:
-        """ACCOUNT on Settings > Privacy (chapter 9 screen 16, D17, D31):
+        """ACCOUNT on Settings > Account (chapter 9 screen 16, D17, D31):
         who is signed in, when the last sync ran, and the buttons — Sign
-        in with Google, an anonymous account, Sign out, Delete
-        my account. Every press is a command to the RUNNING app over the
+        in with Google, an anonymous account, Sign out (this PC), Sign
+        out of every PC, Delete my account. Every press is a command to the RUNNING app over the
         pipe: this window is another process, and only the app holds the
         session (8.6). The line and the buttons follow status()["account"]
         on every poll (_paint_account), so a sign-in finishing in the
-        browser shows up here without a click. Delete asks first, the way
-        the Problems ✕ does — the question grows out of the card, and the
-        answer sits at the far end from the button that raised it."""
+        browser shows up here without a click. Delete and Sign out of every
+        PC ask first, the way the Problems ✕ did — the question grows out of
+        the card, and the answer sits at the far end from the button that
+        raised it."""
         # 36 above the strip for the two text lines, 30 for the buttons,
         # 18 of pad each side: the first build was 132 and cut the buttons
         # in half (his screenshot, 2026-09-18).
@@ -7065,7 +7077,7 @@ class Dashboard:
         self.parts["account_sub"] = sub
         self.parts["account_strip"] = strip
         self._account_seen = None
-        self._account_asking = False
+        self._account_asking = ""      # "" | "delete" | "everywhere": the question the card asks
         self._paint_account(force=True)
         scroller.bind_wheel(card)
 
@@ -7116,7 +7128,14 @@ class Dashboard:
             said_sub = " · ".join(bits)
             if info.get("last_error"):
                 said_sub = f"{info['last_error']}  ·  {said_sub}"
-            if self._account_asking:
+            if self._account_asking == "everywhere":
+                said = "Sign out of every PC? Each one, this one too, stops dictating " \
+                       "until you sign in on it again."
+                colour = ui.AMBER
+                buttons = [("Stay signed in", self._account_keep),
+                           ("Sign out of every PC",
+                            lambda: self._account_do("signout_all", "signing out of every PC"))]
+            elif self._account_asking:
                 said = "Delete your account on the server? Your reports, synced words, " \
                        "settings and history go with it. Your data on this PC stays."
                 colour = ui.AMBER
@@ -7131,7 +7150,11 @@ class Dashboard:
                 if info.get("anonymous"):
                     buttons.append(("Sign in with Google",
                                     lambda: self._account_do("google", "opening the browser")))
-                buttons += [("Sign out", lambda: self._account_do("signout", "signing out")),
+                # Sign out is THIS PC, the way Google's and Microsoft's is;
+                # every PC is its own button and asks first (the Store walk,
+                # 2026-10-03: one Sign out on the Store copy locked his Dev).
+                buttons += [("Sign out", lambda: self._account_do("signout", "signing out on this PC")),
+                            ("Sign out of every PC", self._account_ask_everywhere),
                             ("Delete my account", self._account_ask)]
         else:
             said = "none — sign in to keep your learned words, settings and history " \
@@ -7164,6 +7187,15 @@ class Dashboard:
         if not self.running:
             return {}
         return dict(((self.status.get("account") or {}).get("lock") or {}))
+
+    def _lock_asks(self) -> bool:
+        """Does the pile carry a lock row that asks — another PC waiting
+        to join, or the lock changed somewhere else? Those are the two
+        questions the app also knocks for (source "account")."""
+        lock = self._lock_info()
+        if not lock or not (self.status.get("account") or {}).get("signed_in"):
+            return False
+        return bool(lock.get("pending")) or lock.get("state") == "changed"
 
     def _lock_stat(self):
         """What the pile watches: the lock's state, the requests, and the
@@ -7285,8 +7317,9 @@ class Dashboard:
                     "eyebrow": "Your account", "eyebrow_right": False,
                     "text": f"Two requests say they are {name} — neither can be approved",
                     "note": f"One of them is not your PC. On {name}, sign out and sign in again to "
-                            "ask afresh. Nobody of yours asking right now? Sign out in Settings > "
-                            "Account — it signs out every PC and anyone else in your account.",
+                            "ask afresh. Nobody of yours asking right now? Settings > Account > "
+                            "Sign out of every PC — it ends every session of your account, "
+                            "anyone else's too.",
                     "buttons": [("Not now", "quiet",
                                  lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))],
                 })
@@ -7338,8 +7371,8 @@ class Dashboard:
         the conversation, nothing trusted silently. [It was me] asks to
         join the new lock (the old key is set aside, not deleted); [It
         wasn't me] keeps everything as it is and then offers the way
-        out: Sign out (every session, a stolen one too) and Put my lock
-        back."""
+        out: Sign out of every PC (every session, a stolen one too) and
+        Put my lock back."""
         ch = lock.get("changed") or {}
         if lock.get("state") != "changed":
             return []
@@ -7357,7 +7390,7 @@ class Dashboard:
                             ("It was me", "quiet",
                              lambda: self._lock_do("lock_answer", "asked", kind="yes"))],
             }]
-        buttons = [("Sign out", "quiet", self._lock_go_account)]
+        buttons = [("Sign out of every PC", "quiet", self._lock_go_account)]
         if ch.get("mine"):                 # a key here to put back (not one set aside already)
             buttons.insert(0, ("Put my lock back", "gold",
                                lambda: self._lock_do("lock_restore", "put back")))
@@ -7365,18 +7398,25 @@ class Dashboard:
             "at": now + 3, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
             "eyebrow": "Your account", "eyebrow_right": False,
             "text": "Not you — this PC kept its key. What you said and your keys stay paused",
-            "note": "Sign out in Settings > Account: it signs out every PC of yours and anyone "
-                    "else in your account. Sign in again here, then put your lock back — "
-                    "syncing starts again under this PC's key.",
+            "note": "Sign out of every PC ends every session of your account, anyone else's "
+                    "too. Sign in again here, then put your lock back — syncing starts again "
+                    "under this PC's key.",
             "buttons": buttons,
         }]
 
     def _lock_go_account(self) -> None:
-        """The changed-lock row's [Sign out]: Settings > Account, where
-        Sign out is — one press away, never pressed for him."""
-        self._show("Settings")
-        self._settings_go("Account")
-        self._finish_settings()
+        """The changed-lock row's [Sign out of every PC]: Settings >
+        Account with the card already asking "Sign out of every PC?" —
+        one press away, never pressed for him. ONE switch, the tab set
+        before it and the question put up under its cover, the way
+        _lock_go_type does it (two rebuilds in one press flash a third
+        screen)."""
+        self._settings_tab = settings_mod.ACCOUNT
+
+        def then() -> None:
+            self._finish_settings()
+            self._account_ask_everywhere()
+        self._show("Settings", then=then)
 
     def _lock_go_type(self) -> None:
         """The pile's [Type the recovery key]: the lock card with its
@@ -7558,8 +7598,8 @@ class Dashboard:
                            ("It was me", lambda: self._lock_do("lock_answer", "asked", kind="yes"))]
             else:
                 said = "Not you — this PC kept its key; what you said and your keys stay paused."
-                said_sub = ("Sign out above: it signs out every PC of yours and anyone else in "
-                            "your account. Sign in again, then put your lock back.")
+                said_sub = ("Sign out of every PC, above: it ends every session of your account, "
+                            "anyone else's too. Sign in again, then put your lock back.")
                 buttons = ([("Put my lock back", lambda: self._lock_do("lock_restore", "put back"))]
                            if ch.get("mine") else [])
             if ch.get("server"):
@@ -7696,15 +7736,19 @@ class Dashboard:
         self._paint_lock(force=True)
 
     def _account_ask(self) -> None:
-        self._account_asking = True
+        self._account_asking = "delete"
+        self._paint_account(force=True)
+
+    def _account_ask_everywhere(self) -> None:
+        self._account_asking = "everywhere"
         self._paint_account(force=True)
 
     def _account_keep(self) -> None:
-        self._account_asking = False
+        self._account_asking = ""
         self._paint_account(force=True)
 
     def _account_do(self, do: str, said: str, **args) -> None:
-        self._account_asking = False
+        self._account_asking = ""
         if not self.running:
             self._note("start dictation first — the account lives in the running app")
             return
@@ -9287,12 +9331,41 @@ class Dashboard:
         p["landing_line"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
                                      font=(ui.UI, 10), wraplength=inner,
                                      justify="left", anchor="w")
-        p["landing_line"].place(x=0, y=220)
-        tk.Label(body, text=self.LANDING_STORED, bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8), wraplength=inner, justify="left",
-                 anchor="w").place(x=0, y=250)
+        p["landing_line"].place(x=0, y=self.LANDING_LINE_Y)
+        p["landing_stored"] = tk.Label(body, text=self.LANDING_STORED, bg=ui.CARD,
+                                       fg=ui.FAINT, font=(ui.UI, 8), wraplength=inner,
+                                       justify="left", anchor="w")
+        p["landing_card"] = card
         self._landing_seen = None
         self._paint_landing()
+        self._lay_landing()
+
+    #: Where the line under the button starts, and the least room it
+    #: keeps above the paragraph when it is empty.
+    LANDING_LINE_Y, LANDING_LINE_ROOM = 220, 30
+
+    def _lay_landing(self) -> None:
+        """The card as tall as what it says: the line under the button
+        takes the lines its words need, the paragraph moves down under
+        it, and the card grows to the paragraph's last line. Both used to
+        sit at fixed heights in a fixed card (2026-10-03, his screenshot):
+        a reason that wrapped went under the paragraph, and the
+        paragraph's last line under the card's edge. A label's requested
+        height is known the moment its text is set, so nothing here
+        waits for a paint."""
+        p = self.parts
+        card, line, stored = p.get("landing_card"), p.get("landing_line"), p.get("landing_stored")
+        if card is None or line is None or stored is None or not line.winfo_exists():
+            return
+        room = self.LANDING_LINE_ROOM
+        if line.cget("text"):
+            room = max(room, line.winfo_reqheight() + 10)
+        y = self.LANDING_LINE_Y + room
+        stored.place(x=0, y=y)
+        h = y + stored.winfo_reqheight() + 2 * 36 + 6
+        if h != card.h:
+            card.resize(h)
+            card.place(x=(W - card.w) // 2, y=(H - TOP - h) // 2 - 20)
 
     def _paint_landing(self) -> None:
         """Every poll: the line under the button follows the app's
@@ -9309,12 +9382,26 @@ class Dashboard:
             said, colour = ("Waiting for Google's sign-in page in your browser…",
                             ui.DIM)
         elif info.get("last_error"):
-            said, colour = f"Not signed in: {info['last_error']}"[:200], ui.AMBER
+            said = str(info["last_error"])
+            if said not in self._gone_words():
+                said = f"Not signed in: {said}"[:200]    # a sign-in that failed
+            colour = ui.AMBER
         else:
             said, colour = "", ui.DIM
         if (said, colour) != getattr(self, "_landing_seen", None):
             self._landing_seen = (said, colour)
             line.configure(text=said, fg=colour)
+            self._lay_landing()
+
+    @staticmethod
+    def _gone_words() -> tuple[str, ...]:
+        """sb's own sentences for a session that ended elsewhere — said
+        as they are, without "Not signed in:" in front."""
+        try:
+            import sb
+            return (sb.GONE_ELSEWHERE, sb.GONE_WORDS)
+        except Exception:                                    # noqa: BLE001
+            return ()
 
     def _landing_sign_in(self) -> None:
         """[Sign in with Google] on the landing. Through the running app
@@ -9335,6 +9422,7 @@ class Dashboard:
         if line is not None:
             line.configure(text="Waiting for Google's sign-in page in your browser…",
                            fg=ui.DIM)
+            self._lay_landing()
 
         def work() -> None:
             try:
@@ -9358,6 +9446,7 @@ class Dashboard:
         else:
             line.configure(text=(f"Signed in as {who.get('email')}" if who and who.get("email")
                                  else "Signed in"), fg=ui.GREEN)
+        self._lay_landing()
         # the poll takes the landing down on its next tick; no waiting
         self._refresh(None if not self.status else self.status)
 
