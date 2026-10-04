@@ -118,6 +118,10 @@ hebrew.KeepData=&להשאיר
 hebrew.DeleteData=&למחוק
 hebrew.Downgrade=DeskIT %1 כבר מותקן; קובץ ההתקנה הזה הוא גרסה %2.%n%nכדי לחזור לגרסה ישנה יותר, הסר את DeskIT ואז הפעל את קובץ ההתקנה הישן (הקישור נמצא בהערות הגרסה).
 
+; One DeskIT per PC: the Store copy is asked about before anything is
+; installed (its words, its kernel32 call and OneCopyOk are in there).
+#include "one_copy.iss"
+
 [Files]
 ; Everything the build staged: python\, app\, MANIFEST.sha256. ignoreversion
 ; because .py files carry no version resource and must always be replaced.
@@ -236,7 +240,8 @@ begin
     Result := '';
 end;
 
-{ A downgrade is refused by name (D21: rollback is uninstall, then the
+{ The Store copy first (one_copy.iss: one DeskIT per PC), then a
+  downgrade is refused by name (D21: rollback is uninstall, then the
   older installer, whose link the release notes carry). }
 function InitializeSetup: Boolean;
 var
@@ -244,6 +249,11 @@ var
 begin
   Result := True;
   Have := InstalledVersion;
+  if not OneCopyOk(Have <> '') then
+  begin
+    Result := False;
+    Exit;
+  end;
   if (Have <> '') and (VersionNumber(Have) > VersionNumber('{#Version}')) then
   begin
     SuppressibleMsgBox(FmtMessage(CustomMessage('Downgrade'), [Have, '{#Version}']), mbError, MB_OK, IDOK);
