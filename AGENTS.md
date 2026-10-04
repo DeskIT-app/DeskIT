@@ -332,8 +332,10 @@ exactly what classic did.
   Anyone who trusted the old line moved dictation onto the slow path.
 - Ollama at `http://127.0.0.1:11434` — **127.0.0.1, never localhost**
   (localhost resolves ::1 first and costs ~2 s of refused connection).
-- Keys: Windows Credential Manager first (`DeskIT/groq`, `DeskIT/gemini`
-  — `main.py --set-key groq`, `--keys` lists what is where), then
+- Keys: Windows Credential Manager first (`<prefix>/groq`, `<prefix>/gemini`
+  — `main.py --set-key groq`, `--keys` lists what is where; the prefix is
+  the COPY's own since 2026-10-04: `DeskIT.dev/` in this checkout,
+  `DeskIT/` for the released app, website, winget and Store alike), then
   `DESKIT_GROQ_API_KEY` / `DESKIT_GEMINI_API_KEY` in the environment, then
   the gitignored `.env` beside `main.py` — read in THIS checkout only
   (portable/developer mode). `secretstore.py` is the one reader; every
@@ -459,6 +461,32 @@ exactly what classic did.
   key use the `DeskIT.test/` Credential Manager prefix (`DESKIT_HOME`
   selects it) or the DPAPI files under the tests' scratch home — a test
   that touches `DeskIT/groq` is a test that can delete the owner's key.
+  **And `DeskIT.stranger/` is a real key too**: the Stranger
+  (`dev\stranger.py`) is signed in to the owner's account, its vault
+  pulls his keys into that prefix, and a key emptied there is pushed as
+  a removal to every PC. Until 2026-10-03 it shared `DeskIT.test/` with
+  the suite, and a suite run deleted its synced Groq key (the e2e key
+  test runs `--delete-key` as a stranger copy). `tests.py` now sets
+  `DESKIT_SUITE=1` before its first import and every child inherits
+  it; a marked process is on `DeskIT.test/` even as a stranger. A test
+  that builds a child's environment from scratch must carry the mark.
+  **And no two copies share a slot** (2026-10-04, `secretstore.prefix_for`).
+  Until then the Dev checkout and the released app both used
+  `DeskIT/groq`: on 2026-10-03 the Store copy's wizard, signed in to a
+  TEST account, saved that account's key over the one the Dev used; the
+  Dev's next vault pass (15:38:40, "vault pulled 0, pushed 1") sealed the
+  foreign key into the owner's account and the Stranger pulled it
+  (16:36:28); the test key was deleted at console.groq.com and all three
+  got 401 from 20:09 on, silently. The checkout is `DeskIT.dev/`; the
+  released app is `DeskIT/` however it was downloaded — the website's,
+  winget's and the Store's are ONE app, never two copies on one PC (the
+  owner, 2026-10-04), so `prefix_for` does not ask how a copy came. A new kind of
+  copy gets a prefix of its own in `prefix_for`, and the vault cursor keeps
+  one record per prefix (`sb._sync_vault`, `vault_slots`) — a slot that is
+  new and empty must read as a fresh PC, never as "the key was removed".
+  A process carrying DESKIT_SUITE is on `DeskIT.test/` with or without a
+  hatch, so an in-process test that forgets the fixture can no longer
+  reach the checkout's own slot.
 - **Every personal-store path comes from `paths.py`, never from
   `Path(__file__)`.** Since 2026-09-17 the app has two roots: `APP_DIR`
   (code, read-only once installed) and `DATA_DIR` (everything a person
@@ -1627,6 +1655,6 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `.github/workflows/supabase-keepalive.yml` | the weekly knock that keeps the Free project from pausing (8.9): one GET to `/rest/v1/profiles` with the publishable key from a repository VARIABLE; green and silent while the variables are not set |
 | `tests.py` | the product suite — hundreds of plain-assert test functions, `NEEDS_SCREEN`, `--no-screen`. Not the file you run |
 | `dev\tests_ops.py` | the owner's suite: the nightly run, the git card, the routine's docs — imports `tests.py`'s fixtures, runs only in this checkout |
-| `dev\stranger.py` | the stranger's first run from THIS checkout: `DESKIT_STRANGER=1` beside a `DESKIT_HOME` of its own (`paths.STRANGER`) makes the checkout's code an installed copy — neither `DEVELOPER` nor `PORTABLE`, the model absent under the home, no `.env`, no bare key name, the `DeskIT.test/` store, kernel names with `.test`, port 8758, `APP_ID` `DeskIT.Test`, the Run value under `HKCU\Software\DeskIT.test\Run` and the Claude hook in the home's `claude-settings.json`, so the owner's hook, Run value and data are never touched. Plain = a fresh person with the downloads kept; `--all` the true first run; `--keep` only forgets `setup.done`; `--stop`; `--shots D` photographs the first window on the hidden desktop. It fakes nothing else: the mic, the probe, the downloads, the account page and the hotkeys are real (the copy answers the dev copy's keys while both run). `test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy` holds the flags |
+| `dev\stranger.py` | the stranger's first run from THIS checkout: `DESKIT_STRANGER=1` beside a `DESKIT_HOME` of its own (`paths.STRANGER`) makes the checkout's code an installed copy — neither `DEVELOPER` nor `PORTABLE`, the model absent under the home, no `.env`, no bare key name, the `DeskIT.stranger/` store (its own — the suite's children stay on `DeskIT.test/`), kernel names with `.test`, port 8758, `APP_ID` `DeskIT.Test`, the Run value under `HKCU\Software\DeskIT.test\Run` and the Claude hook in the home's `claude-settings.json`, so the owner's hook, Run value and data are never touched. Plain = a fresh person with the downloads kept; `--all` the true first run; `--keep` only forgets `setup.done`; `--stop`; `--shots D` photographs the first window on the hidden desktop. It fakes nothing else: the mic, the probe, the downloads, the account page and the hotkeys are real (the copy answers the dev copy's keys while both run). `test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy` holds the flags |
 | `tests_quiet.py` | how both are run: on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |
 | `.github/workflows/ci.yml` | the product suite on `windows-latest`, `tests.py --no-screen`, on every push; installs `requirements.lock` exactly as the build does (`--require-hashes --no-deps`), `av` from `packs.lock`, `requests` for the phone tests, then `pip check` |
