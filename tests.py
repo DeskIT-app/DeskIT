@@ -41756,11 +41756,13 @@ def test_a_slot_that_moved_reads_as_a_fresh_pc_never_as_a_removal():
     """sb._sync_vault keeps one cursor record per Credential Manager
     prefix (vault_slots). D synced its key under the old prefix and its
     cursor is the flat one the build before wrote; then D's prefix is a
-    new, empty slot (the copy moved and nothing was adopted). Read with
-    the flat record, the empty slot is "the person removed the key here"
-    and the pass pushes a removal to every PC. Read per slot, it is a
-    fresh PC: the account's key comes down into the new slot, nothing
-    goes up, the flat record is gone. A second program sharing D's folder
+    new, empty slot (the copy moved and nothing was adopted). Read as it
+    was, the empty slot is "the person removed the key here" and the pass
+    pushes a removal to every PC. Carried into the slot (sb._slot_record),
+    a name the slot does not hold is forgotten: the account's key comes
+    down into the new slot, nothing goes up, the flat record is gone (the
+    next test is the other half: a key the slot DOES hold, changed, goes
+    up). A second program sharing D's folder
     and session under another prefix keeps a record of its own: its
     first pass is a fresh PC's, its
     key change reaches D, and D's record stays D's."""
@@ -41821,6 +41823,58 @@ def test_a_slot_that_moved_reads_as_a_fresh_pc_never_as_a_removal():
         _wipe_slots("DeskIT.test.old")
         for pc in (d, s):
             pc.gone()
+
+
+def test_a_key_changed_after_the_move_is_pushed_not_pulled_over():
+    """The owner's Dev copy, 2026-10-04: the update moved it to its own
+    slot (migrations step 6 copied DeskIT/groq into DeskIT.dev/groq at
+    19:54:30), he replaced the dead key in Settings at 19:56:03 — Groq's
+    check said 200 — and the vault pass that save triggered, the first
+    since the update, pulled the account's dead key over the new one
+    (19:56:04, "vault pulled 1, pushed 0"): the first version dropped the
+    folder's old record, so the slot read as a fresh PC's and the account
+    won. The old record is carried into the slot's now (sb._slot_record):
+    the adopted key matches what it says was synced, the new key differs,
+    and the pass pushes it — the account then holds the new key."""
+    import sb
+    import secretstore
+    import sync as sync_mod
+    import vault
+
+    d = _pc("D", "DeskIT.test.shared")
+    dead, fresh = "gsk_fixture_dead_" + "x" * 30, "gsk_fixture_fresh_" + "n" * 30
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with d:
+                secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+                sb.forget_cache()
+                for n in secretstore.CRED_NAMES:
+                    secretstore.delete(n)
+                secretstore.set("groq", dead)
+                assert sb.sync_now()["vault"] == "pulled 0, pushed 1"
+                key = vault.key(fake.UID)
+                cur = sync_mod.read_cursor()
+                rec = cur.pop("vault_slots")["DeskIT.test.shared"]
+                cur.update(vault_pulled_at=rec["pulled_at"], vault_pushed=rec["pushed"],
+                           vault_digest=rec["digest"])      # as the build before wrote it
+                sync_mod.write_cursor(cur)
+            # the update: step 6 copies the shared slot into the copy's own
+            assert secretstore.adopt("DeskIT.test.shared", "DeskIT.test.own") == ["groq"]
+            d.prefix = "DeskIT.test.own"
+            with d:
+                assert secretstore.get("groq") == dead
+                secretstore.set("groq", fresh)               # Change key, before any pass
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 0, pushed 1", out
+                assert secretstore.get("groq") == fresh, "the account's old key was pulled over the new one"
+                cur = sync_mod.read_cursor()
+                assert not set(sb._VAULT_FLAT) & set(cur) and set(cur["vault_slots"]) == {"DeskIT.test.own"}
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 0, pushed 0", out
+            assert _vault_value(fake, key) == fresh
+    finally:
+        _wipe_slots("DeskIT.test.shared")
+        d.gone()
 
 
 def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him():

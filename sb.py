@@ -1163,9 +1163,38 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
     return word + (f", {unopened} not opened" if unopened else "")
 
 
-#: The keys' cursor as it was before each slot kept its own record — read
-#: by nothing, dropped on the next pass (``_sync_vault``).
+#: The keys' cursor as it was before each slot kept its own record —
+#: carried into this slot's record on the first pass (``_slot_record``).
 _VAULT_FLAT: tuple[str, ...] = ("vault_pulled_at", "vault_pushed", "vault_digest")
+
+
+def _slot_record(cursor: dict, key: bytes) -> dict:
+    """This slot's record of what it synced. The first pass after the
+    slots were split finds the folder's old single record instead and
+    carries it over: it describes the keys this copy synced from
+    ``DeskIT/``, and migrations step 6 copied those very keys into the
+    slot at start, so the two agree and a key changed here since is
+    pushed. A name the old record knew that the slot does not hold (the
+    copy failed, or the person emptied it) is forgotten instead of being
+    read as a removal, and the account's rows come down again from the
+    start, which fills it."""
+    slots: dict = cursor.setdefault("vault_slots", {})
+    flat = {k: cursor.pop(k) for k in _VAULT_FLAT if k in cursor}
+    if secretstore.TARGET_PREFIX in slots:
+        return dict(slots[secretstore.TARGET_PREFIX])
+    if not flat:
+        return {}
+    record = {"pulled_at": str(flat.get("vault_pulled_at") or ""),
+              "pushed": dict(flat.get("vault_pushed") or {}),
+              "digest": dict(flat.get("vault_digest") or {})}
+    _digests, present = vault.digest_keys(key)
+    gone = [n for n in record["digest"] if n not in present]
+    for name in gone:
+        record["digest"].pop(name, None)
+        record["pushed"].pop(name, None)
+    if gone:
+        record["pulled_at"] = ""
+    return record
 
 
 def _sync_vault(cursor: dict, push: bool = True) -> str:
@@ -1182,10 +1211,15 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     The cursor's half for the keys is the SLOT's, not the folder's: one
     record per Credential Manager prefix (``vault_slots``). Until
     2026-10-04 it was one record and every copy shared ``DeskIT/``; when
-    each copy got a prefix of its own (secretstore.TARGET_PREFIX), a
-    record that remembered a digest for a slot that is now empty would
-    have read as "the person removed the key here" and pushed the removal
-    to every PC. A slot with no record is a fresh PC's: everything the
+    each copy got a prefix of its own (secretstore.TARGET_PREFIX), the old
+    record is carried into the slot's once (``_slot_record``): dropping it
+    made the first pass a fresh PC's, and the owner's Dev copy, whose key
+    he replaced in the minute between the update and that pass, had the
+    account's dead key pulled over the new one (2026-10-04 19:56:04,
+    "vault pulled 1, pushed 0", 0.4 s after Groq accepted the new key);
+    and keeping it as it was would have read a slot that is new and empty
+    as "the person removed the key here" and pushed the removal to every
+    PC. A slot with no record at all is a fresh PC's: everything the
     account holds comes down, and only a name the account has never had
     goes up. Two programs that share one data folder under different
     prefixes keep a record each."""
@@ -1193,10 +1227,8 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     key = _lock_key(uid)
     if key is None:
         return _lock_wait_word()
-    for legacy in _VAULT_FLAT:
-        cursor.pop(legacy, None)
     slots: dict = cursor.setdefault("vault_slots", {})
-    mine: dict = dict(slots.get(secretstore.TARGET_PREFIX) or {})
+    mine: dict = _slot_record(cursor, key)
     pushed_ciphers: dict = dict(mine.get("pushed") or {})
     known: dict = dict(mine.get("digest") or {})
     # down
