@@ -691,9 +691,7 @@ class LocalWhisperTranscriber:
         if self._boilerplate:
             text, _removed = cleanup_mod.strip_trailing_boilerplate(
                 text, self._boilerplate)
-        if self._cleanup:
-            text = cleanup_mod.clean(text, self._fillers)
-        return text
+        return self.clean_text(text)
 
     def _choose(self, wav_bytes: bytes, language: str | None):
         """Which model and language a recording gets -> (model, code).
@@ -865,10 +863,11 @@ class LocalWhisperTranscriber:
         """The filler cleanup a transcript gets on its way out — the same
         one, so a stretch repaired while the key is held (main.App
         ._polish_window) starts from the text the whole recording would
-        have."""
+        have. The bidi controls go whether the cleanup is on or off: they
+        are the decoder's, never something said (cleanup.BIDI_CONTROLS)."""
         if self._cleanup and text:
             return cleanup_mod.clean(text, self._fillers)
-        return text
+        return cleanup_mod.strip_bidi_controls(text)
 
     # -- the rolling transcriber (rolling.py) --
 
