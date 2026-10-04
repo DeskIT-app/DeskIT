@@ -2625,6 +2625,19 @@ AppData writes are virtualised, so the Store copy's data lives under
 `%LOCALAPPDATA%\Packages\YoavShimron.DeskITApp_d0r2ms77220w6\LocalCache` and Windows deletes it with the
 app — there is no Keep on a Store uninstall; the account sync is what survives it.
 
+*One copy per PC (2026-10-04, branch `one-copy`, a prototype awaiting the owner's OK).* The website's,
+winget's and the Store's DeskIT are one app (the owner's rule), and two on one PC are not two apps:
+measured on his PC with the Store package 1.0.6 and test names only, a process inside the package reads an
+HKCU Uninstall entry made outside it, reads and appends to a file in the real `%LOCALAPPDATA%`, creates a
+NEW file inside a real folder there in the REAL folder (further than Microsoft's page, which says new files
+go to the private location), and sees a `Local\` mutex held outside. So a Store copy beside a website copy
+shares its `%LOCALAPPDATA%\DeskIT` whole, its `DeskIT/` key slot, and its kernel names (only one runs; the
+second click opens the first one's desk). `onecopy.py` detects the other copy read-only — the Store copy
+asks for the Inno install's Uninstall entry with its uninstaller on disk, the website copy asks Windows for
+the package family (`GetPackagesByPackageFamily`, 3.5 ms) — and `packaging\one_copy.iss` is the
+installer's half, the same call from Inno's 32-bit Setup (verified on the owner's PC). Neither is wired in;
+`dev\proto_one_copy.py` photographs the proposed window and dialogs on the hidden desktop.
+
 If the Store rejects the global hook outright (D20 revisit clause), phase 3 ends, GitHub + winget stays
 primary and the SignPath application of 10.8 moves up to phase 3.
 

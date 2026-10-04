@@ -39790,6 +39790,114 @@ def test_the_store_package_is_the_reserved_identity_with_three_doors():
     assert "/CHANNEL=store" in workflow and "/NODOWNLOAD" in workflow and "--verify" in workflow
 
 
+def test_one_copy_names_the_store_package_by_its_family_and_version():
+    """onecopy.store_copy asks Windows for the Store package family and
+    reads the version out of the full name: `_1.0.6.0_` is 1.0.6 (the
+    Store's fourth number is always 0); no package is no copy, and a
+    family nobody has really answers nothing on this Windows."""
+    import onecopy
+
+    seen = []
+
+    def packages(family):
+        seen.append(family)
+        return ["YoavShimron.DeskITApp_1.0.6.0_x64__d0r2ms77220w6",
+                "YoavShimron.DeskITApp_1.0.10.0_x64__d0r2ms77220w6"]
+    copy = onecopy.store_copy(packages)
+    assert seen == [onecopy.STORE_FAMILY]
+    assert copy.kind == "store" and copy.version == "1.0.10", copy
+    assert copy.name == "DeskIT App, from the Microsoft Store"
+    assert onecopy.store_copy(lambda _f: []) is None
+    assert onecopy.version_of("YoavShimron.DeskITApp_1.2.3.4_x64__x") == "1.2.3.4"
+    assert onecopy.version_of("nonsense") == ""
+    assert onecopy._packages("Nobody.NoSuchDeskIT_0000000000000") == []
+
+
+def test_one_copy_finds_the_website_copy_only_with_its_uninstaller():
+    """onecopy.website_copy is the Inno install's HKCU Uninstall entry AND
+    its uninstaller still on the disk — an entry whose folder was deleted
+    by hand is nobody's copy. The CHANNEL word beside it says whether it
+    came from the website or through winget."""
+    import onecopy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "Programs" / "DeskIT"
+        folder.mkdir(parents=True)
+        uninstaller = folder / "unins000.exe"
+        entry = {"DisplayVersion": "1.0.7", "InstallLocation": str(folder) + "\\",
+                 "UninstallString": f'"{uninstaller}"'}
+        assert onecopy.website_copy(lambda: entry) is None          # no uninstaller yet
+        uninstaller.write_bytes(b"MZ")
+        copy = onecopy.website_copy(lambda: entry)
+        assert copy.kind == "website" and copy.version == "1.0.7", copy
+        assert copy.folder == str(folder) and copy.uninstaller == str(uninstaller)
+        assert copy.channel == "github" and copy.name == "DeskIT, from the website"
+        (folder / "CHANNEL").write_text("winget", "utf-8")
+        assert onecopy.website_copy(lambda: entry).name == "DeskIT, installed with winget"
+        assert onecopy.website_copy(lambda: None) is None
+    assert onecopy._unquote(r'"C:\P\DeskIT\unins000.exe" /SILENT') == r"C:\P\DeskIT\unins000.exe"
+    assert onecopy._unquote(r"C:\P\DeskIT\unins000.exe /SILENT") == r"C:\P\DeskIT\unins000.exe"
+
+
+def test_one_copy_never_looks_from_a_copy_with_its_own_data():
+    """The checkout (DeskIT Dev), the Stranger, a portable copy, a
+    DESKIT_HOME and anything the suite starts keep their own data and
+    their own key slot: they never look for "the other copy", so the
+    suite on the owner's PC — where the Store copy IS installed — never
+    meets one."""
+    import onecopy
+
+    assert onecopy.checks_here() is False          # this checkout, and DESKIT_SUITE
+    assert onecopy.other_copy() is None
+    saved = {name: getattr(onecopy.paths, name) for name in ("DEVELOPER", "STRANGER", "PORTABLE")}
+    env = {name: os.environ.get(name) for name in ("DESKIT_HOME", "DESKIT_SUITE")}
+    try:
+        for name in saved:
+            setattr(onecopy.paths, name, False)
+        for name in env:
+            os.environ.pop(name, None)
+        assert onecopy.checks_here() is True       # a released copy
+        os.environ["DESKIT_SUITE"] = "1"
+        assert onecopy.checks_here() is False
+        os.environ.pop("DESKIT_SUITE")
+        os.environ["DESKIT_HOME"] = "x"
+        assert onecopy.checks_here() is False
+        os.environ.pop("DESKIT_HOME")
+        onecopy.paths.STRANGER = True
+        assert onecopy.checks_here() is False
+    finally:
+        for name, value in saved.items():
+            setattr(onecopy.paths, name, value)
+        for name, value in env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def test_one_copy_names_the_same_package_and_installer_as_the_packaging():
+    """The family onecopy asks for is the one AppxManifest.xml and
+    store.yml build, the Uninstall key is DeskIT.iss's AppId, and the
+    installer's half (packaging/one_copy.iss) asks for the same family
+    and opens the same Settings page — one typo would make each side
+    blind to the other, silently."""
+    import onecopy
+
+    workflow = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
+    assert f"FAMILY: {onecopy.STORE_FAMILY}" in workflow
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    assert f"AppId={{{onecopy.INNO_APP_ID}" in iss, onecopy.INNO_APP_ID
+    assert onecopy.UNINSTALL_KEY.endswith("\\" + onecopy.INNO_APP_ID + "_is1")
+    half = (REPO / "packaging" / "one_copy.iss").read_text("utf-8")
+    assert f"StoreFamily = '{onecopy.STORE_FAMILY}'" in half
+    assert f"StoreSettings = '{onecopy.STORE_SETTINGS_URI}'" in half
+    for language in ("english", "hebrew"):
+        for word in ("OneCopyTitle", "OneCopyText", "OneCopyKeep", "OneCopyRemove",
+                     "OneCopyWaitTitle", "OneCopyWaitText", "OneCopyContinue",
+                     "OneCopyCancel", "OneCopySilent"):
+            assert f"{language}.{word}=" in half, (language, word)
+
+
 def test_the_store_copy_holds_the_claude_door_through_its_alias():
     """Inside the package the hook line names the deskit-hook.exe alias —
     one path for every version, and a door that runs INSIDE the package,
