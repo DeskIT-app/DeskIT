@@ -56,8 +56,8 @@ Windows Settings > Privacy & security > Microphone > allow desktop apps; then ch
 device under **Settings > General**. The wizard (`main.py --setup`) shows the bar again.
 
 **Where are my keys, and can you see them?**
-Control Panel > Credential Manager > Windows Credentials > `DeskIT/groq`, `DeskIT/gemini`
-(`DeskIT.store/groq`, `DeskIT.store/gemini` for the Microsoft Store copy). They go only to api.groq.com / generativelanguage.googleapis.com under your account;
+Control Panel > Credential Manager > Windows Credentials > `DeskIT/groq`, `DeskIT/gemini`.
+They go only to api.groq.com / generativelanguage.googleapis.com under your account;
 [chapter 4](04-privacy) shows how to verify that yourself.
 
 **What leaves my PC when everything is off?**

@@ -96,11 +96,12 @@ def _the_account_words_ask_nothing_new() -> None:
 
 def _each_copy_its_own_key_slot() -> None:
     """Each copy keeps its cloud keys under a Credential Manager prefix of
-    its own (2026-10-04, secretstore.TARGET_PREFIX): the Dev checkout,
-    the Store's copy and a portable one leave the shared ``DeskIT/`` and
-    take ONE copy of what it holds, if they were set up before — a
-    fresh copy takes nothing. ``DeskIT/`` itself is never touched: the
-    website's copy keeps it, and may be the one reading it on this PC.
+    its own (2026-10-04, secretstore.TARGET_PREFIX): the Dev checkout
+    and a portable copy leave the shared ``DeskIT/`` and take ONE copy
+    of what it holds, if they were set up before — a fresh copy takes
+    nothing. ``DeskIT/`` itself is never touched: the released app (the
+    website's, winget's or the Store's — one app) keeps it, and may be
+    the one reading it on this PC.
     The vault's cursor follows the slot by itself (sb._sync_vault), so a
     slot that starts empty is a fresh PC's, never a removal."""
     import secretstore

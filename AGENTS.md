@@ -335,7 +335,7 @@ exactly what classic did.
 - Keys: Windows Credential Manager first (`<prefix>/groq`, `<prefix>/gemini`
   — `main.py --set-key groq`, `--keys` lists what is where; the prefix is
   the COPY's own since 2026-10-04: `DeskIT.dev/` in this checkout,
-  `DeskIT.store/` in the Store package, `DeskIT/` for the website's), then
+  `DeskIT/` for the released app, website, winget and Store alike), then
   `DESKIT_GROQ_API_KEY` / `DESKIT_GEMINI_API_KEY` in the environment, then
   the gitignored `.env` beside `main.py` — read in THIS checkout only
   (portable/developer mode). `secretstore.py` is the one reader; every
@@ -471,14 +471,16 @@ exactly what classic did.
   it; a marked process is on `DeskIT.test/` even as a stranger. A test
   that builds a child's environment from scratch must carry the mark.
   **And no two copies share a slot** (2026-10-04, `secretstore.prefix_for`).
-  Until then the Dev checkout, the Store copy and the website's all used
+  Until then the Dev checkout and the released app both used
   `DeskIT/groq`: on 2026-10-03 the Store copy's wizard, signed in to a
   TEST account, saved that account's key over the one the Dev used; the
   Dev's next vault pass (15:38:40, "vault pulled 0, pushed 1") sealed the
   foreign key into the owner's account and the Stranger pulled it
   (16:36:28); the test key was deleted at console.groq.com and all three
-  got 401 from 20:09 on, silently. The checkout is `DeskIT.dev/`, the
-  Store package `DeskIT.store/`, the website's `DeskIT/`. A new kind of
+  got 401 from 20:09 on, silently. The checkout is `DeskIT.dev/`; the
+  released app is `DeskIT/` however it was downloaded — the website's,
+  winget's and the Store's are ONE app, never two copies on one PC (the
+  owner, 2026-10-04), so `prefix_for` does not ask how a copy came. A new kind of
   copy gets a prefix of its own in `prefix_for`, and the vault cursor keeps
   one record per prefix (`sb._sync_vault`, `vault_slots`) — a slot that is
   new and empty must read as a fresh PC, never as "the key was removed".
