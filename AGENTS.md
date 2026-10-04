@@ -552,6 +552,20 @@ exactly what classic did.
   `recent\` wavs re-decoded at stock thresholds on the hidden desktop
   at night and diffed against `words`. Until one of them has run, do not
   write "the guards only remove hallucinations" anywhere.
+  What 2026-10-04 did settle (lane 6 of the Store walk): over the 53
+  kept sidecars with three witnesses, the places where every witness
+  heard words the paste lacks were four — the rolling seam below
+  ("הפגישה"), two shorter mis-decodes in running speech, and one soft
+  phrase after 2 s of silence (Dev, 15:52, 22.5-23.7 s, peaks a quarter
+  of his speech). That last one was decoded again with each guard taken
+  away in turn — hallucination_silence off, stock no_speech/log_prob,
+  no hotwords: the decoder stops after the word before it every time,
+  and the whole recording at the live settings misses it too; it comes
+  back only with 4 s of audio after it in the window. So neither guard
+  ate anything the witnesses caught. That is NOT the open question
+  answered: the witnesses decode with the same `_guards`, so a drop all
+  four decodes share cannot show in that census, and the stock-threshold
+  re-decode above is still unrun.
 - **There is no unbiased accuracy number on this machine, and the tools
   that look like one are not.** Checked 2026-10-02. `--benchmark` scores
   only the `recent\` clips with a typed correction (`meta["corrected"]`)
@@ -683,6 +697,26 @@ exactly what classic did.
   in 6 of 6). Context travels as AUDIO here — `LEAD_S` in front, `EXT_S`
   after, both trimmed back by word times — which is the one form of it
   the decoder cannot invent from.
+- **...and the trim by word middles is only safe where the cut is in a
+  real gap.** `_trim` keeps a word on the side its MIDDLE falls, which
+  is sound when the boundary sits in a pause; at a boundary INSIDE
+  speech the two decodes' word times disagree by more than half a word
+  and a word can land on neither side. The Store walk's 34.5 s dictation
+  (2026-10-03, read aloud, no 0.5 s pause in 27 s) hit `cut_at`'s
+  forced branch, which then took the quietest single 10 ms chunk — peak
+  0.0001 at 28.32 s, the closure of the last ט of "מייקרוסופט" — and
+  "הפגישה" after it reached neither window's text; all three witnesses
+  had it. Replaying the recording through the Roller at 10 ms chunks gave
+  back the live windows to the hundredth (1.69 s, 28.23 s, a 7.19 s
+  tail), so the cut is a pure function of the audio and can be checked
+  offline: `dev\rolling_census.py`. Its first run over 55 kept recordings
+  (both copies, 2026-10-04): 55 cuts, 54 in a pause and none of those
+  short of a word where a witness could tell, 1 forced — that one. The
+  forced branch now takes the LONGEST quiet run of its five seconds and
+  cuts its middle (0.18 s at 25.31-25.49 s there, between two words;
+  the replay then joins whole). A quiet chunk is not a gap: in unbroken
+  speech the quietest 10 ms is as likely as not a stop consonant's
+  closure, inside a word (0.08 s of quiet there).
 - **`vocab.apply` matches a word where `_WORD` says a word is, and not a
   character looser.** Its old edge was "the next character is not a
   letter", so the hyphen of "ה-API" ended a word: the owner's pair
