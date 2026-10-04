@@ -1216,7 +1216,7 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     made the first pass a fresh PC's, and the owner's Dev copy, whose key
     he replaced in the minute between the update and that pass, had the
     account's dead key pulled over the new one (2026-10-04 19:56:04,
-    "vault pulled 1, pushed 0", 0.4 s after Groq accepted the new key);
+    "vault pulled 1, pushed 0", 0.4 s after the provider accepted the new key);
     and keeping it as it was would have read a slot that is new and empty
     as "the person removed the key here" and pushed the removal to every
     PC. A slot with no record at all is a fresh PC's: everything the
