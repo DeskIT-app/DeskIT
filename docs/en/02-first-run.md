@@ -13,9 +13,9 @@ done. **הבא** (next) moves on, **דלג** (skip) closes it — and a skipped 
 back by itself. To see it again: Settings > About > **Show the tour**. This page is the
 long version of those four cards.
 
-**The two-sentence version.** The first start opens a seven-page wizard; only three pages ask
-you anything (which microphone, whether to download now, and the optional extras) and every
-other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.
+**The two-sentence version.** The first start opens a short wizard; only a few pages ask
+you anything (which microphone, whether to download now, where screenshots and recordings go,
+the cloud keys and the optional extras) and every other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.
 Since the installer downloads the model and the packs itself ([chapter 1](01-install)), the
 "This computer" page is usually skipped — it appears only for what you unticked there or
 what did not finish.
@@ -82,7 +82,7 @@ Pick another row if you have more than one microphone. **Next** saves the choice
 ![This computer](../img/02-computer.png)
 
 This page exists only while something is left to download — after an install whose
-Downloads page you left as it was, it is not shown at all, and the counter says "of 6".
+Downloads page you left as it was, it is not shown at all, and the counter says "of 8".
 
 The top line is what DeskIT found: an NVIDIA card and its memory ("fast transcription"), a
 small NVIDIA card ("fast, smaller mode"), or no NVIDIA card ("transcription will take about
@@ -112,30 +112,68 @@ This happens only once.
 **Record 3 seconds**, speak, and read what came back — through the real backend, the same one
 every later dictation uses. The line under it says how long the transcription took; on a PC
 without an NVIDIA card that number is the speed to expect. The button waits while the model is
-still downloading; **Skip** goes on without it.
+still downloading; **Next** goes on without it. Pressed before you tried anything, **Next** asks
+once, on the page itself — *Are you sure you want to continue without trying the model?* —
+with **Try it** (back to the page) and **Continue without trying** (straight on).
 
 ## Keys
 
 ![Keys](../img/02-keys.png)
 
-The keyboard keys DeskIT listens to — hold, latch, punctuate, ask the screen — as they are
-now. These are hotkeys, not API keys; the cloud keys come in [chapter 5](05-cloud). Change
-them later on the dashboard's **Keys** place.
+The keyboard keys DeskIT listens to — hold, latch, punctuate, ask the screen, translate — as
+they are now. These are hotkeys, not API keys; the cloud keys have a page of their own, two on. Change them
+later on the dashboard's **Keys** place.
+
+## Screenshots and recordings
+
+![Screenshots and recordings](../img/02-screen.png)
+
+The two screen keys, each with the folder its files go to ([chapter 7](07-screen)):
+
+- **Take a screenshot** — Win+Shift+S, with **Use Win+Shift+S** under it: on, Windows' own
+  Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11.
+  **Save every screenshot** — off: a screenshot goes to the clipboard, and to the folder only
+  when you press Save on its card; on: every one is saved as well.
+- **Record the screen** — Ctrl+F12, tap again to stop. A recording is always saved.
+
+Under each, **Saved in** and the full path — Windows' own **Pictures\DeskIT** and
+**Videos\DeskIT** unless you pick another with **Browse…**. They are ordinary folders: easy to
+find, and they stay when DeskIT is uninstalled. Camera photos go with the screenshots. Every
+change here is written the moment you make it; **Settings > General** changes the folders later.
+
+## Cloud keys
+
+![Cloud keys](../img/02-cloud.png)
+
+Two cards, **Groq** and **Gemini**, one free key each (no credit card). Each card says what
+its key unlocks and what you do without it:
+
+- **Groq** fixes the words it misheard, puts in punctuation (Ctrl+F2) and translates what you
+  select (F8). Without it, what you say is pasted exactly as heard and those two keys do
+  nothing.
+- **Gemini** translates what you select (F8) and goes first for it. Without it, Groq
+  translates; with neither key, F8 does nothing.
+
+A card's switch is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens
+the key's field under it, with the way to a free key. **Save key** checks the key with the
+provider at once; a key that works is drawn as a row of dots with **Change key** beside it.
+**Change key** opens an empty field with **Save** and **Cancel** — Cancel keeps the saved key,
+and a new key the provider refuses gives the saved one back. **Next** waits while a card is on
+without a working key. Skip both and the keys can be added later in **Settings > Privacy**;
+the first time you press F8 or Ctrl+F2 without one, Home says which key to add and where.
 
 ## Optional extras
 
 ![Optional extras](../img/02-extras.png)
 
-Five switches, each one thing that leaves this PC or changes Windows. They are drawn as they
+Three switches, each one thing that leaves this PC or changes Windows. They are drawn as they
 stand and written only if you move them:
 
 | switch | what it does |
 |---|---|
-| Fix misheard words with a free cloud model (text only) | Off. Turning it on is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens a field under the row for your own free Groq key, checked with Groq the moment you save it. Next waits until a key works — or the switch is off again. |
 | Keep this PC awake while DeskIT runs | On. Windows does not sleep while DeskIT runs; Settings > General turns it off. |
 | Check for updates weekly | On. One request to github.com, no identifier. |
 | Connect Claude Code | Off. Two hook lines in `~/.claude/settings.json`: when Claude Code finishes or asks, DeskIT shows a card and plays a cue. One copy of DeskIT at a time: if another copy on this PC is connected, the row says so and turning it on asks first — answer *Yes, connect this one* and the other is disconnected. |
-| Take over Win+Shift+S for DeskIT's screenshot key | On. Windows' own Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11. |
 
 ## Ready
 
