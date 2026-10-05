@@ -1075,6 +1075,16 @@ class PolishConfig:
     # of staring at "..." — and it also caps the damage from a cold Ollama
     # (76 s on the first request after it idles, measured 2026-08-12).
     max_wait_s: float = 10.0
+    # ...and how long of that a CLOUD backend may have. max_wait_s is sized
+    # for the local model; a Groq answer is ~0.35 s of work, and anything
+    # past 2 s is its queue (usage.queue_time), not the repair. Measured
+    # 2026-10-05 on 23 real dictations sent at once to every option: Groq
+    # held the paste 1.4 s typical, 12.1 s worst, 8 of 23 over 2 s, and its
+    # "over capacity" 503 took ~5 s to come back; a 2 s cap gave 2.0 s
+    # worst and lost the repair on 2 of 23. A cloud backend that times out
+    # hands the rest of max_wait_s to the next backend (only "always" and
+    # "known" have one; under "cloud" the text is pasted as heard).
+    cloud_wait_s: float = 2.0
     # Send one throwaway request at startup so the ~5 GB is already in VRAM
     # before a dictation needs it (76 s cold vs 2.5 s warm). Costs the VRAM
     # for the whole session; set false if you would rather pay the wait.
@@ -1963,6 +1973,8 @@ def build(data: dict) -> Config:
                 "cerebras_timeout_s", PolishConfig.cerebras_timeout_s)),
             max_wait_s=float(polish.get("max_wait_s",
                                         PolishConfig.max_wait_s)),
+            cloud_wait_s=float(polish.get("cloud_wait_s",
+                                          PolishConfig.cloud_wait_s)),
             warm_up=bool(polish.get("warm_up", PolishConfig.warm_up)),
         ),
         visual_qa=VisualQAConfig(
@@ -2277,6 +2289,10 @@ def build(data: dict) -> Config:
             "polish.max_wait_s must be > 0 — it is the longest the paste may "
             'be delayed by the context pass. Use polish.when = "never" to '
             "turn the pass off instead")
+    if cfg.polish.cloud_wait_s <= 0:
+        raise ConfigError(
+            "polish.cloud_wait_s must be > 0 — it is how long a cloud repair "
+            "may hold the paste")
     if cfg.visual_qa.prefer not in ("ollama", "groq", "gemini"):
         raise ConfigError('visual_qa.prefer must be "ollama", "groq" or '
                           f'"gemini", got {cfg.visual_qa.prefer!r}')

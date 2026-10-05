@@ -6495,6 +6495,53 @@ def test_polish_prefer_ollama_reverses_the_repair_order() -> None:
     assert names == ["ollama", "groq"], names
 
 
+def test_a_slow_cloud_repair_lets_go_of_the_paste_at_cloud_wait_s() -> None:
+    """Groq's work is ~0.35 s and the rest is its queue: on 2026-10-05 it
+    held the paste up to 12.1 s under the 10 s max_wait_s the local model
+    needs. A cloud backend gets cloud_wait_s; past it the text is pasted as
+    heard, and under "always" the next backend gets what is left."""
+    import dataclasses
+
+    import polish as polish_mod
+
+    class Fake:
+        def __init__(self, name, delay, reply):
+            self.name, self.delay, self.reply = name, delay, reply
+
+        def translate(self, text):
+            time.sleep(self.delay)
+            return self.reply
+
+    text = "אני רוצה לבדוק את זה עכשיו בבקשה"
+    fixed = "אני רוצה לבדוק את זה עכשיו, בבקשה."
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.polish.cloud_wait_s == 2.0 and cfg.polish.max_wait_s == 10.0
+    cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
+        cfg.polish, cloud_wait_s=0.3, max_wait_s=5.0))
+
+    def run(*backends):
+        p = polish_mod.Polisher(cfg, _tmp_vocab())
+        p._backends = lambda text, kinds=None: iter(backends)
+        started = time.monotonic()
+        out = p.polish(text, kinds=("cloud",))
+        return out, time.monotonic() - started
+
+    # a quick answer is still taken
+    (out, by), took = run(Fake("groq", 0.0, fixed))
+    assert (out, by) == (fixed, "groq") and took < 0.3, (out, by, took)
+    # a slow one is let go at cloud_wait_s, not at max_wait_s
+    (out, by), took = run(Fake("groq", 2.0, fixed))
+    assert (out, by) == (text, None), (out, by)
+    assert 0.25 < took < 1.0, took
+    # with a local backend behind it, the rest of the budget is the local's
+    (out, by), took = run(Fake("groq", 2.0, fixed), Fake("ollama", 0.4, fixed))
+    assert (out, by) == (fixed, "ollama"), (out, by)
+    assert 0.6 < took < 1.5, took
+    # and the local model keeps the whole of max_wait_s, never cloud_wait_s
+    (out, by), took = run(Fake("ollama", 0.6, fixed))
+    assert (out, by) == (fixed, "ollama"), (out, by, took)
+
+
 def test_cerebras_is_opt_in_but_still_reachable() -> None:
     """Out of the fallback chain, not out of the app: whoever still holds
     quota there sets prefer = "cerebras" and gets it first, as before."""

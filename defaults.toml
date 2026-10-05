@@ -1742,6 +1742,25 @@ max_wait_s = 10           # THE LONGEST YOUR PASTE MAY BE HELD UP. Past this
                           # peaks at 6.2 s, so 6 would time out on exactly the
                           # long dictations that need it most. It also caps a
                           # COLD Ollama, which took 53.7 s (2026-08-14)
+cloud_wait_s = 2          # ...of which a CLOUD backend may have this much.
+                          # 10 s is the local model's number; Groq's work is
+                          # ~0.35 s and the rest is its queue (usage.queue_time
+                          # 3.98 of 4.73 s on one call, 2026-10-05). Measured
+                          # that day on 23 real dictations sent at once to
+                          # every option, the repair's hold on the paste:
+                          #     Groq, 10 s cap      1.4 s typical, 12.1 worst,
+                          #                         8 of 23 over 2 s; its 503
+                          #                         "over capacity" took ~5 s
+                          #     retry after a 503   15.4 s worst (worse)
+                          #     race with gemma     8.0 s worst; gemma won 11
+                          #                         of 23 with weaker fixes
+                          #     this cap at 2 s     2.0 s worst, the repair
+                          #                         lost on 2 of 23
+                          # The repair changed 3 of 20 of those dictations
+                          # (90 of 450 since 2026-09-21), and on the read-aloud
+                          # gold it fixed 3 words and broke 4, so a late one is
+                          # cheap to lose. A cloud timeout hands the rest of
+                          # max_wait_s to the next backend ("always"/"known")
 warm_up = true            # send one throwaway request at startup so the model
                           # is in VRAM before a dictation needs it (76 s cold
                           # vs 2.5 s warm). Costs that VRAM all session
