@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.7
+
+While the screens are off, a card now says so. When I turn the screens off with Ctrl+Alt+N so Claude can drive the PC from my phone, any touch lights them for a few seconds and then they go dark again, and I used to wonder whether something was wrong. Now a card sits at the bottom-right of the screen, under any other notification, saying the screens are off on purpose, since when, and how to bring them back — the same key, or its own Screens on button. It has no close button and nothing dismisses it; it goes away the moment the screens come back on, from the key, the desk, the panel beside the dot or the phone. It works with the speech model off, and the screens key now works while dictation is paused too, so the way back the card names is never a dead key.
+
 ## 1.0.6
 
 DeskIT is on its way to the Microsoft Store. A copy from the Store is signed by Microsoft, so Windows will stop warning that it does not recognise the app — the warning everyone sees today on the first run of the installer from this page. This version changes nothing for a copy installed from here; it is the version the Store package is made from. The package is built from this release's own installer, so the Store copy is the same files as this one, file for file, plus a small launcher that starts it. Inside the Store package three things work the way Windows wants them to there: "Start with Windows" goes through Windows' own list of startup apps, Connect Claude Code goes through a command the package adds, and the app's windows sit under its tile in the Start menu. One difference a Store user should know before installing: Windows keeps a Store app's files in a folder of its own and removes them with the app, so uninstalling the Store copy removes what it has learned too — unless the sync with your account is on.
