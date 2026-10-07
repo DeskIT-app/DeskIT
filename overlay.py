@@ -3861,6 +3861,17 @@ class NotifyCard(HintCard):
     NEVER `dismissed()`: that is the hint card's "don't show this again"
     and writes `enabled = false` into config.toml. Dismissing a
     notification means "seen", not "never again".
+
+    THE PIN (2026-10-07). The "Screens off" card (awake.py's mode) is not
+    a notification and sits BESIDE the column rather than in it: `pin()` /
+    `unpin()` put it up and take it down, and what is on screen is always
+    `notifications + [pin]` — the pin LAST, which is the bottom of the
+    column and the edge the window is anchored by, so it never moves while
+    notifications come and go. `visible()` / `current()` / `hovering()` /
+    Esc / the dismiss key all keep meaning "notifications" and never see
+    it, so the engine's reminders behave as they always did; nothing can
+    dismiss the pin, a click on its body does nothing, and its one pill
+    calls `on_pin_press`. See notify_card.pinned_card.
     """
 
     CORNERS = ("right", "left", "top-right", "top-left",
@@ -3869,11 +3880,14 @@ class NotifyCard(HintCard):
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_dismiss=None, on_open=None,
-                 seconds: float = 0.0, anchor: str = "bottom") -> None:
+                 seconds: float = 0.0, anchor: str = "bottom",
+                 on_pin_press=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
         self._on_dismiss = on_dismiss
         self._on_open = on_open
+        self._on_pin_press = on_pin_press
+        self._pin = None          # the pinned card's dict, or None
         # ZERO BY DEFAULT SINCE 2026-09-04: "I want you to remove the time
         # of each card, the card will not disappear". Nothing here was
         # deleted for it — a non-zero `seconds` still runs a clock, still
@@ -3897,8 +3911,40 @@ class NotifyCard(HintCard):
                                         name="notify-card")
         self._thread.start()
         self._alive.wait(timeout=3)
+        with self._state_lock:
+            drawn = self._drawn()
+        if self._pin is not None:         # pinned before the thread existed
+            self._q.put(drawn)
 
     # -- caller's threads --
+
+    def _drawn(self) -> list:
+        """What is on the window: the notifications, newest first, then
+        the pin. Caller holds `_state_lock`."""
+        return self._cards + ([self._pin] if self._pin is not None else [])
+
+    def pin(self, card: dict) -> None:
+        """Put the pinned card up at the bottom of the column. Only
+        enqueues — it is called from the screens mode's flip, on the
+        keyboard hook's thread."""
+        with self._state_lock:
+            self._pin = dict(card)
+            drawn = self._drawn()
+        if self._thread is not None and self._enabled:
+            self._q.put(drawn)
+
+    def unpin(self) -> None:
+        """Take the pinned card down; the notifications stay."""
+        with self._state_lock:
+            if self._pin is None:
+                return
+            self._pin = None
+            drawn = self._drawn()
+        if self._thread is not None and self._enabled:
+            self._q.put(drawn or None)
+
+    def pinned(self) -> bool:
+        return self._pin is not None
 
     def show(self, items) -> None:
         """Put the whole unread COLUMN up, newest first.
@@ -3940,14 +3986,22 @@ class NotifyCard(HintCard):
             # the one at the top of the pile.
             self._current = cards[0]["id"]
             self._cards = cards
-        self._q.put(cards)
+            drawn = self._drawn()
+        self._q.put(drawn)
 
     def hide(self) -> None:
+        """The notifications down. The pin, if there is one, stays."""
         with self._state_lock:
+            had = self._current is not None
             self._current = None
             self._cards = []
-        if self._thread is not None:
+            drawn = self._drawn()
+        if self._thread is None:
+            return
+        if not drawn:
             self._q.put(None)
+        elif had:                  # nothing to take down means no rebuild
+            self._q.put(drawn)
 
     def visible(self) -> bool:
         return self._current is not None
@@ -4004,12 +4058,29 @@ class NotifyCard(HintCard):
         Neither is HintCard.dismissed() — that writes enabled=false into
         config.toml, and this is "seen", not "never again".
         """
-        if name not in ("dismiss", "open"):
+        import notify_card as nc
+        if name == "button":
+            # The pill on the pinned card, the only thing on it that takes
+            # a click. Not a notification, so nothing is taken down here:
+            # the callback ends the screens mode and the mode's flip
+            # unpins, one road for every way out.
+            if item_id == nc.PIN_ID and self._on_pin_press is not None:
+                try:
+                    self._on_pin_press()
+                except Exception:
+                    _log.info("notify card: the pin's button failed",
+                              exc_info=True)
             return
+        if name not in ("dismiss", "open") or item_id == nc.PIN_ID:
+            return                 # the pin is never dismissed or opened
         with self._state_lock:
             was, self._current, self._cards = self._current, None, []
+            drawn = self._drawn()
         if self._thread is not None:
-            self._q.put(None)
+            if not drawn:
+                self._q.put(None)
+            elif was is not None:
+                self._q.put(drawn)
         callback = self._on_open if name == "open" else self._on_dismiss
         if was is None or callback is None:
             return
@@ -4029,6 +4100,11 @@ class NotifyCard(HintCard):
         with self._state_lock:
             self._current = None
             self._cards = []
+            drawn = self._drawn()
+        if drawn and self._thread is not None:
+            # The presenter is about to take the window down; the pin
+            # goes straight back up behind it.
+            self._q.put(drawn)
 
     # -- placement --
 
@@ -4037,7 +4113,7 @@ class NotifyCard(HintCard):
         import notify_card as nc
         if cards is None:
             with self._state_lock:
-                cards = list(self._cards)
+                cards = self._drawn()
         return nc.stack_measure(cards, self.scale)
 
     def placed(self, x: int, y: int) -> None:
@@ -4297,6 +4373,8 @@ class NotifyCard(HintCard):
                 # The × of ONE card, named by its own id: everything else
                 # in the column stays unread.
                 self.pressed("dismiss", ident(where[0]))
+            elif code == nc.HTCLIENT and what == nc.BUTTON:
+                self.pressed("button", ident(where[0]))
             elif code == nc.HTCAPTION:
                 st["drag"] = (event.x_root - root.winfo_x(),
                               event.y_root - root.winfo_y())

@@ -25014,7 +25014,8 @@ def test_the_awake_section_is_in_the_real_config_and_bounded() -> None:
     keys = {s.key for s in sections["awake"].settings}
     assert keys == {"hold", "enabled", "screens_hotkey", "pin_timeouts",
                     "screens_off_again_s", "keep_screens_off_s",
-                    "vitals_minutes"}, keys
+                    "vitals_minutes", "screens_card"}, keys
+    assert cfg.awake.screens_card is True, "the card is on by default"
     assert sections["awake"].help, "the section has no help text"
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         p = Path(d) / "config.toml"
@@ -45345,6 +45346,400 @@ def test_a_bead_on_the_map_puts_the_dot_in_that_corner_and_ends_the_move() -> No
         assert (app.dot.x, app.dot.y) == before and len(written) == count
     finally:
         capture_mod.monitors, overlay_mod._monitor_work = real_mons, real_work
+
+
+# ---------------------------------------------------- the "Screens off" card
+
+
+def _pin_card(**over):
+    import notify_card as nc
+    kw = dict(since=time.mktime(time.strptime("2026-10-07 14:35",
+                                              "%Y-%m-%d %H:%M")),
+              keep_s=10, key="Ctrl+Alt+N")
+    kw.update(over)
+    return nc.pinned_card(**kw)
+
+
+def test_a_pinned_card_has_a_pill_and_no_cross() -> None:
+    """The geometry of the Screens off card (2026-10-07): a footer row as
+    tall as the pill, no × box, a pill box that is a client hit, and the
+    rest of the card — the × spot included — a drag handle. In a column
+    the pill resolves to the pinned card's own index."""
+    import notify_card as nc
+
+    pin = _pin_card()
+    plain = {**pin, "pinned": False}
+    w0, h0 = nc.measure(plain, 1.0)
+    w1, h1 = nc.measure(pin, 1.0)
+    assert w1 == w0 and h1 - h0 == nc.BUTTON_H - nc.FOOTER_H, (h0, h1)
+
+    boxes = nc.regions(pin, 1.0)
+    assert nc.DISMISS not in boxes and nc.BUTTON in boxes, sorted(boxes)
+    bx = boxes[nc.BUTTON]
+    assert bx[2] - bx[0] == nc.BUTTON_W and bx[3] - bx[1] == nc.BUTTON_H
+    centre = ((bx[0] + bx[2]) // 2, (bx[1] + bx[3]) // 2)
+    assert nc.hit_test(pin, 1.0, *centre) == (nc.HTCLIENT, nc.BUTTON)
+    where = nc.SHADOW + nc.PAD + 5          # exactly where an × would be
+    assert nc.hit_test(pin, 1.0, where, where) == (nc.HTCAPTION, nc.DRAG)
+    assert nc.hit_test(pin, 1.0, 2, 2) == (nc.HTTRANSPARENT, None)
+    # the same arithmetic at another scale
+    b2 = nc.regions(pin, 1.4)[nc.BUTTON]
+    assert abs((b2[2] - b2[0]) - nc.BUTTON_W * 1.4) < 1.5
+
+    note = nc.card_for(_item(), seconds=0)
+    cards = [note, pin]
+    places = nc.stack_layout(cards, 1.0)
+    cx, cy, _w, _h = places[1]
+    dx, dy = cx - nc.SHADOW, cy - nc.SHADOW
+    got = nc.stack_hit_test(cards, 1.0, centre[0] + dx, centre[1] + dy)
+    assert got == (nc.HTCLIENT, (1, nc.BUTTON)), got
+    got = nc.stack_hit_test(cards, 1.0, where + dx, where + dy)
+    assert got == (nc.HTCAPTION, (1, nc.DRAG)), "a pinned card has no ×"
+    got = nc.stack_hit_test(cards, 1.0, where, where)
+    assert got == (nc.HTCLIENT, (0, nc.DISMISS)), "the notification keeps its ×"
+    # and the picture is the size the arithmetic says, with and without
+    # the pill lit
+    assert nc.compose(pin, 1.0).size == (w1, h1)
+    assert nc.compose(pin, 1.0, hover=nc.BUTTON).size == (w1, h1)
+
+
+def test_the_screens_card_says_what_the_plan_says() -> None:
+    import notify_card as nc
+
+    card = _pin_card()
+    assert card["id"] == nc.PIN_ID and card["pinned"] is True
+    assert card["kind"] == "info" and card["label"] == "SCREENS OFF"
+    assert card["title"] == "Screens off is on"
+    assert card["when"] == "since 14:35", card["when"]
+    assert card["button"] == "Screens on"
+    assert "go dark again 10 s after you stop" in card["body"], card["body"]
+    assert card["footer"] == "Ctrl+Alt+N brings them back", card["footer"]
+    assert float(card["seconds"]) == 0, "a pinned card keeps no clock"
+    # no key bound: the desk is named instead
+    assert _pin_card(key="")["footer"] == \
+        "The desk's Awake screen brings them back"
+    # [awake] keep_screens_off_s = 0: the sentence changes
+    zero = _pin_card(keep_s=0)["body"]
+    assert "monitors' own timer" in zero and " s after" not in zero, zero
+    # a notification can never be taken for the pin
+    assert not nc.is_pinned(nc.card_for(_item(), seconds=0))
+
+
+def test_the_pinned_card_goes_on_the_bottom_of_the_column_and_cannot_be_closed(
+        ) -> None:
+    """overlay.NotifyCard, no window: the pin is always LAST, notifications
+    come and go above it, nothing dismisses or opens it, its pill reports
+    once, and visible()/current()/Esc keep meaning notifications."""
+    import notify_card as nc
+
+    dismissed: list = []
+    opened: list = []
+    pressed: list = []
+    card = overlay_mod.NotifyCard(on_dismiss=dismissed.append,
+                                  on_open=opened.append,
+                                  on_pin_press=lambda: pressed.append(1))
+    card._thread = threading.Thread(target=lambda: None)   # never started
+
+    def queued() -> list:
+        out = []
+        while True:
+            try:
+                out.append(card._q.get_nowait())
+            except queue.Empty:
+                return out
+
+    def ids(column) -> list:
+        return None if column is None else [c["id"] for c in column]
+
+    card.pin(_pin_card())
+    assert [ids(q) for q in queued()] == [[nc.PIN_ID]]
+    assert card.pinned() and not card.visible() and card.current() is None
+    card.rect = (0, 0, 100, 100)
+    card.hovering = lambda: True
+    assert card.on_key(0x1B) is False, \
+        "Esc over a pin alone is an ordinary Esc"
+    assert dismissed == [] and queued() == []
+
+    card.show(_item(id=7))
+    assert [ids(q) for q in queued()] == [[7, nc.PIN_ID]]
+    assert card.visible() and card.current() == 7
+    card.show([_item(id=8), _item(id=7)])
+    assert [ids(q) for q in queued()] == [[8, 7, nc.PIN_ID]], \
+        "newest first, and the pin stays last"
+    assert card.column() == nc.stack_measure(
+        [nc.card_for(_item(id=8), seconds=0), nc.card_for(_item(id=7), seconds=0),
+         _pin_card()], 1.0), "the window is sized for the pin too"
+
+    # a click on the pin's body, or a key sent at it, does nothing at all
+    card.pressed("open", nc.PIN_ID)
+    card.pressed("dismiss", nc.PIN_ID)
+    assert opened == [] and dismissed == [] and queued() == []
+    assert card.visible(), "a press on the pin must not take the column down"
+
+    # Esc over the notifications dismisses THEM and leaves the pin up
+    assert card.on_key(0x1B) is True and dismissed == [None]
+    assert [ids(q) for q in queued()] == [[nc.PIN_ID]]
+    assert not card.visible() and card.pinned()
+    card.show(_item(id=9))
+    queued()
+    card.pressed("dismiss", 9)
+    assert dismissed == [None, 9]
+    assert [ids(q) for q in queued()] == [[nc.PIN_ID]]
+    # the engine's "nothing unread" leaves the pin; asked twice it does not
+    # rebuild a window that has nothing to take down
+    card.show(_item(id=10))
+    queued()
+    card.hide()
+    assert [ids(q) for q in queued()] == [[nc.PIN_ID]]
+    card.hide()
+    assert queued() == []
+
+    # the pill: once per press, and only for the pin's own id
+    card.pressed("button", nc.PIN_ID)
+    card.pressed("button", 7)
+    assert pressed == [1], pressed
+    assert queued() == [], "the pill takes nothing down by itself"
+
+    # a timeout (only with [notify] card_seconds) is not a dismissal of the pin
+    card.show(_item(id=11))
+    queued()
+    card.timed_out()
+    assert [ids(q) for q in queued()] == [[nc.PIN_ID]]
+    assert card.pinned()
+
+    # unpin: the notifications stay; with nothing else the window goes
+    card.show(_item(id=12))
+    queued()
+    card.unpin()
+    assert [ids(q) for q in queued()] == [[12]] and not card.pinned()
+    card.unpin()
+    assert queued() == [], "a second unpin changes nothing"
+    card.hide()
+    queued()
+    card.pin(_pin_card())
+    queued()
+    card.unpin()
+    assert queued() == [None], "the last thing up comes down"
+
+    # a card that is off ignores all of it
+    off = overlay_mod.NotifyCard.off()
+    off.pin(_pin_card())
+    off.unpin()
+    off.pressed("button", nc.PIN_ID)
+    assert off._q.empty()
+
+
+def test_the_skin_notify_card_takes_the_pill_and_not_the_pin_body() -> None:
+    """The glass presenter's two doors: a click that never moved on the
+    pin's body is NOT an `open` (and must not spend the press latch the
+    real notifications need), and the pill is `pressed("button")`."""
+    import inspect
+    from skin import notify as skin_notify
+
+    src = inspect.getsource(skin_notify.run)
+    assert "nc.PIN_ID" in src and 'card.pressed("button"' in src, \
+        "the glass presenter does not route the pill"
+    body = src.split("def on_move")[1].split("def on_click")[0]
+    assert body.index("nc.PIN_ID") < body.index("dismissing = True"), \
+        "the pin's body must be refused BEFORE the latch is taken"
+    flat = inspect.getsource(overlay_mod.NotifyCard._build_and_loop)
+    assert 'self.pressed("button"' in flat, "the Tk fallback has no pill"
+
+
+def test_the_awake_engine_says_when_the_mode_flips_and_only_then() -> None:
+    import awake as awake_mod
+
+    calls: list = []
+    sent: list = []
+    touched = [0.0]
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        eng = awake_mod.Engine(
+            Path(d), None,
+            hold_factory=lambda: awake_mod.Hold(setter=lambda flags: 1),
+            sender=lambda s: sent.append(s) or True, run=_FakePowercfg(),
+            input_fn=lambda: touched[0], on_dark=calls.append)
+        eng._probe_to_log = lambda: None
+        eng.again_s = 0
+        eng.vitals_minutes = 0
+        eng.keep_off_s = 0
+        eng.hold(by="test")
+        assert calls == [], "holding is not the screens mode"
+        eng.darken(by="test")
+        assert [c["dark"] for c in calls] == [True], calls
+        assert calls[0]["since"] and calls[0]["keep_screens_off_s"] == 0
+        eng.darken(by="test")            # a second press: put them out again
+        eng.blank()
+        assert len(calls) == 1, "blank() and a second darken() are no flip"
+        eng.lighten(by="test")
+        assert [c["dark"] for c in calls] == [True, False], calls
+        eng.lighten(by="test")           # already on
+        assert len(calls) == 2
+        eng.toggle(by="test")
+        eng.toggle(by="test")
+        assert [c["dark"] for c in calls] == [True, False, True, False]
+        eng.darken(by="test")
+        eng.release()                    # the exit brings the screens back
+        assert [c["dark"] for c in calls][-2:] == [True, False], calls
+        assert not eng.dark and len(calls) == 6
+
+    # the keep-off worker putting them out again is not a flip either
+    calls.clear()
+    sent.clear()
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        eng = awake_mod.Engine(
+            Path(d), None,
+            hold_factory=lambda: awake_mod.Hold(setter=lambda flags: 1),
+            sender=lambda s: sent.append(s) or True, run=_FakePowercfg(),
+            input_fn=lambda: touched[0], on_dark=calls.append)
+        eng._probe_to_log = lambda: None
+        eng.again_s = 0
+        eng.vitals_minutes = 0
+        eng.keep_off_s = 0.2
+        touched[0] = time.monotonic()
+        eng.darken(by="test")
+        _awake_until(lambda: bool(sent))
+        time.sleep(0.5)                  # the worker has read what lit them
+        touched[0] = time.monotonic()
+        _awake_until(lambda: sent.count(awake_mod.MONITOR_OFF) >= 2)
+        assert sent.count(awake_mod.MONITOR_OFF) >= 2
+        assert len(calls) == 1, "the watchdog's re-darkening is no flip"
+        eng.lighten(by="test")
+        assert len(calls) == 2
+
+    # a callback that raises costs the screens nothing
+    sent.clear()
+
+    def boom(_state):
+        raise RuntimeError("the card would not paint")
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        eng = awake_mod.Engine(
+            Path(d), None,
+            hold_factory=lambda: awake_mod.Hold(setter=lambda flags: 1),
+            sender=lambda s: sent.append(s) or True, run=_FakePowercfg(),
+            on_dark=boom)
+        eng._probe_to_log = lambda: None
+        eng.again_s = 0
+        eng.vitals_minutes = 0
+        eng.keep_off_s = 0
+        assert eng.darken(by="test")["dark"] is True and eng.dark
+        _awake_until(lambda: awake_mod.MONITOR_OFF in sent)
+        assert awake_mod.MONITOR_OFF in sent
+        assert eng.lighten(by="test")["dark"] is False and not eng.dark
+        _awake_until(lambda: awake_mod.MONITOR_ON in sent)
+        assert awake_mod.MONITOR_ON in sent
+
+
+def test_the_screens_card_follows_the_mode_through_main() -> None:
+    """main.App._screens_card is the one road: every flip of the engine
+    pins or unpins, [awake] screens_card = false pins nothing, the footer
+    names the key (or the desk when it is unbound), and the pill ends the
+    mode on a thread and says so once."""
+    import dataclasses
+    import types
+    import main as main_mod
+
+    import awake as awake_mod
+    import notify_card as nc
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = cfg
+    pins: list = []
+    app.notify_card = types.SimpleNamespace(pin=pins.append,
+                                            unpin=lambda: pins.append(None))
+    said: list = []
+    app._say = said.append
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        app.awake = awake_mod.Engine(
+            Path(d), None,
+            hold_factory=lambda: awake_mod.Hold(setter=lambda flags: 1),
+            sender=lambda s: True, run=_FakePowercfg(),
+            on_dark=app._screens_card)
+        app.awake._probe_to_log = lambda: None
+        app.awake.again_s = 0
+        app.awake.vitals_minutes = 0
+        app.awake.keep_off_s = 0
+        app._screens_card_pressed()                  # nothing to end
+        time.sleep(0.2)
+        assert said == [] and pins == []
+
+        app.awake.darken(by="key")
+        assert len(pins) == 1 and pins[0]["id"] == nc.PIN_ID, pins
+        assert pins[0]["footer"] == "Ctrl+Alt+N brings them back", pins[0]
+        assert "monitors' own timer" in pins[0]["body"], \
+            "the engine here keeps no watchdog (keep_off_s = 0)"
+        app._screens_card_pressed()                  # the pill
+        _awake_until(lambda: not app.awake.dark)
+        _awake_until(lambda: pins[-1] is None)
+        assert not app.awake.dark and pins[-1] is None, pins
+        assert said == ["screens on"], said
+        app._screens_card_pressed()                  # a second click
+        time.sleep(0.2)
+        assert said == ["screens on"], "a stale click said it twice"
+
+        # unbound key: the desk is named
+        app.cfg = dataclasses.replace(
+            cfg, awake=dataclasses.replace(cfg.awake, enabled=False))
+        pins.clear()
+        app.awake.darken(by="dashboard")
+        assert pins[0]["footer"] == "The desk's Awake screen brings them back"
+        app.awake.lighten(by="dashboard")
+        # the kill switch: nothing is pinned, the mode is unchanged
+        app.cfg = dataclasses.replace(
+            cfg, awake=dataclasses.replace(cfg.awake, screens_card=False))
+        pins.clear()
+        app.awake.darken(by="dashboard")
+        assert app.awake.dark and [p for p in pins if p is not None] == [], pins
+        app.awake.lighten(by="dashboard")
+        assert not app.awake.dark
+
+
+def test_screens_card_is_a_config_switch_and_defaults_on() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        p = Path(d) / "config.toml"
+        p.write_text("[awake]\nscreens_card = false\n", "utf-8")
+        assert config_mod.load(p).awake.screens_card is False
+        p.write_text("[awake]\nhold = true\n", "utf-8")
+        assert config_mod.load(p).awake.screens_card is True
+    assert config_mod.AwakeConfig().screens_card is True
+
+
+def test_the_screens_key_is_live_while_paused_and_nothing_else_is() -> None:
+    """The Screens off card names the key as the way back, so the key must
+    work while dictation is paused — and ONLY it: the hold key stays inert
+    and every other tap passes straight through, unswallowed."""
+    spy = Spy()
+    m = PTTStateMachine(
+        {VK_RCTRL: "he"},
+        on_start=lambda lang: spy.events.append("start"),
+        on_stop=lambda lang: spy.events.append("stop"),
+        on_abort=lambda why: spy.events.append(f"abort:{why}"),
+        taps={VK_F9: "screens", VK_F8: "capture"},
+        on_tap=lambda action: spy.events.append(f"tap:{action}"),
+        pause_vk=VK_SCROLL,
+        on_pause=lambda paused: spy.events.append(
+            "paused" if paused else "resumed"))
+    assert hotkey_mod.PAUSED_TAPS == frozenset({"screens"})
+    assert m.set_paused(True) is True
+    assert spy.events == ["paused"]
+    assert m.handle("down", VK_RCTRL, False) is False
+    m.handle("up", VK_RCTRL, False)
+    assert "start" not in spy.events, "the hold key must stay inert"
+    m.handle("down", VK_F8, False)                 # another tap: inert
+    m.handle("up", VK_F8, False)
+    assert spy.events == ["paused"], spy.events
+    m.handle("down", VK_F9, False)
+    m.handle("down", VK_F9, False)                 # Windows' auto-repeat
+    m.handle("up", VK_F9, False)
+    assert spy.events == ["paused", "tap:screens"], spy.events
+    m.handle("down", VK_F9, False)                 # a second, real press
+    m.handle("up", VK_F9, False)
+    assert spy.events == ["paused", "tap:screens", "tap:screens"], spy.events
+    assert m.set_paused(False) is True
+    m.handle("down", VK_F8, False)                 # and awake again
+    m.handle("up", VK_F8, False)
+    assert spy.events[-1] == "tap:capture", spy.events
 
 
 if __name__ == "__main__":

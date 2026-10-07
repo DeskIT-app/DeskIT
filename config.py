@@ -779,6 +779,11 @@ class AwakeConfig:
     # this app, the heaviest programs), and one more the moment they
     # come back. 0 = none. See awake.vitals().
     vitals_minutes: int = 10
+    # While the screens are off, a card is pinned in the notification
+    # column that says so and carries the way back (notify_card
+    # .pinned_card). False = no card; the screens mode itself is the
+    # same either way.
+    screens_card: bool = True
 
 
 @dataclass(frozen=True)
@@ -2058,6 +2063,8 @@ def build(data: dict) -> Config:
                 "keep_screens_off_s", AwakeConfig.keep_screens_off_s)),
             vitals_minutes=int(awake.get(
                 "vitals_minutes", AwakeConfig.vitals_minutes)),
+            screens_card=bool(awake.get("screens_card",
+                                        AwakeConfig.screens_card)),
         ),
         notify=NotifyConfig(
             enabled=bool(notify.get("enabled", NotifyConfig.enabled)),

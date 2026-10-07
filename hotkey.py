@@ -37,6 +37,13 @@ IDLE = "idle"
 RECORDING = "recording"
 LATCHED = "latched"
 
+# The taps that still fire while the app is PAUSED. Paused makes every key
+# inert but the pause key; the screens key is the one other exception
+# (2026-10-07): it touches no cursor and no microphone, and the "Screens
+# off" card names it as the way back — a card advertising a dead key is
+# the worst state that card could be in.
+PAUSED_TAPS = frozenset({"screens"})
+
 # ---------------------------------------------------------------- key names
 
 _VK: dict[str, int] = {
@@ -1143,7 +1150,25 @@ class PTTStateMachine:
                             self._on_abort("paused mid-recording")
                         self._on_pause(now_paused)
             elif self._paused:
-                pass    # every other key is inert, and passes through
+                # Every other key is inert, and passes through — except the
+                # taps in PAUSED_TAPS (the screens key: the "Screens off"
+                # card promises that key is a way out, and a key that goes
+                # dead the moment dictation is paused would break the
+                # promise). Matched BEFORE _try_tap so that every other tap
+                # is not even marked held, and a Win chord that is not ours
+                # to take still reaches Windows.
+                if event_type == "down" and vk in self._taps \
+                        and vk not in self._tap_held:
+                    matched = self._match_tap(vk)
+                    if matched is not None and matched[1] in PAUSED_TAPS:
+                        took = self._try_tap(vk)
+                        if took is not None:
+                            action, swallow_it = took
+                            swallow = swallow or swallow_it
+                            fire = lambda action=action: (
+                                self._on_tap(action)
+                                if self._tap_may_fire(action, IDLE)
+                                else None)
             elif self._state == IDLE:
                 if vk in self._hotkeys and event_type == "down":
                     if self._dictation_off:
