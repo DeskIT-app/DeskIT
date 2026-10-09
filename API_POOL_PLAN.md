@@ -10,6 +10,18 @@ use your own API key"* — with a share per user, per day and per month, in
 dollars or in calls, that follows how many users there are; and the master
 app able to change those shares **live, without shipping an update**.
 
+> **Update 2026-10-09 — the key is in hand, and the question got wider.**
+> He has the API key from the Max plan's credit: **$100 every billing
+> cycle**, as §1 describes. Gate A (§11) no longer waits on anything but
+> the key reaching this PC — his hands, into Windows Credential Manager,
+> never into the repo, the chat or a log. And his question is no longer
+> only "Haiku in front of Groq": *maybe the key replaces the local models
+> in some places* — maybe the fastest way to transcribe stays on this PC,
+> and the best way to LEARN goes through Claude. **§13 holds every speed
+> and accuracy measured so far** (the local decoder, the local model,
+> Groq, our own trained model), so the mix is decided on numbers; §13.5
+> is filled in after the training run of the night of 2026-10-10.
+
 ---
 
 ## 0. In one paragraph
@@ -134,8 +146,8 @@ Measured on this checkout, read-only (`transcripts.log`, `vocab.json`,
 | the repair prompt's instructions alone | 1,148 characters |
 | the same with his 60 glossary pairs | 2,741 characters |
 
-**Not measured yet — the first job of the build (§11, gate A):** the token
-count. `count_tokens` is free and exact; until it has run on 50 real prompts,
+**Not measured yet — the first job of the build (§11, gate A; the key is in
+hand since 2026-10-09, §13):** the token count. `count_tokens` is free and exact; until it has run on 50 real prompts,
 the cost below is an estimate. Estimate: ~1,000-1,500 tokens in, ~50-300
 out with thinking off → **about $0.0002-0.0003 a repair on Haiku 5.5**
 ($0.10 / $0.50 per million). A new user's prompt is smaller (few or no
@@ -385,6 +397,133 @@ users in §4, and the idea is re-decided with that number.
    all until it runs out?
 6. The message to Anthropic support about serving the app's users with the
    plan's credit — send it before gate A, or only if gate A says go?
+7. **(2026-10-09) The mix — §13.6.** Which job goes to which road:
+   transcribing (local, today), fixing before the paste (off since
+   2026-10-07), learning after the paste, and teaching our own model.
+   Decided after gate A and the night of 2026-10-10, not before.
+
+---
+
+## 13. Measured speeds and accuracy — to decide the mix (2026-10-05 … 10-09)
+
+Every number below was measured on this PC, in this checkout, with the date
+it was taken. "To the paste" is from the key's release to the text at the
+cursor, as `app.log` writes it. An estimate is called one.
+
+### 13.1 One dictation today, part by part
+
+| part | road | measured |
+|---|---|---|
+| the decoder (Whisper, ivrit.ai turbo, on the graphics card) | local | **0.7 s median, 1.2 s p90** per dictation (21 dictations, 2026-10-07 17:05 → 10-09); daily medians 0.6-0.85 s since 2026-09-23. On 123 min of FLEURS audio: 277-378 s of decoding (≈ 0.04-0.05 s per second of speech) |
+| the learned-words swap | local | instant |
+| the fix before the paste | Groq | **off since 2026-10-07** (`polish.when = "never"`, his choice) |
+| **to the paste, repair off** | — | **0.8 s median, 1.3 s p90, 2.7 s worst** (the same 21 dictations) |
+| to the paste with Groq answering normally | Groq | daily medians 1.6-2.0 s (2026-09-23 → 10-03) |
+| to the paste with Groq busy | Groq | 6.0-12.1 s (2026-10-05); with the 2 s cap (branch `polish-cloud-wait`) at most ~3 s |
+
+The day he remembered as "about a second" (2026-10-03 20:00 → 10-04 20:00)
+was the day Groq refused the key: the fix failed at once, so nothing was
+fixed — 0.9-1.2 s to the paste. That is the speed of the local road alone.
+
+### 13.2 The fix itself, every road on the same 23 dictations sent at once (2026-10-05)
+
+| road | typical | p90 | worst | failed | on the read-aloud text with known words (raw: 21.6% wrong) |
+|---|---|---|---|---|---|
+| **Groq gpt-oss-120b** (today's) | 1.17 s | 7.06 s | 12.1 s | 2 of 23 ("over capacity", ~5 s to say so) | 21.6% — fixed 3 words, broke 4 |
+| Groq — its own work only | 0.23-0.35 s | | | | the rest is Groq's queue: 0.02 s calm (2026-10-07), 3.98-10.6 s busy |
+| Groq qwen3.8-27b, no thinking | 0.50 s | 1.75 s | 2.0 s | 2 of 23 | 23.5% — worse fixes ("לבן" → "לב") |
+| **local gemma3:12b** (Ollama), warm | 1.53 s | 7.5 s | 8.0 s | 0 | 22.2% — weaker fixes ("שנשאר" → "שנשמר") |
+| local gemma3:12b, cold | 21-24 s to load (20 loads, 2026-10-07); unloads after 5 min idle | | | | |
+| Groq, asked again after a refusal | | | 15.4 s | | |
+| Groq and gemma raced, first wins | 0.92 s | 3.3 s | 8.0 s | | gemma won 11 of 23, with its weaker fixes |
+| Groq, waited for at most 2 s | 1.38 s | 2.0 s | 2.0 s | | the fix lost on 2 of 23 |
+| **Claude Haiku 5.5** | **not measured — gate A** | | | | estimate $0.0002-0.0003 a fix (§4); two hops on the pool road (the Supabase function, then Anthropic) |
+
+Local gemma also had a crash: Ollama 0.35.0 (auto-updated 2026-10-01)
+failed to load the model on 6 of 79 loads, at its flash-attention step;
+flash attention is off since 2026-10-07 (20 of 20 loads then, ~5% slower).
+
+### 13.3 What the fix is worth — the case for spending the key on it
+
+- It changed **1 dictation in 5** (90 of 450, 2026-09-21 → 10-07); after
+  the word guard of 2026-10-02, **28 of 215** (13%).
+- Of those 42 word changes, by my reading — a judgment, not his labels —
+  about half were good ("סלש קליר" → slash clear, "תאכל" → "תוכל"), about a
+  quarter harmful ("קלוד" → Cloud ×4, "האשף" → "ה-Dev" ×4, "שיחקנו" →
+  "סינכרנו"), the rest unclear. Only 11 of the 42 repeat — the rest a word
+  list could never learn.
+- On the read-aloud text (153 words, the words known before the audio) it
+  fixed 3 and broke 4: net nothing.
+- So in front of the paste it costs 0.6-12 s and buys little. Haiku earns
+  that place only if gate A shows it fast (p90 within the deadline) and
+  harmless (no more harms than it fixes). **Behind** the paste — the second
+  reading, the cards, learning — the clock does not matter, and quality is
+  everything.
+
+### 13.4 Our own model — trained on this PC (2026-10-07 → 10-09)
+
+Full detail in `DeskIT-training\README.txt` (outside the repo; deleting that
+folder deletes all of it).
+
+- **Tests, both with words written by people:** FLEURS Hebrew test (Google,
+  792 clips, 123 min, CC BY 4.0) for plain Hebrew; three held-out episodes
+  of the Reversim podcast (342 clips, 57 min) for Hebrew with English terms.
+- **Today's model** (the app's decoder settings, without his personal word
+  list): FLEURS **19.61%** of words wrong, Reversim **16.03%**, English words
+  in Reversim right **40%** — and 166 of the 175 English-word errors come
+  out in Hebrew letters ("testing" → "טסטינג", "data" → "דאטה").
+- **Training data:** 97 other Reversim episodes → 18,739 clips, 51.9 h,
+  each with the episode's own transcript (English terms in Latin letters).
+  Cutting them: 1 h 33 min. Training (a small add-on to the part that
+  chooses the words; the part that hears is untouched): **56 min, 3.5 GB
+  of graphics memory** — it runs beside the dictation model.
+- **The first run (night of 2026-10-09):**
+
+| | today's model | trained | |
+|---|---|---|---|
+| English words right (Reversim) | 40% | **76-77%** | the thing we wanted |
+| Reversim, words wrong (no timestamps) | 15.67% | **12.33%** | better |
+| FLEURS, words wrong (no timestamps) | 19.39% | 21.97% | worse: +273 of the +352 errors are foreign NAMES now written in Latin letters (Giza, Carolina, Haiti → "it"), ~+150 real Hebrew errors |
+| FLEURS in the app's own mode (timestamps) | 19.61% | 52.96% | **broken** — trained without timestamps, it never ended a segment in timestamp mode and ran on inventing words; fixed in the training program (half the labels now carry timestamps) |
+
+- Speed: a trained model is the same size and shape as today's, so the
+  decoder's 0.7 s should not move — to be measured with the fixed model.
+
+### 13.5 The fixed model — the night of 2026-10-10
+
+*To be filled in from `DeskIT-training\runs\night2\report.txt` after the run
+(03:15).* Same data and settings as 13.4, one change: half the training
+labels carry timestamps. The question it answers: does the gain in English
+words (40% → 76%) survive in the app's own mode, without breaking it.
+
+### 13.6 How the jobs might split — a hypothesis to test, not a decision
+
+| job | is a person waiting? | candidates | what the numbers say so far |
+|---|---|---|---|
+| **transcribe at the key** | yes, every dictation | local decoder — today's model, or ours if 13.5 holds | 0.7 s, audio never leaves (house rule 2); nothing in the cloud can be faster than "already here" |
+| **fix before the paste** | yes | off (today) / Haiku, if gate A says fast and harmless | Groq's fix bought little for its 0.6-12 s (13.3) |
+| **learn after the paste** — the second reading, the word pairs, the cards | no | Claude via the key / Groq (today) / local gemma | no clock, so the best judge wins; gemma's fixes were the weakest, Groq's queue does not matter here; Claude is the natural candidate — to measure on his 164 second-reading verdicts |
+| **teach our own model** — cleaning and checking training text | no, nightly | Claude via the key | Claude reads text and images, not audio (the API takes text, image and PDF blocks); its part would be the TEXT — reconciling the decoder's three hearings with a transcript, writing English terms the way he does, throwing out bad clips. Unmeasured |
+
+The money side: the background jobs run once per dictation too — about 50
+a day for him — so at Haiku's price they cost about what the fix would
+(§4), and they fit inside the same pool.
+
+### 13.7 What to measure next
+
+1. **Gate A, with his key on this PC:** Haiku 5.5's time from this PC (p50,
+   p90 — direct to Anthropic first, through the Supabase function later);
+   its fixes against Groq's on his 164 verdicts and the 16 + 16 hand
+   labels, run more than once.
+2. **The night of 2026-10-10:** 13.5 above.
+3. **The learning job:** Haiku against Groq as the second reading's judge,
+   on the same verdicts — accepted proposals kept, rejected ones not made.
+4. **The decoder with our model:** time per dictation, beside 13.1.
+
+Haiku 5.5 facts used above (the Claude API reference bundled with Claude
+Code, cached 2026-10-06): id `claude-haiku-5-5`, $0.10 / $0.50 per million
+tokens up to 100K tokens of prompt; thinking can be turned off only at
+effort `high` or below; input is text, images and PDFs.
 
 ---
 
