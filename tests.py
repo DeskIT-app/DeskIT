@@ -4814,6 +4814,141 @@ print("ok")
 ''')
 
 
+def test_a_dot_pushed_under_the_windows_climbs_back_on_top() -> None:
+    """The owner's report of 2026-10-10: "sometimes the dot disappears
+    behind the windows". Walked live, the dot's window sat UNDER a
+    maximised Claude window with WS_EX_TOPMOST still on — put there by
+    something outside the app, along with a dozen other programs' topmost
+    windows (overlay.dig_out has the whole story). The dot is shown once
+    and lives for days, so it never went back up on its own.
+
+    Asked of the REAL dot, on both painters (the glass one, and the Tk
+    fallback with HD_SKIN=0): an ordinary window is put over it and the
+    dot is slipped under that window, and within a couple of
+    DOT_ON_TOP_S it must be above it again, topmost bit and all, with one
+    line in the log saying who it was under. Then a TOPMOST window is put
+    over it, and that one must be left where it is — among topmost
+    windows the newest is on top, and the screenshot selector, the move
+    frame and the cards all count on that rule.
+
+    The burial here goes through SetWindowPos, which also clears the
+    bit; whatever did it on his machine left the bit on. dig_out's test
+    is the same either way — a visible window without the bit above the
+    dot — so this is the rescue, not the cause, and it says so.
+    """
+    body = r'''
+import os, sys, time
+os.environ["HD_SKIN"] = "%s"
+import ctypes, logging
+lines = []
+class Keep(logging.Handler):
+    def emit(self, record):
+        lines.append(record.getMessage())
+logging.getLogger("app").addHandler(Keep())
+logging.getLogger("app").setLevel(logging.INFO)
+import overlay
+
+H = ctypes.c_void_p
+u = ctypes.WinDLL("user32", use_last_error=True)
+u.CreateWindowExW.restype = H
+u.CreateWindowExW.argtypes = [ctypes.c_ulong, ctypes.c_wchar_p,
+                              ctypes.c_wchar_p, ctypes.c_ulong] \
+    + [ctypes.c_int] * 4 + [H, H, H, H]
+u.SetWindowPos.argtypes = [H, H] + [ctypes.c_int] * 4 + [ctypes.c_uint]
+u.ShowWindow.argtypes = [H, ctypes.c_int]
+u.DestroyWindow.argtypes = [H]
+u.GetTopWindow.restype = H
+u.GetTopWindow.argtypes = [H]
+u.GetWindow.restype = H
+u.GetWindow.argtypes = [H, ctypes.c_uint]
+u.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+u.GetWindowLongPtrW.argtypes = [H, ctypes.c_int]
+u.GetWindowThreadProcessId.argtypes = [H, ctypes.c_void_p]
+u.IsWindowVisible.argtypes = [H]
+u.GetWindowRect.argtypes = [H, ctypes.c_void_p]
+
+class R(ctypes.Structure):
+    _fields_ = [("l", ctypes.c_int), ("t", ctypes.c_int),
+                ("r", ctypes.c_int), ("b", ctypes.c_int)]
+
+def order():
+    out, h = [], u.GetTopWindow(None)
+    while h:
+        out.append(h)
+        h = u.GetWindow(h, 2)                     # GW_HWNDNEXT
+    return out
+
+def above(a, b):
+    z = order()
+    return z.index(a) < z.index(b)
+
+def topmost(h):
+    return bool(u.GetWindowLongPtrW(h, -20) & 0x8)
+
+def wait(cond, seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return cond()
+
+d = overlay.StatusDot(x=300, y=200)
+d.start()
+assert wait(lambda: d.rect is not None, 10), "the dot never mapped"
+me = os.getpid()
+dot = None
+for h in order():
+    pid = ctypes.c_ulong(0)
+    u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+    rc = R(); u.GetWindowRect(h, ctypes.byref(rc))
+    if (pid.value == me and u.IsWindowVisible(h)
+            and 10 < rc.r - rc.l < 60 and 10 < rc.b - rc.t < 60):
+        dot = h
+        break
+assert dot, "no dot window"
+assert topmost(dot), "the dot was born without the topmost bit"
+
+def cover(ex):
+    l, t, r, b = d.rect
+    h = u.CreateWindowExW(ex | 0x80 | 0x08000000, "Static", "cover",
+                          0x80000000, l - 20, t - 20, r - l + 40, b - t + 40,
+                          None, None, None, None)
+    assert h, ctypes.get_last_error()
+    u.ShowWindow(h, 4)                            # SW_SHOWNOACTIVATE
+    return h
+
+# AN ORDINARY WINDOW OVER IT, and the dot slipped under that window
+plain = cover(0)
+u.SetWindowPos(dot, plain, 0, 0, 0, 0, 0x2 | 0x1 | 0x10)
+assert above(plain, dot), "the burial itself did not take"
+assert wait(lambda: above(dot, plain) and topmost(dot),
+            overlay.DOT_ON_TOP_S * 3 + 1), \
+    "the dot stayed under an ordinary window"
+said = [s for s in lines if "the dot was under" in s]
+assert len(said) == 1, ("one burial, one line", lines)
+assert "(Static)" in said[0], said
+# THE NEXT CHECKS FIND NOTHING, and say nothing
+time.sleep(overlay.DOT_ON_TOP_S * 2.5)
+assert len([s for s in lines if "the dot was under" in s]) == 1, lines
+
+# A TOPMOST WINDOW OVER IT is Windows' own rule and is left alone
+over = cover(0x8)
+assert above(over, dot), "a new topmost window was not on top"
+time.sleep(overlay.DOT_ON_TOP_S * 2.5)
+assert above(over, dot), "the dot climbed over a topmost window"
+
+u.DestroyWindow(over)
+u.DestroyWindow(plain)
+d.stop()
+print("ok")
+'''
+    for skin_flag in ("1", "0"):
+        if skin_flag == "1" and not _glass_dot_here():
+            continue
+        _run_window_script(body % skin_flag)
+
+
 def test_the_dot_is_a_button_only_on_its_disc() -> None:
     """The arithmetic behind the probe above, checked without a window:
     HTCLIENT inside the disc plus two pixels, HTTRANSPARENT at 14 px and

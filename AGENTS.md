@@ -1564,6 +1564,17 @@ exactly what classic did.
   `_notify_cfg()` pins `quiet_s=0, interrupt="all"`, and the quiet door's
   tests name what they want. `Engine.test()` is `urgent` — Send-a-test
   always rings, whatever the two keys say.
+- **WS_EX_TOPMOST is a bit, not a promise.** On 2026-10-10 the dot sat
+  under a maximised Claude window with the bit still on — moved below
+  the ordinary windows by something outside the app, together with a
+  dozen other programs' topmost windows, while SetWindowPos itself
+  clears the bit on every way it can do that (measured). A window shown
+  once and kept for days never recovers by itself, so the dot checks
+  every `overlay.DOT_ON_TOP_S` (`overlay.dig_out`: a visible window
+  WITHOUT the bit above it means it was buried) and logs "the dot was
+  under X" once per burial. Topmost windows above it are left alone on
+  purpose. Any new long-lived topmost window needs the same check; a
+  card that is raised each time it is shown does not.
 
 ## Where things live
 
