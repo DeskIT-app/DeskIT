@@ -2855,7 +2855,7 @@ class App:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     def _account_command(self, do: str, kind: str = "") -> dict:
-        """Settings > Privacy > Account (screen 16), over the pipe: the
+        """Settings > Account (screen 16), over the pipe: the
         dashboard is another process and only THIS one holds the
         session (8.6). Nothing here waits on the network — a sign-in
         opens the browser and waits on a thread of its own, a sync is a
@@ -2894,10 +2894,19 @@ class App:
             return {"ok": True, "message": ("the browser opens Google's sign-in; come back "
                                             "here when it says done" if do == "google"
                                             else "creating an anonymous account")}
-        if do == "signout":
-            threading.Thread(target=lambda: self._account_try(sb.sign_out, "signed out"),
-                             daemon=True, name="account-signout").start()
-            return {"ok": True, "message": "signing out"}
+        if do in ("signout", "signout_all"):
+            # Sign out is THIS PC (the Store walk, 2026-10-03: "why does
+            # Sign out throw out everyone and not only the one I pressed it
+            # on?" — it locked his Dev copy too). Every PC is its own,
+            # plainly named button: the one the changed lock's "It wasn't
+            # me" points to, to end a stranger's session with his own.
+            everywhere = do == "signout_all"
+            threading.Thread(target=lambda: self._account_try(
+                lambda: sb.sign_out(everywhere=everywhere),
+                "signed out of every PC" if everywhere else "signed out on this PC"),
+                daemon=True, name="account-signout").start()
+            return {"ok": True, "message": ("signing out of every PC" if everywhere
+                                            else "signing out on this PC")}
         if do == "delete":
             if not sb.signed_in():
                 return {"ok": False, "error": "no account on this PC"}
