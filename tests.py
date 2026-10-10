@@ -4925,6 +4925,9 @@ assert above(plain, dot), "the burial itself did not take"
 assert wait(lambda: above(dot, plain) and topmost(dot),
             overlay.DOT_ON_TOP_S * 3 + 1), \
     "the dot stayed under an ordinary window"
+# The line is written AFTER the raise (naming the window imports
+# foreground.py the first time), so it is waited for, not assumed.
+wait(lambda: any("the dot was under" in s for s in lines), 3)
 said = [s for s in lines if "the dot was under" in s]
 assert len(said) == 1, ("one burial, one line", lines)
 assert "(Static)" in said[0], said
