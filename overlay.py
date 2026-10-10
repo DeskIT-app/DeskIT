@@ -71,6 +71,9 @@ GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TRANSPARENT = 0x00000020   # click-through
+WS_EX_TOPMOST = 0x00000008
+GW_HWNDPREV = 3                  # GetWindow: the window just above
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
 # LAMPLIGHT, spelled out. This module is imported before ui.py has built
 # anything, so it cannot read the palette — it carries the four names the
@@ -437,6 +440,101 @@ def _no_activate(root, click_through: bool = False) -> bool:
         return False
 
 
+_Z_USER32 = None
+
+
+def _z_user32():
+    """A PRIVATE user32 with the z-order calls declared, built once —
+    dig_out runs every second for as long as the app does. Private for
+    skin\\glass.py's reason, and a HWND is c_void_p because a 64-bit
+    handle does not fit the c_int ctypes would assume."""
+    global _Z_USER32
+    if _Z_USER32 is None:
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        u.GetWindow.restype = ctypes.c_void_p
+        u.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        u.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        u.IsWindowVisible.restype = ctypes.c_int
+        u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_uint]
+        u.SetWindowPos.restype = ctypes.c_int
+        u.GetParent.argtypes = [ctypes.c_void_p]
+        u.GetParent.restype = ctypes.c_void_p
+        _Z_USER32 = u
+    return _Z_USER32
+
+
+def dig_out(hwnd) -> int:
+    """Put the dot back on top if an ordinary window has got above it.
+
+    THE OWNER'S REPORT, 2026-10-10: "sometimes the dot disappears behind
+    the windows" — with two screenshots, Claude maximised and no dot, the
+    desktop shown and the dot right where it should be. Walked live, the
+    dot's window still carried WS_EX_TOPMOST and sat at z-order #121,
+    under the maximised Claude window at #38; the first window without
+    the bit was #36. Something had moved it BELOW the ordinary windows
+    and left the bit on. Not us: none of SetWindowPos' own doors does
+    that — HWND_BOTTOM, HWND_NOTOPMOST and "after an ordinary window"
+    all clear the bit, measured on throwaway windows the same day — and
+    it was not only us: about fifteen topmost windows of other programs
+    (Vanguard, EarTrumpet, Tailscale, the Start feed, Explorer's own)
+    sat down there with the bit on as well, while the taskbar and the
+    rest had evidently put themselves back. Every other window of ours
+    is raised each time it is shown; the dot is shown once and lives for
+    days, so it was the one that stayed buried. SetWindowPos(HWND_TOPMOST)
+    from outside brought it back at once (#121 -> #15, over Claude).
+
+    So the painters call this every DOT_ON_TOP_S. It walks UP from the
+    dot and raises it the moment it meets a visible window WITHOUT the
+    topmost bit — which, above a topmost window, can only mean the dot
+    was put where it does not belong. Topmost windows above it are left
+    alone: among topmost windows the newest is on top by Windows' own
+    rule, and the screenshot selector, the move frame (which goes UNDER
+    the dot on its own), the shelf and the cards all count on that.
+
+    Returns the ordinary window it found over the dot (0 for none, and
+    nothing was done), so the caller can say once who it was. Never
+    raises: a dot that cannot check its z-order is still a dot.
+    """
+    if not hwnd:
+        return 0
+    try:
+        u = _z_user32()
+        above = u.GetWindow(int(hwnd), GW_HWNDPREV)
+        for _ in range(4096):              # a desktop has hundreds, at most
+            if not above:
+                return 0
+            if (u.IsWindowVisible(above)
+                    and not u.GetWindowLongPtrW(above, GWL_EXSTYLE)
+                    & WS_EX_TOPMOST):
+                u.SetWindowPos(int(hwnd), ctypes.c_void_p(-1), 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                return int(above)
+            above = u.GetWindow(above, GW_HWNDPREV)
+    except Exception:
+        _log.debug("could not check the dot's z-order", exc_info=True)
+    return 0
+
+
+def window_owner(hwnd) -> str:
+    """'explorer.exe (Progman)' for a window: who it was, for the log. The
+    program and the class only — never the title, which is a browser
+    tab or a document name and has no business in app.log."""
+    try:
+        import os
+        import foreground
+        u32, k32 = foreground._handles()
+        pid = ctypes.c_ulong(0)
+        u32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
+        exe = os.path.basename(foreground._exe_of(k32, pid.value)) or "?"
+        return "%s (%s)" % (exe, foreground._class(u32, int(hwnd)))
+    except Exception:
+        return "?"
+
+
 # NO `_hide_from_capture` IN THIS MODULE ANY MORE. It was eleven lines
 # that set WDA_EXCLUDEFROMCAPTURE on an overlay window, all four of our
 # windows called it, and it was deleted on 2026-09-04 at the owner's
@@ -562,6 +660,10 @@ DOT_FRAME_S = 180.0
 # A release that travelled less than this is a click, not a drag —
 # NotifyCard's rule and its number, kept the same everywhere.
 DOT_CLICK_PX = 4
+# How often the dot checks that no ordinary window has got above it
+# (`dig_out`). Once a second: the check is a few dozen GetWindow calls,
+# and a dot that took longer than that to come back would read as gone.
+DOT_ON_TOP_S = 1.0
 
 # THE ALARM: a dead microphone ten seconds into a dictation (recorder.
 # SILENT_PEAK). The owner's words for what he wants to see: "הנקודה
@@ -1168,6 +1270,14 @@ class StatusDot:
         # fallback is the path with skin\ deleted.
         on_click = self.on_click
         _no_activate(root, click_through=on_click is None)
+        # The real top-level, for dig_out: Tk's winfo_id is the client
+        # window inside it (see _no_activate).
+        try:
+            top_hwnd = (_z_user32().GetParent(int(root.winfo_id()))
+                        or int(root.winfo_id()))
+        except Exception:
+            top_hwnd = 0
+        on_top = {"next": 0.0, "buried": False}
         if on_click is not None:
             centre = box / 2.0
             reach = self._size / 2.0 + 2.0
@@ -1293,11 +1403,23 @@ class StatusDot:
                         root.geometry(f"+{at[0]}+{at[1]}")
                         root.deiconify()
                         self.rect = (at[0], at[1], at[0] + box, at[1] + box)
+                        on_top["next"] = 0.0      # check at once
                         continue
                     state["name"] = item
                     state["phase"] = 0.0
             except queue.Empty:
                 pass
+            # Pushed under the ordinary windows by something outside the
+            # app? Back on top — the glass painter's check, every
+            # DOT_ON_TOP_S (see dig_out for the whole story).
+            now = time.monotonic()
+            if not self.hidden and now >= on_top["next"]:
+                on_top["next"] = now + DOT_ON_TOP_S
+                over = dig_out(top_hwnd)
+                if over and not on_top["buried"]:
+                    _log.info("the dot was under %s — put back on top",
+                              window_owner(over))
+                on_top["buried"] = bool(over)
             # Somebody moved it from somewhere else — a drop that had to
             # be clamped, or "Back to the corner" from the dashboard.
             if self._replace.is_set():
