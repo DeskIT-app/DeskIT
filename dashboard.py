@@ -2721,6 +2721,27 @@ class Dashboard:
         model, pack, changed = self._hardware_words()
         rows: list[dict] = []
         now = time.time()
+        # The parts downloading in the background on the running app
+        # (downloads.py, 2026-10-03 — no page, no button): one quiet row
+        # with how far it is, in place of a Download that would only
+        # start a second downloader on the same part.
+        dl = (self.status or {}).get("downloads") if self.running else None
+        if dl and dl.get("state") in ("running", "waiting"):
+            parts = dl.get("parts") or {}
+            pct = int(round(float(dl.get("fraction") or 0) * 100))
+            rows.append({
+                "at": now, "kind": "hardware", "mark": "engine",
+                "mark_colour": ui.ACCENT, "eyebrow": "This computer",
+                "eyebrow_right": False,
+                "text": (f"Downloading app parts — {pct}%" if not dl.get("offline")
+                         else "Downloading app parts — waiting for the connection"),
+                "note": ("Once, in the background. Dictation starts the moment the "
+                         "Hebrew model lands." if parts.get("model") not in (None, "done")
+                         else "Once, in the background — nothing to press."),
+                "buttons": [],
+            })
+            if "model" in parts:
+                model = "downloading"     # the row above says it; no second Download
         if not paths.PORTABLE and model in ("absent", "incomplete", "stale"):
             size = ""
             try:
@@ -2780,6 +2801,8 @@ class Dashboard:
 
     def _hardware_remove(self) -> None:
         packs_mod.remove("gpu")
+        # turned off by hand: the background downloads never fetch it again
+        packs_mod.decline("gpu")
         self._note("faster dictation is off — Settings > Dictation offers it again")
         self._fill_waiting()
 
@@ -8005,7 +8028,14 @@ class Dashboard:
             state = packs_mod.state("recording")
             rp = packs_mod.pack("recording")
             size = f" ({packs_mod.human(rp.bytes)})" if rp else ""
-            if state == "ok":
+            dl = (self.status or {}).get("downloads") if self.running else None
+            if (dl and dl.get("state") in ("running", "waiting")
+                    and (dl.get("parts") or {}).get("recording") not in (None, "done")):
+                # the running app is fetching it (downloads.py, 2026-10-03):
+                # no second download, nothing to press
+                said = ("Screen recording and the webcam are downloading in "
+                        f"the background{size}.")
+            elif state == "ok":
                 said = "Screen recording and the webcam are ready."
                 buttons.append(("Remove it",
                                 lambda: self._pack_remove("recording")))
@@ -8056,6 +8086,8 @@ class Dashboard:
 
     def _pack_remove(self, name: str) -> None:
         packs_mod.remove(name)
+        # turned down by hand: the background downloads never fetch it again
+        packs_mod.decline(name)
         self._note(f"the {name} pack was removed")
         self._draw_settings()
 
@@ -8181,15 +8213,25 @@ class Dashboard:
             return lines, buttons
         e = models_mod.entry(repo)
         size = f" ({models_mod.human(e.bytes)})" if e else ""
+        # a part the running app is downloading in the background
+        # (downloads.py, 2026-10-03) says so and offers no second download
+        dl = (self.status or {}).get("downloads") if self.running else None
+        coming = ({k for k, v in (dl.get("parts") or {}).items() if v != "done"}
+                  if dl and dl.get("state") in ("running", "waiting") else set())
+        if "model" in coming:
+            model = "coming"
         model_said = {
             "ready": f"ready{size}",
             "absent": f"not downloaded yet{size}",
             "incomplete": "the download did not finish — continue it",
             "stale": "there is a newer one to download",
             "unknown": "this copy asks for a model nobody knows",
+            "coming": f"downloading in the background{size}",
         }[model]
         lines.append(("The Hebrew model", model_said))
-        if model == "ready":
+        if model == "coming":
+            pass
+        elif model == "ready":
             buttons.append(("Delete and re-download the model", self._speed_redownload))
             buttons.append(("Delete the model", self._speed_delete_model))
         elif model != "unknown":
@@ -8199,7 +8241,9 @@ class Dashboard:
         has_card = int(facts.get("cuda_devices") or 0) >= 1
         gp = packs_mod.pack("gpu")
         psize = f" ({packs_mod.human(gp.bytes)})" if gp else ""
-        if pack.startswith("failed:"):
+        if "pack" in coming:
+            pack_said = f"downloading in the background{psize}"
+        elif pack.startswith("failed:"):
             pack_said = f"it will not start on this PC ({pack[7:]}) — dictation runs on the processor"
             buttons.append(("Try it again", self._hardware_retry))
             buttons.append((f"Download it again{psize}",
