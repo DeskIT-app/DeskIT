@@ -51,6 +51,21 @@ THE MECHANISM, and what it deliberately is not:
   the hold above already covers S3 and a belt-and-braces setting is a
   second thing to restore.
 
+THE CARD (2026-10-07). While the screens are off a card is pinned at the
+bottom of the notification column — the screens are dark, so nobody sees
+it, but the moment a touch lights them for a few seconds it is the first
+thing on the screen and says why they are about to go dark again. It is
+put up and taken down by `Engine(on_dark=)`, called with the fresh
+`state()` when the MODE flips (`darken()` on, `lighten()` off, and
+`release()` at exit through it) from every road at once — the key, the
+desk, the shelf, the phone, the card's own pill — and NOT for `blank()`,
+a second `darken()` or the keep-off worker, which are not changes of mode.
+The callback only enqueues and a raise costs nothing: the screens have
+already switched. The card has no ×, no key dismisses it and a click on
+its body does nothing; only ending the mode takes it down, and it works
+with the speech model off. [awake] screens_card = false puts no card up.
+See notify_card.pinned_card, overlay.NotifyCard.pin, main.App._screens_card.
+
 WHAT SURVIVES A CRASH. `awake_state.json` is written beside the app the
 moment the hold goes up and removed when it comes down. Its one job is
 the pinned timers: the execution state dies with the process and needs
@@ -971,7 +986,8 @@ class Engine:
                  alarms_fn: Callable[[], list[str]] | None = None,
                  input_fn: Callable[[], float] | None = None,
                  state_path: Path | None = None,
-                 log_path: Path | None = None) -> None:
+                 log_path: Path | None = None,
+                 on_dark: Callable[[dict], None] | None = None) -> None:
         self.app_dir = Path(app_dir)
         self.state_path = Path(state_path) if state_path else self.app_dir / STATE_NAME
         self.log_path = Path(log_path) if log_path else self.app_dir / LOG_NAME
@@ -980,6 +996,7 @@ class Engine:
         self.again_s = int(getattr(cfg, "screens_off_again_s", 3))
         self.vitals_minutes = int(getattr(cfg, "vitals_minutes", 10))
         self.keep_off_s = int(getattr(cfg, "keep_screens_off_s", 10))
+        self._on_dark = on_dark
         self._hold_factory = hold_factory
         self._sender = sender or send_monitor_power
         self._run = run or _run_powercfg
@@ -1136,7 +1153,7 @@ class Engine:
                 threading.Thread(target=self._keep_off_worker,
                                  args=(self._keep_stop,), daemon=True,
                                  name="awake-keep-off").start()
-            return self.state()
+            return self._said_dark()
 
     def lighten(self, *, by: str = "dashboard") -> dict:
         """The screens back. Does not touch the hold."""
@@ -1160,7 +1177,23 @@ class Engine:
             # From the phone there is no mouse to light them: say so.
             threading.Thread(target=self._send, args=(MONITOR_ON,),
                              daemon=True, name="awake-screen").start()
-            return self.state()
+            return self._said_dark()
+
+    def _said_dark(self) -> dict:
+        """The mode just flipped (on in darken, off in lighten, and off
+        in release's lighten): tell whoever asked, with the fresh state.
+        NOT blank(), a second darken() or the keep-off worker — those
+        are not changes of mode. The callers may hold `_lock` (toggle and
+        release do, and it is re-entrant), so the callback must only
+        enqueue — main's `_screens_card` does — and a callback that
+        raises costs nothing: the screens have already switched."""
+        state = self.state()
+        if self._on_dark is not None:
+            try:
+                self._on_dark(state)
+            except Exception as e:        # noqa: BLE001
+                log.info("screens-mode callback failed (%s)", e)
+        return state
 
     def toggle(self, *, by: str = "key") -> dict:
         with self._lock:

@@ -49,6 +49,15 @@ the single-card one, so a card in a column measures, draws and takes a
 click exactly as it does alone. `measure`, `regions`, `hit_test`,
 `compose` and `flat` are untouched and still mean one card.
 
+A PINNED CARD (2026-10-07, the "Screens off" card — awake.py's screens
+mode). A card dict may carry `pinned: True` and `button: "<text>"`, and
+`pinned_card()` builds the one the screens mode puts up. It differs from
+every other card in three places and nowhere else: it has NO ×, because
+nobody may close it — a moon stands where the × would be; its footer row
+is BUTTON_H tall and carries the footer text on the left and one filled
+pill on the right; and the pill, not the card, is the only thing that
+answers a click (`BUTTON`). The rest of it still drags the column.
+
 Everything geometric is a function of the card dict and the scale, so
 tests check the layout without a screen; `regions()` is what both the
 painter and the hit test read, which is what keeps the × pressed where
@@ -71,7 +80,11 @@ RADIUS = 20
 BODY_LINES = 4
 SCALE_MIN, SCALE_MAX = 0.6, 1.4
 
-DISMISS, DRAG = "dismiss", "drag"
+DISMISS, DRAG, BUTTON = "dismiss", "drag", "button"
+
+# The id of the pinned screens card — overlay.NotifyCard and main.py agree
+# on it, and a notification can never carry it (notify ids are numbers).
+PIN_ID = "awake:screens"
 
 # One colour per kind: the bar across the top, the label and the badge.
 # LAMPLIGHT semantics: done is the success green, input is the ACCENT
@@ -89,6 +102,10 @@ HEAD_H = 26               # the ×, the label and the time share this row
 TITLE_H = 22
 PROJECT_H = 16
 FOOTER_H = 14
+BUTTON_H = 24             # a pinned card's footer row: it holds the pill
+BUTTON_W = 92             # the pill's width. Fixed, not measured, so a hit
+                          # test stays arithmetic and the pill does not
+                          # change size with the font
 MORE_H = 14               # the "+N earlier" line, only on the last card
 ROW = 8                   # between rows INSIDE one card. This was called
                           # GAP until 2026-09-04, when GAP became the air
@@ -197,6 +214,38 @@ def card_for(item: dict, *, seconds: float, unread: int = 1,
             # thing that knows how many unread items the column left in the
             # store, and it puts the number on the LAST card it hands over.
             "more": more}
+
+
+def pinned_card(*, since: float, keep_s: int, key: str = "",
+                button: str = "Screens on") -> dict:
+    """The "Screens off" card as data (overlay.NotifyCard.pin takes it).
+
+    `since` is the epoch second the mode started — drawn as a clock time,
+    not a running counter, so the card never has to repaint while it
+    waits; `keep_s` is `[awake] keep_screens_off_s` (0 = the screens stay
+    lit until the monitors' own timer); `key` is the bound screens key,
+    already pretty-printed ("Ctrl+Alt+N"), or "" when none is bound — the
+    footer then names the desk's Awake screen instead."""
+    keep = max(0, int(keep_s))
+    if keep > 0:
+        body = ("The PC is awake and working. Touch it and the screens "
+                f"light up, then go dark again {keep} s after you stop.")
+    else:
+        body = ("The PC is awake and working. Touch it and the screens "
+                "light up and stay lit until the monitors' own timer.")
+    footer = (f"{key} brings them back" if key
+              else "The desk's Awake screen brings them back")
+    card = card_for({"id": PIN_ID, "kind": "info", "label": "SCREENS OFF",
+                     "title": "Screens off is on", "body": body},
+                    seconds=0)
+    card.update({"pinned": True, "button": str(button), "footer": footer,
+                 "when": "since " + datetime.fromtimestamp(float(since))
+                 .strftime("%H:%M")})
+    return card
+
+
+def is_pinned(card: dict) -> bool:
+    return bool(card.get("pinned"))
 
 
 # ---------------------------------------------------------------------------
@@ -315,10 +364,8 @@ def _body_height(text: str, pt: float, width: int) -> int:
 # the geometry
 # ---------------------------------------------------------------------------
 
-def measure(card: dict, scale: float = 1.0) -> tuple[int, int]:
-    """The card's size at `scale`. Arithmetic, except for the body's
-    height, which is the one thing only the text layout knows."""
-    s = clamp_scale(scale)
+def _above_footer(card: dict, s: float) -> tuple[int, float]:
+    """(the card's width, the y where the row BEFORE the footer ends)."""
     width = int(round(CARD_W * s))
     inner = int(width - 2 * PAD * s)
     h = PAD * s + HEAD_H * s + ROW * s + TITLE_H * s
@@ -329,7 +376,19 @@ def measure(card: dict, scale: float = 1.0) -> tuple[int, int]:
         h += ROW * s + PROJECT_H * s
     if float(card.get("seconds") or 0) > 0:
         h += ROW * s + BAR_H * s
-    h += ROW * s + FOOTER_H * s
+    return width, h
+
+
+def _footer_h(card: dict) -> int:
+    return BUTTON_H if is_pinned(card) else FOOTER_H
+
+
+def measure(card: dict, scale: float = 1.0) -> tuple[int, int]:
+    """The card's size at `scale`. Arithmetic, except for the body's
+    height, which is the one thing only the text layout knows."""
+    s = clamp_scale(scale)
+    width, h = _above_footer(card, s)
+    h += ROW * s + _footer_h(card) * s
     if int(card.get("more") or 0) > 0:
         h += 2 * s + MORE_H * s
     h += PAD * s
@@ -343,10 +402,22 @@ def regions(card: dict, scale: float = 1.0) -> dict:
     s = clamp_scale(scale)
     width, height = measure(card, s)
     x0 = y0 = SHADOW
-    pad = PAD * s
-    box = CROSS * s
-    return {DISMISS: (x0 + pad, y0 + pad, x0 + pad + box, y0 + pad + box),
+    return {**_chrome_boxes(card, s, width, x0, y0),
             DRAG: (x0, y0, x0 + width, y0 + height)}
+
+
+def _chrome_boxes(card: dict, s: float, width: int, x0: float,
+                  y0: float) -> dict:
+    """The client-hit boxes of ONE card whose top-left is (x0, y0): the ×
+    on an ordinary card, the pill on a pinned one — never both."""
+    pad = PAD * s
+    if is_pinned(card):
+        top = y0 + _above_footer(card, s)[1] + ROW * s
+        bw, bh = BUTTON_W * s, BUTTON_H * s
+        return {BUTTON: (x0 + width - pad - bw, top,
+                         x0 + width - pad, top + bh)}
+    box = CROSS * s
+    return {DISMISS: (x0 + pad, y0 + pad, x0 + pad + box, y0 + pad + box)}
 
 
 def _in(box, x, y) -> bool:
@@ -358,8 +429,9 @@ def hit_test(card: dict, scale: float, x: int, y: int):
     client hit, the rest of the card drags, the shadow margin is not
     ours at all."""
     boxes = regions(card, scale)
-    if _in(boxes[DISMISS], x, y):
-        return HTCLIENT, DISMISS
+    for what in (DISMISS, BUTTON):
+        if what in boxes and _in(boxes[what], x, y):
+            return HTCLIENT, what
     if _in(boxes[DRAG], x, y):
         return HTCAPTION, DRAG
     return HTTRANSPARENT, None
@@ -424,13 +496,13 @@ def stack_hit_test(cards, scale: float, x: int, y: int):
     edge of the screen, where the close button of a maximised window is.
     """
     s = clamp_scale(scale)
-    pad = PAD * s
-    box = CROSS * s
     for index, (cx, cy, width, height) in enumerate(stack_layout(cards, s)):
         if not (cx <= x <= cx + width and cy <= y <= cy + height):
             continue
-        if _in((cx + pad, cy + pad, cx + pad + box, cy + pad + box), x, y):
-            return HTCLIENT, (index, DISMISS)
+        for what, box in _chrome_boxes(cards[index], s, width, cx,
+                                       cy).items():
+            if _in(box, x, y):
+                return HTCLIENT, (index, what)
         return HTCAPTION, (index, DRAG)
     return HTTRANSPARENT, None
 
@@ -467,6 +539,31 @@ def _cross(cache: dict, size: float, colour):
     lw = max(1, int(round(1.6 * k * n / 26)))
     d.line([(a, a), (b, b)], fill=tuple(colour) + (255,), width=lw)
     d.line([(b, a), (a, b)], fill=tuple(colour) + (255,), width=lw)
+    img = big.resize((n, n), Image.LANCZOS)
+    cache[key] = img
+    return img
+
+
+def _moon(cache: dict, size: float, colour):
+    """A crescent — what stands where a pinned card's × would be: the
+    screens are asleep, and this is not a thing to close. A disc with a
+    second disc bitten out of it, at 4x and shrunk."""
+    key = ("moon", int(size), colour)
+    img = cache.get(key)
+    if img is not None:
+        return img
+    n = max(1, int(size))
+    k = 4
+    m = n * k
+    big = Image.new("RGBA", (m, m), (0, 0, 0, 0))
+    ImageDraw.Draw(big).ellipse((m * .22, m * .20, m * .80, m * .78),
+                                fill=tuple(colour) + (255,))
+    bite = Image.new("L", (m, m), 0)
+    ImageDraw.Draw(bite).ellipse((m * .40, m * .08, m * .98, m * .66),
+                                 fill=255)
+    alpha = big.getchannel("A")
+    alpha.paste(0, mask=bite)
+    big.putalpha(alpha)
     img = big.resize((n, n), Image.LANCZOS)
     cache[key] = img
     return img
@@ -534,8 +631,11 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     # -- head row: the ×, the label, the time, the badge
     y = pad
     box = CROSS * s
-    cross = _cross(cache, box, INK if hover == DISMISS else INK_FAINT)
-    img.alpha_composite(cross, (int(pad), int(y)))
+    if is_pinned(card):
+        glyph = _moon(cache, box, colour)
+    else:
+        glyph = _cross(cache, box, INK if hover == DISMISS else INK_FAINT)
+    img.alpha_composite(glyph, (int(pad), int(y)))
     x_right = right
     badge = card.get("badge") or ""
     if badge:
@@ -612,11 +712,25 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
 
     # -- footer
     y += ROW * s
-    f_img = _text(cache, card.get("footer") or FOOTER, 8.0 * s,
-                  colour=INK_FAINT)
-    img.alpha_composite(f_img, (int(pad), int(y + (FOOTER_H * s
-                                                   - f_img.height) / 2)))
-    y += FOOTER_H * s
+    foot = card.get("footer") or FOOTER
+    f_avail = inner - ((BUTTON_W + 10) * s if is_pinned(card) else 0)
+    f_img = _fit_line(_text(cache, foot, 8.0 * s, colour=INK_FAINT),
+                      f_avail, _is_rtl(foot))
+    row_h = _footer_h(card) * s
+    img.alpha_composite(f_img, (int(pad), int(y + (row_h - f_img.height)
+                                              / 2)))
+    if is_pinned(card):
+        bw, bh = int(BUTTON_W * s), int(BUTTON_H * s)
+        lit = hover == BUTTON
+        pill = _rr((bw, bh), bh / 2, fill=(tuple(min(255, c + 28)
+                                                 for c in colour) if lit
+                                           else colour) + (255,))
+        img.alpha_composite(pill, (int(right - bw), int(y)))
+        t = _text(cache, card.get("button") or "", 8.5 * s, colour=CARD,
+                  weight=700)
+        img.alpha_composite(t, (int(right - bw + (bw - t.width) / 2),
+                                int(y + (bh - t.height) / 2)))
+    y += row_h
 
     # -- "+N earlier": what the column could not fit.
     #
@@ -686,7 +800,9 @@ def stack_flat(cards, scale: float = 1.0, hover=None,
 
 __all__ = ["ago", "card_for", "measure", "regions", "hit_test", "compose",
            "flat", "stack_layout", "stack_measure", "stack_hit_test",
-           "stack_flat", "clamp_scale", "CARD_W", "SHADOW", "PAD", "RADIUS",
+           "stack_flat", "clamp_scale", "pinned_card", "is_pinned", "BUTTON",
+           "BUTTON_H", "BUTTON_W", "PIN_ID", "FOOTER_H",
+           "CARD_W", "SHADOW", "PAD", "RADIUS",
            "BODY_LINES", "SCALE_MIN", "SCALE_MAX", "HTTRANSPARENT",
            "HTCLIENT", "HTCAPTION", "DISMISS", "DRAG", "KIND_COLOUR",
            "FOOTER", "GAP", "ROW", "STACK_MAX", "MORE_H"]
