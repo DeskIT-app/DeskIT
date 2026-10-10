@@ -55,10 +55,16 @@ So this panel's `origin` asks the dot FIRST and ALWAYS when it follows
 one (main.App._dot_rect hands it the dot's rectangle whether or not the
 dot has been dragged), `beside_dot` puts it above or below the dot, and
 skin\\shelf.py draws the face as a bubble whose tail sweeps out toward
-the dot (skin\\bubble.py). A drag of the panel moves it for that opening
-and is NOT remembered (`placed` below): a bubble that stayed where it
-was dragged while the dot moved on would point at nothing. `[shelf]
-x/y` still apply to a panel whose file names a corner of its own.
+the dot (skin\\bubble.py).
+
+AND IT CANNOT BE DRAGGED, since 2026-10-04. Its head strip was a handle
+until then; he dragged it to the middle of the screen, where it floated
+with its tail pointing at nothing, and asked for the option to go: "the
+only way to move it should be Move — and then it is always beside the
+dot." So nothing on it answers HTCAPTION (shelf_card.hit_test), the Tk
+fallback has no drag, `placed` writes nothing, and `[shelf] x/y` — the
+drag's old record — is not read: a panel whose file names a corner of
+its own opens in that corner.
 
 WHAT IT IS. A panel beside the status dot listing everything waiting for
 an answer, with the owner's rule for it, verbatim: **it opens only on the
@@ -193,7 +199,13 @@ class ShelfCard(overlay.HintCard):
         # where the dot is." Both are the base class's; this panel adds
         # nothing to the rule, which is the point — the shelf and the key
         # card cannot disagree about where "beside the dot" is.
-        super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
+        # `x` and `y` are taken and NOT used: they are where a drag of
+        # the panel was recorded, and since 2026-10-04 there is no drag
+        # (the module docstring). An old record — this PC's state.json
+        # held one from a drag long ago — must not pin a panel that is
+        # meant to open beside the dot or in its corner.
+        super().__init__(after_ms=0, corner=corner, margin=margin,
+                         x=overlay.HINT_UNSET, y=overlay.HINT_UNSET,
                          scale=scale, on_change=on_change,
                          dot_corner=dot_corner, dot_at=dot_at)
         self.rows = max(sc.ROWS_MIN, min(sc.ROWS_MAX, int(rows)))
@@ -242,15 +254,11 @@ class ShelfCard(overlay.HintCard):
         return int(x - inset), int(y - inset)
 
     def placed(self, x: int, y: int) -> None:
-        """A drag moved the panel for THIS opening and nothing is written:
-        a follower is anchored to the dot and opens beside it next time.
-        A panel whose file names a corner of its own is remembered as
-        every card is (HintCard.placed)."""
-        if self._dot_at is not None:
-            _log.debug("shelf: dragged aside for now — it opens beside the "
-                       "dot again next time")
-            return
-        super().placed(x, y)
+        """Nothing: this panel is not dragged (the module docstring). The
+        base class's door stays shut here, so no caller can move it or
+        write a position for it by accident."""
+        _log.debug("shelf: a position was offered and ignored — the panel "
+                   "opens beside the dot")
 
     # -- caller's thread --
 
@@ -462,12 +470,11 @@ class ShelfCard(overlay.HintCard):
         """The flat Tk panel: what is on screen when skin\\ is gone.
 
         `shelf_card.flat()` paints the whole panel as one opaque image;
-        this window shows it, moves it, and turns a click, a drag or a
-        hush into `pressed` or `placed`. overlay.NotifyCard's fallback is
-        the one this copies, mouse handling included — CLICK_PX and the
-        press/release discrimination — with one difference that matters:
-        `_no_activate` is called WITHOUT `click_through`, because unlike
-        the hint card this panel has buttons on it.
+        this window shows it and turns a click into `pressed`.
+        overlay.NotifyCard's fallback is the one this copies, without its
+        drag (this panel is not dragged), and with one difference that
+        matters: `_no_activate` is called WITHOUT `click_through`, because
+        unlike the hint card this panel has buttons on it.
 
         THE WINDOW IS THE CARD, NOT THE PICTURE. flat()'s image is the
         card alone; the SHADOW margin every hit test speaks in is added
@@ -487,14 +494,12 @@ class ShelfCard(overlay.HintCard):
         canvas.pack()
         self._alive.set()
 
-        st = {"card": None, "up": False, "hover": None, "drag": None,
-              "from": None, "moved": 0, "photo": None, "hushed": False}
+        st = {"card": None, "up": False, "hover": None, "photo": None,
+              "hushed": False}
         cache: dict = {}
-        CLICK_PX = 4          # a release that travelled less is a click
 
         def hide() -> None:
             st["card"], st["hover"] = None, None
-            st["drag"] = None
             self.rect = None
             cache.clear()
             if st["up"]:
@@ -558,22 +563,8 @@ class ShelfCard(overlay.HintCard):
             code, what = hit(event)
             if code == sc.HTCLIENT and what:
                 self.pressed(what)
-            elif code == sc.HTCAPTION:
-                st["drag"] = (event.x_root - root.winfo_x(),
-                              event.y_root - root.winfo_y())
-                st["from"] = (event.x_root, event.y_root)
-                st["moved"] = 0
 
         def on_motion(event) -> None:
-            if st["drag"] is not None:
-                ox, oy = st["from"]
-                st["moved"] = max(st["moved"], abs(event.x_root - ox)
-                                  + abs(event.y_root - oy))
-                if st["moved"] < CLICK_PX:
-                    return                # still a click until it is not
-                dx, dy = st["drag"]
-                root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
-                return
             code, what = hit(event)
             want = what if code == sc.HTCLIENT else None
             if want != st["hover"]:
@@ -585,23 +576,9 @@ class ShelfCard(overlay.HintCard):
                 st["hover"] = None
                 paint()
 
-        def on_release(_event) -> None:
-            if st["drag"] is None:
-                return
-            st["drag"] = None
-            if st["moved"] < CLICK_PX:
-                return                    # the head is a handle, not a button
-            x, y = root.winfo_x(), root.winfo_y()
-            if st["card"] is not None:
-                w, h = sc.measure(st["card"], self.scale)
-                self.rect = (x, y, x + w, y + h)
-            self.placed(x, y)
-
         canvas.bind("<ButtonPress-1>", on_press)
-        canvas.bind("<B1-Motion>", on_motion)
         canvas.bind("<Motion>", on_motion)
         canvas.bind("<Leave>", on_leave)
-        canvas.bind("<ButtonRelease-1>", on_release)
 
         def pump() -> None:
             try:

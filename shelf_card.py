@@ -80,7 +80,9 @@ from datetime import datetime
 from PIL import Image, ImageDraw
 
 # Win32 hit-test answers, spelled out so this module needs no skin import.
-HTTRANSPARENT, HTCLIENT, HTCAPTION = -1, 1, 2
+# No HTCAPTION: nothing on this panel drags it (2026-10-04, below at
+# `regions`). It sits beside the dot, and the dot is what moves.
+HTTRANSPARENT, HTCLIENT = -1, 1
 
 # ---------------------------------------------------------------- THE TABLE
 # name on this card -> (the names to try in skin\palette.py, in order, and
@@ -226,10 +228,9 @@ ROWS_MIN, ROWS_MAX = 1, 8  # what `[shelf] rows` may be set to
 
 # What a hit landed on. The chrome's names are fixed strings; a pile row's
 # are built by `row_name` so one scheme covers however many rows there are.
-PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE, MOVE = (
-    "pause", "stop", "copy", "screens", "door", "more", "drag", "close",
-    "move")
-CHROME = (PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE, MOVE)
+PAUSE, STOP, COPY, SCREENS, DOOR, MORE, CLOSE, MOVE = (
+    "pause", "stop", "copy", "screens", "door", "more", "close", "move")
+CHROME = (PAUSE, STOP, COPY, SCREENS, DOOR, MORE, CLOSE, MOVE)
 CLOSE_W = BTN_H           # the X is a square the height of a head button
 # The bead on the Move button: the dot's own picture at this size, drawn
 # larger than the other head glyphs because most of it is halo.
@@ -728,11 +729,14 @@ def regions(card: dict, scale: float = 1.0,
     top, height = bands["door"]
     out[DOOR] = (left, y0 + top, right, y0 + top + height)
 
-    # The head strip drags the panel, exactly as the hint card's does —
-    # but only the part of it that is not a button, which `hit_test`
-    # settles by testing the buttons first.
-    top, height = bands["head"]
-    out[DRAG] = (x0, y0, x0 + width, y0 + top + height)
+    # NO DRAG. The head strip dragged the panel until 2026-10-04, and he
+    # dragged it to the middle of the screen, where it floated with its
+    # tail pointing at nothing: "I don't want there to be an option to
+    # move it — the only way is Move, and then it is always beside the
+    # dot." The panel is the dot's speech bubble (shelf.py); Move moves
+    # the dot, and the panel opens beside it wherever it went. The head
+    # strip is panel like the rest of it now: its buttons are named, and
+    # everything between them is not.
     return out
 
 
@@ -753,10 +757,8 @@ def hit_test(card: dict, scale: float, x: int, y: int,
     """
     boxes = regions(card, scale, cache)
     for name, box in boxes.items():
-        if name != DRAG and _in(box, x, y):
+        if _in(box, x, y):
             return HTCLIENT, name
-    if _in(boxes[DRAG], x, y):
-        return HTCAPTION, DRAG
     return HTTRANSPARENT, None
 
 
@@ -1077,6 +1079,6 @@ __all__ = ["INK", "INK_FALLBACKS", "KIND", "STATE_WORD", "STATE_COLOUR",
            "measure", "regions", "hit_test", "action_at", "compose", "flat",
            "clamp_scale", "row_name", "CARD_W", "SHADOW", "PAD", "RADIUS",
            "PILE_MAX", "ROWS_MIN", "ROWS_MAX", "SCALE_MIN", "SCALE_MAX",
-           "HTTRANSPARENT", "HTCLIENT", "HTCAPTION", "PAUSE", "STOP", "COPY",
-           "SCREENS", "DOOR", "MORE", "DRAG", "CLOSE", "MOVE", "CHROME",
+           "HTTRANSPARENT", "HTCLIENT", "PAUSE", "STOP", "COPY",
+           "SCREENS", "DOOR", "MORE", "CLOSE", "MOVE", "CHROME",
            "BEAD_PX", "HEAD_GAP"]
