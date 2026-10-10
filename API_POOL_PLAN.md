@@ -437,7 +437,7 @@ fixed — 0.9-1.2 s to the paste. That is the speed of the local road alone.
 | Groq, asked again after a refusal | | | 15.4 s | | |
 | Groq and gemma raced, first wins | 0.92 s | 3.3 s | 8.0 s | | gemma won 11 of 23, with its weaker fixes |
 | Groq, waited for at most 2 s | 1.38 s | 2.0 s | 2.0 s | | the fix lost on 2 of 23 |
-| **Claude Haiku 5.5** | **not measured — gate A** | | | | estimate $0.0002-0.0003 a fix (§4); two hops on the pool road (the Supabase function, then Anthropic) |
+| **Claude Haiku 5.5** | **1.11 s** (gate A, §13.8) | 1.31 s | 3.6 s | 0 of 2,265 | $0.09 per 1,000 fixes; Sonnet 5.5 1.55 / 1.75 s, $1.70 per 1,000 (§13.8) |
 
 Local gemma also had a crash: Ollama 0.35.0 (auto-updated 2026-10-01)
 failed to load the model on 6 of 79 loads, at its flash-attention step;
@@ -547,6 +547,58 @@ a day for him — so at Haiku's price they cost about what the fix would
 3. **The learning job:** Haiku against Groq as the second reading's judge,
    on the same verdicts — accepted proposals kept, rejected ones not made.
 4. **The decoder with our model:** time per dictation, beside 13.1.
+
+### 13.8 Gate A — the fix on the night's own tests (2026-10-10)
+
+His condition: the same tests as the training night, one to one, and none of
+his own dictations (his transcripts cannot be trusted as truth). So: the
+decoded text of BOTH full test sets — FLEURS Hebrew (792 clips, 13,661
+words) and the Reversim test (342 clips, 7,892 words) — as today's model
+and night2's model wrote it (the night's own output files), each sent
+through the app's repair prompt as a new user gets it (no glossary), every
+reply through the app's own guards (`_is_safe` with the cut-tail check,
+`_keep_what_was_said`), scored with the night scripts' own formulas
+(`eval_fleurs.py`, `eval_reversim.py`). The "decoded alone" column
+reproduces `runs\night2\report.txt` to the hundredth. Claude: Haiku 5.5
+with thinking off, Sonnet 5.5 with `between_tools` (thinking off), one pass,
+key `gate-a` (7 days, Default workspace), stored outside DeskIT's names
+(`gate-a/anthropic`) so no copy of the app can read or sync it. Groq: today's
+model only (its free tier is 1,000 requests a day and the second reading
+shares the key), 600 calls, 67 refused as rate-limited.
+
+| words wrong | decoded alone | + Groq gpt-oss | + Haiku 5.5 | + Sonnet 5.5 |
+|---|---|---|---|---|
+| FLEURS, today's model | 19.61% | 20.51% on its 191 answered clips (decoded 20.78%; Sonnet 18.45% on the same) | 18.05% | **17.22%** |
+| Reversim, today's model | 16.03% | 16.64% (worse) | 16.23% (worse) | **15.69%** |
+| English words right, today's | 40% | 40% | 41% | 43% |
+| FLEURS, night2's model | 22.27% | — | 20.10% | **20.07%** |
+| Reversim, night2's model | 12.05% | — | 11.80% | **11.76%** |
+| English words right, night2's | 77% | — | 80% | 79% |
+
+- **Sonnet is the only road that helps on both sets.** Clips better / worse:
+  FLEURS today 229 / 11, Reversim today 23 / 4. Haiku helps plain Hebrew
+  (169 / 23) and slightly hurts the mixed set (12 / 23). Groq hurts the mixed
+  set (10 / 52) and barely moves FLEURS.
+- **The gains are real fixes, not FLEURS's spelling style.** Clips where
+  Latin letters became Hebrew account for +0 of Sonnet's 326 words on today's
+  FLEURS and +11 of 300 on night2's. A sample: הערים → ההרים, לרצוץ → לרצות,
+  בחצור → בחצות, עופות → הופעות, ניסית → נישאת.
+- **Best per test so far:** plain Hebrew — today's model + Sonnet, 17.22%;
+  Hebrew with English — night2's model + Sonnet, 11.76% and 79%. Night2 +
+  Sonnet still loses to today's model + Sonnet on plain Hebrew (20.07% vs
+  17.22%), so the fix does not cancel night2's plain-Hebrew loss.
+- **Speed, one fix from this PC** (every call): Haiku median 1.11 s, p90
+  1.31 s; Sonnet 1.55 / 1.75 s; Groq 0.94 / 1.44 s when it answered. In
+  front of the paste that turns today's 0.8 s into roughly 1.9 s (Haiku) or
+  2.4 s (Sonnet); behind the paste (the second reading) it costs no wait.
+- **Cost:** this whole run $4.05 (Haiku $0.20, Sonnet $3.85; ~477 tokens in,
+  ~75 out a fix). Haiku $0.09 and Sonnet $1.70 per 1,000 fixes. His ~1,500
+  dictations a month: Haiku ~$0.14, Sonnet ~$2.55. The $80 pool of §5.1
+  buys ~47,000 Sonnet fixes a month (~30 users like him) or ~890,000 Haiku.
+- **Limits of this measurement:** one pass per model (Claude does not take a
+  temperature; run-to-run spread unmeasured); public speakers, not his
+  voice; no personal glossary. Scripts, answers and report in
+  `DeskIT-training\runs\gate_a\` (outside the repo).
 
 Haiku 5.5 facts used above (the Claude API reference bundled with Claude
 Code, cached 2026-10-06): id `claude-haiku-5-5`, $0.10 / $0.50 per million
