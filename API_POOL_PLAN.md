@@ -491,10 +491,32 @@ folder deletes all of it).
 
 ### 13.5 The fixed model — the night of 2026-10-10
 
-*To be filled in from `DeskIT-training\runs\night2\report.txt` after the run
-(03:15).* Same data and settings as 13.4, one change: half the training
-labels carry timestamps. The question it answers: does the gain in English
-words (40% → 76%) survive in the app's own mode, without breaking it.
+Same data and settings as 13.4, one change: half the training labels carry
+timestamps. Ran 03:15-04:20 (training 56 min, 3.5 GB). All numbers in the
+**app's own mode** (timestamps), the mode dictation actually runs in:
+
+| | today's model | night1 | **night2** |
+|---|---|---|---|
+| English words right (Reversim) | 40% | 77% | **77%** |
+| Reversim, words wrong | 16.03% | 18.64% | **12.05%** |
+| FLEURS Hebrew, words wrong | 19.61% | 52.96% | **22.27%** |
+| FLEURS decoding time (123 min of audio) | 378 s | 604 s | **297 s** |
+
+- **The timestamp fix worked.** No more running on after the sentence: the
+  added words on FLEURS are 217, against today's 252 (night1: 3,397).
+- **Mixed Hebrew-English: clearly better.** A quarter fewer errors (16.03% →
+  12.05%), and nearly twice as many English words right (40% → 77%).
+- **Plain Hebrew: still a little worse**, +2.66 points. Of the +371 errors,
+  +230 are foreign names now in Latin letters where FLEURS writes Hebrew
+  letters (Giza, Carolina, Haiti) — a style the training data taught — and
+  about +150 are real Hebrew mistakes.
+- **Not faster or slower** to decode — same size and shape as today's model
+  (297 s against 378 s on a shared card; not a speed claim either way).
+- **Verdict: not yet.** Better where his errors are, worse on plain Hebrew,
+  which is his first priority. Nothing is swapped into the app. The next
+  lever is plain-Hebrew data in the training mix, so the model keeps its
+  Hebrew and its Hebrew-letter names (ivrit.ai's data, access still pending
+  on 2026-10-10).
 
 ### 13.6 How the jobs might split — a hypothesis to test, not a decision
 
@@ -504,6 +526,12 @@ words (40% → 76%) survive in the app's own mode, without breaking it.
 | **fix before the paste** | yes | off (today) / Haiku, if gate A says fast and harmless | Groq's fix bought little for its 0.6-12 s (13.3) |
 | **learn after the paste** — the second reading, the word pairs, the cards | no | Claude via the key / Groq (today) / local gemma | no clock, so the best judge wins; gemma's fixes were the weakest, Groq's queue does not matter here; Claude is the natural candidate — to measure on his 164 second-reading verdicts |
 | **teach our own model** — cleaning and checking training text | no, nightly | Claude via the key | Claude reads text and images, not audio (the API takes text, image and PDF blocks); its part would be the TEXT — reconciling the decoder's three hearings with a transcript, writing English terms the way he does, throwing out bad clips. Unmeasured |
+
+**After night2 (2026-10-10):** training on this PC does fix the English
+terms (40% → 77% right) at the same decoding speed, so the transcribe-at-the-key
+row now has a real local candidate; what is missing is plain Hebrew that
+does not slip (+2.66 points on FLEURS) — that is a training-data problem,
+not a reason to send the dictation itself to a cloud.
 
 The money side: the background jobs run once per dictation too — about 50
 a day for him — so at Haiku's price they cost about what the fix would
