@@ -57,6 +57,15 @@ def _pages(out: Path) -> list[Path]:
     from shot_installer import _shot
 
     sb.REQUIRED = False
+    # The screen page shows Windows' Pictures and Videos folders as full
+    # paths, and these pictures go on the public guide: a stranger's
+    # folders, never the account name of whoever took the shot.
+    paths.known_folder = lambda name: Path(r"C:\Users\Dana") / {"pictures": "Pictures",
+                                                                 "videos": "Videos"}[name]
+    # ...and the Claude Code row as a stranger meets it, never this PC's
+    # hook (which names the shooter's own folder in amber).
+    import notify_hook
+    notify_hook.hook_state = lambda *a, **k: ("none", None)
     cfg = dataclasses.replace(config_mod.load(ROOT / "defaults.toml"),
                               setup=config_mod.SetupConfig(done=False))
 
@@ -132,6 +141,11 @@ def _pages(out: Path) -> list[Path]:
         w._download(); settle(0.3); shot("04-computer-downloading")
         settle(9.5)                                # the four fakes land
         show("say"); shot("05-say")
+        # Next with nothing tried: the question, inside the page (item 10)
+        w._backend = object()
+        w.say.configure_text(firstrun.WORDS["say.button"])
+        w._next(); shot("05-say-ask")
+        w._ask_close()
         # the model "loaded": the button is Record from here, as it is
         # for a person after [Load the speech model]
         w._backend = object()
@@ -142,6 +156,7 @@ def _pages(out: Path) -> list[Path]:
         show("keys"); shot("06-keys")
         w._rebind("punctuate_hotkey"); shot("06-keys-listening")
         w._captured(None)
+        show("screen"); shot("06-screen")
         show("extras"); shot("07-extras")
         # signed in by now, as a person is: the last page carries the
         # sync row (on by default) above the two switches
@@ -156,12 +171,13 @@ def _pages(out: Path) -> list[Path]:
     return shots
 
 
-#: The guide's eight wizard pictures (docs/README.md, chapter 2), by the
+#: The guide's nine wizard pictures (docs/README.md, chapter 2), by the
 #: name each page is taken under here.
 GUIDE = {"02-welcome": "01-welcome", "02-account": "02-account",
          "02-microphone": "03-microphone",
          "02-computer": "04-computer-downloading", "02-say": "05-say-heard",
-         "02-keys": "06-keys", "02-extras": "07-extras", "02-done": "08-ready"}
+         "02-keys": "06-keys", "02-screen": "06-screen", "02-extras": "07-extras",
+         "02-done": "08-ready"}
 
 
 def _guide(out: Path) -> None:
