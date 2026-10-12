@@ -600,6 +600,37 @@ shares the key), 600 calls, 67 refused as rate-limited.
   voice; no personal glossary. Scripts, answers and report in
   `DeskIT-training\runs\gate_a\` (outside the repo).
 
+### 13.9 Claude as the teacher — night3 and night4 (2026-10-10 → 10-12)
+
+The key spent where no one waits: correcting the TRAINING text of our own
+model once, so every later night reuses it for free. The 18,739 Reversim
+training clips were heard again by today's model (local, free); Opus 5.5
+and Sonnet 5.5 each corrected every label with that hearing as evidence;
+Opus judged the 4,468 clips where they disagreed; a code guard kept only
+changes the rules allow. Result: 10,424 labels unchanged, 5,101 only
+glued words separated ("מובןיש", "זה.כלומר" — a defect in the published
+transcripts), 3,214 with word changes (typos, mis-transcriptions, 907 words
+the transcript skipped). Cost **$71.73**, under the hard $90 cap he set
+(enforced in code before every batch: spent + worst case in flight + worst
+case of the next batch). Scripts and outputs: `DeskIT-training\runs\teacher\`.
+
+night3 = Reversim + 51 h of ivrit.ai's volunteer-corrected Hebrew.
+night4 = night3 exactly, the corrected Reversim text the ONLY difference.
+
+| | today's model | night3 | **night4 (teacher)** |
+|---|---|---|---|
+| FLEURS Hebrew, words wrong | 19.61% (2,679) | 20.06% (2,740) | **19.76% (2,699)** |
+| Reversim, words wrong | 16.03% | 11.80% (931) | **10.97% (866)** |
+| English words right | 40% | 74% | 73% |
+
+- The corrected text helped on both tests: 41 fewer errors on FLEURS and
+  65 fewer on Reversim than night3 (one run each; night-to-night spread is
+  unmeasured).
+- Against today's model, night4 is 20 words behind on FLEURS out of 13,661
+  — 9 of them foreign names now in Latin letters — and 5.06 points ahead on
+  the mixed test. The night's strict rule ("not one word worse on FLEURS")
+  still says keep today's model.
+
 Haiku 5.5 facts used above (the Claude API reference bundled with Claude
 Code, cached 2026-10-06): id `claude-haiku-5-5`, $0.10 / $0.50 per million
 tokens up to 100K tokens of prompt; thinking can be turned off only at
