@@ -574,6 +574,14 @@ exactly what classic did.
   ever unpin it, `repetition_penalty`, `collapse_char_runs` and the loop
   warning are what is left. The GPU number above was taken while six agents
   shared the card; re-time it on a quiet machine before quoting it.
+  **And the part of the guards that costs words is the repetition
+  penalty** (2026-10-14, MODEL_PLAN.md findings 7 and 9, public sets only,
+  none of his recordings): `repetition_penalty=1.15` against 1.0 is 8% more
+  errors on FLEURS dev, 24% on ivrit.ai's eval-whatsapp, 17% on eval-d1 —
+  Hebrew repeats its small words and prefixes, and every repeat is
+  penalised. Stock no_speech / log_prob / compression gave byte-identical
+  text on all 778 clips (262 min). The app still ships 1.15: changing it is
+  his decision, through a branch.
 - **...and pinning the temperature turned two retries into two silent
   drops.** Read in the installed faster-whisper 1.2.1 on 2026-10-02.
   (1) A window whose `no_speech_prob` is over `no_speech_threshold` is
