@@ -1119,6 +1119,16 @@ vitals_minutes = 10            # while the screens are off, a line in
                                # (2026-09-02, 09-03) the machine was
                                # found crawling with nothing in any log:
                                # this is the log that was missing. 0 = off
+screens_card = true            # while the screens are off, a card sits
+                               # pinned at the bottom of the notification
+                               # column - bottom-right, under whatever
+                               # else arrives - saying the screens are
+                               # off on purpose and how to bring them
+                               # back (the key, or its own Screens on
+                               # button). It has no close button and no
+                               # key dismisses it: only ending the mode
+                               # takes it down. The screens mode itself
+                               # is the same with this off
 pin_timeouts = false           # also set Windows' own "sleep after" and
                                # "hibernate after" to never while the app
                                # runs, and put the old numbers back on the
