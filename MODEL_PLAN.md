@@ -77,10 +77,16 @@ words on the two dev sets that look like the tests and by ~45 on WhatsApp/d1.
    token already written, and Hebrew repeats its small words and prefixes
    legitimately: "את זה" → "לזה", "רעיון" → "חיאיון". It went in on 2026-08-13
    against one 222-ה loop and was "measured byte-identical on clean audio"
-   (short clips); no loop appeared in 262 min without it. **This is a product
-   change — his decision** (`transcribers/local_whisper.py`
-   `hallucination_guards`, a branch, his Dev copy for days of dictation). The
-   night scripts import the app's guards, so once it lands every eval follows.
+   (short clips). Without it the decoder looped on 2 of 1,912 clips (one
+   word over and over: "ושבע" x68 on a FLEURS test clip, "זהו" x14 on a
+   Reversim one). **His go, 2026-10-14 morning: branch `no-repetition-penalty`**
+   — the first decode at 1.0, and a loop (a letter run OR a word loop) retried
+   first with 1.15, then greedy, then the ladder. On the two looping clips
+   the 1.15 decode is the one that comes back, so the app's expected numbers
+   are the pen 1.0 rows with those two clips at their old values. The night
+   scripts import the app's guards from the checkout, so from the day the
+   branch is in the checkout every eval measures 1.0 — the rows above taken
+   at 1.15 are then comparable only to each other.
 8. **Every trained night is WORSE than today's model on the two sets that look
    like dictation** — WhatsApp and d1 — and the two night tests could not show
    it. Cause, measured (`label_length_check.py`): Reversim's transcripts are
@@ -200,8 +206,8 @@ on FLEURS at ~1.5 s that nobody waits for.
    evening: all five open.
 2. Say yes or no to each Claude spend when it is asked, with its estimate.
 3. Keep DeskIT running at night (it is what keeps the PC awake).
-4. (2026-10-14) Decide the repetition penalty in the app (finding 7): off, 1.05,
-   or leave it — a product change, through a branch and his Dev copy.
+4. (2026-10-14) The repetition penalty (finding 7): decided — off on the first
+   decode, kept for loops; branch `no-repetition-penalty`, his Dev copy next.
 5. (2026-10-14) Decide night7 (verbatim labels, Stage 1) after night6's numbers.
 
 ## 5. Ruled out, and why

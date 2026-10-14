@@ -2964,7 +2964,8 @@ def test_a_loop_is_retried_greedily_and_the_words_come_back() -> None:
 
     class FakeModel:
         def transcribe(self, audio, **kw):
-            asked.append((kw.get("beam_size"), kw.get("temperature")))
+            asked.append((kw.get("beam_size"), kw.get("temperature"),
+                          kw.get("repetition_penalty")))
             # Greedy is what shakes it loose here, as it did on the
             # real clip; the ladder must therefore never be reached.
             return [Whole() if kw.get("beam_size") == 1
@@ -2983,8 +2984,9 @@ def test_a_loop_is_retried_greedily_and_the_words_come_back() -> None:
     assert "xxx" not in out.lower(), out
     assert t.last_warning is None, \
         "a recovered loop must not tell the user to re-dictate"
-    assert len(asked) == 2, "greedy is the first rung, and it worked"
-    assert asked == [(5, None), (1, None)], asked
+    # Since 2026-10-14 the penalty is the first rung (the 09-05 loop came
+    # WITH it, so here it loops again) and greedy, with it, the second.
+    assert asked == [(5, None, None), (5, None, 1.15), (1, None, 1.15)], asked
 
     # A clean decode is never decoded twice.
     asked.clear()
@@ -2993,6 +2995,54 @@ def test_a_loop_is_retried_greedily_and_the_words_come_back() -> None:
             asked.append(kw.get("temperature")) or [Whole()], None)})()
     t.transcribe(RIFF, language="he")
     assert len(asked) == 1, asked
+
+
+def test_a_word_loop_is_retried_with_the_penalty_the_first_decode_dropped() -> None:
+    """repetition_penalty 1.15 left the first decode on 2026-10-14: it cost
+    8-24% of the words on three public sets (MODEL_PLAN.md finding 7). The
+    decode without it looped on 2 of 1,912 clips — one word over and over,
+    which the letter-run test cannot see — so a word loop is a loop now,
+    and its first retry is the old penalty. Real repeats are not loops."""
+    from transcribers import local_whisper as lw
+
+    assert lw.hallucination_guards(True)["repetition_penalty"] == 1.0
+    assert lw.LOOP_PENALTY == 1.15
+
+    # the detector: the two real loops, and what people really say
+    assert lw._word_loop("אומר משהו אופטימי? " + "זהו, " * 14)
+    assert lw._word_loop("שעשרים " + "ושבע " * 68)
+    assert lw._word_loop("אני חושב " * 4)
+    assert not lw._word_loop("לא לא לא, כן כן כן כן כן, לאט לאט")
+    assert not lw._word_loop("אני חושב אני חושב אני חושב שכן")
+    assert not lw._word_loop("1 2 3 4 5 one by one end to end")
+    assert lw._looped("X" + "x" * 72) and not lw._looped("www.example.com")
+
+    class Looped:
+        text = "ואני רוצה שהאווירה תהיה שמחה " + "זהו, " * 14
+
+    class Whole:
+        text = "ואני רוצה שהאווירה תהיה שמחה ותעביר מסר אופטימי. זהו."
+
+    asked = []
+
+    class FakeModel:
+        def transcribe(self, audio, **kw):
+            asked.append((kw.get("beam_size"), kw.get("repetition_penalty")))
+            return [Whole() if kw.get("repetition_penalty") == 1.15
+                    else Looped()], None
+
+    t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+    t._model, t._english = FakeModel(), None
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = "עברית"
+    t._guards, t._boilerplate = lw.hallucination_guards(True), ()
+    t._hotwords = None
+
+    out = t.transcribe(RIFF, language="he")
+    assert "ותעביר מסר אופטימי" in out and out.count("זהו") == 1, out
+    assert asked == [(5, 1.0), (5, 1.15)], asked
+    assert t.last_warning is None, asked
 
 
 def test_www_survives_what_a_decoder_loop_does_not() -> None:

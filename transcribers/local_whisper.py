@@ -250,18 +250,57 @@ def hallucination_guards(enabled: bool) -> dict:
         # study-verified reading the pinned arm was CLOSER (197 edits vs
         # 224 over 2254 words). 0 decoder loops in either arm.
         # The ladder is Whisper's standard escape from a repetition loop,
-        # which this repo has been bitten by twice — repetition_penalty
-        # below, collapse_char_runs and the loop warning all remain.
+        # which this repo has been bitten by twice — the loop retry in
+        # _decode (the penalty, greedy, then the ladder), collapse_char_runs
+        # and the loop warning all remain.
         temperature=[0.0],
         word_timestamps=True,
         hallucination_silence_threshold=2.0,
-        # Against token loops: a vocalised hesitation became 222 ה's, and
-        # everything SPOKEN AFTER it was eaten (2026-08-13, twice).
-        # Measured byte-identical on clean audio; the loop itself could not
-        # be reproduced synthetically, so this is the standard knob for the
-        # mechanism, not a proven cure.
-        repetition_penalty=1.15,
+        # No penalty on the first decode. It went in at 1.15 on 2026-08-13
+        # against token loops (a vocalised hesitation became 222 ה's) and
+        # was "measured byte-identical on clean audio" — on short clips.
+        # On natural speech it costs words, because Hebrew repeats its
+        # small words and prefixes and every repeat was penalised ("את זה"
+        # -> "לזה", "רעיון" -> "חיאיון"). Measured 2026-10-14 on public
+        # sets (MODEL_PLAN.md finding 7, none of his recordings), 1.15 ->
+        # 1.0 on this model: FLEURS dev 1210 -> 1109 words wrong, ivrit.ai
+        # eval-whatsapp 875 -> 665, eval-d1 600 -> 499, the FLEURS test
+        # 2679 -> 2638, the Reversim test 1265 -> 1228, Reversim dev
+        # 1292 -> 1309. Without it the decoder DID loop on 2 of 1,912
+        # clips — one word over and over ("ושבע" x68, "זהו" x14) — so the
+        # penalty is not gone: it is the first rung of the loop retry
+        # (LOOP_PENALTY, _decode), where it costs nothing on the clips
+        # that never loop.
+        repetition_penalty=1.0,
     )
+
+
+# The decode a loop is retried with first: the penalty every dictation
+# carried from 2026-08-13 to 2026-10-14 (hallucination_guards says why it
+# left the first decode).
+LOOP_PENALTY = 1.15
+
+
+def _word_loop(text: str) -> bool:
+    """One word six times in a row, or a phrase of two to six words four
+    times in a row: a decoder loop made of words, which `_LOOP_RUN` (one
+    letter) cannot see. Off the 2026-10-14 decodes without the penalty: the
+    only hits in 1,912 clips (about 7 hours of speech) were the two real
+    loops ("ושבע" x68, "זהו" x14); nothing anybody said came near."""
+    words = re.findall(r"\w+", text.lower())
+    for n in range(1, 7):
+        need = 6 if n == 1 else 4
+        for i in range(len(words) - n * need + 1):
+            unit = words[i:i + n]
+            if all(words[i + k * n:i + (k + 1) * n] == unit
+                   for k in range(1, need)):
+                return True
+    return False
+
+
+def _looped(text: str) -> bool:
+    """Did the decoder loop, in letters or in words?"""
+    return bool(_LOOP_RUN.search(text)) or _word_loop(text)
 
 
 class LocalWhisperTranscriber:
@@ -747,7 +786,7 @@ class LocalWhisperTranscriber:
             return got, " ".join(s.text.strip() for s in got).strip()
 
         segs, text = decode()
-        if _LOOP_RUN.search(text):
+        if _looped(text):
             # The words a loop swallows are NOT gone — this file used
             # to say they were, and it was wrong. Measured 2026-09-05
             # on the 57 s clip whose 73-character "Xxxxx…" ate 29 s:
@@ -763,17 +802,28 @@ class LocalWhisperTranscriber:
             # temperature, so it is DETERMINISTIC and it is cheaper
             # than the decode that just failed. The ladder samples —
             # three runs of it on that clip recovered 69, 114 and 124
-            # words — so it stays the second rung, for the loop that
+            # words — so it stays the last rung, for the loop that
             # greedy decoding cannot shake either.
-            for rung in (dict(beam_size=1),
-                         dict(temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
-                                           1.0])):
+            #
+            # And in front of both, since 2026-10-14, the repetition
+            # penalty the first decode no longer carries
+            # (hallucination_guards): the loop it lets through is one
+            # WORD over and over, and on the clip where the decode
+            # without it looped ("זהו" x14) the decode with it did not.
+            # Every rung keeps it — the two below were measured with it.
+            pen = dict(repetition_penalty=LOOP_PENALTY)
+            for rung in (pen,
+                         dict(pen, beam_size=1),
+                         dict(pen, temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
+                                                1.0])):
                 retry_segs, retry = decode(**rung)
-                if retry and not _LOOP_RUN.search(retry):
+                if retry and not _looped(retry):
                     log.warning("decoder loop — recovered with %s "
                                 "(%d words for %d)",
                                 "beam 1" if "beam_size" in rung
-                                else "the temperature ladder",
+                                else "the temperature ladder"
+                                if "temperature" in rung
+                                else "the repetition penalty",
                                 len(retry.split()), len(text.split()))
                     segs, text = retry_segs, retry
                     break
