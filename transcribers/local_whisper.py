@@ -266,11 +266,13 @@ def hallucination_guards(enabled: bool) -> dict:
         # 1.0 on this model: FLEURS dev 1210 -> 1109 words wrong, ivrit.ai
         # eval-whatsapp 875 -> 665, eval-d1 600 -> 499, the FLEURS test
         # 2679 -> 2638, the Reversim test 1265 -> 1228, Reversim dev
-        # 1292 -> 1309. Without it the decoder DID loop on 2 of 1,912
-        # clips — one word over and over ("ושבע" x68, "זהו" x14) — so the
-        # penalty is not gone: it is the first rung of the loop retry
-        # (LOOP_PENALTY, _decode), where it costs nothing on the clips
-        # that never loop.
+        # 1292 -> 1309. Without it the decoder DID loop, on 2 of 1,912
+        # clips with this model and 3 with each trained one — always one
+        # word over and over ("ושבע" x68, "של" x22, "זהו" x14, "רבה" x44)
+        # — so the penalty is not gone: it is the first rung of the loop
+        # retry (LOOP_PENALTY, _decode), where it costs nothing on the
+        # clips that never loop. With the retry the FLEURS test is 2536,
+        # not 2638: both of its loops come back.
         repetition_penalty=1.0,
     )
 
@@ -284,9 +286,10 @@ LOOP_PENALTY = 1.15
 def _word_loop(text: str) -> bool:
     """One word six times in a row, or a phrase of two to six words four
     times in a row: a decoder loop made of words, which `_LOOP_RUN` (one
-    letter) cannot see. Off the 2026-10-14 decodes without the penalty: the
-    only hits in 1,912 clips (about 7 hours of speech) were the two real
-    loops ("ושבע" x68, "זהו" x14); nothing anybody said came near."""
+    letter) cannot see. Over every 2026-10-14 decode, with and without the
+    penalty (15,072 clip-decodes, 1,912 clips, about 7 hours of speech), it
+    fired on the eight real loops without the penalty and on nothing
+    anybody said."""
     words = re.findall(r"\w+", text.lower())
     for n in range(1, 7):
         need = 6 if n == 1 else 4

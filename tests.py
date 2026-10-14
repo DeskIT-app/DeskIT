@@ -3000,7 +3000,7 @@ def test_a_loop_is_retried_greedily_and_the_words_come_back() -> None:
 def test_a_word_loop_is_retried_with_the_penalty_the_first_decode_dropped() -> None:
     """repetition_penalty 1.15 left the first decode on 2026-10-14: it cost
     8-24% of the words on three public sets (MODEL_PLAN.md finding 7). The
-    decode without it looped on 2 of 1,912 clips — one word over and over,
+    decode without it looped on 2-3 of 1,912 clips a model — one word over and over,
     which the letter-run test cannot see — so a word loop is a loop now,
     and its first retry is the old penalty. Real repeats are not loops."""
     from transcribers import local_whisper as lw

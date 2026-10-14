@@ -555,7 +555,8 @@ exactly what classic did.
   text on all 778 clips (262 min). On his go (2026-10-14, branch
   `no-repetition-penalty`) the first decode carries 1.0, and 1.15
   (`LOOP_PENALTY`) is the first rung of the loop retry — without it the
-  decoder looped on 2 of 1,912 clips, one WORD over and over ("ושבע" x68),
+  decoder looped on 2-3 of 1,912 clips a model, one WORD over and over
+  ("ושבע" x68),
   which `_LOOP_RUN` cannot see, so `_word_loop` is a loop too. Do not put
   the penalty back on the first decode without re-running
   `DeskIT-training\scripts\stage0_run.ps1` against it.
