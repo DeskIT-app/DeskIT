@@ -571,7 +571,7 @@ exactly what classic did.
   draw from a distribution, not a result** — the same beam-5 sweep over the
   same 6 clips scored 10.16%, 42.97% and 14.84% WER on three passes — and
   the ladder is Whisper's standard escape from a repetition loop, so if you
-  ever unpin it, `repetition_penalty`, `collapse_char_runs` and the loop
+  ever unpin it, the loop retry (the penalty, greedy, the ladder), `collapse_char_runs` and the loop
   warning are what is left. The GPU number above was taken while six agents
   shared the card; re-time it on a quiet machine before quoting it.
   **And the part of the guards that costs words is the repetition
@@ -580,8 +580,14 @@ exactly what classic did.
   errors on FLEURS dev, 24% on ivrit.ai's eval-whatsapp, 17% on eval-d1 —
   Hebrew repeats its small words and prefixes, and every repeat is
   penalised. Stock no_speech / log_prob / compression gave byte-identical
-  text on all 778 clips (262 min). The app still ships 1.15: changing it is
-  his decision, through a branch.
+  text on all 778 clips (262 min). On his go (2026-10-14, branch
+  `no-repetition-penalty`) the first decode carries 1.0, and 1.15
+  (`LOOP_PENALTY`) is the first rung of the loop retry — without it the
+  decoder looped on 2-3 of 1,912 clips a model, one WORD over and over
+  ("ושבע" x68),
+  which `_LOOP_RUN` cannot see, so `_word_loop` is a loop too. Do not put
+  the penalty back on the first decode without re-running
+  `DeskIT-training\scripts\stage0_run.ps1` against it.
 - **...and pinning the temperature turned two retries into two silent
   drops.** Read in the installed faster-whisper 1.2.1 on 2026-10-02.
   (1) A window whose `no_speech_prob` is over `no_speech_threshold` is

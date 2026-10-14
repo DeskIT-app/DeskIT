@@ -45,6 +45,27 @@ trained on (56 min, 234 English words); WhatsApp = ivrit.ai's eval-whatsapp
 | **today's, pen 1.0** | **1,109** | 1,309 | **665** | **499** | **2,638** | 1,228 |
 | **night4, pen 1.0** | 1,122 | **792** | 833 | 592 | 2,668 | **757** |
 | today's, pen 1.05 | 1,130 | 1,284 | 700 | 518 | | |
+| night6 (all data, Reversim twice) | 1,217 | 832 | 1,127 | 731 | 2,691 | 885 |
+
+**The decode on branch `no-repetition-penalty`** (pen 1.0, a looping clip
+decoded again with 1.15 — computed from the decodes above, which are
+deterministic; the loops coming back are why the FLEURS test, night4's
+Reversim test and night6's d1 are lower than in the pen 1.0 rows):
+
+| model | FLEURS dev | Reversim dev | WhatsApp | d1 | FLEURS test | Reversim test |
+|---|---|---|---|---|---|---|
+| today's | 1,109 | 1,309 | **665** | **499** | 2,536 | 1,228 |
+| night4 | 1,122 | 792 | 833 | 592 | 2,565 | **738** |
+| night6 | **1,096** | **783** | 818 | 574 | **2,530** | 776 |
+
+**night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
+5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
+dev −26, FLEURS test −35), a little worse on the Reversim test (+38), the
+rest inside the spread. It is the first trained model that is not worse
+than today's on plain Hebrew (−13 and −6), and it is ~40% better on Hebrew
+with English; but it is still 23% worse on WhatsApp and 15% on d1, and the
+reason is still the dropped words (WhatsApp: 128 dropped vs today's 82).
+More data did not cure finding 8 — the labels have to.
 
 The decode is deterministic (temperature pinned), so a variant of ONE model
 differs by its setting alone; two TRAINED runs (night4/night5) differ by 5-8
@@ -77,10 +98,17 @@ words on the two dev sets that look like the tests and by ~45 on WhatsApp/d1.
    token already written, and Hebrew repeats its small words and prefixes
    legitimately: "את זה" → "לזה", "רעיון" → "חיאיון". It went in on 2026-08-13
    against one 222-ה loop and was "measured byte-identical on clean audio"
-   (short clips); no loop appeared in 262 min without it. **This is a product
-   change — his decision** (`transcribers/local_whisper.py`
-   `hallucination_guards`, a branch, his Dev copy for days of dictation). The
-   night scripts import the app's guards, so once it lands every eval follows.
+   (short clips). Without it the decoder looped on 2 of 1,912 clips with
+   today's model and 3 with each trained one, always one word over and over
+   ("ושבע" x68 and "של" x22 on the FLEURS test, "זהו" x14 on Reversim, "רבה"
+   x44 on d1). **His go, 2026-10-14 morning: branch `no-repetition-penalty`**
+   — the first decode at 1.0, and a loop (a letter run OR a word loop) retried
+   first with 1.15, then greedy, then the ladder. On the two looping clips
+   the 1.15 decode is the one that comes back, so the app's expected numbers
+   are the pen 1.0 rows with those two clips at their old values. The night
+   scripts import the app's guards from the checkout, so from the day the
+   branch is in the checkout every eval measures 1.0 — the rows above taken
+   at 1.15 are then comparable only to each other.
 8. **Every trained night is WORSE than today's model on the two sets that look
    like dictation** — WhatsApp and d1 — and the two night tests could not show
    it. Cause, measured (`label_length_check.py`): Reversim's transcripts are
@@ -134,9 +162,8 @@ then pen 1.0 with both tests).
 ### Stage 1 — squeeze the recipe (free, ~6-8 nights, one change a night)
 
 Each night changes ONE thing against the best recipe so far, judged on dev:
-- **tonight (night6, armed)**: all 251 h of crowd-transcribe (rehearsal at
-  scale) + Reversim twice. (Reversim twice also doubles the lesson of finding
-  8; WhatsApp and d1 will say.)
+- **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
+  scale) + Reversim twice — level with night4, see §1.
 - **night7 candidate, prepared, NOT armed — the labels made verbatim**:
   night4's recipe with `runs\teacher\labels_verbatim.jsonl`
   (`build_verbatim_labels.py`): the Hebrew words today's model heard and the
@@ -200,8 +227,8 @@ on FLEURS at ~1.5 s that nobody waits for.
    evening: all five open.
 2. Say yes or no to each Claude spend when it is asked, with its estimate.
 3. Keep DeskIT running at night (it is what keeps the PC awake).
-4. (2026-10-14) Decide the repetition penalty in the app (finding 7): off, 1.05,
-   or leave it — a product change, through a branch and his Dev copy.
+4. (2026-10-14) The repetition penalty (finding 7): decided — off on the first
+   decode, kept for loops; branch `no-repetition-penalty`, his Dev copy next.
 5. (2026-10-14) Decide night7 (verbatim labels, Stage 1) after night6's numbers.
 
 ## 5. Ruled out, and why
