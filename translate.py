@@ -8,9 +8,12 @@ backend from the transcribers.
 Gemini goes first: it keeps embedded English technical terms in Latin
 script and preserves register, which matters because these messages are
 usually prompts for a coding assistant. When the free-tier daily cap is
-spent it falls back to a local Ollama model — the same cloud-first,
-local-when-spent shape the dictation path already uses, so translation
-never becomes another thing that stops working at 20 requests.
+spent — or there is no Gemini key — Groq answers, and a local Ollama
+model after both: the same cloud-first, local-when-spent shape the
+dictation path already uses, so translation never becomes another thing
+that stops working at 20 requests. Groq earned its place by measurement
+(2026-10-03, `[translate] prefer` in defaults.toml): it keeps the English
+terms as well as Gemini, so one free key of either kind translates.
 
 Ollama is reached over plain HTTP: no new pip dependency, and nothing is
 loaded into VRAM until the fallback actually fires.
@@ -591,34 +594,52 @@ class GroqTranslator(CerebrasTranslator):
     reasoning_tokens = 512
 
 
-class Translator:
-    """Gemini first, Ollama once every Gemini model is out of quota.
+# The order the translators are tried in, whichever one `[translate]
+# prefer` puts first. Gemini was the only cloud here until 2026-10-03; Groq
+# joined after the measurement written at `prefer` in defaults.toml (it
+# keeps English terms in Latin script as well as Gemini did, 8x faster), so
+# one free key of EITHER kind translates.
+ORDER = ("gemini", "groq", "ollama")
 
-    Both halves are built lazily: no API key check and no Ollama contact
-    happen until the user actually presses the key.
+
+class Translator:
+    """The clouds in `prefer` order, Ollama when no cloud answers.
+
+    Every leg is built lazily: no API key check and no Ollama contact
+    happen until the user actually presses the key. A cloud that cannot be
+    built (no key, the gate shut) is left out of the chain, and
+    ``missing_keys()`` says which keys would have put one there.
     """
 
     def __init__(self, cfg):
         self._cfg = cfg
-        self._cloud = None      # None = not built, False = unavailable
+        self._clouds: dict[str, object] = {}   # name -> backend | False
         self._local = None
         # Forgotten when the cloud_text gate opens or closes (privacy.py).
         privacy.on_change("cloud_text", self._forget_cloud)
 
     def _forget_cloud(self) -> None:
-        self._cloud = None
+        self._clouds = {}
 
-    def _cloud_backend(self):
-        if self._cloud is None:
+    def _build(self, name: str):
+        t = self._cfg.translate
+        if name == "gemini":
+            return GeminiTranslator(list(self._cfg.gemini.models),
+                                    t.timeout_s, t.target, purpose="translate")
+        polish = getattr(self._cfg, "polish", None)
+        return GroqTranslator(getattr(polish, "groq_model", "")
+                              or "openai/gpt-oss-120b",
+                              t.timeout_s, t.target, purpose="translate")
+
+    def _cloud_backend(self, name: str = "gemini"):
+        if name not in self._clouds:
             try:
-                self._cloud = GeminiTranslator(list(self._cfg.gemini.models),
-                                               self._cfg.translate.timeout_s,
-                                               self._cfg.translate.target,
-                                               purpose="translate")
+                self._clouds[name] = self._build(name)
             except Exception as e:
-                log.info("no Gemini translator (%s) — using Ollama", e)
-                self._cloud = False
-        return self._cloud or None
+                log.info("no %s translator (%s)", name,
+                         str(e).splitlines()[0][:160])
+                self._clouds[name] = False
+        return self._clouds[name] or None
 
     def _local_backend(self):
         if self._local is None:
@@ -629,20 +650,47 @@ class Translator:
                 self._cfg.translate.target, purpose="translate")
         return self._local
 
+    def _ranked(self) -> list[str]:
+        prefer = getattr(self._cfg.translate, "prefer", "gemini")
+        return [prefer] + [n for n in ORDER if n != prefer]
+
+    @staticmethod
+    def missing_keys() -> list[str]:
+        """The cloud keys that are not stored — ["gemini", "groq"] when
+        neither is, which is when the key has nothing but Ollama. Only
+        presence is asked (find_key); the value is dropped at once."""
+        import secretstore
+
+        missing = []
+        for name in ("gemini", "groq"):
+            try:
+                key, _source = secretstore.find_key(name)
+            except Exception:                     # noqa: BLE001
+                key = None
+            if not key:
+                missing.append(name)
+            del key
+        return missing
+
     def translate(self, text: str) -> tuple[str, str]:
         """Returns (translated_text, backend_name)."""
-        cloud = self._cloud_backend()
-        if cloud is not None:
+        for name in self._ranked():
+            if name == "ollama":
+                local = self._local_backend()
+                return local.translate(text), local.name
+            cloud = self._cloud_backend(name)
+            if cloud is None:
+                continue
             try:
                 return cloud.translate(text), cloud.name
             except RateLimitError as e:
-                log.warning("%s — translating locally with Ollama instead", e)
+                log.warning("%s — translating with the next backend", e)
             except TranscriptionError as e:
                 # Deliberately the BASE class: the model rotation reports a
                 # plain TranscriptionError for API errors (a 499 timeout,
-                # a 500), and those are exactly the cases where the local
-                # model should answer instead of the user losing the press.
-                log.warning("Gemini translation failed (%s) — trying Ollama",
-                            e)
+                # a 500), and those are exactly the cases where the next
+                # backend should answer instead of the user losing the press.
+                log.warning("%s translation failed (%s) — trying the next",
+                            name, e)
         local = self._local_backend()
         return local.translate(text), local.name

@@ -354,12 +354,23 @@ retry_seconds = 45            # keep retrying this long before spooling to pendi
 [translate]
 # Whisper only transcribes, so translating needs a language model. Gemini
 # goes first (it keeps English technical terms in Latin script and holds
-# the register); when its daily cap is spent this drops to a local Ollama
-# model, so the key never becomes another thing that dies at 20 requests.
+# the register); when its daily cap is spent, or there is no Gemini key,
+# Groq answers, and a local Ollama model after both, so the key never
+# becomes another thing that dies at 20 requests (`prefer` below).
 target = "English"
 max_chars = 5000              # a guard: above this the key refuses, on the
                               # assumption ctrl+a caught a whole document
 ollama_model = "llama3.1:8b"  # the fallback; must be pulled in ollama
+# Which cloud translates first: gemini | groq | ollama. The other cloud
+# comes next, Ollama last, so ONE key of either kind is enough to translate.
+# Groq joined the chain 2026-10-03 after a measurement (dev\measure_translate.py,
+# 16 Hebrew prompts holding 44 English terms — config.toml, useEffect,
+# git rebase — or Hebrew-spelled ones like פוש): Groq gpt-oss-120b kept
+# 43/44 and 44/44 in two runs, p50 0.46-0.53 s, max 0.71 s, no failures;
+# Gemini (flash-latest, a new key) kept 26/26 of what it answered but
+# failed 7 of 16 (503 "high demand", 30 s read timeouts), p50 4.0 s. Its
+# one Groq miss: "ברנץ'" came out "brunch".
+prefer = "gemini"
 # 127.0.0.1 and NOT localhost, and the difference is not cosmetic: this
 # machine's getaddrinfo("localhost") hands back ::1 first, Ollama listens on
 # IPv4 only, and the refused connection takes ~2.05 s to come back before
@@ -796,8 +807,9 @@ cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
 #
 # PRIVACY. Unlike [visual_qa], whose screenshot lives in memory and is
 # never written down, this feature exists to write pictures of your screen
-# to disk. So `folder` is treated the way transcripts.log is: beside the
-# app, gitignored, and never uploaded by anything in capture.py. The only
+# to disk. So `folder` is treated the way transcripts.log is: never
+# uploaded by anything in capture.py, and out of the repo (Windows'
+# Pictures folder since 2026-10-03, see `folder` below). The only
 # route from a capture to a model is the editor's Ask button, which hands
 # the pixels to the ask card and obeys [privacy] cloud_screenshots.
 #
@@ -836,18 +848,29 @@ record_hotkey = "ctrl+f12"     # tap to start, tap again to stop. One key
                                # same thought as the first, and a recorder
                                # you have to hunt for with the mouse records
                                # you hunting for it
-folder = "captures"
+folder = "{pictures}/DeskIT"
                                # where screenshots and camera photos go.
-                               # A relative name is relative to the APP
-                               # folder, not to whatever directory the
-                               # process started in — this app is launched
+                               # {pictures} is Windows' own Pictures
+                               # folder (SHGetKnownFolderPath — wherever
+                               # the person moved it). It was "captures"
+                               # under the data folder until 2026-10-03:
+                               # nobody found it, and a Store uninstall
+                               # deleted it with the app (the owner's
+                               # Store walk, item 17). Pictures is where a
+                               # person looks, and it outlives the app;
+                               # if OneDrive backs Pictures up, the files
+                               # you SAVE go with it, as Windows' own
+                               # screenshots do. A relative name is
+                               # relative to the DATA folder, not to the
+                               # working directory — this app is launched
                                # from a .vbs, a shortcut and a scheduled
                                # task, and all three disagree. An absolute
                                # path is used as given
-clip_folder = ""
-                               # where screen RECORDINGS (clip *.mp4) go.
-                               # Empty means the same folder as the
-                               # pictures; an absolute path is used as
+clip_folder = "{videos}/DeskIT"
+                               # where screen RECORDINGS (clip *.mp4) go:
+                               # Windows' Videos folder, for the same
+                               # reasons. Empty means the same folder as
+                               # the pictures; an absolute path is used as
                                # given, like `folder`
 copy_to_clipboard = true       # Win+Shift+S's promise. CF_DIB and the
                                # registered PNG format, so Paint, Word,
@@ -990,7 +1013,7 @@ announce = true                # say "Recording started" for 2.6 s before
 # opens it for as long as the window is up and not a moment longer: the
 # device is released the instant the shutter fires, not when the editor
 # closes, so the light beside the lens means what it looks like it means.
-# The photo is written to `folder` beside the app, gitignored, and nothing
+# The photo is written to `folder` (Windows' Pictures folder), and nothing
 # here uploads anything anywhere. The one route from a photo to a model is
 # the editor's Ask button, which obeys [privacy] cloud_screenshots like
 # every other question. `enabled = false` unregisters the key.
@@ -1047,10 +1070,11 @@ timer = 0                      # 0, 3 or 10 seconds of self-timer to start
                                # on. `t` cycles it while the window is
                                # open, and Esc cancels a countdown before
                                # it closes the window
-folder = "captures"
+folder = "{pictures}/DeskIT"
                                # the same folder the screen captures go
                                # to, so there is one place to look for
-                               # pictures. The files are named
+                               # pictures (the wizard and Settings write
+                               # both together). The files are named
                                # "photo 2026-08-26 18-45-22.png" rather
                                # than "shot ...", so sorting by name still
                                # groups them
@@ -1724,11 +1748,17 @@ warm_up = true            # send one throwaway request at startup so the model
 # Free-tier quota is PER MODEL (gemini-2.5-flash = 20 requests/day), so this
 # list is a longer runway: each is tried in order and rested when it reports
 # its cap. Verified as supporting audio input on 2026-08-12.
+# The two "-latest" aliases go FIRST since 2026-10-03: a key made that month
+# gets 404 "no longer available to new users" from both 2.5 models (probed
+# one request each: flash-latest answered in 3.7 s, flash-lite-latest in
+# 1.0 s, both 2.5s 404). gemini_pool.rotate rests a 404 model and moves on,
+# but a list that starts with two dead models spends two requests a day
+# finding that out. An older key still has the 2.5s, behind the aliases.
 models = [
-  "gemini-2.5-flash",
   "gemini-flash-latest",
-  "gemini-2.5-flash-lite",
   "gemini-flash-lite-latest",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
 ]
 timeout_s = 30
 
