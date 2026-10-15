@@ -56,7 +56,8 @@ Reversim test and night6's d1 are lower than in the pen 1.0 rows):
 |---|---|---|---|---|---|---|
 | today's | 1,109 | 1,309 | **665** | **499** | 2,536 | 1,228 |
 | night4 | 1,122 | 792 | 833 | 592 | 2,565 | **738** |
-| night6 | **1,096** | **783** | 818 | 574 | **2,530** | 776 |
+| night6 | 1,096 | **783** | 818 | 574 | **2,530** | 776 |
+| night7 (night6 + verbatim labels) | **1,093** | 824 | 788 | 547 | 2,542 | 741 |
 
 **night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
 5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
@@ -66,6 +67,18 @@ than today's on plain Hebrew (−13 and −6), and it is ~40% better on Hebrew
 with English; but it is still 23% worse on WhatsApp and 15% on d1, and the
 reason is still the dropped words (WhatsApp: 128 dropped vs today's 82).
 More data did not cure finding 8 — the labels have to.
+
+**night7 (2026-10-15)**: night6 with the verbatim labels, scored by its own
+runner in the branch's decode (night6's row above was re-measured by the same
+runner and came back to the word, so the computed rows hold). The cure works
+and is half done: words DROPPED against today's model on WhatsApp 128 -> 105
+(today 82), on d1 182 -> 148 (today 122) — the excess halved on both. The
+totals moved the same way (WhatsApp −30, d1 −27, Reversim test −35) but each
+inside its spread; Reversim dev +41 is the one cost, and its references are
+the same edited text, so putting spoken words back is partly scored as
+insertions there. Still +123 / +48 against today's on WhatsApp / d1.
+The restoration only put words back mid-clip where nothing else changed;
+30% of the clips still lack 2+ heard words.
 
 The decode is deterministic (temperature pinned), so a variant of ONE model
 differs by its setting alone; two TRAINED runs (night4/night5) differ by 5-8
@@ -164,7 +177,14 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
-- **night7 candidate, prepared, NOT armed — the labels made verbatim**:
+- **night8 (armed for 2026-10-16 03:15, `night_teacher8.ps1`)**: night7 with
+  ONE change — the Reversim clips whose verbatim label still lacks 2+ heard
+  words left out, both copies (`build_night8_data.py`,
+  `train_lora_night8.py`): 13,124 of 18,739 clips kept, 34.9 h, 62% of the
+  English words. If WhatsApp and d1 reach today's model while Reversim holds,
+  finding 8 is closed; if the English drops, the middle road is "at most two
+  missing" (81% of clips, 74% of the English).
+- **night7 (done 2026-10-15) — the labels made verbatim**:
   night4's recipe with `runs\teacher\labels_verbatim.jsonl`
   (`build_verbatim_labels.py`): the Hebrew words today's model heard and the
   label lacks, put back where nothing else changes there — 6,357 words in 22%
