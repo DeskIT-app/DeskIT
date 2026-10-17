@@ -58,6 +58,7 @@ Reversim test and night6's d1 are lower than in the pen 1.0 rows):
 | night4 | 1,122 | 792 | 833 | 592 | 2,565 | **738** |
 | night6 | 1,096 | **783** | 818 | 574 | **2,530** | 776 |
 | night7 (night6 + verbatim labels) | **1,093** | 824 | 788 | 547 | 2,542 | 741 |
+| night8 (night7, clips still missing 2+ heard words left out) | 1,100 | 851 | 767 | 539 | 2,541 | 741 |
 
 **night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
 5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
@@ -79,6 +80,20 @@ the same edited text, so putting spoken words back is partly scored as
 insertions there. Still +123 / +48 against today's on WhatsApp / d1.
 The restoration only put words back mid-clip where nothing else changed;
 30% of the clips still lack 2+ heard words.
+
+**night8 (2026-10-16) — finding 8 closed.** Words dropped on WhatsApp 79
+(today's 82; night6 128, night7 105), on d1 136 (today's 122). The English
+held (Reversim test 247 of 330 English words right, today's 118). What is left
+on WhatsApp is mostly the style the app wants: 121 of night8's 767 are an
+English term in Latin letters where the reference spells it in Hebrew
+("google" for "גוגל", "token" for "טוקנים"); without those, night8 646 against
+today's 662 there, and on d1 523 against 487 (inside the ~45 spread). It is
+the first trained model level with today's on plain Hebrew and on everyday
+speech and ~40% better on Hebrew with English. **His call, 2026-10-17: into
+his Dev copy for days of real dictation** (`local.model` in settings.toml =
+`DeskIT-training\runs\night8\ct2`; one line back to
+`ivrit-ai/whisper-large-v3-turbo-ct2` undoes it), **and night9 = night8
+repeated** (`night_teacher9.ps1`, 2026-10-18 03:15) — the plan's two runs.
 
 The decode is deterministic (temperature pinned), so a variant of ONE model
 differs by its setting alone; two TRAINED runs (night4/night5) differ by 5-8
@@ -177,7 +192,8 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
-- **night8 (armed for 2026-10-16 03:15, `night_teacher8.ps1`)**: night7 with
+- **night9 (armed for 2026-10-18 03:15)**: night8 again, to measure its spread.
+- **night8 (done 2026-10-16, `night_teacher8.ps1`; §1)**: night7 with
   ONE change — the Reversim clips whose verbatim label still lacks 2+ heard
   words left out, both copies (`build_night8_data.py`,
   `train_lora_night8.py`): 13,124 of 18,739 clips kept, 34.9 h, 62% of the
