@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.7
+
+Dictation gets more of my words right. Since August every dictation was decoded with a setting that makes the speech model avoid writing anything it has already written; it went in to stop the model getting stuck on one sound and repeating it. But Hebrew repeats its small words and prefixes all the time, so the setting kept pushing real words out and putting a wrong one in their place. Measured on public recordings, none of them mine, turning it off cuts the mistakes by about a quarter on everyday voice messages, a sixth on long podcast recordings and a twelfth on read-out sentences. The protection is not gone: when a dictation does come out stuck on one word, DeskIT now notices and decodes it again the old way. Without the setting that happened on two recordings out of almost two thousand.
+
 ## 1.0.6
 
 DeskIT is on its way to the Microsoft Store. A copy from the Store is signed by Microsoft, so Windows will stop warning that it does not recognise the app — the warning everyone sees today on the first run of the installer from this page. This version changes nothing for a copy installed from here; it is the version the Store package is made from. The package is built from this release's own installer, so the Store copy is the same files as this one, file for file, plus a small launcher that starts it. Inside the Store package three things work the way Windows wants them to there: "Start with Windows" goes through Windows' own list of startup apps, Connect Claude Code goes through a command the package adds, and the app's windows sit under its tile in the Start menu. One difference a Store user should know before installing: Windows keeps a Store app's files in a folder of its own and removes them with the app, so uninstalling the Store copy removes what it has learned too — unless the sync with your account is on.
