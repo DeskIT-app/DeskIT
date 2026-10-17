@@ -8627,6 +8627,161 @@ def test_a_prompt_change_retires_the_answers_it_produced() -> None:
         lookup_mod.Cache.key("Hebrew", "word", "us")
 
 
+class _FakeLookupBackend:
+    """One leg of the lookup chain: answers, or raises what it was given."""
+
+    def __init__(self, name: str, asked: list, fails=None):
+        self.name, self._asked, self._fails = name, asked, fails
+
+    def translate(self, text: str) -> str:
+        self._asked.append(self.name)
+        if self._fails is not None:
+            raise self._fails
+        return f"{self.name}: {text}"
+
+
+def _lookup_engine(d: Path, prefer: str, clouds: dict, resident: bool,
+                   asked: list, probes: list, warmed: list):
+    """A lookup.Engine whose legs are fakes, its cache in `d`, nothing
+    contacted: `clouds` maps groq/gemini to a fake, or to None for a
+    cloud that cannot be built (no key, the gate shut)."""
+    import lookup as lookup_mod
+
+    cfg = config_mod.load_layered(settings=d / "none.toml",
+                                  state=d / "none.json")
+    cfg = dataclasses.replace(
+        cfg, lookup=dataclasses.replace(cfg.lookup, prefer=prefer))
+    engine = lookup_mod.Engine(cfg, cache=lookup_mod.Cache(d / "cache.json"))
+    engine._cloud_backend = lambda name: clouds.get(name)
+    engine._ollama_backend = lambda: _FakeLookupBackend("ollama", asked)
+
+    def probe() -> bool:
+        probes.append(1)
+        return resident
+
+    engine.model_is_resident = probe
+    engine.warm = lambda keep_alive=None: warmed.append(1)
+    return engine
+
+
+def test_a_lookup_asks_groq_first_and_the_local_model_last() -> None:
+    """2026-10-17: the owner waited 34 s on one lookup — gemma3:12b was
+    out of VRAM, the only cloud was Gemini and his Gemini key answered
+    401. Groq goes first now; the local model is not even asked whether
+    it is loaded while a cloud answers, nothing is warmed for it, and
+    when every cloud refuses the box says the model is loading instead
+    of sitting on "…"."""
+    import lookup as lookup_mod
+    from transcribers.base import RateLimitError, TranscriptionError
+
+    assert config_mod.defaults_flat()["lookup.prefer"] == "groq"
+    d = Path(tempfile.mkdtemp(prefix="lookup-order-"))
+    try:
+        # Groq answers: Gemini and the local model are never touched.
+        asked, probes, warmed, status = [], [], [], []
+        clouds = {"groq": _FakeLookupBackend("groq", asked),
+                  "gemini": _FakeLookupBackend("gemini", asked)}
+        (d / "a").mkdir()
+        engine = _lookup_engine(d / "a", "groq", clouds, False,
+                                asked, probes, warmed)
+        answer = engine.look_up("brittle", on_status=status.append)
+        assert answer.backend == "groq" and asked == ["groq"], asked
+        assert probes == [] and warmed == [] and status == [], \
+            (probes, warmed, status)
+        assert not answer.warming
+
+        # Groq out of quota, Gemini's key refused (the 401 of that
+        # evening), the model cold: the local model answers and the box
+        # was told why it is slow — once, before the wait.
+        asked, probes, warmed, status = [], [], [], []
+        clouds = {"groq": _FakeLookupBackend(
+                      "groq", asked, RateLimitError("Groq rate limit")),
+                  "gemini": _FakeLookupBackend(
+                      "gemini", asked, TranscriptionError("Gemini 401"))}
+        (d / "b").mkdir()
+        engine = _lookup_engine(d / "b", "groq", clouds, False,
+                                asked, probes, warmed)
+        answer = engine.look_up("brittle", on_status=status.append)
+        assert asked == ["groq", "gemini", "ollama"], asked
+        assert answer.backend == "ollama"
+        assert status == [lookup_mod.WARMING_NOTE], status
+        assert probes == [1] and warmed == [], (probes, warmed)
+
+        # No cloud key at all and the model already loaded: straight to
+        # it, and nothing on the box claims a wait that is not coming.
+        asked, probes, warmed, status = [], [], [], []
+        (d / "c").mkdir()
+        engine = _lookup_engine(d / "c", "groq", {}, True,
+                                asked, probes, warmed)
+        answer = engine.look_up("brittle", on_status=status.append)
+        assert asked == ["ollama"] and status == [], (asked, status)
+
+        # prefer = "gemini" swaps the clouds and nothing else.
+        asked, probes, warmed, status = [], [], [], []
+        clouds = {"groq": _FakeLookupBackend("groq", asked),
+                  "gemini": _FakeLookupBackend(
+                      "gemini", asked, RateLimitError("Gemini 429"))}
+        (d / "d").mkdir()
+        engine = _lookup_engine(d / "d", "gemini", clouds, False,
+                                asked, probes, warmed)
+        assert engine.look_up("brittle").backend == "groq"
+        assert asked == ["gemini", "groq"] and probes == [], (asked, probes)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_prefer_ollama_still_keeps_the_reading_local() -> None:
+    """The old order stays one line away: the local model first while it
+    is loaded, and when it is cold that one lookup goes to the clouds —
+    Groq before Gemini now — while the model warms behind it."""
+    d = Path(tempfile.mkdtemp(prefix="lookup-local-"))
+    try:
+        asked, probes, warmed = [], [], []
+        clouds = {"groq": _FakeLookupBackend("groq", asked),
+                  "gemini": _FakeLookupBackend("gemini", asked)}
+        (d / "a").mkdir()
+        engine = _lookup_engine(d / "a", "ollama", clouds, True,
+                                asked, probes, warmed)
+        assert engine.look_up("brittle").backend == "ollama"
+        assert asked == ["ollama"] and warmed == [], (asked, warmed)
+
+        asked, probes, warmed, status = [], [], [], []
+        clouds = {"groq": _FakeLookupBackend("groq", asked),
+                  "gemini": _FakeLookupBackend("gemini", asked)}
+        (d / "b").mkdir()
+        engine = _lookup_engine(d / "b", "ollama", clouds, False,
+                                asked, probes, warmed)
+        answer = engine.look_up("brittle", on_status=status.append)
+        assert answer.backend == "groq" and asked == ["groq"], asked
+        assert answer.warming and warmed == [1] and status == [], \
+            (answer.warming, warmed, status)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_lookup_prefer_is_checked_when_the_config_loads() -> None:
+    """A misspelt prefer is refused at start, by name, rather than
+    quietly running the lookup through an order nobody chose."""
+    d = Path(tempfile.mkdtemp(prefix="cfg-"))
+    try:
+        for good in ("groq", "gemini", "ollama"):
+            ok = d / f"{good}.toml"
+            ok.write_text(f'[lookup]\nprefer = "{good}"\n', "utf-8")
+            assert config_mod.load(ok).lookup.prefer == good
+        for bad, name in (('prefer = "grok"', "lookup.prefer"),
+                          ('groq_model = ""', "lookup.groq_model")):
+            path = d / "bad.toml"
+            path.write_text(f"[lookup]\n{bad}\n", "utf-8")
+            try:
+                config_mod.load(path)
+            except config_mod.ConfigError as e:
+                assert name in str(e), e
+            else:
+                raise AssertionError(f"{bad} was accepted")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_lookup_box_swallows_esc_and_nothing_else() -> None:
     """on_key_down is the only part of this feature that can hurt the
     dictation path: it is the one thing able to stop a keystroke reaching
