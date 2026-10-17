@@ -20,15 +20,18 @@ then its senses. "It is not rocket science." wants a translation. The same
 prompt cannot do both: asked for a dictionary entry, a model given a
 sentence explains it word by word.
 
-**Which backend, and this is the reverse of every other key here.** Gemini
-first is right for F9 and F7, which a person presses deliberately a few
-times a day. This key costs nothing to press and gets pressed while
-reading; app.log shows F9 and F7 alone spending 34 / 39 / 17 / 18 of the
-~80 free-tier requests a day and hitting 429s on seven separate days, so a
-key that plausibly runs 30-60 times a day would take the whole pool and
-break the two keys whose local fallback is the measurably worse one.
-Ollama goes first, and only a model that is not loaded sends this one
-lookup to the cloud (see Engine).
+**Which backend.** Groq first, Gemini after it, the local model last
+(`[lookup] prefer`, since 2026-10-17). It was Ollama first until then, for
+a reason that was about Gemini alone: this key is pressed while reading,
+30-60 times a day, and Gemini's ~80 free requests a day were already half
+spent by F9 and F7. Groq's free tier is about a thousand a day per model
+and this PC sends it 50-100. What ended Ollama-first was the owner waiting
+34 s for a 370-char selection: gemma3:12b had dropped out of VRAM, the
+cloud leg had only Gemini, and his Gemini key answered 401. Measured the
+same evening on 14 selections, Groq gpt-oss-120b answered in 0.5-1.1 s
+and warm gemma3:12b in 2.5-7.1 s — and gemma got the headline wrong where
+Groq did not ("commit" -> "ביצוע", "debounce" -> "עיכוב", "deadlock" ->
+"חסימת נתונים", against "קומיט", "דיבאונס", "קיפאון"). See Engine.
 
 Answers are cached in lookup_cache.json. That file holds the text you
 selected — like transcripts.log and vocab.json, it is a record of what you
@@ -188,7 +191,7 @@ def needs_hebrew(text: str, max_chars: int = 5000) -> bool:
 # it) and gemma3:12b reads Hebrew at roughly two to three characters a
 # token, so a chunk this size leaves room for the prompt AND the
 # translation inside one window instead of silently truncating the input.
-# Gemini is not bounded by this: its API takes the whole selection in one
+# The clouds are not bounded by this: their APIs take the whole selection in one
 # request and answers in seconds.
 _LOCAL_CHUNK = 3800
 
@@ -242,7 +245,7 @@ def translate_chunked(backend, text: str, on_progress=None) -> str:
     The owner selected ALL the text on a page and got silence, because
     lookup.max_chars refused what one request could not safely carry. The
     cap now sits higher and the LOCAL path carries long selections as
-    several requests, joined with newlines; Gemini takes the whole thing
+    several requests, joined with newlines; a cloud takes the whole thing
     at once, exactly as before. `on_progress(i, n)` fires before each
     part after the first, so the box can say which part is translating
     instead of hanging between silent minutes.
@@ -562,7 +565,7 @@ class Answer:
     text: str
     target: str
     mode: str
-    backend: str          # "cache" | "ollama" | "gemini"
+    backend: str          # "cache" | "ollama" | "groq" | "gemini"
     seconds: float
     warming: bool = False
 
@@ -577,23 +580,31 @@ class Answer:
 
 
 class Engine:
-    """Ollama first, Gemini only when the local model is not loaded.
+    """The clouds in `prefer` order, the local model when none answers.
 
-    The order is the reverse of translate.py and punctuate.py, deliberately
-    — see the module docstring. The sequence, all of it measured
-    2026-08-19:
+    With the default `prefer = "groq"`: Groq, then Gemini, then Ollama —
+    and the local model is asked whether it is loaded only once both
+    clouds have refused (no key, the cloud_text gate shut, a 429, an
+    answer that never came), so that the box can say it is loading
+    instead of sitting on "…" for 25 s. Nothing is warmed on a cloud
+    answer: 9 GB of VRAM loaded for a lookup that did not need it would
+    only be in a game's way.
+
+    `prefer = "ollama"` is the order this key had until 2026-10-17, kept
+    for a machine that wants its reading to stay on it. Its sequence, all
+    of it measured 2026-08-19:
 
       1. GET /api/ps, under a millisecond over 127.0.0.1. Is the model
          resident?
       2. Resident -> Ollama. gemma3:12b answers a word in 1.4-3.1 s, a
          sentence in 0.8-2.0 s, a 100-word paragraph in 5.0-7.4 s, and
          costs no extra VRAM because [polish] already keeps it loaded.
-      3. Not resident -> Gemini (0.5-1.3 s for a word or a sentence, 9.0 s
-         for the paragraph) AND a background warm-up, because a cold local
-         model is 22-25 s to the first token and nobody is going to stand
-         and watch that. Bounded at about one cloud request per idle
+      3. Not resident -> the clouds (Groq 0.5-1.1 s, Gemini 0.5-1.3 s for
+         a word or a sentence) AND a background warm-up, because a cold
+         local model is 22-25 s to the first token and nobody is going to
+         stand and watch that. Bounded at about one cloud request per idle
          keep_alive period.
-      4. Gemini out of quota -> Ollama cold anyway, `warming` set, and the
+      4. No cloud answers -> Ollama cold anyway, `warming` set, and the
          box says the local model is loading rather than looking hung.
 
     Two things make step 3 rare, and both were measured on 2026-08-19
@@ -618,7 +629,7 @@ class Engine:
     5.4 s. The total is unchanged. What changes is how long the box is
     empty.
 
-    Both backends are built lazily: no API key is looked for and nothing is
+    Every backend is built lazily: no API key is looked for and nothing is
     contacted until the key is actually pressed.
     """
 
@@ -626,7 +637,9 @@ class Engine:
         self._cfg = cfg
         self._url = cfg.translate.ollama_url.rstrip("/")
         self._model = cfg.lookup.model or cfg.translate.ollama_model
-        self._gemini = None       # None = not built, False = unavailable
+        # name -> backend once built, False when it cannot be (no key, the
+        # gate shut); absent = not tried yet.
+        self._clouds: dict[str, object] = {}
         self._ollama = None
         # Forgotten when the cloud_text gate opens or closes (privacy.py):
         # the next lookup rebuilds the leg whichever way the gate points.
@@ -646,7 +659,7 @@ class Engine:
     # ---- the prompt hook the backends call back into ----
 
     def _forget_cloud(self) -> None:
-        self._gemini = None
+        self._clouds = {}
 
     def _system_prompt(self) -> str:
         return prompt_for(getattr(self._state, "target", "Hebrew"),
@@ -689,19 +702,29 @@ class Engine:
                 on_chunk=self._chunk, purpose="lookup")
         return self._ollama
 
-    def _gemini_backend(self):
+    def _build_cloud(self, name: str):
         import translate as translate_mod
 
-        if self._gemini is None:
+        timeout_s = self._cfg.translate.timeout_s
+        if name == "gemini":
+            return translate_mod.GeminiTranslator(
+                list(self._cfg.gemini.models), timeout_s,
+                system_prompt=self._system_prompt, purpose="lookup")
+        # No reply cap: the answer is as long as the selection, and a
+        # cap sized for a word would cut a paragraph in half.
+        return translate_mod.GroqTranslator(
+            self._cfg.lookup.groq_model, timeout_s,
+            system_prompt=self._system_prompt, purpose="lookup")
+
+    def _cloud_backend(self, name: str):
+        if name not in self._clouds:
             try:
-                self._gemini = translate_mod.GeminiTranslator(
-                    list(self._cfg.gemini.models),
-                    self._cfg.translate.timeout_s,
-                    system_prompt=self._system_prompt, purpose="lookup")
+                self._clouds[name] = self._build_cloud(name)
             except Exception as e:
-                log.info("no Gemini to look up with (%s) — Ollama only", e)
-                self._gemini = False
-        return self._gemini or None
+                log.info("no %s to look up with (%s)", name,
+                         str(e).splitlines()[0][:160])
+                self._clouds[name] = False
+        return self._clouds[name] or None
 
     # ---- is the local model loaded? ----
 
@@ -843,10 +866,10 @@ class Engine:
                       on_chunk, started: float,
                       on_progress=None) -> Answer:
         prefer = self._cfg.lookup.prefer
-        # Short-circuited: with prefer = "gemini" the probe is not even
-        # sent, because the answer would not change anything.
-        resident = prefer == "ollama" and self.model_is_resident()
-        cold = prefer == "ollama" and not resident
+        local_first = prefer == "ollama"
+        # Short-circuited: with a cloud first the probe is not sent here
+        # at all — it is asked below, and only once every cloud refused.
+        cold = local_first and not self.model_is_resident()
         # The cloud answers this one while the local model loads in the
         # background. With cold_to_gemini off the user waits for that load
         # instead — 22-25 s to the first token — which is why `warming` is
@@ -859,18 +882,22 @@ class Engine:
         errors: list[str] = []
 
         try:
-            for backend in self._order(prefer != "ollama" or to_cloud):
-                if cold and backend.name == "ollama" and not told:
-                    # About to load 8 GB with somebody watching an empty
-                    # box.
+            for backend in self._order(prefer, local_first and not to_cloud):
+                if backend.name == "ollama" and not told:
                     told = True
-                    if on_status is not None:
+                    if not local_first:
+                        # Every cloud refused, and this is the first
+                        # moment it is worth a millisecond to ask.
+                        cold = not self.model_is_resident()
+                    if cold and on_status is not None:
+                        # About to load 8 GB with somebody watching an
+                        # empty box.
                         on_status(WARMING_NOTE)
                 self._state.target = target
                 self._state.mode = mode
                 # Beside target and mode, and thread-local for the same
-                # reason — see _chunk. Gemini never reads it: it answers
-                # in 0.8-1.3 s and it is the fallback, not the path.
+                # reason — see _chunk. The clouds never read it: they
+                # answer whole, in about a second.
                 self._state.on_chunk = on_chunk
                 try:
                     # Chunked on the LOCAL path only: one request per
@@ -911,23 +938,28 @@ class Engine:
             "no backend could look that up (" + "; ".join(errors) + ") — "
             "start Ollama, or check lookup.model in config.toml")
 
-    def _order(self, gemini_first: bool):
-        """The backends to try, in order, for one lookup.
+    def _order(self, prefer: str, local_first: bool):
+        """The backends to try, in order, for one lookup: `prefer`'s cloud
+        before the other one, Ollama first or last.
 
-        A generator so a Gemini client is never built on a request the
-        local model is about to answer — that constructor looks for an API
-        key and reads a file.
+        A generator so a cloud client is never built on a request that an
+        earlier backend answered — that constructor looks for an API key
+        and reads a file.
         """
-        if gemini_first:
-            gemini = self._gemini_backend()
-            if gemini is not None:
-                yield gemini
+        if local_first:
             yield self._ollama_backend()
-            return
-        yield self._ollama_backend()
-        gemini = self._gemini_backend()
-        if gemini is not None:
-            yield gemini
+        for name in sorted(CLOUDS, key=lambda n: n != prefer):
+            cloud = self._cloud_backend(name)
+            if cloud is not None:
+                yield cloud
+        if not local_first:
+            yield self._ollama_backend()
+
+
+# The clouds this key can ask, in the order tried when `prefer` names
+# neither of them (prefer = "ollama" and the model is cold): Groq first,
+# for the numbers in the module docstring.
+CLOUDS = ("groq", "gemini")
 
 
 def _tagged(name: str) -> str:
