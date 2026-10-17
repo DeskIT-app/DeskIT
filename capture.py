@@ -1766,6 +1766,7 @@ class Clip:
         self._audio = None
         self._resampler = None
         self._audio_pts = 0
+        self._to_yuv = None
         self.frames = 0
 
     def _open(self) -> None:
@@ -1799,6 +1800,23 @@ class Clip:
         # loses the last second when you stop it.
         stream.options = {"preset": "veryfast", "tune": "zerolatency",
                           "crf": str(self.crf)}
+        # THE COLOURS ARE BT.709, AND THE FILE SAYS SO. Until 2026-10-17
+        # PyAV's own bgra -> yuv420p step used the BT.601 matrix and wrote
+        # no tag, and every player reads an untagged HD stream as BT.709:
+        # Chromium drew (220,40,40) as (236,58,37) and (40,180,60) as
+        # (30,160,57), every recording since the recorder existed. Each
+        # frame is converted by add_frame with the matching matrix, and
+        # these four tags (BT.709 matrix, primaries, transfer, limited
+        # range) go into the stream so no player has to guess — a small
+        # region, which a guessing player would read as SD and BT.601,
+        # included. Measured: the same Chromium then draws every patch
+        # within 1 of the source; 1440p encodes at 12.5-13.6 ms a frame
+        # either way.
+        context = stream.codec_context
+        context.colorspace = 1         # AVCOL_SPC_BT709
+        context.color_primaries = 1    # AVCOL_PRI_BT709
+        context.color_trc = 1          # AVCOL_TRC_BT709
+        context.color_range = 1        # AVCOL_RANGE_MPEG (limited)
         # WALL-CLOCK STAMPS, not frame numbers. A grab that could only
         # manage 24 fps must not play back 20% fast; every frame carries
         # the millisecond it was taken at instead.
@@ -1815,7 +1833,15 @@ class Clip:
     def add_frame(self, bgra, at_ms: int) -> None:
         import fractions
         import av
-        frame = av.VideoFrame.from_ndarray(bgra, format="bgra")
+        if self._to_yuv is None:
+            # ONE reformatter for the clip: VideoFrame.reformat builds a
+            # new one per frame, which cost +6.6 ms a frame at 1080p.
+            from av.video.reformatter import VideoReformatter
+            self._to_yuv = VideoReformatter()
+        frame = self._to_yuv.reformat(
+            av.VideoFrame.from_ndarray(bgra, format="bgra"),
+            format="yuv420p", dst_colorspace="ITU709",
+            dst_color_range="MPEG")
         frame.pts = int(at_ms)
         frame.time_base = fractions.Fraction(1, CLOCK_HZ)
         with self._lock:
