@@ -16712,6 +16712,10 @@ def test_the_picture_and_the_sound_take_turns_writing_the_clip() -> None:
         def resample(self, frame):
             return [frame]
 
+    class Reformatter:
+        def reformat(self, frame, **_kw):
+            return frame
+
     fake = types.ModuleType("av")
     fake.open = lambda _path, mode="w": Container()
     fake.VideoFrame = fake.AudioFrame = Frame
@@ -16719,9 +16723,15 @@ def test_the_picture_and_the_sound_take_turns_writing_the_clip() -> None:
     fake_resampler = types.ModuleType("av.audio.resampler")
     fake_resampler.AudioResampler = Resampler
     fake.audio, fake_audio.resampler = fake_audio, fake_resampler
-    names = ("av", "av.audio", "av.audio.resampler")
+    fake_video = types.ModuleType("av.video")
+    fake_reformatter = types.ModuleType("av.video.reformatter")
+    fake_reformatter.VideoReformatter = Reformatter
+    fake.video, fake_video.reformatter = fake_video, fake_reformatter
+    names = ("av", "av.audio", "av.audio.resampler", "av.video",
+             "av.video.reformatter")
     saved = {n: sys.modules.get(n) for n in names}
-    sys.modules.update(zip(names, (fake, fake_audio, fake_resampler)))
+    sys.modules.update(zip(names, (fake, fake_audio, fake_resampler,
+                                   fake_video, fake_reformatter)))
     try:
         clip = cap.Clip(Path("unused.mp4"), (64, 48), 30, 23,
                         audio_rate=48000)
@@ -16819,6 +16829,58 @@ def test_the_picture_and_the_sound_take_turns_writing_the_clip() -> None:
             assert done.streams.video and done.streams.audio, done.streams
             video = sum(1 for _ in done.decode(video=0))
         assert video >= 250, f"{video} of 300 frames came back"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_recording_keeps_its_colours_in_every_player() -> None:
+    """2026-10-17, the owner: "see whether our captures lose quality".
+    The recorder converted with BT.601 and tagged nothing, and players read
+    an untagged HD stream as BT.709 — Chromium drew (220,40,40) as
+    (236,58,37) and (40,180,60) as (30,160,57). A clip now says BT.709 in
+    the stream AND is converted with that matrix, so a player that follows
+    the tag gets the source colours back. A SMALL region on purpose: that
+    is where a guessing player would have guessed BT.601."""
+    import shutil
+    import tempfile
+
+    import capture as cap
+
+    try:
+        import av
+    except ImportError:
+        return
+    if getattr(av, "is_stub", None) is not None and av.is_stub():
+        return                    # an installed copy without the pack
+    width, height = 320, 240
+    patches = {(0, 0): (220, 40, 40), (160, 0): (40, 180, 60),
+               (0, 120): (40, 90, 220), (160, 120): (86, 156, 245)}
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    for (x, y), colour in patches.items():
+        rgb[y:y + 120, x:x + 160] = colour
+    bgra = np.dstack([rgb[..., 2], rgb[..., 1], rgb[..., 0],
+                      np.full((height, width), 255, dtype=np.uint8)])
+    tmp = Path(tempfile.mkdtemp(prefix="capture-colours-"))
+    try:
+        path = tmp / "colours.mp4"
+        clip = cap.Clip(path, (width, height), 30, 18)
+        for i in range(5):
+            clip.add_frame(bgra, i * 33)
+        assert clip.close() == path
+        with av.open(str(path)) as done:
+            context = done.streams.video[0].codec_context
+            tags = (context.colorspace, context.color_primaries,
+                    context.color_trc, context.color_range)
+            assert tags == (1, 1, 1, 1), \
+                f"the stream does not say BT.709 / limited: {tags}"
+            first = next(done.decode(video=0))
+            shown = first.reformat(format="rgb24", src_colorspace="ITU709",
+                                   src_color_range="MPEG").to_ndarray()
+        for (x, y), colour in patches.items():
+            got = shown[y + 40:y + 80, x + 50:x + 110].reshape(-1, 3)
+            got = tuple(int(round(v)) for v in got.mean(axis=0))
+            off = max(abs(a - b) for a, b in zip(got, colour))
+            assert off <= 4, f"{colour} plays back as {got}"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

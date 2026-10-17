@@ -954,6 +954,16 @@ exactly what classic did.
   package and no ffmpeg.exe. NVENC was measured and rejected: same speed
   warm, 234 ms spike on its first frame, and the GPU budget is already
   spent (see The machine).
+- **A video's colours are a matrix AND a tag, and PyAV gives you
+  neither.** Its own bgra -> yuv420p step is BT.601 and writes no tag,
+  and every player reads an untagged HD stream as BT.709: until
+  2026-10-17 every recording played in Chromium with (220,40,40) as
+  (236,58,37) and (40,180,60) as (30,160,57). `capture.Clip` converts
+  with ONE cached `VideoReformatter` to BT.709 / limited and tags the
+  codec context the same; `test_a_recording_keeps_its_colours_in_every_player`
+  reads both back. `frame.reformat()` instead builds a reformatter per
+  frame (+6.6 ms at 1080p). The screenshot path was checked the same
+  day: crop, PNG and both clipboard formats are bit-exact to the grab.
 - **A webcam has no "default device" URL.** FFmpeg's dshow demuxer is
   opened as `video=<friendly name>`, so anything that opens a camera has
   to enumerate first — `capture.cameras()`, 147 ms, once per window. And
