@@ -373,6 +373,17 @@ class App:
         self.config_path = Path(config_path) if config_path else None
         self._stopping = threading.Event()
         self._watcher: threading.Thread | None = None
+        # Room for a game (room.py): the ladder, built in start(); set
+        # once its first look is in, so a start-up warm-up never loads
+        # the local model under a game that was already running.
+        self._room = None
+        self._room_looked = threading.Event()
+        self._room_took_model = False    # rung 3 unloaded it, so rung 0 loads it
+        self._room_keep_speech = False   # the person pressed Start meanwhile
+        self._room_checked_at = 0.0
+        # What a hold key says while the model is off: Stop's sentence,
+        # or the room's while it was the room that took the model.
+        self._model_off_words = self.MODEL_OFF_WORDS
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
         # The str|None is the language the key declared, None meaning it
         # declared nothing — see App.bindings and Config.auto_language.
@@ -1421,6 +1432,11 @@ class App:
                     return False
             except Exception:
                 return False
+        # A game holding the card (room.py) is borrowing it already: the
+        # second reading's three decodes wait until it is gone.
+        room = getattr(self, "_room", None)
+        if room is not None and room.rung:
+            return False
         return (self._activity == "ready"
                 and self.queue.empty()
                 and not self._text_busy.is_set()
@@ -1825,6 +1841,9 @@ class App:
             "uptime_s": round(time.monotonic() - self._started_at, 1),
             "backend": self.transcriber.name,
             "model": self._model_state,
+            # Room for a game (room.py): how many models stood aside and
+            # for whom — {"rung": 0} when nothing did.
+            "room": self._room_status(),
             "mic": self._mic_label,
             "keys": {name: getattr(self.cfg, name)
                      for name, _label in config_mod.HOTKEY_FIELDS},
@@ -2329,20 +2348,24 @@ class App:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
             self._watcher.start()
+        # Room for a game, before the warm-ups below: they wait for its
+        # first look, so an app started with a game already running does
+        # not load 9 GB of local model onto the card the game is using.
+        self._start_room()
         if self.cfg.polish.when != "never" and self.cfg.polish.warm_up:
             # In the background and after the hotkey is live: dictation must
             # not wait on a language model it may never need, but the model
             # must not be cold the first time it IS needed.
-            threading.Thread(target=self._warm_polish, daemon=True,
-                             name="polish-warmup").start()
+            threading.Thread(target=self._after_room, args=(self._warm_polish,),
+                             daemon=True, name="polish-warmup").start()
         vqa_cfg = getattr(self.cfg, "visual_qa", None)
         if vqa_cfg is not None and vqa_cfg.enabled and vqa_cfg.warmup:
             # Same bargain, vision edition: the projector behind gemma3's
             # image input costs 22.6 s on the FIRST image of a session
             # (measured 2026-08-25) and ~0.4 s warm, so one dummy-image,
             # num_predict=1 call goes out in the background now.
-            threading.Thread(target=self.vqa.warm, daemon=True,
-                             name="vqa-warmup").start()
+            threading.Thread(target=self._after_room, args=(self.vqa.warm,),
+                             daemon=True, name="vqa-warmup").start()
         # And the IMPORTS themselves, off the hook thread, which is a
         # different problem from either warm-up above and now a sharper
         # one. `self.capture` and `self.vqa` build on first touch, and
@@ -2440,8 +2463,11 @@ class App:
 
     MODEL_OFF_WORDS = ("the model is off — press Start in the desk to load it "
                        "(about 25 seconds); every other key works")
+    ROOM_OFF_WORDS = ("the speech model stepped aside for {name} — it comes "
+                      "back by itself after {name} closes; every other key "
+                      "works")
 
-    def unload_model(self) -> dict:
+    def unload_model(self, *, for_room: str = "") -> dict:
         """Stop, as the desk means it: the speech model goes, the process
         stays (the microphone stream too — see start()). "Many things don't need the model —
         screenshot, screen recording and a few more — and they don't work
@@ -2450,7 +2476,10 @@ class App:
         doors, the shelf, translate, lookup and the screen keys all keep
         running; only the hold keys are refused (hotkey.set_dictation_off)
         and the phone's /transcribe says why. The work is on a thread —
-        this is a pipe handler, and dropping a model can take a moment."""
+        this is a pipe handler, and dropping a model can take a moment.
+
+        `for_room`: the program the model is stepping aside for (room.py,
+        rung 3) — the same unload, with words that say it comes back."""
         if self._model_state in ("off", "unloading"):
             return {"ok": False, "error": "the model is already off"}
         if self._model_state == "loading":
@@ -2459,18 +2488,21 @@ class App:
             return {"ok": False, "error": "not while the microphone is live — "
                                           "finish the dictation first"}
         self._model_state = "unloading"
-        threading.Thread(target=self._unload_work, daemon=True,
+        threading.Thread(target=self._unload_work, args=(for_room,), daemon=True,
                          name="model-unload").start()
         return {"ok": True, "message": "unloading the model — every key that needs "
                                        "no model keeps working"}
 
-    def _unload_work(self) -> None:
+    def _unload_work(self, for_room: str = "") -> None:
         import gc
         from transcribers.off import OffTranscriber
+        words = (self.ROOM_OFF_WORDS.format(name=for_room) if for_room
+                 else self.MODEL_OFF_WORDS)
+        self._model_off_words = words
         self.machine.set_dictation_off(True)
         self._stop_learning()
         with self._model_lock:
-            old, self.transcriber = self.transcriber, OffTranscriber(self.MODEL_OFF_WORDS)
+            old, self.transcriber = self.transcriber, OffTranscriber(words)
             self._local = None
         # An English detector still loading on its thread (english_later)
         # is told its result is not wanted; the thread holds the object
@@ -2482,26 +2514,43 @@ class App:
         gc.collect()
         self._model_state = "off"
         self._set_state("paused")          # no dot: alive, not listening
+        if for_room:
+            self._say(f"the speech model stepped aside for {for_room} — it "
+                      f"comes back by itself after it closes")
+            log.info("model unloaded to make room for %s — it loads again "
+                     "when %s is gone", for_room, for_room)
+            return
         self._say("model off — Start loads it again; every other key works")
         log.info("model unloaded — the keys that need no model keep working")
 
-    def load_model(self) -> dict:
+    def load_model(self, *, for_room: bool = False) -> dict:
         """Start, with the process already up: the model back (about 25 s,
         narrated by the same splash a process start shows), the learning
-        engines, the hold keys."""
+        engines, the hold keys.
+
+        `for_room`: the room bringing back what it took (room.py) — no
+        splash and no cue, the game has only just closed. A Start the
+        PERSON presses while the model stood aside for a game is theirs
+        to make: it loads, and the room does not take it again until the
+        game is over (room.Ladder.keep_speech)."""
         if self._model_state == "on":
             return {"ok": False, "error": "the model is loaded"}
         if self._model_state == "loading":
             return {"ok": True, "message": "still loading"}
         if self._model_state == "unloading":
             return {"ok": False, "error": "the model is still unloading — a moment"}
+        if not for_room:
+            # Applied by the room's own thread at its next look: this is a
+            # pipe handler, and the ladder is that thread's to move.
+            self._room_took_model = False
+            self._room_keep_speech = True
         self._model_state = "loading"
         self._set_state("busy")
-        threading.Thread(target=self._load_work, daemon=True,
+        threading.Thread(target=self._load_work, args=(for_room,), daemon=True,
                          name="model-load").start()
         return {"ok": True, "message": "loading the model — about 25 seconds"}
 
-    def _load_work(self) -> None:
+    def _load_work(self, quiet: bool = False) -> None:
         # The splash a process start shows — "the animation that the
         # model is loading", his words when Start in the desk loaded it
         # in silence (22:37) — narrating the same log lines, landing in
@@ -2509,7 +2558,7 @@ class App:
         # splash that cannot be built is skipped, not a failed load.
         splash, splash_log = None, None
         try:
-            if getattr(self.cfg, "splash", True):
+            if getattr(self.cfg, "splash", True) and not quiet:
                 splash = overlay_mod.Splash()
                 _dot = getattr(self.cfg, "dot", None)
                 splash.dot_corner = str(getattr(_dot, "corner", "bottom-right"))
@@ -2527,6 +2576,7 @@ class App:
             fresh = get_transcriber(self.cfg, self._hotwords,
                                     english_later=True)
         except Exception as e:                               # noqa: BLE001
+            self._model_off_words = self.MODEL_OFF_WORDS
             self._model_state = "off"
             self._set_state("paused")
             self._say(f"the model did not load: {str(e).splitlines()[0][:120]}")
@@ -2536,6 +2586,7 @@ class App:
         with self._model_lock:
             self.transcriber = fresh
         self._start_learning()
+        self._model_off_words = self.MODEL_OFF_WORDS
         self._model_state = "on"
         self.machine.set_dictation_off(False)
         self.dot.show()                   # before the splash lands in it
@@ -2564,7 +2615,159 @@ class App:
         if now - self._refused_at < 2.0:
             return
         self._refused_at = now
-        self._say(self.MODEL_OFF_WORDS)
+        self._say(getattr(self, "_model_off_words", self.MODEL_OFF_WORDS))
+
+    # ---- room for a game (room.py, the owner's ask of 2026-10-17)
+
+    def _start_room(self) -> None:
+        """The ladder and its thread. The first look happens on the thread
+        (PDH's first read costs ~0.4 s); the warm-ups wait for it."""
+        import room as room_mod
+        rcfg = getattr(self.cfg, "room", None)
+        if rcfg is None or not rcfg.enabled or not room_mod.LIVE:
+            self._room_looked.set()
+            return
+        self._room = room_mod.Ladder(
+            competitor_gb=rcfg.competitor_gb, commit_tight=rcfg.commit_tight,
+            spill_gb=rcfg.spill_gb, settle_s=rcfg.settle_s, exit_s=rcfg.exit_s)
+        threading.Thread(target=self._room_loop, daemon=True,
+                         name="room").start()
+
+    def _after_room(self, work) -> None:
+        """A start-up warm-up, once the room has had its first look."""
+        self._room_looked.wait(10)
+        work()
+
+    def _room_loop(self) -> None:
+        import room as room_mod
+        try:
+            self._room_tick(room_mod.reading(), time.monotonic())
+        except Exception:                                    # noqa: BLE001
+            log.exception("room: the first look failed")
+        finally:
+            self._room_looked.set()
+        while not self._stopping.wait(max(1.0, float(self.cfg.room.poll_s))):
+            try:
+                self._room_tick(room_mod.reading(), time.monotonic())
+            except Exception:                                # noqa: BLE001
+                log.exception("room: a look failed")
+
+    def _room_status(self) -> dict:
+        ladder = getattr(self, "_room", None)
+        if ladder is None or not ladder.rung:
+            return {"rung": 0}
+        import room as room_mod
+        return {"rung": ladder.rung, "step": room_mod.NAMES[ladder.rung],
+                "for": ladder.holder}
+
+    def _room_tick(self, reading, now: float) -> None:
+        """One reading in, at most one step taken. A step that cannot be
+        taken yet (a dictation running) is simply asked for again on the
+        next reading; the ladder only moves once a step is done."""
+        ladder = self._room
+        if ladder is None:
+            return
+        import room as room_mod
+        if self._room_keep_speech:
+            self._room_keep_speech = False
+            ladder.keep_speech(now)
+        want = ladder.want(reading, now)
+        if not self.cfg.room.enabled:
+            want = 0
+        if want > ladder.rung:
+            step = ladder.rung + 1
+            if self._room_down(step, ladder.holder or "a game", reading, now):
+                ladder.moved(step, now)
+        elif want < ladder.rung:
+            self._room_up(ladder.rung, ladder.holder or "the game")
+            ladder.moved(0, now)
+        elif ladder.rung >= room_mod.LOCAL and now - self._room_checked_at \
+                >= room_mod.RECHECK_S:
+            # Another program on this PC may load the local model while
+            # the hold stands (the hold is this app's, not Ollama's).
+            self._room_checked_at = now
+            gone = room_mod.ollama_unload(self.cfg.translate.ollama_url)
+            if gone:
+                log.info("room: %s was loaded again by another program — "
+                         "unloaded (%s still holds the card)",
+                         ", ".join(gone), ladder.holder)
+
+    @staticmethod
+    def _room_numbers(reading) -> str:
+        parts = []
+        c = reading.competitor
+        if c is not None:
+            parts.append(f"{c.name} holds {c.dedicated / (1 << 30):.1f} GB of "
+                         f"the card and {c.shared / (1 << 30):.1f} GB more")
+        if reading.commit is not None:
+            parts.append(f"commit {100 * reading.commit:.0f}% of the limit")
+        return ", ".join(parts)
+
+    def _room_down(self, step: int, holder: str, reading, now: float) -> bool:
+        """Take one rung. True when it is taken (or there was nothing of
+        ours to take on it)."""
+        import net as net_mod
+        import room as room_mod
+        url = self.cfg.translate.ollama_url
+        if step == room_mod.LOCAL:
+            net_mod.hold(url, f"the local model stepped aside for {holder}")
+            self._room_checked_at = now
+            gone = room_mod.ollama_unload(url)
+            log.info("room: %s — the local model steps aside (%s) and stays "
+                     "off until %s is gone", self._room_numbers(reading),
+                     ", ".join(gone) or "none was loaded", holder)
+            return True
+        if step == room_mod.ENGLISH:
+            aside = getattr(self.transcriber, "english_aside", None)
+            took = False
+            if callable(aside):
+                try:
+                    took = bool(aside())
+                except Exception:                            # noqa: BLE001
+                    log.debug("room: the English model did not step aside",
+                              exc_info=True)
+            if took:
+                import gc
+                gc.collect()
+            log.info("room: %s — the English model steps aside%s",
+                     self._room_numbers(reading),
+                     "" if took else " (none was loaded)")
+            return True
+        if step == room_mod.SPEECH:
+            if self._model_state == "off":
+                return True              # the person's Stop, or never loaded
+            if self._model_state != "on":
+                return False             # loading or unloading: next time
+            if self.machine.state != hotkey_mod.IDLE:
+                return False             # never under a live microphone
+            log.info("room: %s — the speech model steps aside",
+                     self._room_numbers(reading))
+            if self.unload_model(for_room=holder).get("ok"):
+                self._room_took_model = True
+                return True
+            return False
+        return False
+
+    def _room_up(self, rung: int, holder: str) -> None:
+        """Every rung back at once, the last one first."""
+        import net as net_mod
+        import room as room_mod
+        log.info("room: %s is gone — the models come back", holder)
+        if rung >= room_mod.SPEECH and self._room_took_model \
+                and self._model_state == "off":
+            self._room_took_model = False
+            self._model_off_words = "the speech model is coming back — a few seconds"
+            self.load_model(for_room=True)
+        elif rung >= room_mod.ENGLISH:
+            back = getattr(self.transcriber, "english_back", None)
+            if callable(back):
+                try:
+                    back()
+                except Exception:                            # noqa: BLE001
+                    log.debug("room: the English model did not come back",
+                              exc_info=True)
+        self._room_took_model = False
+        net_mod.release(self.cfg.translate.ollama_url)
 
     def stop(self) -> None:
         self._stopping.set()      # ends the fullscreen and question waits
@@ -3110,7 +3313,8 @@ class App:
         if locked is not None and locked():
             raise RuntimeError(self.LOCK_WORDS)
         if getattr(self, "_model_state", "on") != "on":
-            raise RuntimeError(self.MODEL_OFF_WORDS)
+            raise RuntimeError(getattr(self, "_model_off_words",
+                                       self.MODEL_OFF_WORDS))
         started = time.monotonic()
         text, backend = self._transcribe(wav, language=None)
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",

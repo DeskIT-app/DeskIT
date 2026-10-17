@@ -782,6 +782,27 @@ class AwakeConfig:
 
 
 @dataclass(frozen=True)
+class RoomConfig:
+    """Room for a game — see room.py. While another program holds a lot
+    of graphics memory, the local language model, then the English
+    model, then the Hebrew model step aside, each only while the machine
+    is still short; all of it comes back when the program is gone."""
+    enabled: bool = True
+    # A program holding at least this much graphics memory (the card's
+    # own plus what spilled into system memory) is a competitor.
+    competitor_gb: float = 2.5
+    # Past this fraction of the commit limit, with a competitor there,
+    # the next rung is taken. 98% is where this PC fell over.
+    commit_tight: float = 0.90
+    # A competitor with this much of its memory pushed out of the card
+    # did not fit on it: the next rung is taken.
+    spill_gb: float = 1.0
+    poll_s: float = 5.0
+    settle_s: float = 15.0
+    exit_s: float = 60.0
+
+
+@dataclass(frozen=True)
 class NotifyConfig:
     """Notifications from other programs — see notify.py.
 
@@ -1366,6 +1387,7 @@ class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
     awake: AwakeConfig = field(default_factory=AwakeConfig)
+    room: RoomConfig = field(default_factory=RoomConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     problems: ProblemsConfig = field(default_factory=ProblemsConfig)
     shelf: ShelfConfig = field(default_factory=ShelfConfig)
@@ -1701,6 +1723,7 @@ def build(data: dict) -> Config:
     capture = data.get("capture", {})
     camera = data.get("camera", {})
     awake = data.get("awake", {})
+    room = data.get("room", {})
     notify = data.get("notify", {})
     problems = data.get("problems", {})
     shelf = data.get("shelf", {})
@@ -2059,6 +2082,17 @@ def build(data: dict) -> Config:
             vitals_minutes=int(awake.get(
                 "vitals_minutes", AwakeConfig.vitals_minutes)),
         ),
+        room=RoomConfig(
+            enabled=bool(room.get("enabled", RoomConfig.enabled)),
+            competitor_gb=float(room.get("competitor_gb",
+                                         RoomConfig.competitor_gb)),
+            commit_tight=float(room.get("commit_tight",
+                                        RoomConfig.commit_tight)),
+            spill_gb=float(room.get("spill_gb", RoomConfig.spill_gb)),
+            poll_s=float(room.get("poll_s", RoomConfig.poll_s)),
+            settle_s=float(room.get("settle_s", RoomConfig.settle_s)),
+            exit_s=float(room.get("exit_s", RoomConfig.exit_s)),
+        ),
         notify=NotifyConfig(
             enabled=bool(notify.get("enabled", NotifyConfig.enabled)),
             cue=bool(notify.get("cue", NotifyConfig.cue)),
@@ -2152,6 +2186,19 @@ def build(data: dict) -> Config:
         raise ConfigError("awake.keep_screens_off_s must be 0-600 seconds")
     if not 0 <= cfg.awake.vitals_minutes <= 1440:
         raise ConfigError("awake.vitals_minutes must be 0-1440 (a day)")
+    if not 0.5 <= cfg.room.competitor_gb <= 64:
+        raise ConfigError("room.competitor_gb must be 0.5-64")
+    if not 0.5 <= cfg.room.commit_tight <= 0.99:
+        raise ConfigError("room.commit_tight must be 0.5-0.99 (a fraction "
+                          "of the commit limit)")
+    if not 0.1 <= cfg.room.spill_gb <= 64:
+        raise ConfigError("room.spill_gb must be 0.1-64")
+    if not 1 <= cfg.room.poll_s <= 60:
+        raise ConfigError("room.poll_s must be 1-60 seconds")
+    if not 0 <= cfg.room.settle_s <= 600:
+        raise ConfigError("room.settle_s must be 0-600 seconds")
+    if not 5 <= cfg.room.exit_s <= 3600:
+        raise ConfigError("room.exit_s must be 5-3600 seconds")
     if not 0 <= cfg.history.keep_days <= 3650:
         raise ConfigError("history.keep_days must be 0-3650 (0 = off)")
     if cfg.translate_hotkey:
