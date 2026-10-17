@@ -451,19 +451,24 @@ class LookupConfig:
     # refused. Still a ceiling: 20000 chars is minutes locally, and past
     # the Ollama runner's context window even chunks would degrade.
     max_chars: int = 20000
-    # The OPPOSITE of [translate] and [punctuate], deliberately. The free
-    # Gemini tier is 20 requests per model per day and those two keys
-    # already spend 34/39/17/18 of them on a working day; a key tapped
-    # while READING would take the rest of the pool and break the two keys
-    # whose local fallback is the weak one.
-    prefer: str = "ollama"
+    # groq | gemini | ollama: which goes first; the other cloud comes
+    # next and the local model last ("ollama" puts it first and the clouds
+    # after). Groq since 2026-10-17: 0.5-1.1 s against warm gemma3:12b's
+    # 2.5-7.1 s on the same 14 selections, the headline right where gemma
+    # wrote "ביצוע" for "commit", and a quota (~1000 a day) this key
+    # cannot dent. It was "ollama" while the only cloud was Gemini's 20
+    # requests per model per day, which F9 and F7 already spent.
+    prefer: str = "groq"
+    # The Groq model. gpt-oss-120b over qwen3.8-27b (3x quicker): qwen
+    # wrote "התחייבות" for "commit" and garbled a whole sentence.
+    groq_model: str = "openai/gpt-oss-120b"
     # "" = reuse translate.ollama_model. Its own knob because this key
     # wants the model [polish] already keeps resident, not the fallback:
     # measured, qwen2.5:7b answered "brittle" with '?");'.
     model: str = "gemma3:12b"
-    # A cold Ollama is 22-25 s to the first token. Rather than make you
-    # watch that, a cold model sends this one lookup to the cloud and
-    # warms the local one in the background.
+    # prefer = "ollama" only (the name is older than Groq): a cold Ollama
+    # is 22-25 s to the first token, so a cold model sends this one lookup
+    # to the clouds and warms the local one in the background.
     cold_to_gemini: bool = True
     # How long Ollama holds the model after a lookup. Its own default is
     # five minutes, which a reading session outlasts: measured
@@ -1885,6 +1890,8 @@ def build(data: dict) -> Config:
             max_chars=int(lookup.get("max_chars", LookupConfig.max_chars)),
             prefer=str(lookup.get(
                 "prefer", LookupConfig.prefer)).strip().lower(),
+            groq_model=str(lookup.get("groq_model",
+                                      LookupConfig.groq_model)).strip(),
             model=str(lookup.get("model", LookupConfig.model)).strip(),
             cold_to_gemini=bool(lookup.get("cold_to_gemini",
                                            LookupConfig.cold_to_gemini)),
@@ -2230,9 +2237,12 @@ def build(data: dict) -> Config:
                               "translate.ollama_model must, which lookup "
                               "falls back to) — the lookup key has nothing "
                               "to ask otherwise")
-    if cfg.lookup.prefer not in ("ollama", "gemini"):
-        raise ConfigError('lookup.prefer must be "ollama" or "gemini", got '
-                          f"{cfg.lookup.prefer!r}")
+    if cfg.lookup.prefer not in ("groq", "gemini", "ollama"):
+        raise ConfigError('lookup.prefer must be "groq", "gemini" or '
+                          f'"ollama", got {cfg.lookup.prefer!r}')
+    if not cfg.lookup.groq_model:
+        raise ConfigError("lookup.groq_model must name a Groq model — "
+                          'the default is "openai/gpt-oss-120b"')
     if not (0.0 <= cfg.lookup.hebrew_share <= 1.0):
         raise ConfigError("lookup.hebrew_share must be between 0 and 1 — it "
                           "is the share of HEBREW WORDS at or above which a "

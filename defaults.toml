@@ -493,17 +493,29 @@ both_ways = true
 # document you still want F9.
 max_chars = 20000
 
-# Which backend goes first, and this is deliberately the OPPOSITE of
-# [translate] and [punctuate]. The free Gemini tier is 20 requests per
-# model per day across 4 models — about 80 — and app.log shows F9 and F7
-# alone spending 34 / 39 / 17 / 18 of them on working days and running into
-# 429s on seven separate days. This key is tapped while READING, costs you
-# nothing to press, and would plausibly run 30-60 times a day; sent to the
-# cloud first it would take the whole pool and break the two keys whose
-# local fallback is the weak one. Measured warm over 127.0.0.1, gemma3:12b
-# answers a word in 1.9-3.1 s and a sentence in 1.0-2.0 s — about a second
-# behind Gemini's 0.8-1.3 s, and free.
-prefer = "ollama"
+# Which backend goes first: groq | gemini | ollama. The other cloud comes
+# next and the local model last; "ollama" puts the local model first and
+# the clouds after it.
+#
+# It was "ollama" until 2026-10-17, for a reason that was about Gemini
+# alone: its free tier is 20 requests per model per day, F9 and F7 already
+# spent most of them, and this key is tapped 30-60 times a day while
+# reading. Groq's free tier is about a thousand a day per model and this
+# PC sends it 50-100. What ended Ollama-first was the owner waiting 34 s
+# on a 370-char selection — gemma3:12b had dropped out of VRAM, the cloud
+# leg had only Gemini, and his Gemini key answered 401. Measured that
+# evening on 14 selections in both directions (words, a sentence, the
+# paragraph he had selected): Groq gpt-oss-120b 0.5-1.1 s, warm
+# gemma3:12b 2.5-7.1 s, and gemma got the headline wrong where Groq did
+# not — "commit" -> "ביצוע", "debounce" -> "עיכוב", "deadlock" ->
+# "חסימת נתונים", against Groq's "קומיט", "דיבאונס", "קיפאון".
+prefer = "groq"
+
+# The Groq model. qwen/qwen3.8-27b was measured beside it on the same 14
+# and answered three times quicker (0.16-0.47 s), but wrote "התחייבות" for
+# "commit" and turned "The decoder loops on a hesitation and eats the
+# words after it." into a sentence about a decoder that disappears.
+groq_model = "openai/gpt-oss-120b"
 
 # Already resident for [polish] (warm_up, when = "always"), and Ollama
 # serves one copy to every caller, so this costs no extra VRAM: nvidia-smi
@@ -532,12 +544,14 @@ prefer = "ollama"
 # held the shape every time.
 model = "gemma3:12b"
 
-# If the model is not resident, Ollama loads it first: 24.4 s to the first
-# token, 25.3 s in total. Rather than make you watch that, a cold model
-# sends this one lookup to the cloud and warms the local one in the
-# background. Bounded at about one cloud request per idle keep_alive
-# period, and any dictation resets that clock because [polish] keeps the
-# same model alive.
+# Read only with prefer = "ollama" (and named before Groq existed: it
+# means any cloud). If the model is not resident, Ollama loads it first:
+# 24.4 s to the first token, 25.3 s in total. Rather than make you watch
+# that, a cold model sends this one lookup to the clouds and warms the
+# local one in the background. Bounded at about one cloud request per idle
+# keep_alive period, and any dictation resets that clock because [polish]
+# keeps the same model alive. With a cloud first nothing is warmed: the
+# local model loads only when no cloud answered, and the box says so.
 cold_to_gemini = true
 
 # How long Ollama holds the model after a lookup. It matters because
