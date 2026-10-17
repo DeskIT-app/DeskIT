@@ -315,10 +315,13 @@ class LocalWhisperTranscriber:
     _beam_size = 5
     #: The English detector's state: "" (none configured), "loading"
     #: (on its thread, english_later), "ready", "failed", "closed" (it
-    #: landed after close() and was dropped).
+    #: landed after close() and was dropped), "aside" (room for a game,
+    #: english_aside).
     english_state = ""
     _said_loading = False
     _closed = False
+    #: Room for a game asked the detector to stand aside (english_aside).
+    _english_aside = False
     _english_thread: threading.Thread | None = None
     #: Where the seconds went, for the log and the wizard: the ivrit
     #: load, its warm-up, the English load and ITS warm-up — each alone,
@@ -368,6 +371,11 @@ class LocalWhisperTranscriber:
             log.info("English model loaded after this transcriber was "
                      "closed — dropped")
             return
+        if self._english_aside:
+            self.english_state = "aside"
+            log.info("English model loaded while it was asked to stand "
+                     "aside — dropped")
+            return
         self._english = english
         self.english_state = "ready"
         log.info("English model ready on %s (load %.1f s, warm-up %.1f s)"
@@ -389,6 +397,33 @@ class LocalWhisperTranscriber:
         with the object — only the word to a detector load still on its
         thread that its result is not wanted (see _load_english)."""
         self._closed = True
+
+    def english_aside(self) -> bool:
+        """Room for a game (room.py, rung 2): the English detector off the
+        card, the Hebrew model left where it is. A decode already running
+        keeps its own reference and finishes; the next dictation is
+        Hebrew. A load still on its thread drops what it brings. False
+        when there was no detector to take (none configured, or it failed)."""
+        if not self._english_model_name or self.english_state == "failed":
+            return False
+        self._english_aside = True
+        self._english = None
+        self.english_state = "aside"
+        return True
+
+    def english_back(self) -> None:
+        """The detector back, on a thread of its own (english_later's
+        path): a dictation in the seconds before it lands is Hebrew."""
+        if not self._english_aside:
+            return
+        self._english_aside = False
+        if self._english is not None or self._closed:
+            return
+        self.english_state = "loading"
+        self._said_loading = False
+        self._english_thread = threading.Thread(
+            target=self._load_english, daemon=True, name="english-model")
+        self._english_thread.start()
 
     def _detector(self):
         """The English model, or None — and, while it is still on its

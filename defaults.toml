@@ -1182,6 +1182,41 @@ pin_timeouts = false           # also set Windows' own "sleep after" and
                                # because the hold already covers S3 sleep
                                # and this is a second thing to restore
 
+[room]
+# ROOM FOR A GAME (room.py). On 2026-10-17 a game started beside the app
+# and the PC ran out of memory: Windows named Ollama's gemma3:12b (13.6 GB
+# of commit) and this app (6.3 GB) as the two biggest, at 98% of the
+# commit limit. What a program puts on the graphics card is committed
+# system memory too, so a full card and a game spilling out of it share
+# one limit. While another program holds a lot of graphics memory, the
+# models here step aside, one at a time and only while the machine is
+# still short: the local language model first (~9 GB of the card,
+# ~12 GB of commit, dictation untouched), then the English model
+# (dictation goes on in Hebrew), then the Hebrew model (the model is off
+# until the game is gone). All of it comes back by itself. The processor
+# is not a step: measured the same evening, a dictation took 9-10 s on
+# all 12 cores against 0.3-0.5 s on the card.
+enabled = true                 # false = the models never step aside
+competitor_gb = 2.5            # a program holding at least this much
+                               # graphics memory - the card's own plus what
+                               # spilled into system memory - is a game.
+                               # Measured on an idle desktop: NVIDIA's
+                               # overlay 1.9 GB, every other program under
+                               # 0.2 GB; dwm, Ollama and Python never count
+commit_tight = 0.90            # with a game there, past this fraction of
+                               # the commit limit the next model steps
+                               # aside. This PC fell over at 0.98
+spill_gb = 1.0                 # with a game there, once this much of its
+                               # memory has been pushed out of the card
+                               # into system memory, the next model steps
+                               # aside: the card was too full for it
+poll_s = 5                     # seconds between two looks at the card
+settle_s = 15                  # seconds after one step before the next,
+                               # so the first one's effect can show
+exit_s = 60                    # seconds without a game before everything
+                               # comes back (Hebrew model ~7 s, English
+                               # ~16 s, the local model on its next use)
+
 [notify]
 # A DOOR FOR OTHER PROGRAMS TO KNOCK ON. Claude Code's own "finished"
 # notification never reaches the owner, so this app takes the job: any

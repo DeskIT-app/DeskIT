@@ -66,6 +66,10 @@ _sb_mod.REQUIRED = False
 # ...and the live channel: a fake project has no websocket to hold; the
 # channel's own test stands up a fake server on a socket pair.
 _sb_mod.LIVE_ENABLED = False
+# ...and room for a game: an App a test starts must not read the real
+# graphics card and unload the owner's Ollama because he is playing.
+import room as _room_mod  # noqa: E402
+_room_mod.LIVE = False
 _paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
 # And the egress log: every net.py row a test provokes lands here, not in
 # the checkout's network.log the owner reads.
@@ -46668,6 +46672,412 @@ def test_the_lock_card_on_the_privacy_tab():
             assert board._lock_banner_card is None, "the banner stayed after the approval"
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# ------------------------------------------------- room for a game (room.py)
+
+def test_room_ladder_steps_down_only_while_short_and_comes_back_at_once():
+    """The decision, by numbers (room.Ladder, 2026-10-17): a program under
+    competitor_gb never counts; a competitor seen twice in a row takes
+    rung 1; rungs 2 and 3 only while the machine is still short — commit
+    past commit_tight, or the competitor spilling spill_gb out of the
+    card — and settle_s after the last step; never below rung 3; back to
+    0 in one move after exit_s without it, a return in between resetting
+    the wait; and a Start the person pressed keeps the speech model for
+    the rest of the episode."""
+    import room as room_mod
+
+    G = 1 << 30
+    R = room_mod.Reading
+
+    def game(dedicated, shared=0.0):
+        return room_mod.Competitor("fortniteclient-win64-shipping", 4242,
+                                   int(dedicated * G), int(shared * G))
+
+    ladder = room_mod.Ladder(competitor_gb=2.5, commit_tight=0.90,
+                             spill_gb=1.0, settle_s=15, exit_s=60)
+    # NVIDIA's overlay on an idle desktop: 1.9 GB, never a game
+    for t in (0, 5, 10):
+        assert ladder.want(R(game(1.9), 0.97), t) == 0
+    # the card's own plus what spilled: 2.0 + 0.6 counts
+    assert ladder.counts(game(2.0, 0.6))
+    # once is a flash, twice in a row is a game sitting down
+    assert ladder.want(R(game(6), 0.6), 15) == 0
+    assert ladder.want(R(None, 0.6), 20) == 0
+    assert ladder.want(R(game(6), 0.6), 25) == 0
+    assert ladder.want(R(game(6), 0.6), 30) == room_mod.LOCAL
+    ladder.moved(room_mod.LOCAL, 30)
+    assert ladder.holder == "fortniteclient-win64-shipping"
+    # room enough: rung 1 for as long as the game runs
+    for t in range(35, 400, 5):
+        assert ladder.want(R(game(6), 0.7), t) == room_mod.LOCAL, t
+    # short of commit: one rung, settled first
+    ladder.moved(room_mod.LOCAL, 400)
+    assert ladder.want(R(game(6), 0.93), 405) == room_mod.LOCAL
+    assert ladder.want(R(game(6), 0.93), 415) == room_mod.ENGLISH
+    ladder.moved(room_mod.ENGLISH, 415)
+    # the game spilling out of the card is short too, commit or not
+    assert ladder.want(R(game(6, 1.5), 0.5), 420) == room_mod.ENGLISH
+    assert ladder.want(R(game(6, 1.5), 0.5), 430) == room_mod.SPEECH
+    ladder.moved(room_mod.SPEECH, 430)
+    assert ladder.want(R(game(6, 3.0), 0.99), 500) == room_mod.SPEECH, "below the top"
+    # the game closes: a minute, a return that resets it, a minute again
+    assert ladder.want(R(None, 0.5), 510) == room_mod.SPEECH
+    assert ladder.want(R(None, 0.5), 569) == room_mod.SPEECH
+    assert ladder.want(R(game(6), 0.5), 569.5) == room_mod.SPEECH
+    assert ladder.want(R(None, 0.5), 570) == room_mod.SPEECH
+    assert ladder.want(R(None, 0.5), 629) == room_mod.SPEECH
+    assert ladder.want(R(None, 0.5), 630) == 0, "all of it back at once"
+    ladder.moved(0, 630)
+    assert ladder.holder == "" and ladder.ceiling == room_mod.TOP
+    # the person's Start while the speech model stood aside
+    ladder.moved(room_mod.SPEECH, 700)
+    ladder.keep_speech(705)
+    assert (ladder.rung, ladder.ceiling) == (room_mod.LOCAL, room_mod.ENGLISH)
+    assert ladder.want(R(game(6), 0.97), 720) == room_mod.ENGLISH
+    ladder.moved(room_mod.ENGLISH, 720)
+    for t in range(725, 900, 5):
+        assert ladder.want(R(game(6, 4), 0.99), t) == room_mod.ENGLISH, t
+    # and keep_speech on a ladder that took nothing is nothing
+    calm = room_mod.Ladder()
+    calm.keep_speech(1)
+    assert (calm.rung, calm.ceiling) == (0, room_mod.TOP)
+
+
+def test_room_reading_names_the_heaviest_program_and_never_ours():
+    """room.heaviest: the program holding the most graphics memory (the
+    card's own plus what spilled) — never this process, never dwm (whose
+    counter read 29.9 GB on a 16 GB card), never Ollama's runner, NVIDIA's
+    overlay or another Python (another copy of this app); and the live
+    reading answers on this machine without raising."""
+    import room as room_mod
+
+    G = 1 << 30
+    me = 39484
+    dedicated = {1632: 30 * G, me: 4 * G, 12548: int(1.9 * G), 777: 5 * G,
+                 888: 9 * G, 4242: 6 * G, 99: G // 10}
+    shared = {4242: int(1.5 * G), 5555: 3 * G}
+    images = {1632: "dwm", me: "pythonw", 12548: "nvidia overlay",
+              777: "python", 888: "llama-server",
+              4242: "fortniteclient-win64-shipping", 99: "chrome",
+              5555: "cyberpunk2077"}
+    best = room_mod.heaviest(dedicated, shared, images, me)
+    assert (best.name, best.pid, best.total) == (
+        "fortniteclient-win64-shipping", 4242, int(7.5 * G)), best
+    # a game that only spilled is seen by what it spilled
+    del dedicated[4242], shared[4242]
+    best = room_mod.heaviest(dedicated, shared, images, me)
+    assert best.name == "cyberpunk2077" and best.dedicated == 0, best
+    # nothing that counts: only the small program is left, and it is small
+    del shared[5555]
+    best = room_mod.heaviest(dedicated, shared, images, me)
+    assert best.name == "chrome", best
+    assert not room_mod.Ladder().counts(best)
+    # a process with no name in the snapshot is never guessed at
+    assert room_mod.heaviest({1: 9 * G}, {}, {}, me) is None
+    # the real machine
+    live = room_mod.reading()
+    assert isinstance(live, room_mod.Reading)
+    assert live.commit is None or 0.0 < live.commit < 1.0, live.commit
+    if live.competitor is not None:
+        assert live.competitor.pid != os.getpid()
+        assert live.competitor.name not in room_mod.NEVER, live.competitor
+
+
+def test_net_holds_the_local_model_before_a_socket():
+    """net.hold (room for a game): every request to the held origin is
+    refused before a socket, carrying the room's sentence, whatever the
+    feature; the `room` purpose — the unload itself — passes; the phone
+    listener on another loopback port is untouched; release opens it."""
+    import net as net_mod
+
+    url = "http://127.0.0.1:11434"
+    seen: list[str] = []
+
+    def connect(method, target, headers, body, timeout_s):
+        seen.append(target)
+        return _FakeRaw(b'{"models": []}')
+
+    with _patched(net_mod, "_connect", connect):
+        net_mod.hold(url, "the local model stepped aside for fortnite")
+        try:
+            for purpose, path in (("lookup", "/api/chat"),
+                                  ("ask-screen", "/api/chat"),
+                                  ("ollama", "/api/generate"),
+                                  ("polish", "/api/chat"),
+                                  ("translate", "/api/chat")):
+                try:
+                    net_mod.request("POST", url + path, purpose, body=b"{}")
+                except net_mod.EgressRefused as e:
+                    assert "fortnite" in e.reason and e.purpose == purpose, e
+                else:
+                    raise AssertionError(f"{purpose} reached a held Ollama")
+            assert seen == [], seen
+            assert net_mod.held(url + "/api/ps") and net_mod.held("http://127.0.0.1:11434/")
+            status, _h, _b = net_mod.request("GET", url + "/api/ps", "room")
+            assert status == 200 and seen == [url + "/api/ps"], seen
+            net_mod.request("POST", "http://127.0.0.1:8756/notify", "notify",
+                            body=b"{}")
+            assert seen[-1] == "http://127.0.0.1:8756/notify", seen
+        finally:
+            net_mod.release(url)
+        assert net_mod.held(url) is None
+        net_mod.request("POST", url + "/api/chat", "lookup", body=b"{}")
+        assert seen[-1] == url + "/api/chat", seen
+
+
+def test_room_unloads_every_model_ollama_holds():
+    """room.ollama_unload: GET /api/ps, then keep_alive 0 for each model
+    it names — under the hold, which lets `room` through; an Ollama that
+    is not running holds nothing and raises nothing."""
+    import net as net_mod
+    import room as room_mod
+
+    url = "http://127.0.0.1:11434"
+    calls: list[tuple] = []
+
+    def connect(method, target, headers, body, timeout_s):
+        calls.append((method, target, json.loads(body) if body else None))
+        if target.endswith("/api/ps"):
+            return _FakeRaw(json.dumps({"models": [
+                {"name": "gemma3:12b", "model": "gemma3:12b"},
+                {"model": "qwen3:8b"}]}).encode("utf-8"))
+        return _FakeRaw(b'{"done_reason": "unload"}')
+
+    with _patched(net_mod, "_connect", connect):
+        net_mod.hold(url, "the local model stepped aside for a game")
+        try:
+            gone = room_mod.ollama_unload(url)
+        finally:
+            net_mod.release(url)
+    assert gone == ["gemma3:12b", "qwen3:8b"], gone
+    assert calls == [
+        ("GET", url + "/api/ps", None),
+        ("POST", url + "/api/generate", {"model": "gemma3:12b", "keep_alive": 0}),
+        ("POST", url + "/api/generate", {"model": "qwen3:8b", "keep_alive": 0}),
+    ], calls
+
+    def dead(*a, **k):
+        raise net_mod.NetError("connection refused")
+
+    with _patched(net_mod, "_connect", dead):
+        assert room_mod.ollama_unload(url) == []
+
+
+def test_the_english_model_steps_aside_and_comes_back():
+    """LocalWhisperTranscriber.english_aside / english_back (room rung 2):
+    the detector off and the next dictation Hebrew; a load still on its
+    way while it stands aside drops what it brings; back is a load on a
+    thread of its own; a transcriber with no detector has nothing to give."""
+    from transcribers.local_whisper import LocalWhisperTranscriber as LW
+
+    t = LW.__new__(LW)
+    t._english_model_name = "deepdml/faster-whisper-large-v3-turbo-ct2"
+    t._english = object()
+    t.english_state = "ready"
+    t.timing = {}
+    t.device = "cuda"
+    assert t.english_aside() is True
+    assert t._english is None and t.english_state == "aside"
+    assert t._detector() is None, "the next dictation must be Hebrew"
+    landed = object()
+    with _patched(LW, "_load", lambda self, name: landed), \
+            _patched(LW, "_warm_detector", lambda self, detector=None: None):
+        t._load_english()           # a load that was already on its way
+        assert t._english is None and t.english_state == "aside"
+        t.english_back()
+        assert t.wait_for_english(30.0), t.english_state
+        assert t._english is landed and t.english_state == "ready"
+        t.english_back()            # back twice is nothing
+        assert t._english is landed
+    none = LW.__new__(LW)
+    none._english_model_name = ""
+    assert none.english_aside() is False
+    failed = LW.__new__(LW)
+    failed._english_model_name = "x"
+    failed.english_state = "failed"
+    assert failed.english_aside() is False
+
+
+def test_the_app_makes_room_for_a_game_and_takes_it_back():
+    """main.App._room_tick over a real ladder: the second sight of a game
+    holds the local model off and unloads Ollama; the learning engines
+    wait; room enough means nothing more; short of commit, the English
+    model, then — settled, and never under a live microphone — the speech
+    model with its own words on the hold key; a minute after the game is
+    gone everything is back and the hold released. The next game, a Start
+    the person presses while the speech model stands aside is kept."""
+    import main as main_mod
+    import net as net_mod
+    import room as room_mod
+    from transcribers.off import OffTranscriber
+
+    App = main_mod.App
+    app = App.__new__(App)
+    said: list[str] = []
+    states: list[str] = []
+    unloads: list[str] = []
+    asides: list[str] = []
+    builds: list[dict] = []
+    url = "http://127.0.0.1:11434"
+    app._say = said.append
+    app._set_state = states.append
+    app.cfg = type("C", (), {
+        "hotkey": "right ctrl", "review": None, "study": None, "splash": False,
+        "room": config_mod.RoomConfig(),
+        "translate": type("T", (), {"ollama_url": url})()})()
+    app.recent = None
+    app.vocab = None
+    app._hotwords = None
+    app._local = None
+    app._model_lock = threading.Lock()
+    app._model_state = "on"
+    app._refused_at = 0.0
+    app._study = app._review = None
+    app.dot = type("D", (), {"show": lambda self: None})()
+
+    class Speech:
+        name = "local"
+
+        def english_aside(self):
+            asides.append("aside")
+            return True
+
+        def english_back(self):
+            asides.append("back")
+
+    app.transcriber = Speech()
+    app.machine = hotkey_mod.PTTStateMachine(
+        VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, on_refused=app._on_dictation_refused)
+    app._room = room_mod.Ladder(competitor_gb=2.5, commit_tight=0.90,
+                                spill_gb=1.0, settle_s=15, exit_s=60)
+    app._room_keep_speech = False
+    app._room_took_model = False
+    app._room_checked_at = 0.0
+    app._model_off_words = App.MODEL_OFF_WORDS
+    G = 1 << 30
+    game = room_mod.Competitor("fortniteclient-win64-shipping", 4242, 7 * G, 0)
+    words = App.ROOM_OFF_WORDS.format(name=game.name)
+
+    def at(t, commit=0.6, who=game):
+        app._room_tick(room_mod.Reading(who, commit), float(t))
+
+    def build(cfg, hotwords=None, **kw):
+        builds.append(kw)
+        return Speech()
+
+    def unload(target):
+        unloads.append(target)
+        return ["gemma3:12b"]
+
+    with _patched(room_mod, "ollama_unload", unload), \
+            _patched(main_mod, "get_transcriber", build):
+        try:
+            at(0)
+            assert app._room.rung == 0 and net_mod.held(url) is None
+            at(5)
+            assert app._room.rung == room_mod.LOCAL
+            assert "fortniteclient" in (net_mod.held(url) or ""), net_mod.held(url)
+            assert unloads == [url], unloads
+            assert app._room_status() == {"rung": 1, "step": "local model",
+                                          "for": game.name}
+            assert app._learning_quiet() is False, "a game holds the card"
+            # room enough: nothing more, however long
+            for t in (10, 20, 30):
+                at(t)
+            assert app._room.rung == room_mod.LOCAL and asides == []
+            # 30 s on, a model somebody else loaded is unloaded again
+            at(36)
+            assert unloads == [url, url], unloads
+            # short of commit: the English model first, the Hebrew one settled
+            at(40, commit=0.95)
+            assert app._room.rung == room_mod.ENGLISH and asides == ["aside"]
+            at(50, commit=0.95)
+            assert app._room.rung == room_mod.ENGLISH, "not settled yet"
+            app.machine.handle("down", VK_RCTRL, injected=False)
+            at(60, commit=0.95)
+            assert app._room.rung == room_mod.ENGLISH and app._model_state == "on", \
+                "the model was taken from under a live microphone"
+            app.machine.handle("up", VK_RCTRL, injected=False)
+            at(65, commit=0.95)
+            assert _until(lambda: any("stepped aside" in s for s in said), 60.0), \
+                ("the unload thread never finished", app._model_state,
+                 said[-1:], _threads_now())
+            assert app._model_state == "off" and app._room.rung == room_mod.SPEECH
+            assert app._room_took_model and isinstance(app.transcriber, OffTranscriber)
+            with _patched(main_mod, "time", _StoppedClock()):
+                app.machine.handle("down", VK_RCTRL, injected=False)
+                app.machine.handle("up", VK_RCTRL, injected=False)
+            assert said[-1] == words, said[-1:]
+            # the game closes: a minute, then everything at once
+            at(70, who=None)
+            at(129, who=None)
+            assert app._room.rung == room_mod.SPEECH
+            at(130, who=None)
+            assert app._room.rung == 0 and net_mod.held(url) is None
+            assert _until(lambda: app._model_state == "on", 60.0), \
+                ("the load thread never finished", app._model_state, _threads_now())
+            assert len(builds) == 1 and builds[0].get("english_later") is True, builds
+            assert app._model_off_words == App.MODEL_OFF_WORDS
+            assert app._room_status() == {"rung": 0}
+            # the next game, and a Start the person presses meanwhile
+            at(200)
+            at(205)
+            at(225, commit=0.95)
+            at(245, commit=0.95)
+            assert _until(lambda: app._model_state == "off", 60.0), app._model_state
+            assert app._room.rung == room_mod.SPEECH
+            assert app.load_model()["ok"]
+            assert _until(lambda: app._model_state == "on", 60.0), app._model_state
+            assert not app._room_took_model
+            at(250, commit=0.95)
+            assert app._room.rung == room_mod.LOCAL
+            at(270, commit=0.95)
+            assert app._room.rung == room_mod.ENGLISH and asides[-1] == "aside"
+            for t in (290, 310, 330):
+                at(t, commit=0.99)
+            assert app._room.rung == room_mod.ENGLISH and app._model_state == "on", \
+                "the person's Start was taken back"
+            # that game closes: the English model back, nothing loaded twice
+            at(340, who=None)
+            at(400, who=None)
+            assert app._room.rung == 0 and asides[-1] == "back", asides
+            assert len(builds) == 2 and app._model_state == "on", builds
+            assert net_mod.held(url) is None
+        finally:
+            net_mod.release(url)
+
+
+def test_the_room_section_is_in_the_file_bounded_and_off_the_screen():
+    """[room] in defaults.toml is exactly RoomConfig's defaults — the
+    developer's numbers, not a line of the Settings place — and each one
+    is bounded."""
+    import settings as settings_mod
+
+    here = Path(__file__).resolve().parent
+    cfg = config_mod.load(here / "defaults.toml")
+    assert cfg.room == config_mod.RoomConfig(), cfg.room
+    sections = {s.name: s for s in settings_mod.read(here / "defaults.toml")}
+    assert sections["room"].help, "the section has no help text"
+    assert {s.key for s in sections["room"].settings} == set(
+        config_mod.RoomConfig.__dataclass_fields__), sections["room"].settings
+    assert not [p for p in settings_mod.friendly_paths() if p.startswith("room.")]
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        p = Path(d) / "config.toml"
+        for line, name in (("commit_tight = 1.5", "commit_tight"),
+                           ("competitor_gb = 0", "competitor_gb"),
+                           ("spill_gb = 0", "spill_gb"),
+                           ("poll_s = 0", "poll_s"),
+                           ("settle_s = -1", "settle_s"),
+                           ("exit_s = 1", "exit_s")):
+            p.write_text(f"[room]\n{line}\n", "utf-8")
+            try:
+                config_mod.load(p)
+            except config_mod.ConfigError as e:
+                assert name in str(e), e
+            else:
+                raise AssertionError(f"{line} was accepted")
 
 
 NEEDS_SCREEN = (
