@@ -18745,8 +18745,9 @@ def test_the_arrow_you_drag_is_the_arrow_you_get() -> None:
 
     source = (Path(__file__).resolve().parent / "capture.py").read_text(
         "utf-8")
-    assert "arrowshape=tk_arrowshape()" in source, \
-        "the canvas preview is back on a hard-coded arrowhead"
+    assert "arrowshape=tk_arrowshape(width)" in source, \
+        "the canvas preview is back on a hard-coded arrowhead, or on one " \
+        "that is not the width the arrow will be drawn at"
     neck, barb, half = cap.tk_arrowshape()
     assert barb == round(max(cap.ARROW_HEAD_MIN, cap.PEN_W * cap.ARROW_HEAD))
     assert 0 < neck < barb, (neck, barb)
@@ -18892,6 +18893,383 @@ def test_growing_a_crop_brings_back_the_marks_that_were_outside_it() -> None:
     grown = cap.render_shot(screen, (20, 20, 380, 280), mark, None, (0, 0))
     assert has_ink(grown), "growing the crop back did not bring the ink back"
     assert grown.size == (360, 260)
+
+
+# ------------------------------------------- the pen: smooth, and any colour
+#
+# 2026-10-17, his words: drawing in the screenshot editor lagged, the
+# stroke "disappears for a split second and only then appears" when the
+# button comes up, and the colour choice should be "much more versatile and
+# wide". Measured that day: the release repainted the whole lit picture
+# (125-290 ms) AFTER deleting the preview, and every hover over the toolbar
+# did the same (73-190 ms).
+
+
+def test_the_palette_is_drawn_where_it_can_be_clicked() -> None:
+    """The palette's one table feeds its painter and its hit test, like the
+    toolbar's: every spot inside the sheet, none overlapping another, each
+    found at its own centre, and every preset and width has a spot."""
+    import capture as cap
+
+    layout = cap.palette_layout()
+    spots = layout["spots"]
+    width, height = layout["size"]
+    for i in range(len(cap.INKS)):
+        assert f"swatch:{i}" in spots, i
+    for i in range(len(cap.SIZES)):
+        assert f"size:{i}" in spots, i
+    for i in range(cap.RECENT_MAX):
+        assert f"recent:{i}" in spots, i
+    assert "spectrum" in spots and "pick" in spots
+    for name, (x0, y0, x1, y1) in spots.items():
+        assert 0 <= x0 < x1 <= width, (name, x0, x1, width)
+        assert 0 <= y0 < y1 <= height, (name, y0, y1, height)
+        if name.startswith("_"):
+            continue
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert cap.hit(spots, cx, cy) == name, (name, cx, cy)
+    real = [(n, r) for n, r in spots.items() if not n.startswith("_")]
+    for i, (an, a) in enumerate(real):
+        for bn, b in real[i + 1:]:
+            apart = a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]
+            assert apart, f"{an} overlaps {bn}: {a} {b}"
+    # Wider than four, and red is still the first and the default.
+    assert len(cap.INKS) >= 16, len(cap.INKS)
+    assert cap.INKS[0][0] == "red", "red is no longer the first ink"
+    assert len({tuple(rgb) for _n, rgb in cap.INKS}) == len(cap.INKS), \
+        "two presets are the same colour"
+    # The toolbar does not grow a chip per colour: one chip opens them all.
+    assert "ink" in cap.bar_layout()["spots"]
+
+
+def test_the_rainbow_is_the_colour_under_the_pointer() -> None:
+    """The strip is drawn by the same function the click reads, so the
+    colour taken is the colour that was under the pointer. Hue across, a
+    tint at the top and a shade at the bottom."""
+    import capture as cap
+
+    for fx in (0.0, 0.17, 0.5, 0.83, 1.0):
+        for fy in (0.0, 0.5, 1.0):
+            rgb = cap.spectrum_colour(fx, fy)
+            assert all(0 <= c <= 255 for c in rgb), rgb
+    top, middle, bottom = (cap.spectrum_colour(0.0, f) for f in (0.0, 0.5, 1.0))
+    assert sum(top) > sum(middle) > sum(bottom), (top, middle, bottom)
+    assert middle[0] > 200 and middle[1] < 60 and middle[2] < 60, \
+        f"the left edge is not red: {middle}"
+    assert cap.spectrum_colour(0.0, 0.5) == cap.spectrum_colour(1.0, 0.5), \
+        "the hue does not come back round to where it started"
+    assert cap.spectrum_colour(-3, 9) == cap.spectrum_colour(0.0, 1.0), \
+        "a drag past the strip's edge must read the edge"
+    image = cap.spectrum_image((60, 20))
+    for x, y in ((0, 0), (59, 0), (30, 10), (13, 19), (59, 19)):
+        assert image.getpixel((x, y)) == cap.spectrum_colour(x / 59, y / 19), \
+            (x, y)
+    # The cache hands out copies: drawing on one does not paint the next.
+    image.putpixel((0, 0), (1, 2, 3))
+    assert cap.spectrum_image((60, 20)).getpixel((0, 0)) != (1, 2, 3)
+
+    assert cap.colour_name(cap.INKS[0][1]) == "red"
+    assert cap.colour_name((58, 123, 213)) == "#3A7BD5"
+
+
+def test_a_colour_he_picked_is_kept_and_a_preset_is_not_repeated() -> None:
+    import capture as cap
+
+    saved = dict(cap._PEN, recent=list(cap._PEN["recent"]))
+    try:
+        cap._PEN["recent"] = []
+        cap.remember_colour(cap.INKS[3][1])
+        assert cap._PEN["recent"] == [], "a preset is already on the palette"
+        for i in range(cap.RECENT_MAX + 3):
+            cap.remember_colour((i, 100, 200))
+        recent = cap._PEN["recent"]
+        assert len(recent) == cap.RECENT_MAX, recent
+        assert recent[0] == (cap.RECENT_MAX + 2, 100, 200), "newest first"
+        cap.remember_colour(recent[-1])
+        assert cap._PEN["recent"][0] == recent[-1], "taken again = to the front"
+        assert len(cap._PEN["recent"]) == cap.RECENT_MAX, "and not twice"
+    finally:
+        cap._PEN.clear()
+        cap._PEN.update(saved)
+
+
+def test_a_width_is_a_width_and_a_heavy_arrow_keeps_its_barbs() -> None:
+    """Four widths for the pen, the arrow and the box, four of its own for
+    the highlighter. A mark carries the width it was drawn at; a mark from
+    before there were widths draws exactly as it always did."""
+    import capture as cap
+    from PIL import Image
+
+    assert [cap.stroke_width("pen", i) for i in range(4)] == \
+        [w for _n, w in cap.SIZES]
+    assert cap.stroke_width("pen", cap.SIZE_DEFAULT) == cap.PEN_W
+    assert cap.stroke_width("highlight", cap.SIZE_DEFAULT) == cap.HIGHLIGHT_W
+    widths = [cap.stroke_width("highlight", i) for i in range(4)]
+    assert widths == sorted(widths) and widths[0] > cap.SIZES[-1][1] // 2
+    assert cap.stroke_width("pen", 99) == cap.SIZES[-1][1], "clamped"
+
+    base = Image.new("RGB", (300, 200), (255, 255, 255))
+    points = [(30, 100), (120, 40), (270, 160)]
+
+    def inked(mark):
+        out = cap.draw_marks(base, [mark], (0, 0)).convert("RGB")
+        return sum(1 for p in out.getdata() if p[0] > p[2] + 60)
+
+    thin = inked({"kind": "pen", "points": points, "colour": (224, 53, 43),
+                  "width": 2})
+    heavy = inked({"kind": "pen", "points": points, "colour": (224, 53, 43),
+                   "width": 8})
+    assert heavy > thin * 2.5, (thin, heavy)
+    old = {"kind": "pen", "points": points, "colour": (224, 53, 43)}
+    new = dict(old, width=cap.PEN_W)
+    assert cap.draw_marks(base, [old], (0, 0)).tobytes() == \
+        cap.draw_marks(base, [new], (0, 0)).tobytes(), \
+        "a mark with no width is not the mark it was before widths"
+
+    # The heaviest arrow's barbs reach past any fixed pad; the stamp must
+    # hold them, so nothing it draws touches the stamp's own border.
+    cap._INK_CACHE.clear()
+    layer, _at = cap._ink_stamp("arrow", ((20, 20), (220, 140)),
+                                (224, 53, 43), cap.SIZES[-1][1])
+    alpha = layer.getchannel("A")
+    w, h = alpha.size
+    border = ([alpha.getpixel((x, 0)) for x in range(w)]
+              + [alpha.getpixel((x, h - 1)) for x in range(w)]
+              + [alpha.getpixel((0, y)) for y in range(h)]
+              + [alpha.getpixel((w - 1, y)) for y in range(h)])
+    assert max(border) == 0, "a heavy arrow's head was clipped by its stamp"
+
+
+def test_a_mark_added_in_place_is_the_mark_replayed() -> None:
+    """The editor adds each new mark to the picture it already has instead
+    of replaying the list; the file is the list replayed. The two must be
+    the same pixels — over a lasso, under a crop's origin, with a blur in
+    the middle that reads the ink before it."""
+    import capture as cap
+    from PIL import Image, ImageDraw
+
+    screen = Image.new("RGB", (500, 360), (20, 30, 40))
+    d = ImageDraw.Draw(screen)
+    for x in range(0, 500, 9):
+        d.line([(x, 0), (x + 120, 360)], fill=(200, 210, 90), width=2)
+    box = (40, 30, 460, 330)
+    shape = [(60, 40), (440, 60), (420, 320), (70, 300)]
+    marks = [
+        {"kind": "pen", "points": [(80, 80), (200, 120), (300, 90)],
+         "colour": (232, 62, 48), "width": 5},
+        {"kind": "highlight", "points": [(90, 200), (380, 210)],
+         "colour": (255, 214, 64), "width": 28},
+        {"kind": "blur", "points": [(150, 70), (330, 230)],
+         "colour": (232, 62, 48)},
+        {"kind": "arrow", "points": [(100, 290), (350, 150)],
+         "colour": (86, 156, 245), "width": 8},
+        {"kind": "box", "points": [(400, 300), (240, 180)],
+         "colour": (255, 84, 166), "width": 2},
+        {"kind": "pen", "points": [(30, 20), (480, 340)],   # off the edges
+         "colour": (16, 16, 20)},
+    ]
+    whole = cap.render_shot(screen, box, marks, shape)
+    step = cap.render_shot(screen, box, [], shape).convert("RGBA")
+    for mark in marks:
+        rect = cap.mark_into(step, mark, (box[0], box[1]))
+        assert rect is None or (rect[2] > rect[0] and rect[3] > rect[1]), rect
+    assert step.tobytes() == whole.tobytes(), \
+        "the screen's picture and the file's picture disagree"
+    # The rectangle a mark reports is where it changed things.
+    plain = cap.render_shot(screen, box, [], None).convert("RGBA")
+    after = plain.copy()
+    rect = cap.mark_into(after, marks[0], (box[0], box[1]))
+    left, top, right, bottom = (rect[0] - box[0], rect[1] - box[1],
+                                rect[2] - box[0], rect[3] - box[1])
+    inside = Image.new("L", after.size, 0)
+    ImageDraw.Draw(inside).rectangle((left, top, right - 1, bottom - 1),
+                                     fill=255)
+    from PIL import ImageChops
+    changed = ImageChops.difference(after, plain).convert("L").point(
+        lambda v: 255 if v else 0)
+    outside = ImageChops.subtract(changed, inside)
+    assert outside.getbbox() is None, "a mark changed pixels outside its rect"
+
+
+def test_the_editor_draws_a_stroke_without_a_blank_frame() -> None:
+    """The bug, driven in a real editor window: the preview must still be
+    on the canvas until the committed stroke is in the picture, and the
+    picture must take the stroke without being rebuilt. A hover over the
+    toolbar rebuilds nothing under it. Then the palette: a preset, the
+    pipette (off the REAL pixels, not the dimmed backdrop), Esc putting
+    away the smallest thing first, and the colour carried to the next
+    picture."""
+    import gc
+
+    import capture as cap
+    from PIL import Image, ImageDraw
+
+    vx, vy, vw, vh = cap.virtual_screen()
+    full = Image.new("RGB", (vw, vh), (40, 44, 60))
+    d = ImageDraw.Draw(full)
+    for x in range(0, vw, 16):
+        d.line([(x, 0), (x, vh)], fill=(90, 170, 120), width=3)
+    left, top = vx + 60, vy + 60
+    box = (left, top, left + min(520, vw - 120), top + min(360, vh - 260))
+    saved = dict(cap._PEN, recent=list(cap._PEN["recent"]))
+
+    class Ev:
+        def __init__(self, x, y):
+            self.x_root, self.y_root = x, y
+            self.x, self.y = x - vx, y - vy
+            self.state = 0
+
+    def shown(win, x, y):
+        sx, sy = win._stage_at
+        got = win.root.tk.call(str(win._keep["stage"]), "get",
+                               x - vx - sx, y - vy - sy)
+        if isinstance(got, str):
+            got = got.split()
+        return tuple(int(v) for v in got)[:3]
+
+    try:
+        win = cap.ShotWindow(full, edit=True, copy=False, save=False,
+                             start_box=box)
+    except Exception as err:                                 # noqa: BLE001
+        print(f"    (skipped: no Tk window — {err})")
+        return
+    rebuilt = []
+    real_stage = win._paint_stage
+    win._paint_stage = lambda: (rebuilt.append(1), real_stage())[1]
+    try:
+        win.root.update()
+        win._paint_now()
+        assert rebuilt == [1], rebuilt
+        photo = win._keep["stage"]
+        # A patch over the whole picture is the whole paint, pixel for
+        # pixel — the rounded corners and the blue hairline included.
+        whole = win._scene.tobytes()
+        win._patch(win.box)
+        assert win._scene.tobytes() == whole, \
+            "a patch paints the picture differently from the full paint"
+
+        # A hover over every chip: the toolbar repaints, the picture does not.
+        bx, by = win._bar_at
+        for name, (x0, y0, x1, y1) in win._layout["spots"].items():
+            if name.startswith("_"):
+                continue
+            win._on_move(Ev(bx + (x0 + x1) // 2, by + (y0 + y1) // 2))
+            if win._dirty:
+                win._paint_now()
+        assert rebuilt == [1], "a hover rebuilt the whole picture"
+
+        # A pen stroke across the middle of the picture.
+        cap._PEN["colour"] = win.colour = cap.INKS[0][1]
+        win.tool, win.size = "pen", 3
+        y = (box[1] + box[3]) // 2
+        x0 = box[0] + 40
+        win._edit_press(Ev(x0, y))
+        for x in range(x0 + 4, x0 + 240, 4):
+            win._edit_drag(Ev(x, y))
+        assert win.canvas.find_withtag("ink"), "no live preview while drawing"
+        before = shown(win, x0 + 120, y)
+        win._edit_release(Ev(x0 + 240, y))
+        # THE MOMENT AFTER THE RELEASE — before any tick of the pump — the
+        # preview is gone and the stroke is already in the picture.
+        assert not win.canvas.find_withtag("ink"), "the preview outlived its mark"
+        after = shown(win, x0 + 120, y)
+        assert after != before and after[0] > 180 and after[1] < 110, \
+            f"the stroke is not on the screen yet: {before} -> {after}"
+        assert win._keep["stage"] is photo, "the stroke replaced the photo"
+        assert rebuilt == [1], "the stroke rebuilt the whole picture"
+        assert len(win.marks) == 1 and win.marks[0]["width"] == \
+            cap.SIZES[3][1]
+        assert win._pic.tobytes() == win.picture().convert("RGBA").tobytes()
+
+        # The highlighter previews INTO the picture, see-through, with no
+        # solid canvas line over it.
+        win.tool, win.size = "highlight", 1
+        hy = y + 60
+        win._edit_press(Ev(x0, hy))
+        for x in range(x0 + 4, x0 + 200, 5):
+            win._edit_drag(Ev(x, hy))
+        assert not win.canvas.find_withtag("ink"), \
+            "the highlighter is back on an opaque canvas line"
+        tinted = shown(win, x0 + 100, hy)
+        under = win._scene.getpixel((x0 + 100 - vx - win._stage_at[0],
+                                     hy - vy - win._stage_at[1]))
+        assert tinted != under, "the live highlight is not on the screen"
+        assert tinted != tuple(win.colour), "the live highlight is opaque"
+        win._edit_release(Ev(x0 + 200, hy))
+        assert shown(win, x0 + 100, hy) == win._scene.getpixel(
+            (x0 + 100 - vx - win._stage_at[0], hy - vy - win._stage_at[1]))
+        assert rebuilt == [1]
+
+        # A click that is not a stroke leaves the picture as it was.
+        win._edit_press(Ev(x0 + 300, hy))
+        win._edit_release(Ev(x0 + 301, hy))
+        assert len(win.marks) == 2
+
+        # Undo IS a rebuild, and it takes the stroke back off the screen.
+        win._activate("undo")
+        win._paint_now()
+        assert rebuilt == [1, 1] and len(win.marks) == 1
+        assert shown(win, x0 + 100, hy) == under
+
+        # The palette: open, a preset, closed by the choice.
+        win._activate("ink")
+        win._paint_now()
+        assert win._palette_open and win._palette_item is not None
+        px, py = win._palette_at
+        sx0, sy0, sx1, sy1 = win._palette["spots"]["swatch:6"]
+        win._edit_press(Ev(px + (sx0 + sx1) // 2, py + (sy0 + sy1) // 2))
+        win._edit_release(Ev(px + (sx0 + sx1) // 2, py + (sy0 + sy1) // 2))
+        assert win.colour == tuple(cap.INKS[6][1]) and not win._palette_open
+        assert len(win.marks) == 1, "a click on the palette drew a mark"
+
+        # The pipette takes the real pixel, not the dimmed one around the
+        # picture, and Esc puts the pipette away before it closes anything.
+        win._activate("ink")
+        win._paint_now()
+        kx0, ky0, kx1, ky1 = win._palette["spots"]["pick"]
+        win._edit_press(Ev(px + (kx0 + kx1) // 2, py + (ky0 + ky1) // 2))
+        assert win._picking and not win._palette_open
+        assert win._escape() and not win._picking, "Esc did not stop it"
+        win._activate("ink")
+        win._paint_now()
+        win._edit_press(Ev(px + (kx0 + kx1) // 2, py + (ky0 + ky1) // 2))
+        tx, ty = box[2] + 30, box[1] + 5       # outside the picture
+        win._edit_press(Ev(tx, ty))
+        assert not win._picking
+        assert win.colour == full.getpixel((tx - vx, ty - vy)), win.colour
+        assert win.colour != win.dark.getpixel((tx - vx, ty - vy))
+        assert cap._PEN["recent"][0] == win.colour
+
+        # Esc with nothing open is the editor's to take.
+        assert not win._escape()
+        win._activate("ink")
+        assert win._escape() and not win._palette_open
+
+        # The next picture starts with this pen.
+        win.size = 2
+        cap._PEN["size"] = 2
+        kept = win.colour
+    finally:
+        try:
+            win._keep.clear()
+            win.root.destroy()
+        except Exception:                                    # noqa: BLE001
+            pass
+        del win
+        gc.collect()
+    try:
+        again = cap.ShotWindow(full, edit=True, copy=False, save=False,
+                               start_box=box)
+        try:
+            assert again.colour == kept and again.size == 2, \
+                (again.colour, again.size)
+        finally:
+            again.root.destroy()
+            del again
+            gc.collect()
+    finally:
+        cap._PEN.clear()
+        cap._PEN.update(saved)
 
 
 # ------------------------------------------------- chords, and the Windows key
