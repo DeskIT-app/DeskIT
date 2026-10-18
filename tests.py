@@ -18737,23 +18737,73 @@ def test_an_arrow_shaft_stops_at_the_notch_and_not_at_the_point() -> None:
 
 
 def test_the_arrow_you_drag_is_the_arrow_you_get() -> None:
-    """Tk draws the live preview and Pillow draws the file. Two arrowheads
-    unless one set of numbers feeds both — and the drag is where you decide
-    whether the arrow is right, so a preview that lies is worse than no
-    preview."""
+    """The drag is where you decide whether the mark is right, so a preview
+    that lies is worse than no preview. It used to be a Tk line with a Tk
+    arrowhead — another arrowhead, jagged, kept in step with Pillow's by
+    hand. Now the editor lays the mark's own pieces into a live mask as
+    the mouse moves (a shape laid again whole at each move, what it
+    covered a move ago cleared first; a trail laid a segment at a time),
+    and files that mask as the stamp. Done here the way the editor does
+    it, the filed stamp must be the stamp the mark would get from scratch,
+    pixel for pixel."""
+    from PIL import Image
+
     import capture as cap
 
     source = (Path(__file__).resolve().parent / "capture.py").read_text(
         "utf-8")
-    assert "arrowshape=tk_arrowshape(width)" in source, \
-        "the canvas preview is back on a hard-coded arrowhead, or on one " \
-        "that is not the width the arrow will be drawn at"
-    neck, barb, half = cap.tk_arrowshape()
-    assert barb == round(max(cap.ARROW_HEAD_MIN, cap.PEN_W * cap.ARROW_HEAD))
-    assert 0 < neck < barb, (neck, barb)
-    assert 0 < half < barb
-    # It moves when the geometry moves, rather than being a second opinion.
-    assert cap.tk_arrowshape(12)[1] > cap.tk_arrowshape(2)[1]
+    assert "arrowshape=" not in source and "create_line" not in source[
+        source.index("    def _edit_drag"):source.index("    def _lay_live")], \
+        "the live arrow is back on a Tk line"
+
+    surface = (-300, 0, 1500, 900)            # a surface with a negative left
+    origin = surface[:2]
+
+    def drawn_live(kind, ends, stroke, colour):
+        mask = Image.new("L", (surface[2] - surface[0],
+                               surface[3] - surface[1]), 0)
+        rects = []
+        for end in ends:                       # the drag: one shape per move
+            for left, top, right, bottom in rects:
+                mask.paste(0, (left - origin[0], top - origin[1],
+                               right - origin[0], bottom - origin[1]))
+            rects = [r for r in (cap.lay_piece(mask, p, origin) for p in
+                                 cap.mark_pieces(kind, [(-200, 700), end],
+                                                 stroke)) if r]
+        cap._INK_CACHE.clear()
+        live = cap.keep_live_stamp(kind, [(-200, 700), ends[-1]], colour,
+                                   stroke, mask, origin)
+        cap._INK_CACHE.clear()
+        fresh = cap._ink_stamp(kind, ((-200, 700), tuple(ends[-1])), colour,
+                               stroke)
+        return live, fresh
+
+    for kind in ("arrow", "box"):
+        for stroke in (cap.SIZES[0][1], cap.SIZES[-1][1]):
+            ends = [(-150 + i * 37, 690 - i * 19) for i in range(1, 34)]
+            live, fresh = drawn_live(kind, ends, stroke, (86, 156, 245))
+            assert live[1] == fresh[1], (kind, stroke, live[1], fresh[1])
+            assert live[0].tobytes() == fresh[0].tobytes(), \
+                f"the {kind} dragged is not the {kind} kept (w{stroke})"
+
+    # A trail, a segment per move, the way the pen and the highlighter go.
+    for kind in ("pen", "highlight"):
+        points = [(-200 + i * 11, 400 + int(160 * ((i % 17) / 17)))
+                  for i in range(120)]
+        mask = Image.new("L", (surface[2] - surface[0],
+                               surface[3] - surface[1]), 0)
+        laid = 1
+        for n in range(2, len(points) + 1):
+            for piece in cap.mark_pieces(kind, points[:n], 5, start=laid):
+                cap.lay_piece(mask, piece, origin)
+            laid = n
+        cap._INK_CACHE.clear()
+        live = cap.keep_live_stamp(kind, points, (232, 62, 48), 5, mask,
+                                   origin)
+        cap._INK_CACHE.clear()
+        fresh = cap._ink_stamp(kind, tuple(points), (232, 62, 48), 5)
+        assert live[0].tobytes() == fresh[0].tobytes(), \
+            f"the {kind} stroke laid live is not the stroke replayed"
 
 
 def test_one_mark_is_oversampled_once_and_then_reused() -> None:
@@ -19120,12 +19170,20 @@ def test_the_editor_draws_a_stroke_without_a_blank_frame() -> None:
             self.state = 0
 
     def shown(win, x, y):
+        return win._stage_pixel(x, y)      # off Tk's own photo
+
+    def screen_is_the_layers(win, why):
+        """What Tk shows, sampled across the picture, against what the
+        layers say it should show — the screen is never left stale."""
+        win._settle_scene()
+        left, top, right, bottom = win.box
         sx, sy = win._stage_at
-        got = win.root.tk.call(str(win._keep["stage"]), "get",
-                               x - vx - sx, y - vy - sy)
-        if isinstance(got, str):
-            got = got.split()
-        return tuple(int(v) for v in got)[:3]
+        for i in range(23):
+            for j in range(17):
+                x = left + (right - left - 1) * i // 22
+                y = top + (bottom - top - 1) * j // 16
+                want = win._scene.getpixel((x - vx - sx, y - vy - sy))
+                assert shown(win, x, y) == want, (why, (x, y), want)
 
     try:
         win = cap.ShotWindow(full, edit=True, copy=False, save=False,
@@ -19140,13 +19198,14 @@ def test_the_editor_draws_a_stroke_without_a_blank_frame() -> None:
         win.root.update()
         win._paint_now()
         assert rebuilt == [1], rebuilt
-        photo = win._keep["stage"]
+        gen = win._stage_gen
         # A patch over the whole picture is the whole paint, pixel for
         # pixel — the rounded corners and the blue hairline included.
         whole = win._scene.tobytes()
         win._patch(win.box)
         assert win._scene.tobytes() == whole, \
             "a patch paints the picture differently from the full paint"
+        screen_is_the_layers(win, "first paint")
 
         # A hover over every chip: the toolbar repaints, the picture does not.
         bx, by = win._bar_at
@@ -19164,18 +19223,27 @@ def test_the_editor_draws_a_stroke_without_a_blank_frame() -> None:
         y = (box[1] + box[3]) // 2
         x0 = box[0] + 40
         win._edit_press(Ev(x0, y))
+        before = shown(win, x0 + 120, y + 15)
         for x in range(x0 + 4, x0 + 240, 4):
-            win._edit_drag(Ev(x, y))
-        assert win.canvas.find_withtag("ink"), "no live preview while drawing"
-        before = shown(win, x0 + 120, y)
-        win._edit_release(Ev(x0 + 240, y))
+            win._edit_drag(Ev(x, y + (x - x0) // 8))   # a slope: real edges
+        # THE PREVIEW IS IN THE PICTURE, antialiased, and not a Tk line.
+        assert not win.canvas.find_withtag("ink"), \
+            "the pen is back on a jagged Tk canvas line"
+        live = [shown(win, x0 + 120, y + 15 + dy) for dy in range(-7, 8)]
+        win._edit_release(Ev(x0 + 240, y + 30))
         # THE MOMENT AFTER THE RELEASE — before any tick of the pump — the
-        # preview is gone and the stroke is already in the picture.
-        assert not win.canvas.find_withtag("ink"), "the preview outlived its mark"
-        after = shown(win, x0 + 120, y)
+        # stroke is in the picture, and it is the very pixels the drag
+        # showed: nothing changes on the screen when the button comes up.
+        after = shown(win, x0 + 120, y + 15)
         assert after != before and after[0] > 180 and after[1] < 110, \
             f"the stroke is not on the screen yet: {before} -> {after}"
-        assert win._keep["stage"] is photo, "the stroke replaced the photo"
+        assert [shown(win, x0 + 120, y + 15 + dy)
+                for dy in range(-7, 8)] == live, \
+            "the stroke changed when the button came up"
+        assert any(0 < abs(p[0] - q[0]) < abs(after[0] - before[0])
+                   for p, q in zip(live, [before] * len(live))), \
+            "the stroke's edge has no soft pixel: it is jagged"
+        assert win._stage_gen == gen, "the stroke repainted the whole stage"
         assert rebuilt == [1], "the stroke rebuilt the whole picture"
         assert len(win.marks) == 1 and win.marks[0]["width"] == \
             cap.SIZES[3][1]
@@ -19191,11 +19259,13 @@ def test_the_editor_draws_a_stroke_without_a_blank_frame() -> None:
         assert not win.canvas.find_withtag("ink"), \
             "the highlighter is back on an opaque canvas line"
         tinted = shown(win, x0 + 100, hy)
+        win._settle_scene()
         under = win._scene.getpixel((x0 + 100 - vx - win._stage_at[0],
                                      hy - vy - win._stage_at[1]))
         assert tinted != under, "the live highlight is not on the screen"
         assert tinted != tuple(win.colour), "the live highlight is opaque"
         win._edit_release(Ev(x0 + 200, hy))
+        win._settle_scene()
         assert shown(win, x0 + 100, hy) == win._scene.getpixel(
             (x0 + 100 - vx - win._stage_at[0], hy - vy - win._stage_at[1]))
         assert rebuilt == [1]
@@ -19205,16 +19275,63 @@ def test_the_editor_draws_a_stroke_without_a_blank_frame() -> None:
         win._edit_release(Ev(x0 + 301, hy))
         assert len(win.marks) == 2
 
-        # Undo IS a rebuild, and it takes the stroke back off the screen.
+        # Undo of a stroke is NOT a rebuild: the picture is drawn again
+        # where the stroke was, and that is the same as drawing it all.
         win._activate("undo")
         win._paint_now()
-        assert rebuilt == [1, 1] and len(win.marks) == 1
+        assert rebuilt == [1] and len(win.marks) == 1, rebuilt
         assert shown(win, x0 + 100, hy) == under
+        assert win._pic.tobytes() == win.picture().convert("RGBA").tobytes(), \
+            "the undone picture is not the picture replayed"
+        screen_is_the_layers(win, "after undo")
+        win._settle_scene()
+        whole = win._scene.tobytes()
+        win._patch(win.box)
+        assert win._scene.tobytes() == whole, "the screen after undo is stale"
 
-        # The palette: open, a preset, closed by the choice.
+        # A long arrow and a box dragged about and let go: the screen is
+        # the layers everywhere, nothing left behind where they had been.
+        for tool in ("arrow", "box"):
+            win.tool, win.size = tool, 3
+            win._edit_press(Ev(box[0] + 20, box[3] - 20))
+            for k in range(1, 40):
+                win._edit_drag(Ev(box[0] + 20 + k * 11,
+                                  box[3] - 20 - (k * 7) % (box[3] - box[1] - 40)))
+            win._edit_release(Ev(box[0] + 20 + 39 * 11,
+                                 box[3] - 20 - (39 * 7) % (box[3] - box[1] - 40)))
+            screen_is_the_layers(win, tool)
+            assert win._pic.tobytes() == \
+                win.picture().convert("RGBA").tobytes(), tool
+        assert len(win.marks) == 3
+        win._activate("undo")
+        win._activate("undo")
+        screen_is_the_layers(win, "two undos")
+
+        # The palette's glass and sprites are made while the editor idles,
+        # so the first open only lays them out; a stroke far from the
+        # palette does not throw its glass away.
+        for _ in range(10):
+            if win._warmth is False:
+                break
+            win._warm_step()
+        assert win._warmth is False, "the warm-up never finished"
+        warm = win._palette_glass
+        assert warm is not None, "the palette's glass was not built ahead"
         win._activate("ink")
         win._paint_now()
         assert win._palette_open and win._palette_item is not None
+        assert win._palette_glass is warm, "the first open rebuilt the glass"
+        win._activate("ink")
+        win.tool = "pen"
+        win._edit_press(Ev(box[0] + 30, box[1] + 30))
+        for k in range(1, 12):
+            win._edit_drag(Ev(box[0] + 30 + k * 3, box[1] + 30 + k))
+        win._edit_release(Ev(box[0] + 63, box[1] + 41))
+        win._activate("undo")
+        win._activate("ink")
+        win._paint_now()
+        assert win._palette_glass is warm, \
+            "a stroke far from the palette threw its glass away"
         px, py = win._palette_at
         sx0, sy0, sx1, sy1 = win._palette["spots"]["swatch:6"]
         win._edit_press(Ev(px + (sx0 + sx1) // 2, py + (sy0 + sy1) // 2))

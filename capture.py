@@ -306,6 +306,7 @@ _MARK_PAD = {"pen": PEN_W + 2, "arrow": 44, "box": BOX_W + 3,
              "highlight": HIGHLIGHT_W + 2}
 _MARK_W = {"pen": PEN_W, "arrow": PEN_W, "box": BOX_W,
            "highlight": HIGHLIGHT_W}
+INKED = ("pen", "arrow", "box", "highlight")   # the marks that are ink
 PIXEL_BLOCK = 12             # the redaction mosaic; below ~8 px, 12 pt
                              # text is still readable in the blocks
 
@@ -335,6 +336,7 @@ LOUPE_ZOOM = 8               # ...each drawn 8 px wide, so 88 px across
 # it is read, so the pump's period is the stroke's sampling rate: at 15 ms
 # a fast curve came out as a polygon with visible corners.
 DRAW_TICK_S = 0.004
+STAGE_TILE = 256             # px, the lit picture's tiles (see _lay_tiles)
 
 # The hint card the selector opens with: one sheet of glass holding the
 # instructions and a tile per monitor. Glass rather than card stock,
@@ -1496,22 +1498,8 @@ def arrow_shape(start, end, width: int = PEN_W):
     ]
 
 
-def tk_arrowshape(width: int = PEN_W) -> tuple[int, int, int]:
-    """The same head, in the three numbers Tk's canvas wants.
-
-    Tk draws the live preview and Pillow draws the picture, and they are
-    two different arrowheads unless somebody makes them agree. This is
-    that somebody: (neck-to-tip, barb-to-tip, half-width), read off the
-    geometry above so a change there moves both.
-    """
-    import math
-    head = max(ARROW_HEAD_MIN, width * ARROW_HEAD)
-    return (max(2, round(head * ARROW_NOTCH)), max(3, round(head)),
-            max(2, round(head * math.sin(math.radians(ARROW_SPREAD)))))
-
-
 def ink_scale(width: int, height: int) -> int:
-    """How far to oversample one mark's own rectangle before shrinking it.
+    """How far to oversample one PIECE of ink before shrinking it.
 
     PILLOW ANTIALIASES NOTHING. `ImageDraw.line` and `.polygon` write hard
     pixels, so every diagonal an arrow or a pen stroke makes comes out as
@@ -1520,18 +1508,13 @@ def ink_scale(width: int, height: int) -> int:
     `rr_layer` already use: draw it big and shrink it (a box average since
     2026-10-17, see `_ink_stamp`; it was LANCZOS when this was measured).
 
-    Big is not free, and a mark's rectangle can be the whole picture (one
-    arrow corner to corner). So the factor is whatever fits the budget:
-    4x for the marks people actually draw, dropping to 2x for the ones
-    that span a 1440p screenshot. Measured on this machine, per mark:
-
-        220x160 box       4x     1.9 ms
-        1280x720 arrow    2x    24.0 ms
-        2560x1440 arrow   1x     3.1 ms   (too big to oversample at all)
-
-    and none of it is per-frame — a stamp is cached per mark and the
-    editor adds each new one to the picture it already has
-    (`ShotWindow._commit`), so this runs once per stroke, at the release.
+    Big is not free. This used to be asked of a mark's WHOLE rectangle,
+    and the answer for one arrow corner to corner of a 1440p shot was 1x
+    — no antialiasing, a staircase (measured 2026-08 on this machine:
+    220x160 box 4x 1.9 ms, 1280x720 arrow 2x 24 ms, 2560x1440 arrow 1x).
+    Since 2026-10-17 it is asked of each piece (`mark_pieces`), and a
+    piece is at most PIECE_MAX px long, so the answer is INK_SS for every
+    mark of every size; the budget stays as the guard it always was.
     """
     area = max(1, width * height)
     for scale in (INK_SS, 3, 2):
@@ -1606,10 +1589,169 @@ def _mark_pad(kind: str, width: int) -> int:
 
 # One rendered stamp per mark, because a mark never changes after it is
 # committed — a crop only moves where it is PASTED. Without this, every
-# repaint of a picture carrying eight marks would oversample all eight
-# again, and the whole point of oversampling is that it is not cheap.
+# repaint of a picture carrying eight marks would rasterise all eight
+# again. Bounded by count AND by pixels: one stroke across a 1440p shot
+# is a 15 MB stamp, and sixty-four of those would be a gigabyte.
 _INK_CACHE: dict = {}
 _INK_CACHE_MAX = 64
+_INK_CACHE_PIXELS = 40_000_000
+_INK_CACHE_HELD = [0]
+
+
+def _keep_stamp(key, stamp):
+    layer = stamp[0]
+    size = layer.width * layer.height
+    if (len(_INK_CACHE) >= _INK_CACHE_MAX
+            or _INK_CACHE_HELD[0] + size > _INK_CACHE_PIXELS):
+        _INK_CACHE.clear()          # a whole generation at a time: the
+        _INK_CACHE_HELD[0] = 0      # entries are all the same age and
+    _INK_CACHE[key] = stamp         # none is special
+    _INK_CACHE_HELD[0] += size
+    return stamp
+
+
+# THE INK IS DRAWN IN PIECES (2026-10-17). A mark used to be oversampled
+# as ONE layer the size of its whole rectangle, and a rectangle the size
+# of a big screenshot does not fit the oversampling budget: ink_scale gave
+# 1x — no antialiasing at all — to any mark spanning more than about
+# 1000x1000 px. Measured that day: a pen line, an arrow or a box drawn
+# across a 2400x1320 span had 0% soft edge pixels, a staircase, where the
+# same mark at 900x495 had 50%. Every mark is now a set of small pieces —
+# a straight run of at most PIECE_MAX px with round ends, an arrowhead, a
+# band of a box's outline — each drawn at INK_SS on its own and laid into
+# the mark's coverage with MAX, so overlapping pieces neither darken where
+# they meet nor depend on the order they were laid in. The live preview
+# lays the very same pieces into the very same kind of mask as the mouse
+# moves, so what is drawn while dragging is what the release keeps.
+PIECE_MAX = 96
+
+
+def _split(a, b):
+    """A straight run cut into pieces no longer than PIECE_MAX."""
+    length = math.hypot(b[0] - a[0], b[1] - a[1])
+    n = max(1, math.ceil(length / PIECE_MAX))
+    if n == 1:
+        return [(a, b)]
+    return [((a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n),
+             (a[0] + (b[0] - a[0]) * (i + 1) / n,
+              a[1] + (b[1] - a[1]) * (i + 1) / n)) for i in range(n)]
+
+
+def _capsule(a, b, stroke: int):
+    """One straight run with round ends: (coverage L at 1x, (left, top))."""
+    from PIL import Image, ImageDraw
+    half = stroke / 2
+    left = math.floor(min(a[0], b[0]) - half) - 1
+    top = math.floor(min(a[1], b[1]) - half) - 1
+    right = math.ceil(max(a[0], b[0]) + half) + 2
+    bottom = math.ceil(max(a[1], b[1]) + half) + 2
+    s = ink_scale(right - left, bottom - top)
+    big = Image.new("L", ((right - left) * s, (bottom - top) * s), 0)
+    draw = ImageDraw.Draw(big)
+    ax, ay = (a[0] - left) * s, (a[1] - top) * s
+    bx, by = (b[0] - left) * s, (b[1] - top) * s
+    radius = half * s
+    draw.line([(ax, ay), (bx, by)], fill=255, width=max(1, round(stroke * s)))
+    # Round ends, which ImageDraw has no keyword for. A flat cap on a 3 px
+    # stroke is a visible chisel at either end of every squiggle, and the
+    # ends of the pieces of one stroke are its round joins.
+    for x, y in ((ax, ay), (bx, by)):
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius),
+                     fill=255)
+    return (big.reduce(s) if s > 1 else big), (left, top)
+
+
+def _polygon_piece(points):
+    from PIL import Image, ImageDraw
+    left = math.floor(min(p[0] for p in points)) - 1
+    top = math.floor(min(p[1] for p in points)) - 1
+    right = math.ceil(max(p[0] for p in points)) + 2
+    bottom = math.ceil(max(p[1] for p in points)) + 2
+    s = ink_scale(right - left, bottom - top)
+    big = Image.new("L", ((right - left) * s, (bottom - top) * s), 0)
+    ImageDraw.Draw(big).polygon([((x - left) * s, (y - top) * s)
+                                 for x, y in points], fill=255)
+    return (big.reduce(s) if s > 1 else big), (left, top)
+
+
+def _box_bands(start, end, stroke: int):
+    """A box's outline as four bands, each drawn on its own. The whole
+    rounded rectangle is drawn into each band and ImageDraw clips it, so a
+    corner is the same pixels whichever band it lands in."""
+    from PIL import Image, ImageDraw
+    x0, y0, x1, y1 = normalize_bbox(start[0], start[1], end[0], end[1])
+    reach = max(stroke, 4) + 2
+    for left, top, right, bottom in ((x0 - 1, y0 - 1, x1 + 2, y0 + reach),
+                                     (x0 - 1, y1 - reach, x1 + 2, y1 + 2),
+                                     (x0 - 1, y0 - 1, x0 + reach, y1 + 2),
+                                     (x1 - reach, y0 - 1, x1 + 2, y1 + 2)):
+        s = ink_scale(right - left, bottom - top)
+        big = Image.new("L", ((right - left) * s, (bottom - top) * s), 0)
+        ImageDraw.Draw(big).rounded_rectangle(
+            ((x0 - left) * s, (y0 - top) * s, (x1 - left) * s,
+             (y1 - top) * s), 4 * s, outline=255, width=stroke * s)
+        yield (big.reduce(s) if s > 1 else big), (left, top)
+
+
+def mark_pieces(kind: str, points, stroke: int, start: int = 0):
+    """The antialiased pieces a mark is made of, in virtual-screen pixels.
+
+    `start` is for a stroke being drawn: the pieces of the segments from
+    point `start` on, so the editor can lay only what a move added.
+    """
+    if kind in ("pen", "highlight"):
+        for i in range(max(1, start), len(points)):
+            for a, b in _split(points[i - 1], points[i]):
+                yield _capsule(a, b, stroke)
+    elif kind == "arrow":
+        notch, head = arrow_shape(points[0], points[-1], stroke)
+        for a, b in _split(points[0], notch):
+            yield _capsule(a, b, stroke)
+        if head:
+            yield _polygon_piece(head)
+    elif kind == "box":
+        yield from _box_bands(points[0], points[-1], stroke)
+
+
+def lay_piece(mask, piece, at) -> tuple[int, int, int, int] | None:
+    """MAX one piece into a coverage mask whose top-left is `at` (in the
+    piece's coordinates), clipped. The rectangle it touched, in the
+    piece's coordinates, or None when it fell outside the mask."""
+    from PIL import ImageChops
+    image, (left, top) = piece
+    x, y = left - at[0], top - at[1]
+    x0, y0 = max(0, x), max(0, y)
+    x1 = min(mask.width, x + image.width)
+    y1 = min(mask.height, y + image.height)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    part = image if (x0, y0, x1, y1) == (x, y, x + image.width,
+                                         y + image.height) \
+        else image.crop((x0 - x, y0 - y, x1 - x, y1 - y))
+    mask.paste(ImageChops.lighter(mask.crop((x0, y0, x1, y1)), part),
+               (x0, y0))
+    return (x0 + at[0], y0 + at[1], x1 + at[0], y1 + at[1])
+
+
+def stamp_rect(kind: str, points, stroke: int) -> tuple[int, int, int, int]:
+    """Where a mark's stamp lies, in virtual-screen pixels: its points
+    and as far past them as a mark of this width can reach."""
+    pad = _mark_pad(kind, stroke)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    left, top = int(min(xs)) - pad, int(min(ys)) - pad
+    return (left, top, int(max(xs)) + pad + 1, int(max(ys)) + pad + 1)
+
+
+def tint_mask(mask, colour, kind: str):
+    """A coverage mask as ink: the colour, at the mask's alpha — or at the
+    highlighter's, which never covers more than HIGHLIGHT_A whatever the
+    pieces under it, so a highlight is one even tint."""
+    from PIL import Image
+    layer = Image.new("RGBA", mask.size, tuple(colour)[:3] + (0,))
+    layer.putalpha(mask.point(_HIGHLIGHT_LUT) if kind == "highlight"
+                   else mask)
+    return layer
 
 
 def _ink_stamp(kind: str, points: tuple, colour: tuple,
@@ -1621,75 +1763,31 @@ def _ink_stamp(kind: str, points: tuple, colour: tuple,
     what is being cropped to. `stroke` is the line's width in pixels;
     None is the width every mark had before the palette had sizes.
     """
+    from PIL import Image
+    if kind not in ("pen", "arrow", "box", "highlight"):
+        return None
     stroke = int(stroke or _MARK_W.get(kind, PEN_W))
     key = (kind, points, colour, stroke)
     stamp = _INK_CACHE.get(key)
     if stamp is not None:
         return stamp
+    left, top, right, bottom = stamp_rect(kind, points, stroke)
+    mask = Image.new("L", (right - left, bottom - top), 0)
+    for piece in mark_pieces(kind, points, stroke):
+        lay_piece(mask, piece, (left, top))
+    return _keep_stamp(key, (tint_mask(mask, colour, kind), (left, top)))
 
-    from PIL import Image, ImageDraw
-    pad = _mark_pad(kind, stroke)
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-    left, top = int(min(xs)) - pad, int(min(ys)) - pad
-    width = int(max(xs)) + pad + 1 - left
-    height = int(max(ys)) + pad + 1 - top
-    scale = ink_scale(width, height)
-    layer = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-    at = [((x - left) * scale, (y - top) * scale) for x, y in points]
-    solid = tuple(colour) + (255,)
-    radius = stroke * scale / 2
 
-    def cap(x, y, fill=solid) -> None:
-        """Round ends, which ImageDraw has no keyword for. A flat cap on a
-        3 px stroke is a visible chisel at either end of every squiggle."""
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius),
-                     fill=fill)
-
-    if kind == "pen":
-        draw.line(at, fill=solid, width=stroke * scale, joint="curve")
-        cap(*at[0])
-        cap(*at[-1])
-    elif kind == "arrow":
-        notch, head = arrow_shape(points[0], points[-1], stroke)
-        draw.line([at[0], ((notch[0] - left) * scale,
-                           (notch[1] - top) * scale)],
-                  fill=solid, width=stroke * scale)
-        cap(*at[0])
-        if head:
-            draw.polygon([((x - left) * scale, (y - top) * scale)
-                          for x, y in head], fill=solid)
-    elif kind == "box":
-        x0, y0, x1, y1 = normalize_bbox(at[0][0], at[0][1],
-                                        at[-1][0], at[-1][1])
-        draw.rounded_rectangle((x0, y0, x1, y1), 4 * scale, outline=solid,
-                               width=stroke * scale)
-    elif kind == "highlight":
-        # ROUND ENDS, like a marker's felt tip, and the same shape the
-        # live preview paints while the stroke is being drawn. ImageDraw
-        # REPLACES pixels, so the caps overlapping the line do not stack
-        # their alpha: the whole stroke is one even tint.
-        tint = tuple(colour) + (HIGHLIGHT_A,)
-        draw.line(at, fill=tint, width=stroke * scale, joint="curve")
-        cap(*at[0], fill=tint)
-        cap(*at[-1], fill=tint)
-    else:
-        return None
-
-    if scale > 1:
-        # A BOX average of each scale x scale block — which is what
-        # coverage antialiasing IS — and not LANCZOS. Same edges without
-        # the ringing, and 3.8x faster on the stroke that measured it
-        # (2026-10-17, a 620x420 pen scribble at 3x: 36.7 ms -> 9.6 ms),
-        # which is time the release of every stroke now spends in the
-        # open. `reduce` premultiplies RGBA, so a soft edge does not go
-        # dark against the transparent pixels around it.
-        layer = layer.reduce(scale)
-    if len(_INK_CACHE) >= _INK_CACHE_MAX:
-        _INK_CACHE.clear()          # a whole generation at a time: the
-    _INK_CACHE[key] = (layer, (left, top))    # entries are all the same
-    return _INK_CACHE[key]                    # age and none is special
+def keep_live_stamp(kind: str, points, colour, stroke: int, mask, origin):
+    """File the stamp of a mark that was drawn live, straight out of the
+    mask the preview laid its pieces into (whose top-left is `origin`),
+    so the release does not rasterise the stroke a second time. The same
+    pieces with MAX, so it is the stamp `_ink_stamp` would have made."""
+    left, top, right, bottom = stamp_rect(kind, points, stroke)
+    part = mask.crop((left - origin[0], top - origin[1],
+                      right - origin[0], bottom - origin[1]))
+    key = (kind, tuple(map(tuple, points)), tuple(colour), int(stroke))
+    return _keep_stamp(key, (tint_mask(part, colour, kind), (left, top)))
 
 
 def _ink(out, kind: str, points, colour: tuple, origin: tuple[int, int],
@@ -3281,12 +3379,20 @@ class ShotWindow:
         self._pic_key = None
         self._scene = None               # RGB: exactly what the stage shows
         self._scene_rev = 0
-        self._stage_item = None
+        self._scene_stale = None         # where _scene is behind the screen
+        self._scene_log: list = []       # (rev, rect | None) of its changes
+        self._last_input = time.monotonic()
+        self._warmth = None              # the idle warm-up, a generator
+        self._tile_grid = None           # (left, top, size) of the tiles
+        self._stage_gen = 0              # bumps on every whole repaint
         self._stage_painted = None       # (box, path, back, rev) on screen
         self._bar_item = None
         self._bar_glass = None
         self._sprites: dict = {}         # icons and soft shapes, by recipe
-        self._mask = None                # the highlighter's live stroke
+        self._live_mask = None           # the live stroke's coverage
+        self._live_rects: list = []      # what a live SHAPE covers now
+        self._live_end = None            # the end a live shape was laid to
+        self._laid = 1                   # points of a live trail laid
         self._preview_box = None         # what the live stroke has touched
         # THE PALETTE.
         self._palette = palette_layout()
@@ -3324,7 +3430,8 @@ class ShotWindow:
         # features are recognisably one app.
         self.dark = self.full.point(_FREEZE_LUT)
         self._keep["dark"] = ImageTk.PhotoImage(self.dark, master=root)
-        canvas.create_image(0, 0, anchor="nw", image=self._keep["dark"])
+        self._backdrop = canvas.create_image(0, 0, anchor="nw",
+                                             image=self._keep["dark"])
 
         px, py = root.winfo_pointerx(), root.winfo_pointery()
         self._hint_id = None
@@ -3566,6 +3673,7 @@ class ShotWindow:
     # -- the selection phase --
 
     def _on_press(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "edit":
             return self._edit_press(event)
         flipped = self._switch_under(event.x, event.y)
@@ -3599,6 +3707,7 @@ class ShotWindow:
         self._drop_hint()
 
     def _on_drag(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "edit":
             return self._edit_drag(event)
         if self._start is None:
@@ -3613,6 +3722,7 @@ class ShotWindow:
                                        event.x_root, event.y_root))
 
     def _on_release(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "edit":
             return self._edit_release(event)
         if self._spent:
@@ -3649,6 +3759,7 @@ class ShotWindow:
         self._chose(monitor_near(px, py), None)
 
     def _on_move(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "select":
             hot = self._chip_under(event.x, event.y)
             hot_switch = self._switch_under(event.x, event.y)
@@ -3904,8 +4015,17 @@ class ShotWindow:
         self._start = (x, y)
         self._free = [(x, y)] if self.tool in ("pen", "highlight") else None
         self._live = []
-        self._mask = None
         self._preview_box = None
+        self._live_rects = []
+        self._laid = 1
+        self._live_end = None
+        self._live_mask = None
+        if self.tool in INKED:
+            # The live stroke's coverage, the size of the whole surface
+            # so a stroke that runs off the picture is laid as it will be
+            # kept (a crop can grow back over it). 6 MB of zeros, ~1 ms.
+            from PIL import Image
+            self._live_mask = Image.new("L", (self._vw, self._vh), 0)
 
     def _edit_drag(self, event) -> None:
         if self._spectrum_drag:
@@ -3913,53 +4033,97 @@ class ShotWindow:
         if self._start is None:
             return
         x, y = event.x_root, event.y_root
-        colour = "#%02x%02x%02x" % tuple(self.colour)
-        width = stroke_width(self.tool, self.size)
-        sx, sy = self._start
-        cx0, cy0 = sx - self._vx, sy - self._vy
-        cx1, cy1 = x - self._vx, y - self._vy
-        # THE CANVAS ITEM IS A PREVIEW AND NOTHING ELSE. The picture is
-        # rebuilt from points when the stroke commits — never read back
-        # off the screen, which races the topmost window and returns
-        # black (visual_qa.py records paying for that one).
         if self.tool in ("pen", "highlight"):
             last = self._free[-1]
             if abs(last[0] - x) + abs(last[1] - y) < 2:
                 return
             self._free.append((x, y))
-            # ONE SEGMENT PER MOVE, never the whole stroke again. The
-            # preview used to delete its line and lay every point down
-            # anew on each move: 11 ms a move by the 400th point of a pen
-            # stroke and 24-31 ms at the highlighter's width (measured
-            # 2026-10-17), so the ink fell further behind the pointer the
-            # longer he drew. A segment is the same few microseconds at
-            # the first point and the thousandth, and round caps make the
-            # chain of them the same shape as the one polyline Pillow
-            # draws at the release. (`capstyle`, never PIL's `joint=`: Tk's
-            # canvas answers that with 'unknown option "-joint"'.)
-            if self.tool == "pen":
-                self._live.append(self._under_bar(self.canvas.create_line(
-                    last[0] - self._vx, last[1] - self._vy, cx1, cy1,
-                    fill=colour, width=width, capstyle="round",
-                    tags="ink")))
-            else:
-                self._preview_highlight(last, (x, y), width)
-            return
+            return self._lay_live(self._free)
+        if self.tool in ("arrow", "box"):
+            return self._lay_live([self._start, (x, y)])
+        # THE BLUR AND THE CROP are outlines of what they will act on, and
+        # an outline that is not the mark may be a canvas item: straight
+        # lines on whole pixels, which Tk draws as crisply as anything.
+        sx, sy = self._start
+        cx0, cy0 = sx - self._vx, sy - self._vy
+        cx1, cy1 = x - self._vx, y - self._vy
         if self._live:
             # The same item, moved — not a new one per mouse move.
             self.canvas.coords(self._live[0], cx0, cy0, cx1, cy1)
             return
-        if self.tool == "arrow":
-            item = self.canvas.create_line(
-                cx0, cy0, cx1, cy1, fill=colour, width=width, arrow="last",
-                arrowshape=tk_arrowshape(width), tags="ink")
-        else:
-            crop = self.tool == "crop"
-            item = self.canvas.create_rectangle(
-                cx0, cy0, cx1, cy1, outline=FG if crop else colour,
-                width=width if self.tool == "box" else BOX_W,
-                dash=(5, 4) if crop else None, tags="ink")
+        crop = self.tool == "crop"
+        item = self.canvas.create_rectangle(
+            cx0, cy0, cx1, cy1,
+            outline=FG if crop else "#%02x%02x%02x" % tuple(self.colour),
+            width=BOX_W, dash=(5, 4) if crop else None, tags="ink")
         self._live = [self._under_bar(item)]
+
+    def _lay_live(self, points, show: bool = True) -> None:
+        """The live stroke, laid from the same pieces the mark is made of.
+
+        THE PREVIEW IS THE MARK. It used to be a Tk line (or, for the
+        highlighter, a mask drawn at 1x) — and Tk antialiases nothing, so
+        what he saw while dragging was a jagged line that turned smooth at
+        the release, a visible change on top of being a different line.
+        Now every move lays its pieces (`mark_pieces`) into the live mask
+        with MAX and composites only the rectangles they touched, at the
+        mark's own alpha, over the picture; the release files that very
+        mask as the mark's stamp (`keep_live_stamp`). A trail (the pen,
+        the highlighter) only ever grows, so a move lays the segment it
+        added; a shape (the arrow, the box) is laid again whole, and what
+        it covered a move ago is put back first.
+        """
+        width = stroke_width(self.tool, self.size)
+        origin = (self._vx, self._vy)
+        mask = self._live_mask
+        shape = self.tool in ("arrow", "box")
+        stale = []
+        if shape:
+            for left, top, right, bottom in self._live_rects:
+                mask.paste(0, (left - origin[0], top - origin[1],
+                               right - origin[0], bottom - origin[1]))
+            stale = self._live_rects
+            self._live_rects = []
+            pieces = mark_pieces(self.tool, points, width)
+            self._live_end = tuple(points[-1])
+        else:
+            pieces = mark_pieces(self.tool, points, width, start=self._laid)
+            self._laid = len(points)
+        fresh = []
+        for piece in pieces:
+            rect = lay_piece(mask, piece, origin)
+            if rect is not None:
+                fresh.append(rect)
+        if shape:
+            self._live_rects = fresh
+        # Piece i of a shape a move ago and piece i now are a few pixels
+        # apart, so each is patched with the other as ONE rectangle: half
+        # the patches of patching the two lists one rectangle at a time.
+        touched = [_union(stale[i] if i < len(stale) else None,
+                          fresh[i] if i < len(fresh) else None)
+                   for i in range(max(len(stale), len(fresh)))]
+        for rect in touched:
+            self._preview_box = _union(self._preview_box, rect)
+        if show:
+            self._patch_rects(touched, (mask, self.colour, self.tool))
+
+    def _patch_rects(self, rects, overlay=None) -> None:
+        """Patch a handful of rectangles as one when they are close, one by
+        one when they are not — an arrow across the screen touches a thin
+        diagonal band, and its bounding box would be most of the screen."""
+        rects = [r for r in rects if r is not None]
+        if not rects:
+            return
+        whole = None
+        area = 0
+        for rect in rects:
+            whole = _union(whole, rect)
+            area += (rect[2] - rect[0]) * (rect[3] - rect[1])
+        span = (whole[2] - whole[0]) * (whole[3] - whole[1])
+        if span <= max(2 * area, 120_000):
+            return self._patch(whole, overlay)
+        for rect in rects:
+            self._patch(rect, overlay)
 
     def _edit_release(self, event) -> None:
         if self._spectrum_drag:
@@ -4000,6 +4164,22 @@ class ShotWindow:
                 "colour": tuple(self.colour)}
         if self.tool != "blur":
             mark["width"] = stroke_width(self.tool, self.size)
+        if self.tool in INKED and self._live_mask is not None:
+            # Bring the live mask to exactly the mark's points — the last
+            # stretch to where the button came up — and file it as the
+            # mark's stamp. The release draws the stroke no second time.
+            if self.tool in ("pen", "highlight"):
+                if len(points) > self._laid:
+                    self._lay_live(points)
+            elif self._live_end != tuple(points[-1]):
+                self._lay_live(points)
+            keep_live_stamp(self.tool, points, self.colour, mark["width"],
+                            self._live_mask, (self._vx, self._vy))
+            # The screen already shows exactly this mark — the preview IS
+            # it — so the commit puts it into the picture and repaints
+            # nothing (_commit, `shown`).
+            self._commit(mark, shown=True)
+            return self._drop_preview(live)
         self._commit(mark)
         # ...and only then the preview goes. This order IS the fix for "it
         # disappears for a split second and then appears": the preview
@@ -4008,7 +4188,7 @@ class ShotWindow:
         # picture without the stroke.
         self._drop_preview(live)
 
-    def _commit(self, mark: dict) -> None:
+    def _commit(self, mark: dict, shown: bool = False) -> None:
         """One new mark: into the history, into the picture, onto the screen.
 
         THE PICTURE TAKES THE MARK IN PLACE (`mark_into`, the very function
@@ -4020,6 +4200,13 @@ class ShotWindow:
         nothing else. When the layers are not in step with what is on the
         screen (nothing painted yet), it falls back to the whole repaint,
         at once rather than next tick.
+
+        `shown`: the live preview already put these very pixels on the
+        screen (it is laid from the mark's own pieces), so nothing is
+        blitted at all — the picture takes the mark, and the window's PIL
+        copy of what is on the screen is brought up to date the next time
+        something reads it (`_settle_scene`). The release of a stroke
+        across a 1440p shot spent ~20 ms repainting what was already there.
         """
         in_step = (self._pic is not None and self._pic_key == self._pic_want()
                    and self._stage_painted == self._stage_want())
@@ -4034,57 +4221,91 @@ class ShotWindow:
         self._stage_painted = self._stage_want()
         region = _union(rect, self._preview_box)
         self._preview_box = None
-        if region is not None:
+        if region is None:
+            return
+        if shown:
+            self._scene_stale = _union(self._scene_stale, region)
+        else:
             self._patch(region)
 
     def _drop_preview(self, live) -> None:
         """Take the live stroke off the canvas — after whatever replaces it
-        is already there. The highlighter's preview is painted INTO the
-        stage rather than over it (see _preview_highlight), so a stroke
-        that was not kept puts back the rectangle it touched."""
+        is already there. The ink's preview is painted INTO the stage
+        rather than over it (see _lay_live), so a stroke that was not kept
+        puts back the rectangle it touched."""
         for item in live:
             self.canvas.delete(item)
         if self._preview_box is not None:
             box, self._preview_box = self._preview_box, None
             self._patch(box)
-        self._mask = None
+        self._live_mask = None
+        self._live_rects = []
 
     def _under_bar(self, item):
-        """A live stroke goes under the toolbar and the palette, never over
-        them: the mark it becomes is clipped to the picture."""
+        """A live outline goes under the toolbar and the palette, never over
+        them: what it outlines is clipped to the picture."""
         if self._bar_item is not None:
             self.canvas.tag_lower(item, self._bar_item)
         return item
 
-    def _preview_highlight(self, a, b, width: int) -> None:
-        """The highlighter's live stroke, painted into the stage itself.
+    def _mark_rect(self, mark: dict):
+        """Where a mark can have changed the picture, virtual pixels."""
+        points = mark.get("points", ())
+        if len(points) < 2:
+            return None
+        if mark["kind"] == "blur":
+            return normalize_bbox(points[0][0], points[0][1],
+                                  points[-1][0], points[-1][1])
+        stroke = int(mark.get("width") or _MARK_W.get(mark["kind"], PEN_W))
+        return stamp_rect(mark["kind"], points, stroke)
 
-        Tk has no alpha, so the canvas line the highlighter used to be
-        previewed with was SOLID — an opaque bar that became a see-through
-        tint only at the release, a second jump on top of the flash. This
-        draws the stroke into a mask and composites only the rectangle each
-        move adds, at the highlighter's own alpha over the picture, so
-        what is under the pointer is what the release keeps.
+    def _unpaint(self, gone) -> None:
+        """Undo of a stroke: the picture is drawn again only where the
+        strokes that went had been, and that rectangle only is patched.
+
+        A whole repaint of a 2560x1440 picture was ~100-160 ms per press of
+        Undo, and Undo is the button people press five times in a row. The
+        rectangle grows to hold WHOLE any blur that crosses it, because a
+        mosaic's blocks are counted from its own corner: half a blur drawn
+        again would be a different mosaic. `render_shot` over the
+        rectangle is then the same pixels as over the picture.
         """
-        from PIL import Image, ImageDraw
-        left, top = self.box[0], self.box[1]
-        if self._mask is None:
-            self._mask = Image.new("L", (self.box[2] - left,
-                                         self.box[3] - top), 0)
-        draw = ImageDraw.Draw(self._mask)
-        pa = (a[0] - left, a[1] - top)
-        pb = (b[0] - left, b[1] - top)
-        half = width / 2
-        draw.line([pa, pb], fill=255, width=int(width))
-        ends = (pb,) if self._preview_box is not None else (pa, pb)
-        for px, py in ends:              # round ends, as the stamp has
-            draw.ellipse((px - half, py - half, px + half, py + half),
-                         fill=255)
-        reach = half + 2
-        region = (min(a[0], b[0]) - reach, min(a[1], b[1]) - reach,
-                  max(a[0], b[0]) + reach + 1, max(a[1], b[1]) + reach + 1)
-        self._preview_box = _union(self._preview_box, region)
-        self._patch(region, overlay=(self._mask, self.colour))
+        left, top, right, bottom = self.box
+        region = None
+        for mark in gone:
+            region = _union(region, self._mark_rect(mark))
+        if region is not None:
+            region = clamp_box(region, self.box)
+            grown = True
+            while grown:
+                grown = False
+                for mark in self.marks:
+                    if mark["kind"] != "blur":
+                        continue
+                    blur = self._mark_rect(mark)
+                    if blur is None:
+                        continue
+                    blur = clamp_box(blur, self.box)
+                    crosses = not (blur[2] <= region[0] or region[2] <= blur[0]
+                                   or blur[3] <= region[1]
+                                   or region[3] <= blur[1])
+                    inside = (region[0] <= blur[0] and region[1] <= blur[1]
+                              and blur[2] <= region[2]
+                              and blur[3] <= region[3])
+                    if crosses and not inside:
+                        region = _union(region, blur)
+                        grown = True
+        if region is not None and region[2] > region[0] \
+                and region[3] > region[1]:
+            part = render_shot(self.full, region, self.marks, self.path,
+                               screen_origin=(self._vx, self._vy))
+            self._pic.paste(part.convert("RGBA"),
+                            (region[0] - left, region[1] - top))
+        self._pic_key = self._pic_want()
+        self._pic_path = self.path
+        self._stage_painted = self._stage_want()
+        if region is not None:
+            self._patch(region)
 
     def _crop_stage(self) -> tuple[int, int, int, int]:
         """The rectangle the crop tool is allowed to work in.
@@ -4147,9 +4368,22 @@ class ShotWindow:
             state, self.history = undo_step(self.history)
             if state is None:
                 return self.say("nothing to undo")
-            self.box, self.path, marks = state
+            box, path, marks = state
+            # Taking strokes back, and nothing else: the picture is drawn
+            # again only where they were (_unpaint). A crop undone, or a
+            # picture not yet in step with the screen, is the whole repaint.
+            only_ink = (box == self.box and path is self.path
+                        and len(marks) < len(self.marks)
+                        and all(a is b for a, b in zip(marks, self.marks))
+                        and self._pic is not None
+                        and self._pic_key == self._pic_want()
+                        and self._stage_painted == self._stage_want())
+            gone = self.marks[len(marks):]
+            self.box, self.path = box, path
             self.marks = list(marks)
             self._rev += 1
+            if only_ink:
+                return self._unpaint(gone)
             self._dirty = True
             return
         if name == "copy":
@@ -4267,9 +4501,8 @@ class ShotWindow:
         than one new stroke (an undo — a new stroke is `_commit`'s and
         never comes here).
         """
-        from PIL import ImageTk
         canvas = self.canvas
-        if self._stage_item is None:
+        if self._tile_grid is None:
             canvas.delete("sel")         # the selection drag's own leftovers
         back = self._back()
         stage = back or self.box
@@ -4285,17 +4518,96 @@ class ShotWindow:
         scene = scene.convert("RGB")
         self._draw_edge(scene, (0, 0))
         self._scene = scene
-        self._scene_rev += 1
-        photo = ImageTk.PhotoImage(scene, master=self.root)
-        if self._stage_item is None:
-            self._stage_item = canvas.create_image(sx, sy, anchor="nw",
-                                                   image=photo, tags="stage")
-        else:
-            canvas.coords(self._stage_item, sx, sy)
-            canvas.itemconfigure(self._stage_item, image=photo)
-        self._keep["stage"] = photo
+        self._scene_changed(None)
+        self._scene_stale = None
+        self._lay_tiles(scene)
         self._stage_painted = self._stage_want()
         self._stage_path = self.path     # held, so its id cannot be reused
+
+    def _lay_tiles(self, scene) -> None:
+        """The stage onto the canvas as tiles of STAGE_TILE px, not one photo.
+
+        Measured 2026-10-17: Tk's photo `copy` costs in proportion to the
+        photo copied INTO, not to what is copied — after every put it reads
+        the whole destination's alpha to decide how to draw it (Tk 8.6's
+        ToggleComplexAlphaIfNeeded). 40x40 px into a 2560x1440 photo was
+        0.95 ms, into a 256x256 one 0.02 ms. A long arrow re-laid at every
+        move is a few dozen patches, and on one photo that was 35-50 ms a
+        move; on tiles each patch pays for the tiles it lands on.
+        """
+        from PIL import ImageTk
+        canvas = self.canvas
+        sx, sy = self._stage_at
+        grid = (sx, sy, scene.size)
+        old = self._keep.get("tiles", {})
+        same = grid == self._tile_grid
+        tiles = {}
+        for ty in range(0, scene.height, STAGE_TILE):
+            for tx in range(0, scene.width, STAGE_TILE):
+                photo = ImageTk.PhotoImage(
+                    scene.crop((tx, ty, min(tx + STAGE_TILE, scene.width),
+                                min(ty + STAGE_TILE, scene.height))),
+                    master=self.root)
+                if same:
+                    item = old[(tx, ty)][1]
+                    canvas.itemconfigure(item, image=photo)
+                else:
+                    item = canvas.create_image(sx + tx, sy + ty, anchor="nw",
+                                               image=photo, tags="stage")
+                tiles[(tx, ty)] = (photo, item)
+        if not same:
+            for _photo, item in old.values():
+                canvas.delete(item)
+            # Just over the dim backdrop and under everything else: the
+            # toolbar, the palette, an outline being dragged.
+            canvas.tag_raise("stage", self._backdrop)
+        self._keep["tiles"] = tiles
+        self._tile_grid = grid
+        self._stage_gen += 1
+
+    def _blit(self, piece, lx: int, ly: int) -> None:
+        """An RGB piece onto the stage's tiles at stage pixel (lx, ly)."""
+        from PIL import ImageTk
+        tiles = self._keep.get("tiles")
+        if not tiles:
+            return
+        # ONE scratch photo for every blit, pasted into and copied out of
+        # by its corner — a photo created and deleted per patch was half
+        # the Tk calls a live arrow made.
+        scratch = self._keep.get("scratch")
+        if scratch is None:
+            scratch = self._keep["scratch"] = ImageTk.PhotoImage(
+                "RGB", (STAGE_TILE, STAGE_TILE), master=self.root)
+        x1, y1 = lx + piece.width, ly + piece.height
+        for ty in range(ly - ly % STAGE_TILE, y1, STAGE_TILE):
+            for tx in range(lx - lx % STAGE_TILE, x1, STAGE_TILE):
+                tile = tiles.get((tx, ty))
+                if tile is None:
+                    continue
+                ix0, iy0 = max(lx, tx), max(ly, ty)
+                ix1 = min(x1, tx + STAGE_TILE)
+                iy1 = min(y1, ty + STAGE_TILE)
+                if ix1 <= ix0 or iy1 <= iy0:
+                    continue
+                part = piece if (ix0, iy0, ix1, iy1) == (lx, ly, x1, y1) \
+                    else piece.crop((ix0 - lx, iy0 - ly, ix1 - lx, iy1 - ly))
+                scratch.paste(part)
+                self.root.tk.call(str(tile[0]), "copy", str(scratch),
+                                  "-from", 0, 0, ix1 - ix0, iy1 - iy0,
+                                  "-to", ix0 - tx, iy0 - ty)
+
+    def _stage_pixel(self, x: int, y: int) -> tuple[int, int, int]:
+        """The colour the stage shows at a virtual-screen point, read back
+        off Tk's own photo — what is on the canvas, not what should be."""
+        sx, sy = self._stage_at
+        lx, ly = x - self._vx - sx, y - self._vy - sy
+        tile = self._keep["tiles"][(lx - lx % STAGE_TILE,
+                                    ly - ly % STAGE_TILE)]
+        got = self.root.tk.call(str(tile[0]), "get", lx % STAGE_TILE,
+                                ly % STAGE_TILE)
+        if isinstance(got, str):
+            got = got.split()
+        return tuple(int(v) for v in got)[:3]
 
     def _build_frame(self, stage, back):
         """What lies UNDER the picture: the dim, the halo, the faint part.
@@ -4346,19 +4658,28 @@ class ShotWindow:
             self._pic_path = self.path
         return self._pic
 
-    def _patch(self, region, overlay=None) -> None:
+    def _settle_scene(self) -> None:
+        """Bring the window's PIL copy of the stage up to what the screen
+        shows, where a commit left it behind (`_commit`, `shown`). Called
+        by whatever reads the copy — the palette's glass — and never on
+        the way to the screen, which is already right."""
+        stale, self._scene_stale = self._scene_stale, None
+        if stale is not None:
+            self._patch(stale, blit=False)
+
+    def _patch(self, region, overlay=None, blit: bool = True) -> None:
         """Repaint one rectangle of the stage, from the layers, in place.
 
         Into the photo that is already on the canvas, by Tk's own `copy`
         — so nothing is replaced, nothing is re-sent and only that
         rectangle is redrawn. `region` is in virtual-screen pixels and is
         clipped to the picture, because nothing outside the picture can
-        have changed. `overlay` is the highlighter's live stroke (a mask
-        and a colour): a PREVIEW, painted over the picture and not into
-        it, so the scene this window keeps of what is final is left alone.
+        have changed. `overlay` is the live stroke (its coverage mask, the
+        size of the surface; its colour; its kind): a PREVIEW, painted over
+        the picture and not into it, so the scene this window keeps of what
+        is final is left alone.
         """
-        from PIL import Image, ImageTk
-        if self._pic is None or self._frame is None or self._stage_item is None:
+        if self._pic is None or self._frame is None or not self._tile_grid:
             return
         left, top, right, bottom = self.box
         x0, y0 = max(int(region[0]), left), max(int(region[1]), top)
@@ -4373,18 +4694,17 @@ class ShotWindow:
         piece = self._frame.crop((lx0, ly0, lx1, ly1))
         piece.alpha_composite(self._pic.crop(inside))
         if overlay is not None:
-            mask, colour = overlay
-            tint = Image.new("RGBA", piece.size, tuple(colour) + (0,))
-            tint.putalpha(mask.crop(inside).point(_HIGHLIGHT_LUT))
-            piece.alpha_composite(tint)
+            mask, colour, kind = overlay
+            piece.alpha_composite(tint_mask(
+                mask.crop((x0 - self._vx, y0 - self._vy,
+                           x1 - self._vx, y1 - self._vy)), colour, kind))
         piece = piece.convert("RGB")
         self._draw_edge(piece, (lx0, ly0))
         if overlay is None:
             self._scene.paste(piece, (lx0, ly0))
-            self._scene_rev += 1
-        photo = ImageTk.PhotoImage(piece, master=self.root)
-        self.root.tk.call(str(self._keep["stage"]), "copy", str(photo),
-                          "-to", lx0, ly0)
+            self._scene_changed((x0, y0, x1, y1))
+        if blit:
+            self._blit(piece, lx0, ly0)
 
     def _draw_edge(self, img, offset) -> None:
         """The blue hairline round the picture, into `img`, whose top-left
@@ -4816,6 +5136,7 @@ class ShotWindow:
         """(what is behind `rect`, `rect` inside it): the dim with the lit
         picture laid in, so a palette over the picture is glass over the
         picture and not over the dark it is not standing on."""
+        self._settle_scene()
         pad = 44
         x0, y0 = max(0, rect[0] - pad), max(0, rect[1] - pad)
         x1 = min(self.dark.width, rect[2] + pad)
@@ -4832,20 +5153,52 @@ class ShotWindow:
                            (ix0 - x0, iy0 - y0))
         return back, (rect[0] - x0, rect[1] - y0, rect[2] - x0, rect[3] - y0)
 
+    def _scene_changed(self, rect) -> None:
+        """Note that the scene changed over `rect` (virtual pixels; None is
+        all of it), so a glass built over it knows whether it is stale."""
+        self._scene_rev += 1
+        self._scene_log.append((self._scene_rev, rect))
+        if len(self._scene_log) > 400:
+            del self._scene_log[:200]
+
+    def _changed_since(self, rev: int, rect) -> bool:
+        if self._scene_log and self._scene_log[0][0] > rev + 1:
+            return True                   # older than the log remembers
+        for at, changed in reversed(self._scene_log):
+            if at <= rev:
+                return False
+            if changed is None or not (changed[2] <= rect[0]
+                                       or rect[2] <= changed[0]
+                                       or changed[3] <= rect[1]
+                                       or rect[3] <= changed[1]):
+                return True
+        return False
+
+    def _palette_glass_for(self, rect):
+        """The palette's glass over `rect` (canvas pixels), built when what
+        is behind it changed and kept otherwise — a stroke at the other end
+        of the picture does not make the glass over the toolbar stale."""
+        self._settle_scene()
+        ground = (rect[0] - 44 + self._vx, rect[1] - 44 + self._vy,
+                  rect[2] + 44 + self._vx, rect[3] + 44 + self._vy)
+        kept = self._palette_glass
+        if kept is not None and kept[0] == rect \
+                and not self._changed_since(kept[1], ground):
+            return kept[2], kept[3]
+        back, local = self._glass_ground(rect)
+        self._palette_glass = (rect, self._scene_rev,
+                               _vq.glass_plate(back, local,
+                                               radius=PALETTE_RADIUS),
+                               back.crop(local).convert("RGBA"))
+        return self._palette_glass[2], self._palette_glass[3]
+
     def _paint_palette(self) -> None:
         from PIL import ImageTk
         pw, ph = self._palette["size"]
         px, py = self._palette_at
         lx, ly = px - self._vx, py - self._vy
         rect = (lx, ly, lx + pw, ly + ph)
-        key = (rect, self._scene_rev)
-        if self._palette_glass is None or self._palette_glass[0] != key:
-            back, local = self._glass_ground(rect)
-            self._palette_glass = (key,
-                                   _vq.glass_plate(back, local,
-                                                   radius=PALETTE_RADIUS),
-                                   back.crop(local).convert("RGBA"))
-        _key, glass, ground = self._palette_glass
+        glass, ground = self._palette_glass_for(rect)
         plate = glass.copy()
         self._draw_palette_content(plate)
         under = ground.copy()
@@ -4858,6 +5211,41 @@ class ShotWindow:
             self.canvas.coords(self._palette_item, lx, ly)
             self.canvas.itemconfigure(self._palette_item, image=photo)
         self._keep["palette"] = photo
+
+    def _warm_up(self):
+        """What opening the palette needs, built while the editor is idle,
+        one piece per tick of the pump.
+
+        Measured 2026-10-17: the FIRST open of the palette was 70-130 ms —
+        the rainbow (18 k pixels through colorsys), every swatch and ring
+        and dot as a sprite, and the glass — all of it on the click. None of
+        it depends on anything but where the toolbar is, so it is made
+        while nothing is happening and the click only lays it out.
+        """
+        from PIL import Image
+        x0, y0, x1, y1 = self._palette["spots"]["spectrum"]
+        spectrum_image((x1 - x0, y1 - y0))
+        yield
+        self._draw_palette_content(Image.new("RGBA", self._palette["size"]))
+        yield
+        if self._bar_at is not None and not self._palette_open:
+            self._place_palette()
+            pw, ph = self._palette["size"]
+            px, py = self._palette_at
+            self._palette_glass_for((px - self._vx, py - self._vy,
+                                     px - self._vx + pw, py - self._vy + ph))
+        yield
+
+    def _warm_step(self) -> None:
+        if self._warmth is None:
+            self._warmth = self._warm_up()
+        try:
+            next(self._warmth)
+        except StopIteration:
+            self._warmth = False
+        except Exception:                 # a decoration: never fatal
+            log.exception("the palette's warm-up failed")
+            self._warmth = False
 
     def _swatch(self, plate, spot, rgb, hot: bool) -> None:
         x0, y0, x1, y1 = spot
@@ -5001,6 +5389,10 @@ class ShotWindow:
                 except self.tk.TclError:
                     break
                 drawing = self._start is not None or self._spectrum_drag
+                if (not drawing and self._warmth is not False
+                        and self.phase == "edit" and self._bar_at is not None
+                        and time.monotonic() - self._last_input > 0.25):
+                    self._warm_step()
                 time.sleep(DRAW_TICK_S if drawing else _TICK_S)
         finally:
             self._keep.clear()
