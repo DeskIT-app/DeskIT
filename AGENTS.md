@@ -29,7 +29,8 @@ it at most `summary_wait_s` and is the old card when the answer is
 late, the key missing or the cloud-text gate shut — and only the
 `[notify] interrupt` kinds ringing — with reminders, `ctrl+alt+m` to
 dismiss them
-all, a × per card and a click on a card to go to whoever sent it — how
+all, a × per card, a Clear all pill above the column once two are
+waiting, and a click on a card to go to whoever sent it — how
 Claude Code says it is done, and, through the Windows toasts the desktop
 app raises, how Cowork does too: notify_watch.py, `[notify] watch`; the
 unread ones are rows in the dashboard's Waiting pile), a report key that files the owner's own
@@ -1625,6 +1626,25 @@ exactly what classic did.
   `BitBlt ... SRCCOPY | CAPTUREBLT` exists precisely to include layered
   windows. Measured 2026-08-25: 60000/60000 pixels before the flag, 0
   after. Leave those two calls alone.
+- **The notify column's glass is the COMPOSITOR'S blur, live; a grab is
+  a photograph.** Until 2026-10-18 the frost under the cards was one
+  ImageGrab, blurred, taken when the window was built — so a window moved
+  behind the column stayed the old picture, and he asked for it live.
+  `Glass.blur_behind()` (SetWindowCompositionAttribute, accent state 3,
+  what the taskbar uses) has DWM blur what is behind every frame; it fills
+  the window's whole REGION whatever the picture's alpha, so
+  `Glass.shape(notify_card.coverage_rects(notify_card.stack_shapes(...)))`
+  cuts the window to the cards and the Clear-all pill, each grown by a
+  pixel so the 1-bit edge clips nothing antialiased (a test renders the
+  faces and checks both ways). Re-cut it after every relayout. The grab
+  stays as the fallback for a Windows that refuses the call. And a column
+  that CHANGES is the same window resized in place (`Glass.resize` works
+  on the GPU now): rebuilding it on every close was the "all the cards
+  vanish for a second" he reported, the same day — so `NotifyCard.pressed`
+  takes one card off at once and `_gone` keeps a crossing engine answer
+  from putting it back. Seen on a real screen by his eyes only; the
+  hidden desktop proves the calls succeed (blur True, region set, same
+  hwnd), not the look.
 - **The notify door rings for what is waiting on him, not for every
   turn — and the fix was not `coalesce_s`.** Claude Code's Stop hook
   fires at the end of EVERY turn; counted 2026-09-05, 87 of the last 100
