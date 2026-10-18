@@ -56,9 +56,10 @@ Reversim test and night6's d1 are lower than in the pen 1.0 rows):
 |---|---|---|---|---|---|---|
 | today's | 1,109 | 1,309 | **665** | **499** | 2,536 | 1,228 |
 | night4 | 1,122 | 792 | 833 | 592 | 2,565 | **738** |
-| night6 | 1,096 | **783** | 818 | 574 | **2,530** | 776 |
+| night6 | 1,096 | **783** | 818 | 574 | 2,530 | 776 |
 | night7 (night6 + verbatim labels) | **1,093** | 824 | 788 | 547 | 2,542 | 741 |
 | night8 (night7, clips still missing 2+ heard words left out) | 1,100 | 851 | 767 | 539 | 2,541 | 741 |
+| night9 (night8 again) | 1,097 | 863 | 763 | 549 | **2,501** | 740 |
 
 **night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
 5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
@@ -94,6 +95,28 @@ his Dev copy for days of real dictation** (`local.model` in settings.toml =
 `DeskIT-training\runs\night8\ct2`; one line back to
 `ivrit-ai/whisper-large-v3-turbo-ct2` undoes it), **and night9 = night8
 repeated** (`night_teacher9.ps1`, 2026-10-18 03:15) — the plan's two runs.
+
+**night9 (2026-10-18): night8 reproduces.** Within 12 words of night8 on
+five sets, 40 better on the FLEURS test: the recipe is stable, its spread
+small. **His first word from the Dev copy (2026-10-18, a few dictations):**
+"the sentence comes out more correct as a whole but less exact to what I
+said — it leaves out a word here and there; the old one gave messier
+sentences closer to my speech; I think it is a little better." Checked on
+his 31 dictations since night8 went live, both models decoding the same
+way, neither taken as truth: night8 left out 7 words the old model wrote
+(כאילו x2, בעצם, בסדר, הוא, a repeated word) and wrote 6 it left out — a
+small, real lean toward dropping discourse words on HIS speech, which the
+public sets showed as gone. And one thing to watch: decoded WHOLE, his
+30.7 s answer ended in "ותודה רבה" x44 under night8 (even with the old
+penalty: "תודה רבה לך, אדוני היושב-ראש") — the Knesset tail after the end
+of speech. The live paste of that recording was clean (rolling windows, and
+the app's boilerplate strip), 0 decoder loops in app.log over the 31; but
+the training clips end 0.1 s after the last word, so the model rarely sees
+silence after speech — a candidate for a later night (clips with a second
+of trailing silence). **Before any trained model ships to other people:**
+Reversim's episodes are "© רברס עם פלטפורמה", downloaded for private use on
+this PC (DeskIT-training\README.txt) — a model trained on them is his
+decision, with that in front of him.
 
 The decode is deterministic (temperature pinned), so a variant of ONE model
 differs by its setting alone; two TRAINED runs (night4/night5) differ by 5-8
@@ -192,7 +215,14 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
-- **night9 (armed for 2026-10-18 03:15)**: night8 again, to measure its spread.
+- **night10 (armed for 2026-10-19 00:30, `night_teacher10.ps1`)**: night8 with
+  the add-on also on the encoder — the TOP FOUR layers (28-31). Measured
+  first: the whole encoder ran out of memory beside the app (13.6 GiB) and
+  with gradient checkpointing took 8.6 s a step (~31 h an epoch); the top 8
+  ran out at batch 8 and took 3.3 s a step at 4x4; the top 4 at batch 8 is
+  2.15 s a step and 7.3 GiB — ~7.9 h, hence the earlier start. Compared
+  with night8 AND night9.
+- **night9 (done 2026-10-18)**: night8 again — reproduces (§1).
 - **night8 (done 2026-10-16, `night_teacher8.ps1`; §1)**: night7 with
   ONE change — the Reversim clips whose verbatim label still lacks 2+ heard
   words left out, both copies (`build_night8_data.py`,
