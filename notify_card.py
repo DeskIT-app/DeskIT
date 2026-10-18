@@ -80,7 +80,21 @@ RADIUS = 20
 BODY_LINES = 4
 SCALE_MIN, SCALE_MAX = 0.6, 1.4
 
-DISMISS, DRAG, BUTTON = "dismiss", "drag", "button"
+DISMISS, DRAG, BUTTON, CLEAR = "dismiss", "drag", "button", "clear"
+
+# THE CLEAR-ALL PILL (2026-10-18). His words: "a button for Clear All so
+# I don't have to close them one by one". It is its own small piece of
+# glass ABOVE the newest card, on the left, in the same column as every
+# card's × — the side the eye already goes to to close something — and it
+# is there only while two or more notifications are unread (a lone card
+# has its own ×, and a pill that clears one card is a second × in a worse
+# place). It means what Esc over the column and the dismiss key have
+# always meant: `pressed("dismiss", None)`, every unread one seen, the
+# ones the column had no room for included. Fixed size, so the hit test
+# stays arithmetic.
+CLEAR_W = 128
+CLEAR_H = 26
+CLEAR_TEXT = "Clear all"
 
 # The id of the pinned screens card — overlay.NotifyCard and main.py agree
 # on it, and a notification can never carry it (notify ids are numbers).
@@ -454,6 +468,33 @@ def hit_test(card: dict, scale: float, x: int, y: int):
 # grows away from the newest card and the one you just read never moves.
 # ---------------------------------------------------------------------------
 
+def clear_count(cards) -> int:
+    """How many notifications a Clear all would see: the column's own
+    cards or the engine's unread count, whichever is larger — the column
+    is cut at `[notify] stack_max` and every card carries the whole
+    count. The pinned card is never one of them."""
+    notes = [c for c in cards if not is_pinned(c)]
+    if not notes:
+        return 0
+    try:
+        unread = int(notes[0].get("unread") or 0)
+    except (TypeError, ValueError):
+        unread = 0
+    return max(len(notes), unread)
+
+
+def clear_box(cards, scale: float = 1.0):
+    """The Clear-all pill, WINDOW-relative (x0, y0, x1, y1), or None while
+    fewer than two notifications are unread. It takes the top of the
+    window, so the cards start under it; the bottom edge — the one the
+    window is anchored by — does not move when it comes and goes."""
+    if clear_count(cards) < 2:
+        return None
+    s = clamp_scale(scale)
+    return (SHADOW, SHADOW, SHADOW + int(round(CLEAR_W * s)),
+            SHADOW + int(round(CLEAR_H * s)))
+
+
 def stack_layout(cards, scale: float = 1.0) -> list:
     """One (x, y, w, h) per card, WINDOW-relative, in the order given.
 
@@ -461,12 +502,16 @@ def stack_layout(cards, scale: float = 1.0) -> list:
     own height plus GAP, so a column of cards that measure differently
     still has exactly one gap between each pair. The widths are equal in
     practice — every card is CARD_W at the same scale — and nothing here
-    assumes it: `stack_measure` takes the widest.
+    assumes it: `stack_measure` takes the widest. With the Clear-all pill
+    up (`clear_box`), the first card starts one GAP under it.
     """
     s = clamp_scale(scale)
     gap = int(round(GAP * s))
     places = []
     y = SHADOW
+    pill = clear_box(cards, s)
+    if pill is not None:
+        y = pill[3] + gap
     for card in cards:
         width, height = measure(card, s)
         places.append((SHADOW, int(y), int(width), int(height)))
@@ -481,8 +526,83 @@ def stack_measure(cards, scale: float = 1.0) -> tuple[int, int]:
     if not places:
         return 2 * SHADOW, 2 * SHADOW
     width = max(w for _x, _y, w, _h in places)
+    pill = clear_box(cards, scale)
+    if pill is not None:
+        width = max(width, pill[2] - pill[0])
     bottom = max(y + h for _x, y, _w, h in places)
     return int(width + 2 * SHADOW), int(bottom + SHADOW)
+
+
+def stack_shapes(cards, scale: float = 1.0) -> list:
+    """Every piece of glass in the window as (x, y, w, h, radius): the
+    Clear-all pill first when it is up (a capsule, radius h/2), then one
+    rounded card per entry of `stack_layout`. What the painter draws a
+    face on and what the live blur behind the window is cut to — one list,
+    so the two cannot disagree about where the glass is."""
+    s = clamp_scale(scale)
+    shapes = []
+    pill = clear_box(cards, s)
+    if pill is not None:
+        x0, y0, x1, y1 = pill
+        shapes.append((x0, y0, x1 - x0, y1 - y0, (y1 - y0) / 2))
+    for x, y, w, h in stack_layout(cards, s):
+        shapes.append((x, y, w, h, RADIUS * s))
+    return shapes
+
+
+def coverage_rects(shapes, outset: float = 1.0) -> list:
+    """The pixels the shapes touch, as merged (x0, y0, x1, y1) rectangles
+    — the window region the live blur is clipped to (skin\\glass.shape).
+
+    A pixel is IN when any part of it lies inside its rounded rectangle
+    grown by `outset`: the face is antialiased and its rim is a 1 px
+    stroke centred ON the edge, so half of it sits outside the geometric
+    rectangle, and a region that cut there would put the stair-case of a
+    1-bit mask straight onto the curve the face draws smooth. Grown by a
+    pixel, the region clips nothing the painter drew and lets the blur
+    show at most one pixel past the rim. Rows with the same span — every
+    row of a card between its corners — merge into one rectangle, so a
+    column is a few dozen rectangles, not a thousand.
+    """
+    import math
+    rows: dict = {}
+    for x, y, w, h, r in shapes:
+        x0, y0 = x - outset, y - outset
+        x1, y1 = x + w + outset, y + h + outset
+        r = max(0.0, min(float(r) + outset, (x1 - x0) / 2, (y1 - y0) / 2))
+        for j in range(int(math.floor(y0)), int(math.ceil(y1))):
+            # the part of row j's band [j, j+1] inside [y0, y1], and the
+            # widest the shape is anywhere in it: the band's edge nearest
+            # the shape's middle
+            top, bot = max(j, y0), min(j + 1, y1)
+            if bot <= top:
+                continue
+            if bot <= y0 + r:
+                dy = (y0 + r) - bot
+            elif top >= y1 - r:
+                dy = top - (y1 - r)
+            else:
+                dy = 0.0
+            inset = r - math.sqrt(max(0.0, r * r - dy * dy)) if dy > 0 else 0
+            left = int(math.floor(x0 + inset))
+            right = int(math.ceil(x1 - inset))
+            if right > left:
+                rows.setdefault(j, []).append((left, right))
+    rects = []
+    open_runs: dict = {}            # (left, right) -> [x0, y0, x1, y1]
+    for j in sorted(rows):
+        spans = sorted(set(rows[j]))
+        still = {}
+        for span in spans:
+            run = open_runs.get(span)
+            if run is not None and run[3] == j:
+                run[3] = j + 1
+            else:
+                run = [span[0], j, span[1], j + 1]
+                rects.append(run)
+            still[span] = run
+        open_runs = still
+    return [tuple(r) for r in rects]
 
 
 def stack_hit_test(cards, scale: float, x: int, y: int):
@@ -494,8 +614,15 @@ def stack_hit_test(cards, scale: float, x: int, y: int):
     whole column. Same for the shadow margin, for the same reason the
     single card has always handed it back: this thing sits over the right
     edge of the screen, where the close button of a maximised window is.
+
+    The Clear-all pill answers HTCLIENT with index None — it belongs to no
+    one card — and `(None, CLEAR)` is what a presenter turns into
+    `pressed("dismiss", None)`.
     """
     s = clamp_scale(scale)
+    pill = clear_box(cards, s)
+    if pill is not None and _in(pill, x, y):
+        return HTCLIENT, (None, CLEAR)
     for index, (cx, cy, width, height) in enumerate(stack_layout(cards, s)):
         if not (cx <= x <= cx + width and cy <= y <= cy + height):
             continue
@@ -749,6 +876,35 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     return img
 
 
+def compose_clear(cards, scale: float = 1.0, hover: bool = False,
+                  cache: dict | None = None):
+    """The Clear-all pill's CONTENT on a transparent ground, the size of
+    `clear_box` — a ×, the words, and how many it will clear, faint, at
+    the far end — or None while there is no pill. The face is the
+    presenter's, exactly as with compose()."""
+    cache = cache if cache is not None else {}
+    s = clamp_scale(scale)
+    pill = clear_box(cards, s)
+    if pill is None:
+        return None
+    w, h = pill[2] - pill[0], pill[3] - pill[1]
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ink = INK if hover else INK_DIM
+    glyph = _cross(cache, h * 0.78, ink)
+    x = 5 * s
+    img.alpha_composite(glyph, (int(x), int((h - glyph.height) / 2)))
+    x += glyph.width
+    words = _text(cache, CLEAR_TEXT, 8.5 * s, colour=ink, weight=600,
+                  rtl=False)
+    img.alpha_composite(words, (int(x), int((h - words.height) / 2)))
+    count = _text(cache, f"{clear_count(cards)}", 8.5 * s, colour=INK_FAINT,
+                  weight=600, rtl=False)
+    cx = w - 12 * s - count.width
+    if cx >= x + words.width + 6 * s:
+        img.alpha_composite(count, (int(cx), int((h - count.height) / 2)))
+    return img
+
+
 def flat(card: dict, scale: float = 1.0, progress: float = 1.0,
          hover: str | None = None, cache: dict | None = None):
     """The card on a solid face — what the Tk fallback shows: a rounded
@@ -791,6 +947,14 @@ def stack_flat(cards, scale: float = 1.0, hover=None,
     s = clamp_scale(scale)
     width, height = stack_measure(cards, s)
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    pill = clear_box(cards, s)
+    if pill is not None:
+        pw, ph = pill[2] - pill[0], pill[3] - pill[1]
+        face = _rr((pw, ph), ph / 2, fill=CARD + (255,),
+                   outline=LINE + (255,))
+        face.alpha_composite(compose_clear(cards, s,
+                                           hover == (None, CLEAR), cache))
+        img.alpha_composite(face, (pill[0], pill[1]))
     for index, (x, y, _w, _h) in enumerate(stack_layout(cards, s)):
         what = hover[1] if (hover and hover[0] == index) else None
         img.alpha_composite(flat(cards[index], s, progress, what, cache),
@@ -800,7 +964,9 @@ def stack_flat(cards, scale: float = 1.0, hover=None,
 
 __all__ = ["ago", "card_for", "measure", "regions", "hit_test", "compose",
            "flat", "stack_layout", "stack_measure", "stack_hit_test",
-           "stack_flat", "clamp_scale", "pinned_card", "is_pinned", "BUTTON",
+           "stack_flat", "stack_shapes", "coverage_rects", "clear_box",
+           "clear_count", "compose_clear", "CLEAR", "CLEAR_W", "CLEAR_H",
+           "clamp_scale", "pinned_card", "is_pinned", "BUTTON",
            "BUTTON_H", "BUTTON_W", "PIN_ID", "FOOTER_H",
            "CARD_W", "SHADOW", "PAD", "RADIUS",
            "BODY_LINES", "SCALE_MIN", "SCALE_MAX", "HTTRANSPARENT",

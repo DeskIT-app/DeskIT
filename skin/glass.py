@@ -106,6 +106,22 @@ _gdi32.SelectObject.restype = ctypes.c_void_p
 _gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 _gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
 _gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+_gdi32.ExtCreateRegion.restype = ctypes.c_void_p
+_gdi32.ExtCreateRegion.argtypes = [ctypes.c_void_p, w.DWORD, ctypes.c_void_p]
+_user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, w.BOOL]
+_user32.SetWindowRgn.restype = ctypes.c_int
+_user32.GetWindowRgnBox.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_user32.GetWindowRgnBox.restype = ctypes.c_int
+try:
+    # Undocumented, and in user32 since Windows 7: the call the taskbar and
+    # Start use for the blur behind them. Looked up rather than assumed, so
+    # a Windows without it is a Glass without a live blur and nothing else.
+    _user32.SetWindowCompositionAttribute.argtypes = [ctypes.c_void_p,
+                                                      ctypes.c_void_p]
+    _user32.SetWindowCompositionAttribute.restype = w.BOOL
+    _COMPOSITION = True
+except AttributeError:
+    _COMPOSITION = False
 
 WS_POPUP = 0x80000000
 WS_EX_LAYERED = 0x00080000
@@ -166,6 +182,27 @@ class _POINT(ctypes.Structure):
 
 class _SIZE(ctypes.Structure):
     _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+
+class _ACCENT_POLICY(ctypes.Structure):
+    _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int),
+                ("GradientColor", ctypes.c_uint), ("AnimationId", ctypes.c_int)]
+
+
+class _WINCOMPATTRDATA(ctypes.Structure):
+    _fields_ = [("Attribute", ctypes.c_int), ("Data", ctypes.c_void_p),
+                ("SizeOfData", ctypes.c_size_t)]
+
+
+class _RGNDATAHEADER(ctypes.Structure):
+    _fields_ = [("dwSize", w.DWORD), ("iType", w.DWORD), ("nCount", w.DWORD),
+                ("nRgnSize", w.DWORD), ("rcBound", w.RECT)]
+
+
+WCA_ACCENT_POLICY = 19
+ACCENT_DISABLED, ACCENT_ENABLE_BLURBEHIND = 0, 3
+RDH_RECTANGLES = 1
+REGION_ERROR = 0                 # GetWindowRgnBox: no region on the window
 
 
 _WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p,
@@ -456,13 +493,20 @@ class Glass:
         """A new size for the same window — the same handle, so a mouse
         capture survives it (a corner drag resizes the hint card under the
         pointer it has captured). The next present() puts the picture up
-        at the new size. A window with a GPU surface is refused: nothing
-        that resizes has one."""
+        at the new size.
+
+        A window on the GPU gets a new render target of the new size from
+        the same context (2026-10-18: the notify column resizes in place
+        when one card of it goes, instead of being torn down and built
+        again — the rebuild was the "all of them vanish for a second" the
+        owner saw). If the driver refuses one, the window carries on on
+        the CPU rasteriser, which is slower and exactly as correct."""
         width, height = int(width), int(height)
         if (width, height) == (self.width, self.height) or not self.hwnd:
             return
-        if self.on_gpu:
-            raise RuntimeError("a GPU-backed glass window cannot resize")
+        gpu = None
+        if self.on_gpu and self._gr is not None:
+            gpu = self._gr.surface(width, height)
         self.width, self.height = width, height
         self.surface = self.canvas = None
         self._view = self._buf = None
@@ -472,9 +516,100 @@ class Glass:
             self._info = skia.ImageInfo.Make(width, height,
                                              skia.kBGRA_8888_ColorType,
                                              skia.kPremul_AlphaType)
-            self.surface = skia.Surface.MakeRasterDirect(
-                self._info, self._view, width * 4)
+            if gpu is not None:
+                self.surface = gpu
+            else:
+                self.on_gpu = False
+                self._gr = None
+                self.surface = skia.Surface.MakeRasterDirect(
+                    self._info, self._view, width * 4)
             self.canvas = self.surface.getCanvas() if self.surface else None
+
+    def blur_behind(self, on: bool = True) -> bool:
+        """Ask the compositor to blur whatever is BEHIND the window, live.
+
+        This is what the taskbar and Start do, and it is the only way a
+        translucent window can show the desktop moving behind it: the
+        picture of what is underneath is DWM's own, recomposed every
+        frame, so a window dragged behind the card is seen going behind
+        it as it moves (the owner's ask, 2026-10-18). Anything this
+        process grabs and blurs itself is a photograph, out of date the
+        moment it is taken — which is what the notify card's frost was.
+
+        The blur fills the window's whole REGION, under the per-pixel
+        picture, whatever that picture's alpha — so a window that wants it
+        only behind some of its pixels must be cut to them with `shape`.
+        True when Windows took the request; False on a Windows without the
+        call, which then simply has no live blur.
+        """
+        if not _COMPOSITION or not self.hwnd:
+            return False
+        policy = _ACCENT_POLICY(ACCENT_ENABLE_BLURBEHIND if on
+                                else ACCENT_DISABLED, 0, 0, 0)
+        data = _WINCOMPATTRDATA(WCA_ACCENT_POLICY,
+                                ctypes.cast(ctypes.pointer(policy),
+                                            ctypes.c_void_p),
+                                ctypes.sizeof(policy))
+        try:
+            return bool(_user32.SetWindowCompositionAttribute(
+                self.hwnd, ctypes.byref(data)))
+        except Exception:
+            _log.debug("glass: no blur behind", exc_info=True)
+            return False
+
+    def shape(self, rects) -> bool:
+        """Cut the window to the union of `rects` — (x0, y0, x1, y1),
+        window-relative — or give it back its whole rectangle with None.
+
+        The system draws nothing of a window outside its region (the
+        SetWindowRgn page says so in as many words), and that includes the
+        compositor's blur behind it, which is what this is for: the blur
+        fills the region, so the region is what keeps it off the gaps
+        between cards and off the empty margin. A region is 1-bit, so it
+        must be at least as big as everything antialiased the picture
+        draws — notify_card.coverage_rects grows each shape by a pixel for
+        exactly that reason — or the curve would be stair-cased.
+        """
+        if not self.hwnd:
+            return False
+        if not rects:
+            return bool(_user32.SetWindowRgn(self.hwnd, None, True))
+        rects = [tuple(int(v) for v in r) for r in rects]
+        n = len(rects)
+        head = _RGNDATAHEADER()
+        head.dwSize = ctypes.sizeof(_RGNDATAHEADER)
+        head.iType = RDH_RECTANGLES
+        head.nCount = n
+        head.nRgnSize = n * ctypes.sizeof(w.RECT)
+        head.rcBound = w.RECT(min(r[0] for r in rects),
+                              min(r[1] for r in rects),
+                              max(r[2] for r in rects),
+                              max(r[3] for r in rects))
+        body = (w.RECT * n)(*[w.RECT(*r) for r in rects])
+        size = ctypes.sizeof(head) + ctypes.sizeof(body)
+        blob = ctypes.create_string_buffer(size)
+        ctypes.memmove(blob, ctypes.byref(head), ctypes.sizeof(head))
+        ctypes.memmove(ctypes.byref(blob, ctypes.sizeof(head)), body,
+                       ctypes.sizeof(body))
+        region = _gdi32.ExtCreateRegion(None, size, blob)
+        if not region:
+            return False
+        if _user32.SetWindowRgn(self.hwnd, region, True):
+            return True            # the system owns the region now
+        _gdi32.DeleteObject(region)
+        return False
+
+    def shaped(self):
+        """The bounding box of the window's region, window-relative, or
+        None when it has none — the read-back a test can make without a
+        screen."""
+        if not self.hwnd:
+            return None
+        rect = w.RECT()
+        if _user32.GetWindowRgnBox(self.hwnd, ctypes.byref(rect)) == \
+                REGION_ERROR:
+            return None
+        return rect.left, rect.top, rect.right, rect.bottom
 
     def let_go(self) -> None:
         """End a grip this side asked to end: the capture goes back."""
