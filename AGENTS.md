@@ -1626,25 +1626,36 @@ exactly what classic did.
   `BitBlt ... SRCCOPY | CAPTUREBLT` exists precisely to include layered
   windows. Measured 2026-08-25: 60000/60000 pixels before the flag, 0
   after. Leave those two calls alone.
-- **The notify column's glass is the COMPOSITOR'S blur, live; a grab is
-  a photograph.** Until 2026-10-18 the frost under the cards was one
-  ImageGrab, blurred, taken when the window was built — so a window moved
-  behind the column stayed the old picture, and he asked for it live.
+- **The notify column's glass is the COMPOSITOR'S blur, live — on one
+  window PER CARD, never on the column's own window, because a window
+  region does not cut it.** Until 2026-10-18 the frost under the cards was
+  one ImageGrab, blurred, taken when the window was built, so a window
+  moved behind the column stayed the old picture; he asked for it live.
   `Glass.blur_behind()` (SetWindowCompositionAttribute, accent state 3,
-  what the taskbar uses) has DWM blur what is behind every frame; it fills
-  the window's whole REGION whatever the picture's alpha, so
-  `Glass.shape(notify_card.coverage_rects(notify_card.stack_shapes(...)))`
-  cuts the window to the cards and the Clear-all pill, each grown by a
-  pixel so the 1-bit edge clips nothing antialiased (a test renders the
-  faces and checks both ways). Re-cut it after every relayout. The grab
-  stays as the fallback for a Windows that refuses the call. And a column
-  that CHANGES is the same window resized in place (`Glass.resize` works
-  on the GPU now): rebuilding it on every close was the "all the cards
-  vanish for a second" he reported, the same day — so `NotifyCard.pressed`
-  takes one card off at once and `_gone` keeps a crossing engine answer
-  from putting it back. Seen on a real screen by his eyes only; the
-  hidden desktop proves the calls succeed (blur True, region set, same
-  hwnd), not the look.
+  what the taskbar uses) has DWM blur what is behind every frame — and it
+  fills the window's WHOLE RECTANGLE whatever the picture's alpha. The
+  first version cut the column window with SetWindowRgn and shipped a dark
+  square frame round the column, margin and gaps included (his report,
+  2026-10-19). Measured that day on the real screen over a striped
+  pattern (he allowed three seconds; the hidden desktop composes
+  nothing): a layered window and a plain one cut with SetWindowRgn, and a
+  DwmEnableBlurBehindWindow region, all blurred every pixel of their
+  rectangle; acrylic (state 4) the same. The ONE shape the compositor
+  honours is Windows 11's own corner (`Glass.round_corners`,
+  DWMWA_WINDOW_CORNER_PREFERENCE = ROUND, radius 8 px = `DWM_RADIUS`, its
+  1 px border switched off). So skin
+otify.py puts a click-through blur
+  window exactly the size of each piece (`stack_shapes`: the Clear-all
+  pill and every card) under the column (`sync_behind`, `Glass.under`),
+  moves them with it on every WM_MOVE of a drag (`moving=follow`,
+  `Glass.place`), and draws the faces at `DWM_RADIUS` while the blur is
+  live so the face covers every pixel the blur does. No round corner (a
+  Windows before 11) means no blur: the photograph is the fallback. And
+  a column that CHANGES is the same window resized in place
+  (`Glass.resize` works on the GPU now): rebuilding it on every close was
+  the "all the cards vanish for a second" he reported on 2026-10-18 — so
+  `NotifyCard.pressed` takes one card off at once and `_gone` keeps a
+  crossing engine answer from putting it back.
 - **The notify door rings for what is waiting on him, not for every
   turn — and the fix was not `coalesce_s`.** Claude Code's Stop hook
   fires at the end of EVERY turn; counted 2026-09-05, 87 of the last 100

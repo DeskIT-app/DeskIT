@@ -106,12 +106,16 @@ _gdi32.SelectObject.restype = ctypes.c_void_p
 _gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 _gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
 _gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
-_gdi32.ExtCreateRegion.restype = ctypes.c_void_p
-_gdi32.ExtCreateRegion.argtypes = [ctypes.c_void_p, w.DWORD, ctypes.c_void_p]
-_user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, w.BOOL]
-_user32.SetWindowRgn.restype = ctypes.c_int
-_user32.GetWindowRgnBox.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_user32.GetWindowRgnBox.restype = ctypes.c_int
+try:
+    _dwmapi = ctypes.WinDLL("dwmapi")
+    _dwmapi.DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, w.DWORD,
+                                              ctypes.c_void_p, w.DWORD]
+    _dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+    _dwmapi.DwmGetWindowAttribute.argtypes = [ctypes.c_void_p, w.DWORD,
+                                              ctypes.c_void_p, w.DWORD]
+    _dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+except (OSError, AttributeError):
+    _dwmapi = None
 try:
     # Undocumented, and in user32 since Windows 7: the call the taskbar and
     # Start use for the blur behind them. Looked up rather than assumed, so
@@ -133,6 +137,7 @@ SW_SHOWNOACTIVATE = 4
 ULW_ALPHA = 0x00000002
 AC_SRC_OVER, AC_SRC_ALPHA = 0x00, 0x01
 SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = 0x0002, 0x0001, 0x0010
+SWP_NOZORDER = 0x0004
 HWND_TOPMOST = ctypes.c_void_p(-1)
 SPI_GETCLIENTAREAANIMATION = 0x1042
 ERROR_CLASS_ALREADY_EXISTS = 1410
@@ -194,15 +199,18 @@ class _WINCOMPATTRDATA(ctypes.Structure):
                 ("SizeOfData", ctypes.c_size_t)]
 
 
-class _RGNDATAHEADER(ctypes.Structure):
-    _fields_ = [("dwSize", w.DWORD), ("iType", w.DWORD), ("nCount", w.DWORD),
-                ("nRgnSize", w.DWORD), ("rcBound", w.RECT)]
-
-
 WCA_ACCENT_POLICY = 19
 ACCENT_DISABLED, ACCENT_ENABLE_BLURBEHIND = 0, 3
-RDH_RECTANGLES = 1
-REGION_ERROR = 0                 # GetWindowRgnBox: no region on the window
+WM_MOVE = 0x0003
+# Windows 11's own rounded corners (DwmSetWindowAttribute). The radius is
+# the system's, not ours: DWMWCP_ROUND is 8 px at 100 % — measured on the
+# real screen on 2026-10-19, the blur's edge leaving the window's top row
+# 4-5 px in and reaching its side by row 4, which is an 8 px arc.
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWA_BORDER_COLOR = 34
+DWMWCP_ROUND = 2
+DWMWA_COLOR_NONE = 0xFFFFFFFE
+DWM_RADIUS = 8
 
 
 _WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p,
@@ -266,6 +274,10 @@ def _proc(hwnd, msg, wparam, lparam):
                 if msg == WM_LBUTTONUP:
                     _user32.ReleaseCapture()
                 return 0
+            if msg == WM_MOVE and glass.moving:
+                # every step of a drag Windows runs for us, so whatever
+                # rides with this window can go with it as it moves
+                glass.moving()
             if msg in (WM_EXITSIZEMOVE, WM_NCLBUTTONUP) and glass.moved:
                 glass.moved()
     except Exception:
@@ -359,7 +371,7 @@ class Glass:
 
     def __init__(self, x: int, y: int, width: int, height: int,
                  gpu: bool = True, hit=None, moved=None, clicked=None,
-                 gripped=None) -> None:
+                 gripped=None, moving=None) -> None:
         # Deferred (see skin/__init__), and OPTIONAL since 2026-09-19: a
         # fresh install has no skia — it is the skin pack, a download —
         # and the dot, the boot card and the hint card paint with Pillow
@@ -383,6 +395,7 @@ class Glass:
         # called (screen x, y) for a press on HTBOTTOMRIGHT; `gripping`
         # stays True, with the mouse captured, until the button comes up
         self.gripped = gripped
+        self.moving = moving             # called on every WM_MOVE
         self.gripping = False
         self.hwnd = None
         self.dc = None
@@ -409,7 +422,7 @@ class Glass:
         # message arriving on a half-built or half-dead window finds
         # nothing and falls through to DefWindowProc.
         if (hit is not None or moved is not None or clicked is not None
-                or gripped is not None):
+                or gripped is not None or moving is not None):
             _live[int(self.hwnd)] = self
 
         screen = _user32.GetDC(None)
@@ -536,9 +549,15 @@ class Glass:
         process grabs and blurs itself is a photograph, out of date the
         moment it is taken — which is what the notify card's frost was.
 
-        The blur fills the window's whole REGION, under the per-pixel
-        picture, whatever that picture's alpha — so a window that wants it
-        only behind some of its pixels must be cut to them with `shape`.
+        THE BLUR FILLS THE WINDOW'S WHOLE RECTANGLE, under the picture,
+        whatever the picture's alpha — and a window region does NOT cut
+        it. Measured on the real screen on 2026-10-19 over a striped
+        pattern: a layered window and a plain one, each cut to a rounded
+        card with SetWindowRgn, blurred every pixel of their rectangle
+        (the dark frame the owner saw round the column), and so did a
+        DwmEnableBlurBehindWindow region. The one shape the compositor
+        honours is its OWN rounded corner (`round_corners`). So a window
+        that wants blur behind a rounded thing must BE that thing's size.
         True when Windows took the request; False on a Windows without the
         call, which then simply has no live blur.
         """
@@ -557,59 +576,37 @@ class Glass:
             _log.debug("glass: no blur behind", exc_info=True)
             return False
 
-    def shape(self, rects) -> bool:
-        """Cut the window to the union of `rects` — (x0, y0, x1, y1),
-        window-relative — or give it back its whole rectangle with None.
+    def round_corners(self) -> bool:
+        """Windows 11's rounded corners on this window, and no border.
 
-        The system draws nothing of a window outside its region (the
-        SetWindowRgn page says so in as many words), and that includes the
-        compositor's blur behind it, which is what this is for: the blur
-        fills the region, so the region is what keeps it off the gaps
-        between cards and off the empty margin. A region is 1-bit, so it
-        must be at least as big as everything antialiased the picture
-        draws — notify_card.coverage_rects grows each shape by a pixel for
-        exactly that reason — or the curve would be stair-cased.
-        """
-        if not self.hwnd:
+        The compositor rounds the window — its picture AND the blur behind
+        it — at DWM_RADIUS, antialiased; the light 1 px border it draws
+        with them is switched off, because the face draws its own rim.
+        False on a Windows before 11, where the window stays square."""
+        if _dwmapi is None or not self.hwnd:
             return False
-        if not rects:
-            return bool(_user32.SetWindowRgn(self.hwnd, None, True))
-        rects = [tuple(int(v) for v in r) for r in rects]
-        n = len(rects)
-        head = _RGNDATAHEADER()
-        head.dwSize = ctypes.sizeof(_RGNDATAHEADER)
-        head.iType = RDH_RECTANGLES
-        head.nCount = n
-        head.nRgnSize = n * ctypes.sizeof(w.RECT)
-        head.rcBound = w.RECT(min(r[0] for r in rects),
-                              min(r[1] for r in rects),
-                              max(r[2] for r in rects),
-                              max(r[3] for r in rects))
-        body = (w.RECT * n)(*[w.RECT(*r) for r in rects])
-        size = ctypes.sizeof(head) + ctypes.sizeof(body)
-        blob = ctypes.create_string_buffer(size)
-        ctypes.memmove(blob, ctypes.byref(head), ctypes.sizeof(head))
-        ctypes.memmove(ctypes.byref(blob, ctypes.sizeof(head)), body,
-                       ctypes.sizeof(body))
-        region = _gdi32.ExtCreateRegion(None, size, blob)
-        if not region:
+        pref = ctypes.c_int(DWMWCP_ROUND)
+        none = ctypes.c_uint(DWMWA_COLOR_NONE)
+        try:
+            ok = _dwmapi.DwmSetWindowAttribute(
+                self.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(pref), ctypes.sizeof(pref)) == 0
+            _dwmapi.DwmSetWindowAttribute(
+                self.hwnd, DWMWA_BORDER_COLOR, ctypes.byref(none),
+                ctypes.sizeof(none))
+            return ok
+        except Exception:
+            _log.debug("glass: no rounded corners", exc_info=True)
             return False
-        if _user32.SetWindowRgn(self.hwnd, region, True):
-            return True            # the system owns the region now
-        _gdi32.DeleteObject(region)
-        return False
 
-    def shaped(self):
-        """The bounding box of the window's region, window-relative, or
-        None when it has none — the read-back a test can make without a
-        screen."""
-        if not self.hwnd:
-            return None
-        rect = w.RECT()
-        if _user32.GetWindowRgnBox(self.hwnd, ctypes.byref(rect)) == \
-                REGION_ERROR:
-            return None
-        return rect.left, rect.top, rect.right, rect.bottom
+    def place(self, x: int, y: int) -> None:
+        """Move the window NOW, without a new picture: `move` only records
+        where the next flush puts it, and something that follows another
+        window through a drag has no new picture to flush."""
+        self.move(x, y)
+        if self.hwnd:
+            _user32.SetWindowPos(self.hwnd, None, self.x, self.y, 0, 0,
+                                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
 
     def let_go(self) -> None:
         """End a grip this side asked to end: the capture goes back."""

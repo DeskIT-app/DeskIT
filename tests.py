@@ -48816,70 +48816,68 @@ def test_the_clear_all_pill_sits_above_the_newest_card_and_clears_them_all(
     assert card._q.get_nowait() is None
 
 
-def test_the_live_blur_is_cut_to_exactly_the_glass_the_column_paints(
+def test_the_live_blur_sits_on_one_window_per_card_never_on_the_column(
         ) -> None:
-    """The compositor's blur fills the window's whole REGION, under the
-    picture, whatever the picture's alpha — so the region has to be the
-    glass: every pixel a face paints inside it (or the 1-bit edge would
-    stair-case the antialiased curve), and the gaps between cards and the
-    empty margin outside it (or the blur would show there as a pale slab
-    round the column). notify_card.coverage_rects is that region; this
-    renders the real faces and checks it both ways."""
-    import notify_card as nc
-
-    shapes = [(10, 10, 60, 30, 8.0), (10, 50, 80, 60, 12.0)]
-    rects = nc.coverage_rects(shapes)
-    assert rects and all(x1 > x0 and y1 > y0 for x0, y0, x1, y1 in rects)
-
-    def inside(x, y):
-        return any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in rects)
-
-    # the merge: a card's straight middle is ONE rectangle, not a row each
-    # — and "straight" by pixels, so the rows the arc only nicks (57-62
-    # and 98-103 here: the inset there is under a pixel) are in it
-    assert (9, 57, 91, 103) in rects, rects
-    assert len(rects) < 60, f"{len(rects)} rectangles for two shapes"
-    assert not any(inside(x, 45) for x in range(100)), \
-        "the gap between two shapes is in the region — the blur shows there"
-    assert not inside(9, 9) and not inside(10, 10), \
-        "the square corner outside a curve is in the region"
-    assert inside(40, 25) and inside(50, 70)
-
+    """His bug of 2026-10-19: "a dark frame" round the whole column — the
+    margin, the gaps, the square corners. The compositor's blur fills its
+    window's whole rectangle and a window region does not cut it (measured
+    on the real screen that day: layered or plain, SetWindowRgn or a DWM
+    blur region, every pixel of the rectangle blurred); the one shape it
+    honours is Windows 11's own rounded corner. So the column's window
+    never asks for the blur, every piece of glass gets a blur window of
+    exactly its own size with that corner, and the face over the blur is
+    drawn at the compositor's radius — so the face covers every pixel the
+    blur does, and nothing outside it."""
     skin = _skin_or_skip()
     if skin is None:
         return
     try:
         import skia
+        from skin import glass as skin_glass
         from skin import notify as skin_notify
     except Exception:
         return
-    three = [nc.card_for(_item(id=i), seconds=0, unread=3) for i in (9, 8, 7)]
-    w, h = nc.stack_measure(three)
-    surface = skia.Surface(w, h)
+    import notify_card as nc
+
+    assert skin_glass.DWM_RADIUS == 8, "DWMWCP_ROUND, measured at 8 px"
+    src = inspect.getsource(skin_notify.run)
+    assert "glass.blur_behind(" not in src, \
+        "the column's own window asks for the blur — the frame is back"
+    assert "round_corners()" in src and "blur_behind()" in src
+    assert "nc.stack_shapes(" in src and "b.under(glass.hwnd)" in src
+    assert "moving=follow" in src, "a drag would leave the blur behind"
+    assert not hasattr(skin_glass.Glass, "shape"), \
+        "a window region never cut the blur; do not bring it back"
+    assert "coverage_rects" not in nc.__all__
+
+    # The face at the compositor's radius covers exactly the rounded
+    # rectangle Windows blurs behind: inside the card, the only empty
+    # pixels are the four corners outside an 8 px arc (and the arc's own
+    # antialiased edge); outside the card, nothing at all.
+    w, h, pad = 200, 120, 20
+    surface = skia.Surface(w + 2 * pad, h + 2 * pad)
     canvas = surface.getCanvas()
     canvas.clear(0x00000000)
-    shapes = nc.stack_shapes(three)
-    for x, y, sw, sh, r in shapes:
-        skin_notify.face(canvas, sw, sh, 1.0, None, x, y, radius=r)
+    skin_notify.face(canvas, w, h, 1.0, None, pad, pad,
+                     radius=skin_glass.DWM_RADIUS)
     alpha = surface.makeImageSnapshot().toarray(
         colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
     import numpy as np
-    mask = np.zeros((h, w), dtype=bool)
-    for x0, y0, x1, y1 in nc.coverage_rects(shapes):
-        mask[max(0, y0):min(h, y1), max(0, x0):min(w, x1)] = True
-    outside = np.argwhere((alpha > 0) & ~mask)
-    assert len(outside) == 0, (
-        f"{len(outside)} painted pixels fall outside the region, e.g. "
-        f"{outside[:5].tolist()} (y, x) — the 1-bit edge would cut the curve")
-    empty_inside = int(((alpha == 0) & mask).sum())
-    edge = sum(2 * (sw + sh) for _x, _y, sw, sh, _r in shapes)
-    assert empty_inside <= 3 * edge, (
-        f"{empty_inside} empty pixels are in the region — more than a thin "
-        f"rim; the blur would show where there is no glass")
-    gap_y = shapes[1][1] + shapes[1][3] + nc.GAP // 2
-    assert not mask[gap_y].any(), "the gap between two cards is blurred"
-    assert not mask[1].any() and not mask[:, 1].any(), \
-        "the empty margin round the column is blurred"
+    # (the rim is a 1 px stroke centred ON the edge, so half of it lands a
+    # pixel outside — face where there is no blur, which is harmless; the
+    # direction that matters is the next loop's)
+    outside = alpha.copy()
+    outside[pad - 1:pad + h + 1, pad - 1:pad + w + 1] = 0
+    assert not outside.any(), "the face paints outside its card"
+    r = skin_glass.DWM_RADIUS
+    for y in range(h):
+        for x in range(w):
+            dx = max(0, r - x - 0.5, x + 0.5 - (w - r))
+            dy = max(0, r - y - 0.5, y + 0.5 - (h - r))
+            inside_arc = (dx * dx + dy * dy) ** 0.5 <= r - 1
+            if inside_arc:
+                assert alpha[pad + y, pad + x] > 0, (
+                    f"a hole in the face at ({x}, {y}) where the blur shows")
 
 
 def test_closing_one_card_takes_only_that_card_and_leaves_the_rest_standing(
@@ -48975,15 +48973,17 @@ def test_closing_one_card_takes_only_that_card_and_leaves_the_rest_standing(
     assert [c["id"] for c in lone._q.get_nowait()] == [4, 2]
 
 
-def test_the_glass_column_changes_in_place_and_its_blur_is_cut_to_it(
+def test_the_glass_column_changes_in_place_and_its_blur_windows_follow(
         ) -> None:
-    """The real glass presenter on a real layered window (this suite runs
-    on a hidden desktop; house rule 8). A column that changes is the SAME
+    """The real glass presenter on real layered windows (this suite runs on
+    a hidden desktop; house rule 8). A column that changes is the SAME
     window — same handle — resized and repainted, never taken down and
-    built again; the window carries a region exactly when the compositor
-    took the live blur; and the last card going takes the window with it.
-    What only a screen can show — the desktop moving behind the glass —
-    is the one thing left for his eyes."""
+    built again. While the blur is live there is one blur window per piece
+    of glass, exactly that piece's rectangle on the screen and below the
+    column in the z-order, and they follow it: one fewer when a card
+    goes, one more when one comes, none when the last goes. What only a
+    screen can show — the blur itself — is measured by hand (2026-10-19,
+    the probe in the commit message) and left for his eyes."""
     skin = _skin_or_skip()
     if skin is None:
         return
@@ -48995,13 +48995,21 @@ def test_the_glass_column_changes_in_place_and_its_blur_is_cut_to_it(
         return
     import ctypes
     import ctypes.wintypes
+    import notify_card as nc
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     user32.IsWindow.argtypes = [ctypes.c_void_p]
+    user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    user32.GetWindow.restype = ctypes.c_void_p
 
-    # Glass on its own first: GPU windows resize now, and the region
-    # reads back.
+    def rect(hwnd):
+        r = ctypes.wintypes.RECT()
+        user32.GetWindowRect(ctypes.c_void_p(int(hwnd)), ctypes.byref(r))
+        return r.left, r.top, r.right, r.bottom
+
+    # Glass on its own first: GPU windows resize now, and place() moves a
+    # window without a new picture.
     glass = skin_glass.Glass(40, 50, 120, 80)
     try:
         hwnd = glass.hwnd
@@ -49011,13 +49019,10 @@ def test_the_glass_column_changes_in_place_and_its_blur_is_cut_to_it(
         assert glass.hwnd == hwnd and (glass.width, glass.height) == (200, 140)
         glass.canvas.clear(0x80102030)
         assert glass.flush(), "a resized window (GPU or not) would not flush"
-        rect = ctypes.wintypes.RECT()
-        user32.GetWindowRect(glass.hwnd, ctypes.byref(rect))
-        assert (rect.right - rect.left, rect.bottom - rect.top) == (200, 140)
-        assert glass.shaped() is None
-        assert glass.shape([(10, 10, 50, 40), (60, 10, 190, 130)])
-        assert glass.shaped() == (10, 10, 190, 130), glass.shaped()
-        assert glass.shape(None) and glass.shaped() is None
+        assert rect(hwnd) == (40, 50, 240, 190)
+        glass.place(70, 90)
+        assert rect(hwnd) == (70, 90, 270, 230) and glass.where() == (70, 90)
+        assert glass.round_corners() in (True, False)
         assert glass.blur_behind() in (True, False)
     finally:
         glass.close()
@@ -49035,32 +49040,63 @@ def test_the_glass_column_changes_in_place_and_its_blur_is_cut_to_it(
             return [g for g in list(skin_glass._live.values())
                     if g.moved is not None and g.clicked is not None]
 
-        def size(g):
-            r = ctypes.wintypes.RECT()
-            user32.GetWindowRect(g.hwnd, ctypes.byref(r))
-            return r.right - r.left, r.bottom - r.top
+        def height(g):
+            left, top, right, bottom = rect(g.hwnd)
+            return bottom - top
 
-        card.show([_item(id=i, unread=3) for i in (9, 8, 7)])
+        def check_behind(column):
+            """Every blur window is its piece, on the screen, under the
+            column; and there is one per piece."""
+            behind = list(getattr(card, "behind", []) or [])
+            if not behind:
+                return True                  # no live blur on this desktop
+            win = ours()[0]
+            gx, gy = rect(win.hwnd)[:2]
+            want = [(gx + x, gy + y, gx + x + w, gy + y + h)
+                    for x, y, w, h, _r in nc.stack_shapes(column, 1.0)]
+            assert [rect(b) for b in behind] == want, (
+                [rect(b) for b in behind], want)
+            below, h = set(), user32.GetWindow(ctypes.c_void_p(win.hwnd), 2)
+            for _ in range(400):             # GW_HWNDNEXT, down the z-order
+                if not h:
+                    break
+                below.add(int(h))
+                h = user32.GetWindow(ctypes.c_void_p(h), 2)
+            assert set(behind) <= below, "a blur window is above the cards"
+            return True
+
+        three = [_item(id=i, unread=3) for i in (9, 8, 7)]
+        card.show(three)
         assert _until(lambda: card.rect is not None and len(ours()) == 1), \
             "the column never came up"
         first = ours()[0]
-        hwnd, tall = first.hwnd, size(first)
-        if first.blur_behind():
-            assert _until(lambda: first.shaped() is not None), \
-                "a live blur with no region would blur the whole margin"
+        hwnd, tall = first.hwnd, height(first)
+        drawn = [nc.card_for(i, seconds=0, unread=3) for i in three]
+        check_behind(drawn)
+        was = list(getattr(card, "behind", []) or [])
         card.pressed("dismiss", 8)
-        assert _until(lambda: ours() and size(ours()[0])[1] < tall[1]), \
+        assert _until(lambda: ours() and height(ours()[0]) < tall), \
             "the column did not shrink"
         assert len(ours()) == 1 and ours()[0].hwnd == hwnd, \
             "closing one card built a new window — the blink he saw"
-        assert user32.IsWindow(hwnd)
+        two = [nc.card_for(i, seconds=0, unread=3) for i in three
+               if i["id"] != 8]
+        if was:
+            assert _until(lambda: len(card.behind) == len(was) - 1)
+            check_behind(two)
         card.show([_item(id=i, unread=3) for i in (10, 9, 7)])
-        assert _until(lambda: size(ours()[0])[1] == tall[1]), \
+        assert _until(lambda: height(ours()[0]) == tall), \
             "a card arriving did not grow the same window"
         assert ours()[0].hwnd == hwnd
+        if was:
+            assert _until(lambda: len(card.behind) == len(was))
         card.pressed("dismiss", None)
         assert _until(lambda: not ours() and card.rect is None), \
             "Clear all left the window up"
+        assert not getattr(card, "behind", [])
+        for b in was:
+            assert not user32.IsWindow(ctypes.c_void_p(b)), \
+                "a blur window outlived the column"
     finally:
         card._q.put(overlay_mod._DONE)
         thread.join(5)

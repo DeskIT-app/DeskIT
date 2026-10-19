@@ -537,8 +537,10 @@ def stack_shapes(cards, scale: float = 1.0) -> list:
     """Every piece of glass in the window as (x, y, w, h, radius): the
     Clear-all pill first when it is up (a capsule, radius h/2), then one
     rounded card per entry of `stack_layout`. What the painter draws a
-    face on and what the live blur behind the window is cut to — one list,
-    so the two cannot disagree about where the glass is."""
+    face on and what skin\\notify.py puts one blur window under each of —
+    one list, so the two cannot disagree about where the glass is. (The
+    radius is this module's; over the live blur the presenter draws the
+    compositor's own instead, see skin\\glass.DWM_RADIUS.)"""
     s = clamp_scale(scale)
     shapes = []
     pill = clear_box(cards, s)
@@ -548,61 +550,6 @@ def stack_shapes(cards, scale: float = 1.0) -> list:
     for x, y, w, h in stack_layout(cards, s):
         shapes.append((x, y, w, h, RADIUS * s))
     return shapes
-
-
-def coverage_rects(shapes, outset: float = 1.0) -> list:
-    """The pixels the shapes touch, as merged (x0, y0, x1, y1) rectangles
-    — the window region the live blur is clipped to (skin\\glass.shape).
-
-    A pixel is IN when any part of it lies inside its rounded rectangle
-    grown by `outset`: the face is antialiased and its rim is a 1 px
-    stroke centred ON the edge, so half of it sits outside the geometric
-    rectangle, and a region that cut there would put the stair-case of a
-    1-bit mask straight onto the curve the face draws smooth. Grown by a
-    pixel, the region clips nothing the painter drew and lets the blur
-    show at most one pixel past the rim. Rows with the same span — every
-    row of a card between its corners — merge into one rectangle, so a
-    column is a few dozen rectangles, not a thousand.
-    """
-    import math
-    rows: dict = {}
-    for x, y, w, h, r in shapes:
-        x0, y0 = x - outset, y - outset
-        x1, y1 = x + w + outset, y + h + outset
-        r = max(0.0, min(float(r) + outset, (x1 - x0) / 2, (y1 - y0) / 2))
-        for j in range(int(math.floor(y0)), int(math.ceil(y1))):
-            # the part of row j's band [j, j+1] inside [y0, y1], and the
-            # widest the shape is anywhere in it: the band's edge nearest
-            # the shape's middle
-            top, bot = max(j, y0), min(j + 1, y1)
-            if bot <= top:
-                continue
-            if bot <= y0 + r:
-                dy = (y0 + r) - bot
-            elif top >= y1 - r:
-                dy = top - (y1 - r)
-            else:
-                dy = 0.0
-            inset = r - math.sqrt(max(0.0, r * r - dy * dy)) if dy > 0 else 0
-            left = int(math.floor(x0 + inset))
-            right = int(math.ceil(x1 - inset))
-            if right > left:
-                rows.setdefault(j, []).append((left, right))
-    rects = []
-    open_runs: dict = {}            # (left, right) -> [x0, y0, x1, y1]
-    for j in sorted(rows):
-        spans = sorted(set(rows[j]))
-        still = {}
-        for span in spans:
-            run = open_runs.get(span)
-            if run is not None and run[3] == j:
-                run[3] = j + 1
-            else:
-                run = [span[0], j, span[1], j + 1]
-                rects.append(run)
-            still[span] = run
-        open_runs = still
-    return [tuple(r) for r in rects]
 
 
 def stack_hit_test(cards, scale: float, x: int, y: int):
@@ -964,7 +911,7 @@ def stack_flat(cards, scale: float = 1.0, hover=None,
 
 __all__ = ["ago", "card_for", "measure", "regions", "hit_test", "compose",
            "flat", "stack_layout", "stack_measure", "stack_hit_test",
-           "stack_flat", "stack_shapes", "coverage_rects", "clear_box",
+           "stack_flat", "stack_shapes", "clear_box",
            "clear_count", "compose_clear", "CLEAR", "CLEAR_W", "CLEAR_H",
            "clamp_scale", "pinned_card", "is_pinned", "BUTTON",
            "BUTTON_H", "BUTTON_W", "PIN_ID", "FOOTER_H",
