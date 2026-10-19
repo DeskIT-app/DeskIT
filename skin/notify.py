@@ -63,7 +63,8 @@ import queue
 import time
 
 import notify_card as nc
-from .glass import Glass, primary_screen, virtual_screen
+from PIL import Image
+from .glass import DWM_RADIUS, Glass, primary_screen, virtual_screen
 from .palette import BG, CARD, LINE, FG, argb
 
 _log = logging.getLogger("app")
@@ -269,6 +270,8 @@ def run(card) -> None:
     frost = None                   # the fallback's photograph, skia.Image
     frost_at = (0, 0)              # where on the screen it was taken
     live = False                   # the compositor blurs what is behind
+    behind: list = []              # one blur window per piece of glass
+    pieces: list = []              # their (x, y, w, h) in the column window
     hover = None                   # (index, what) or None
     caption = None                 # index of the card a drag started on
     cache: dict = {}
@@ -293,9 +296,18 @@ def run(card) -> None:
             return None
         return shown[index].get("id")
 
+    def drop_behind():
+        """Close every blur window. Before the column's own window when
+        both go, so no blurred patch outlives the face it was under."""
+        while behind:
+            behind.pop().close()
+        pieces.clear()
+        card.behind = []
+
     def take_down():
         nonlocal glass, shown, frost, hover, deadline, dismissing, caption
         nonlocal live
+        drop_behind()
         if glass is not None:
             glass.close()
             glass = None
@@ -436,15 +448,21 @@ def run(card) -> None:
         # where the window was then, and a column that has since grown or
         # shrunk has moved its top-left
         at = (frost_at[0] - glass.x, frost_at[1] - glass.y)
+        # Over the live blur every corner is the COMPOSITOR'S: the blur
+        # window under each piece is rounded by Windows at DWM_RADIUS and
+        # by nothing else (see Glass.blur_behind), so a face drawn rounder
+        # than that would leave a sliver of blur outside its own curve.
+        corner = DWM_RADIUS if live else None
         pill = nc.clear_box(shown, s)
         if pill is not None:
             pw, ph = pill[2] - pill[0], pill[3] - pill[1]
-            face(canvas, pw, ph, s, frost, pill[0], pill[1], radius=ph / 2,
-                 backdrop_at=at)
+            face(canvas, pw, ph, s, frost, pill[0], pill[1],
+                 radius=corner if live else ph / 2, backdrop_at=at)
             canvas.drawImage(_to_skia(nc.compose_clear(
                 shown, s, hover == (None, nc.CLEAR), cache)), pill[0], pill[1])
         for index, (x, y, w, h) in enumerate(nc.stack_layout(shown, s)):
-            face(canvas, w, h, s, frost, x, y, backdrop_at=at)
+            face(canvas, w, h, s, frost, x, y, radius=corner,
+                 backdrop_at=at)
             # compose(), never flat(): flat() is the Tk fallback's OPAQUE
             # face with the same content on top, and drawing it here would
             # paint a solid CARD rectangle over the rounded glass — the
@@ -489,16 +507,63 @@ def run(card) -> None:
                            virtual_screen())
         return x, y, win_w, win_h
 
-    def reshape():
-        """Cut the window to its glass, so the live blur fills the cards
-        and the pill and nothing else — not the gaps between them, not the
-        empty SHADOW margin round the column. Without the blur there is
-        nothing to cut: per-pixel alpha already makes those holes."""
-        if glass is None or not live or shown is None:
+    def new_behind(x, y, w, h):
+        """One blur window: click-through, never focused, exactly the size
+        of its piece, rounded by Windows, the compositor's blur behind it
+        and nothing of its own in it. None when Windows will not give it
+        both the blur and the corner — a square blur is the frame again."""
+        b = Glass(x, y, w, h, gpu=False)
+        if not (b.round_corners() and b.blur_behind()):
+            b.close()
+            return None
+        b.present(Image.new("RGBA", (w, h), (0, 0, 0, 0)))
+        return b
+
+    def follow():
+        """The column moved — every step of a drag Windows runs for it —
+        and the blur windows go with it, so the glass never slides off its
+        face. Asked on WM_MOVE, so it must stay cheap: the offsets are
+        `pieces`, worked out when the column last changed."""
+        if glass is None or not behind:
             return
-        if not glass.shape(nc.coverage_rects(nc.stack_shapes(shown,
-                                                             card.scale))):
-            _log.info("skin: the notify column would not take its shape")
+        gx, gy = glass.where()
+        for b, (x, y, _w, _h) in zip(behind, pieces):
+            b.place(gx + x, gy + y)
+
+    def sync_behind(show: bool) -> bool:
+        """One blur window per piece of glass — the Clear-all pill and
+        every card — each its piece's size, at its piece's place on the
+        screen, directly under the column's own window. Windows are kept
+        and moved rather than built again when the column changes; extra
+        ones close. False when a new one could not be made live, and then
+        none are left: the column goes on with a photograph instead."""
+        nonlocal live
+        if glass is None or shown is None or not live:
+            return False
+        want = [(int(x), int(y), int(w), int(h))
+                for x, y, w, h, _r in nc.stack_shapes(shown, card.scale)]
+        gx, gy = glass.x, glass.y
+        while len(behind) > len(want):
+            behind.pop().close()
+        for i, (x, y, w, h) in enumerate(want):
+            if i < len(behind):
+                b = behind[i]
+                b.resize(w, h)
+                b.move(gx + x, gy + y)
+                b.present(Image.new("RGBA", (w, h), (0, 0, 0, 0)))
+            else:
+                b = new_behind(gx + x, gy + y, w, h)
+                if b is None:
+                    drop_behind()
+                    live = False
+                    return False
+                behind.append(b)
+            if show:
+                b.show()
+            b.under(glass.hwnd)
+        pieces[:] = want
+        card.behind = [int(b.hwnd) for b in behind]
+        return True
 
     def put_up(items):
         """A new column. Onto the window that is already up when there is
@@ -564,7 +629,8 @@ def run(card) -> None:
         glass.move(x, y)
         placed_at = (x, y)
         paint(progress_now())
-        reshape()
+        if live and not sync_behind(show=True):
+            paint(progress_now())  # back to the photograph's rounder face
         card.rect = (x + SHADOW, y + SHADOW, x + win_w - SHADOW,
                      y + win_h - SHADOW)
 
@@ -582,13 +648,19 @@ def run(card) -> None:
             return
         x, y, win_w, win_h = place(item)
         glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
-                      clicked=on_click)
+                      clicked=on_click, moving=follow)
         # NO `_hide_from_capture(glass.hwnd)` HERE ANY MORE — removed
         # 2026-09-04, at the owner's request, because the card announcing
         # that Claude had finished could not be photographed by the person
         # it was announcing to. See the block where that helper used to
         # live, above `face`, for the whole argument.
-        live = glass.blur_behind()
+        # The blur is never on THIS window: on a window this size it would
+        # fill the margin and the gaps between the cards too — the dark
+        # frame the owner circled on 2026-10-19 — because the compositor
+        # cuts its blur to nothing but its own rounded corner. It goes on
+        # one window per card, under this one (sync_behind).
+        live = True
+        live = sync_behind(show=False)
         if live:
             frost = None
         else:
@@ -608,9 +680,12 @@ def run(card) -> None:
         # rather than assumed to be 1.0: coming back from a hush, the card
         # resumes with the seconds it went down with.
         paint(progress_now())
-        reshape()
+        for b in behind:
+            b.show()
         glass.show()
         glass.raise_()
+        for b in behind:
+            b.under(glass.hwnd)
         card.rect = (x + SHADOW, y + SHADOW, x + win_w - SHADOW,
                      y + win_h - SHADOW)
 
@@ -626,6 +701,7 @@ def run(card) -> None:
             return
         hushed = on
         if on:
+            drop_behind()
             if glass is not None:
                 glass.close()
                 glass = None
