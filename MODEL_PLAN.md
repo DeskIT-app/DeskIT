@@ -56,10 +56,11 @@ Reversim test and night6's d1 are lower than in the pen 1.0 rows):
 |---|---|---|---|---|---|---|
 | today's | 1,109 | 1,309 | **665** | **499** | 2,536 | 1,228 |
 | night4 | 1,122 | 792 | 833 | 592 | 2,565 | **738** |
-| night6 | 1,096 | **783** | 818 | 574 | 2,530 | 776 |
+| night6 | 1,096 | 783 | 818 | 574 | 2,530 | 776 |
 | night7 (night6 + verbatim labels) | **1,093** | 824 | 788 | 547 | 2,542 | 741 |
 | night8 (night7, clips still missing 2+ heard words left out) | 1,100 | 851 | 767 | 539 | 2,541 | 741 |
 | night9 (night8 again) | 1,097 | 863 | 763 | 549 | **2,501** | 740 |
+| **night10** (night8 + top 4 encoder layers) | 1,117 | **805** | 693 | **492** | 2,548 | **707** |
 
 **night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
 5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
@@ -215,6 +216,21 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night11 (armed for 2026-10-20 00:30, `night_teacher11.ps1`)**: night10 with
+  the top SIX encoder layers (26-31). Not smoke-tested by day (he was
+  dictating; Ollama held the card); the runner unloads Ollama first and, if
+  six layers still run out of memory, falls back to night10's recipe as
+  `night10b` — a repeat, so the night is not lost.
+- **night10 (done 2026-10-19) — the best model so far.** The full epoch in
+  447 min, peak 8.5 GiB. Against night8/9 the hearing part paid: WhatsApp
+  −70/−74, d1 −47/−57, Reversim dev −46/−58, Reversim test −33, all past the
+  spread; FLEURS dev +17/+20 and the FLEURS test +7/+47 the one cost. Against
+  today's: d1 492 vs 499, WhatsApp 693 vs 665 but 644 vs 662 without the
+  Latin-style words (49 of its 693, against night8's 121), FLEURS level
+  (+8, +12), Reversim −40%; English words right 262 of 330 (today's 118);
+  dropped words on WhatsApp 83 (today's 82); decode time the same as night8,
+  a little under today's. **His call, 2026-10-19: into his Dev copy**
+  (`local.model` = `runs\night10\ct2`), and night11 = more layers.
 - **night10 (armed for 2026-10-19 00:30, `night_teacher10.ps1`)**: night8 with
   the add-on also on the encoder — the TOP FOUR layers (28-31). Measured
   first: the whole encoder ran out of memory beside the app (13.6 GiB) and
