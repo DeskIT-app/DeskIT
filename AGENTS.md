@@ -29,7 +29,8 @@ it at most `summary_wait_s` and is the old card when the answer is
 late, the key missing or the cloud-text gate shut — and only the
 `[notify] interrupt` kinds ringing — with reminders, `ctrl+alt+m` to
 dismiss them
-all, a × per card and a click on a card to go to whoever sent it — how
+all, a × per card, a Clear all pill above the column once two are
+waiting, and a click on a card to go to whoever sent it — how
 Claude Code says it is done, and, through the Windows toasts the desktop
 app raises, how Cowork does too: notify_watch.py, `[notify] watch`; the
 unread ones are rows in the dashboard's Waiting pile), a report key that files the owner's own
@@ -1539,6 +1540,36 @@ exactly what classic did.
   `BitBlt ... SRCCOPY | CAPTUREBLT` exists precisely to include layered
   windows. Measured 2026-08-25: 60000/60000 pixels before the flag, 0
   after. Leave those two calls alone.
+- **The notify column's glass is the COMPOSITOR'S blur, live — on one
+  window PER CARD, never on the column's own window, because a window
+  region does not cut it.** Until 2026-10-18 the frost under the cards was
+  one ImageGrab, blurred, taken when the window was built, so a window
+  moved behind the column stayed the old picture; he asked for it live.
+  `Glass.blur_behind()` (SetWindowCompositionAttribute, accent state 3,
+  what the taskbar uses) has DWM blur what is behind every frame — and it
+  fills the window's WHOLE RECTANGLE whatever the picture's alpha. The
+  first version cut the column window with SetWindowRgn and shipped a dark
+  square frame round the column, margin and gaps included (his report,
+  2026-10-19). Measured that day on the real screen over a striped
+  pattern (he allowed three seconds; the hidden desktop composes
+  nothing): a layered window and a plain one cut with SetWindowRgn, and a
+  DwmEnableBlurBehindWindow region, all blurred every pixel of their
+  rectangle; acrylic (state 4) the same. The ONE shape the compositor
+  honours is Windows 11's own corner (`Glass.round_corners`,
+  DWMWA_WINDOW_CORNER_PREFERENCE = ROUND, radius 8 px = `DWM_RADIUS`, its
+  1 px border switched off). So skin
+otify.py puts a click-through blur
+  window exactly the size of each piece (`stack_shapes`: the Clear-all
+  pill and every card) under the column (`sync_behind`, `Glass.under`),
+  moves them with it on every WM_MOVE of a drag (`moving=follow`,
+  `Glass.place`), and draws the faces at `DWM_RADIUS` while the blur is
+  live so the face covers every pixel the blur does. No round corner (a
+  Windows before 11) means no blur: the photograph is the fallback. And
+  a column that CHANGES is the same window resized in place
+  (`Glass.resize` works on the GPU now): rebuilding it on every close was
+  the "all the cards vanish for a second" he reported on 2026-10-18 — so
+  `NotifyCard.pressed` takes one card off at once and `_gone` keeps a
+  crossing engine answer from putting it back.
 - **The notify door rings for what is waiting on him, not for every
   turn — and the fix was not `coalesce_s`.** Claude Code's Stop hook
   fires at the end of EVERY turn; counted 2026-09-05, 87 of the last 100

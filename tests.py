@@ -45546,6 +45546,381 @@ def test_the_skin_notify_card_takes_the_pill_and_not_the_pin_body() -> None:
     assert 'self.pressed("button"' in flat, "the Tk fallback has no pill"
 
 
+def test_the_clear_all_pill_sits_above_the_newest_card_and_clears_them_all(
+        ) -> None:
+    """His ask, 2026-10-18: "a button for Clear All so I don't have to
+    close them one by one". The pill is there only while two or more
+    notifications are unread — counted off the engine's `unread`, so the
+    ones the column had no room for count too — it takes the top-left of
+    the window, the same column as every card's ×, the cards start one
+    GAP under it, and a press on it is (HTCLIENT, (None, CLEAR)): no card's
+    id, which is `pressed("dismiss", None)`, every unread one seen. The
+    pinned Screens-off card is never counted."""
+    import notify_card as nc
+
+    def cards(ids, unread=None):
+        return [nc.card_for(_item(id=i), seconds=0,
+                            unread=len(ids) if unread is None else unread)
+                for i in ids]
+
+    one = cards([7])
+    assert nc.clear_count(one) == 1 and nc.clear_box(one) is None, \
+        "a lone card has its own ×; a pill that clears one card is noise"
+    assert nc.stack_layout(one)[0][1] == nc.SHADOW
+    assert nc.stack_hit_test(one, 1.0, nc.SHADOW + 5, nc.SHADOW + 5)[1] \
+        != (None, nc.CLEAR)
+    cut = cards([7], unread=6)       # the column cut short: 5 not shown
+    assert nc.clear_count(cut) == 6 and nc.clear_box(cut) is not None
+
+    three = cards([9, 8, 7])
+    box = nc.clear_box(three)
+    assert box == (nc.SHADOW, nc.SHADOW, nc.SHADOW + nc.CLEAR_W,
+                   nc.SHADOW + nc.CLEAR_H), box
+    places = nc.stack_layout(three)
+    assert places[0][1] == box[3] + nc.GAP, "the newest card starts a GAP under"
+    assert places[0][0] == box[0], "the pill lines up with the ×s, on the left"
+    w3, h3 = nc.stack_measure(three)
+    plain = sum(nc.measure(c)[1] for c in three) + 2 * nc.GAP + 2 * nc.SHADOW
+    assert h3 == plain + nc.CLEAR_H + nc.GAP, (h3, plain)
+    assert nc.stack_hit_test(three, 1.0, box[0] + 10, box[1] + 10) == \
+        (nc.HTCLIENT, (None, nc.CLEAR))
+    assert nc.stack_hit_test(three, 1.0, box[2] + 20, box[1] + 10) == \
+        (nc.HTTRANSPARENT, None), "beside the pill is desktop"
+    # a card's × is still its own, under the pill
+    dx = places[0][0] + nc.PAD + 5
+    dy = places[0][1] + nc.PAD + 5
+    assert nc.stack_hit_test(three, 1.0, dx, dy) == \
+        (nc.HTCLIENT, (0, nc.DISMISS))
+    shapes = nc.stack_shapes(three)
+    assert shapes[0] == (box[0], box[1], nc.CLEAR_W, nc.CLEAR_H,
+                         nc.CLEAR_H / 2), "the pill is a capsule"
+    assert [s[:4] for s in shapes[1:]] == places
+
+    cache: dict = {}
+    img = nc.compose_clear(three, 1.0, False, cache)
+    assert img.size == (nc.CLEAR_W, nc.CLEAR_H)
+    assert img.getchannel("A").getbbox() is not None, "nothing was drawn"
+    assert nc.compose_clear(one) is None
+    flat = nc.stack_flat(three, 1.0, None, {})
+    assert flat.size == (w3, h3)
+    assert flat.getpixel(((box[0] + box[2]) // 2, (box[1] + box[3]) // 2))[3] \
+        == 255, "the fallback paints the pill too"
+
+    # the pin is not a notification: alone with one card, no pill
+    pinned = cards([7]) + [_pin_card()]
+    assert nc.clear_count(pinned) == 1 and nc.clear_box(pinned) is None
+    assert nc.clear_box(cards([8, 7]) + [_pin_card()]) is not None
+
+    # both presenters turn the pill into the press that names nobody
+    tk_src = inspect.getsource(overlay_mod.NotifyCard._build_and_loop)
+    press = tk_src[tk_src.index("def on_press"):tk_src.index("def on_motion")]
+    assert "what == nc.CLEAR" in press and \
+        'self.pressed("dismiss", None)' in press, press
+    from skin import notify as skin_notify
+    src = inspect.getsource(skin_notify.run)
+    click = src[src.index("def on_click"):src.index("def paint")]
+    assert "what == nc.CLEAR" in click and \
+        'card.pressed("dismiss", None)' in click, click
+
+    # ...and the card reads it the way Esc and the dismiss key have always
+    # been read: every unread one, once
+    dismissed: list = []
+    card = overlay_mod.NotifyCard(on_dismiss=dismissed.append)
+    card._thread = threading.Thread(target=lambda: None)
+    card.show([_item(id=9, unread=3), _item(id=8, unread=3),
+               _item(id=7, unread=3)])
+    card._q.get_nowait()
+    card.pressed("dismiss", None)
+    assert dismissed == [None] and not card.visible()
+    assert card._q.get_nowait() is None
+
+
+def test_the_live_blur_sits_on_one_window_per_card_never_on_the_column(
+        ) -> None:
+    """His bug of 2026-10-19: "a dark frame" round the whole column — the
+    margin, the gaps, the square corners. The compositor's blur fills its
+    window's whole rectangle and a window region does not cut it (measured
+    on the real screen that day: layered or plain, SetWindowRgn or a DWM
+    blur region, every pixel of the rectangle blurred); the one shape it
+    honours is Windows 11's own rounded corner. So the column's window
+    never asks for the blur, every piece of glass gets a blur window of
+    exactly its own size with that corner, and the face over the blur is
+    drawn at the compositor's radius — so the face covers every pixel the
+    blur does, and nothing outside it."""
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    try:
+        import skia
+        from skin import glass as skin_glass
+        from skin import notify as skin_notify
+    except Exception:
+        return
+    import notify_card as nc
+
+    assert skin_glass.DWM_RADIUS == 8, "DWMWCP_ROUND, measured at 8 px"
+    src = inspect.getsource(skin_notify.run)
+    assert "glass.blur_behind(" not in src, \
+        "the column's own window asks for the blur — the frame is back"
+    assert "round_corners()" in src and "blur_behind()" in src
+    assert "nc.stack_shapes(" in src and "b.under(glass.hwnd)" in src
+    assert "moving=follow" in src, "a drag would leave the blur behind"
+    assert not hasattr(skin_glass.Glass, "shape"), \
+        "a window region never cut the blur; do not bring it back"
+    assert "coverage_rects" not in nc.__all__
+
+    # The face at the compositor's radius covers exactly the rounded
+    # rectangle Windows blurs behind: inside the card, the only empty
+    # pixels are the four corners outside an 8 px arc (and the arc's own
+    # antialiased edge); outside the card, nothing at all.
+    w, h, pad = 200, 120, 20
+    surface = skia.Surface(w + 2 * pad, h + 2 * pad)
+    canvas = surface.getCanvas()
+    canvas.clear(0x00000000)
+    skin_notify.face(canvas, w, h, 1.0, None, pad, pad,
+                     radius=skin_glass.DWM_RADIUS)
+    alpha = surface.makeImageSnapshot().toarray(
+        colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
+    import numpy as np
+    # (the rim is a 1 px stroke centred ON the edge, so half of it lands a
+    # pixel outside — face where there is no blur, which is harmless; the
+    # direction that matters is the next loop's)
+    outside = alpha.copy()
+    outside[pad - 1:pad + h + 1, pad - 1:pad + w + 1] = 0
+    assert not outside.any(), "the face paints outside its card"
+    r = skin_glass.DWM_RADIUS
+    for y in range(h):
+        for x in range(w):
+            dx = max(0, r - x - 0.5, x + 0.5 - (w - r))
+            dy = max(0, r - y - 0.5, y + 0.5 - (h - r))
+            inside_arc = (dx * dx + dy * dy) ** 0.5 <= r - 1
+            if inside_arc:
+                assert alpha[pad + y, pad + x] > 0, (
+                    f"a hole in the face at ({x}, {y}) where the blur shows")
+
+
+def test_closing_one_card_takes_only_that_card_and_leaves_the_rest_standing(
+        ) -> None:
+    """His bug, 2026-10-18: "when I press X, all the cards vanish for a
+    second and then all of them come back, without the one I closed".
+    `pressed` used to take the whole column down on any press and wait for
+    the engine's show(live()) to put the rest back. Now a press on ONE
+    card of several hands the painter the column without it at once — no
+    None in between — reports that one id once, and keeps a list the
+    engine built before it heard of the close from putting the card back
+    for NOTIFY_GONE_S."""
+    import notify_card as nc
+
+    dismissed: list = []
+    opened: list = []
+    card = overlay_mod.NotifyCard(on_dismiss=dismissed.append,
+                                  on_open=opened.append)
+    card._thread = threading.Thread(target=lambda: None)   # never started
+
+    def queued() -> list:
+        out = []
+        while True:
+            try:
+                got = card._q.get_nowait()
+            except queue.Empty:
+                return out
+            out.append(None if got is None else [c["id"] for c in got])
+
+    def column(*ids):
+        return [_item(id=i, unread=len(ids)) for i in ids]
+
+    card.show(column(9, 8, 7))
+    assert queued() == [[9, 8, 7]]
+    card.pressed("dismiss", 8)
+    assert queued() == [[9, 7]], "the column went down instead of one card"
+    assert dismissed == [8] and card.visible() and card.current() == 9
+    card.pressed("dismiss", 8)
+    assert dismissed == [8] and queued() == [], \
+        "a second click on a card already gone is not a second report"
+    # the engine's answer that crossed the close still names 8
+    card.show(column(9, 8, 7))
+    assert queued() == [[9, 7]], "a stale list put the closed card back"
+    # the newest one goes too: the next becomes the current one
+    card.pressed("dismiss", 9)
+    assert queued() == [[7]] and card.current() == 7 and dismissed == [8, 9]
+    # a click on the last card's body opens it and takes the column down
+    card.pressed("open", 7)
+    assert opened == [7] and queued() == [None] and not card.visible()
+    # a dismissal that never landed shows its card again, later
+    card._gone = {k: t - overlay_mod.NOTIFY_GONE_S - 1
+                  for k, t in card._gone.items()}
+    card.show(column(8, 6))
+    assert queued() == [[8, 6]], "a failed dismissal hid its card for good"
+    # an open on one card of several leaves the rest, like the ×
+    card.pressed("open", 6)
+    assert opened == [7, 6] and queued() == [[8]]
+    # with the pin up, closing every notification leaves the pin
+    card.pin(_pin_card())
+    assert queued() == [[8, nc.PIN_ID]]
+    card.show(column(5, 8))
+    queued()
+    card.pressed("dismiss", 5)
+    assert queued() == [[8, nc.PIN_ID]]
+    card.pressed("dismiss", 8)
+    assert queued() == [[nc.PIN_ID]] and card.pinned()
+    assert dismissed == [8, 9, 5, 8]
+    card.unpin()
+    queued()
+
+    # A column CUT SHORT ("+N earlier" on its last card): the engine's
+    # answer brings the next one up from underneath, so the column is not
+    # drawn one card short first — that would shrink it and grow it back,
+    # two jumps. The press is reported; the picture waits for the answer.
+    cut = column(4, 3, 2)
+    cut[-1]["more"] = 3
+    card.show(cut)
+    assert queued() == [[4, 3, 2]]
+    card.pressed("dismiss", 3)
+    assert dismissed[-1] == 3 and queued() == [], \
+        "a cut column was redrawn short before the engine's answer"
+    assert card.current() == 4 and card.visible()
+    card.show(column(4, 2, 1))           # the engine: 1 came up from below
+    assert queued() == [[4, 2, 1]]
+    # with nobody to answer (no engine), the card goes at once anyway
+    lone = overlay_mod.NotifyCard()
+    lone._thread = threading.Thread(target=lambda: None)
+    cut = column(4, 3, 2)
+    cut[-1]["more"] = 3
+    lone.show(cut)
+    lone._q.get_nowait()
+    lone.pressed("dismiss", 3)
+    assert [c["id"] for c in lone._q.get_nowait()] == [4, 2]
+
+
+def test_the_glass_column_changes_in_place_and_its_blur_windows_follow(
+        ) -> None:
+    """The real glass presenter on real layered windows (this suite runs on
+    a hidden desktop; house rule 8). A column that changes is the SAME
+    window — same handle — resized and repainted, never taken down and
+    built again. While the blur is live there is one blur window per piece
+    of glass, exactly that piece's rectangle on the screen and below the
+    column in the z-order, and they follow it: one fewer when a card
+    goes, one more when one comes, none when the last goes. What only a
+    screen can show — the blur itself — is measured by hand (2026-10-19,
+    the probe in the commit message) and left for his eyes."""
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    try:
+        import skia  # noqa: F401
+        from skin import glass as skin_glass
+        from skin import notify as skin_notify
+    except Exception:
+        return
+    import ctypes
+    import ctypes.wintypes
+    import notify_card as nc
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.IsWindow.argtypes = [ctypes.c_void_p]
+    user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    user32.GetWindow.restype = ctypes.c_void_p
+
+    def rect(hwnd):
+        r = ctypes.wintypes.RECT()
+        user32.GetWindowRect(ctypes.c_void_p(int(hwnd)), ctypes.byref(r))
+        return r.left, r.top, r.right, r.bottom
+
+    # Glass on its own first: GPU windows resize now, and place() moves a
+    # window without a new picture.
+    glass = skin_glass.Glass(40, 50, 120, 80)
+    try:
+        hwnd = glass.hwnd
+        glass.canvas.clear(0x80102030)
+        assert glass.flush()
+        glass.resize(200, 140)
+        assert glass.hwnd == hwnd and (glass.width, glass.height) == (200, 140)
+        glass.canvas.clear(0x80102030)
+        assert glass.flush(), "a resized window (GPU or not) would not flush"
+        assert rect(hwnd) == (40, 50, 240, 190)
+        glass.place(70, 90)
+        assert rect(hwnd) == (70, 90, 270, 230) and glass.where() == (70, 90)
+        assert glass.round_corners() in (True, False)
+        assert glass.blur_behind() in (True, False)
+    finally:
+        glass.close()
+
+    card = overlay_mod.NotifyCard(corner="bottom-right")
+    card.placed = lambda x, y: None          # never write the owner's config
+    thread = threading.Thread(target=skin_notify.run, args=(card,),
+                              daemon=True)
+    card._thread = thread
+    thread.start()
+    try:
+        assert card._alive.wait(5)
+
+        def ours():
+            return [g for g in list(skin_glass._live.values())
+                    if g.moved is not None and g.clicked is not None]
+
+        def height(g):
+            left, top, right, bottom = rect(g.hwnd)
+            return bottom - top
+
+        def check_behind(column):
+            """Every blur window is its piece, on the screen, under the
+            column; and there is one per piece."""
+            behind = list(getattr(card, "behind", []) or [])
+            if not behind:
+                return True                  # no live blur on this desktop
+            win = ours()[0]
+            gx, gy = rect(win.hwnd)[:2]
+            want = [(gx + x, gy + y, gx + x + w, gy + y + h)
+                    for x, y, w, h, _r in nc.stack_shapes(column, 1.0)]
+            assert [rect(b) for b in behind] == want, (
+                [rect(b) for b in behind], want)
+            below, h = set(), user32.GetWindow(ctypes.c_void_p(win.hwnd), 2)
+            for _ in range(400):             # GW_HWNDNEXT, down the z-order
+                if not h:
+                    break
+                below.add(int(h))
+                h = user32.GetWindow(ctypes.c_void_p(h), 2)
+            assert set(behind) <= below, "a blur window is above the cards"
+            return True
+
+        three = [_item(id=i, unread=3) for i in (9, 8, 7)]
+        card.show(three)
+        assert _until(lambda: card.rect is not None and len(ours()) == 1), \
+            "the column never came up"
+        first = ours()[0]
+        hwnd, tall = first.hwnd, height(first)
+        drawn = [nc.card_for(i, seconds=0, unread=3) for i in three]
+        check_behind(drawn)
+        was = list(getattr(card, "behind", []) or [])
+        card.pressed("dismiss", 8)
+        assert _until(lambda: ours() and height(ours()[0]) < tall), \
+            "the column did not shrink"
+        assert len(ours()) == 1 and ours()[0].hwnd == hwnd, \
+            "closing one card built a new window — the blink he saw"
+        two = [nc.card_for(i, seconds=0, unread=3) for i in three
+               if i["id"] != 8]
+        if was:
+            assert _until(lambda: len(card.behind) == len(was) - 1)
+            check_behind(two)
+        card.show([_item(id=i, unread=3) for i in (10, 9, 7)])
+        assert _until(lambda: height(ours()[0]) == tall), \
+            "a card arriving did not grow the same window"
+        assert ours()[0].hwnd == hwnd
+        if was:
+            assert _until(lambda: len(card.behind) == len(was))
+        card.pressed("dismiss", None)
+        assert _until(lambda: not ours() and card.rect is None), \
+            "Clear all left the window up"
+        assert not getattr(card, "behind", [])
+        for b in was:
+            assert not user32.IsWindow(ctypes.c_void_p(b)), \
+                "a blur window outlived the column"
+    finally:
+        card._q.put(overlay_mod._DONE)
+        thread.join(5)
+
+
 def test_the_awake_engine_says_when_the_mode_flips_and_only_then() -> None:
     import awake as awake_mod
 

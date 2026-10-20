@@ -559,6 +559,12 @@ DOT_MOVE_S = 45.0
 # had to be asked for twice. The dashboard's own backstop
 # (dashboard.DOT_WAIT_S) is longer than this on purpose.
 DOT_FRAME_S = 180.0
+# How long a notification closed on the column stays off it whatever the
+# engine's next list says (NotifyCard._gone). The engine's dismissal is a
+# JSON write on a thread of its own, tens of milliseconds; two seconds is
+# room for a slow disk and short enough that a dismissal which failed
+# shows its card again rather than hiding it for good.
+NOTIFY_GONE_S = 2.0
 # A release that travelled less than this is a click, not a drag —
 # NotifyCard's rule and its number, kept the same everywhere.
 DOT_CLICK_PX = 4
@@ -3898,6 +3904,9 @@ class NotifyCard(HintCard):
         self.rect = None          # screen rect of the visible column, or None
         self._current = None      # the NEWEST item id on screen
         self._cards: list = []    # the column as drawn, newest first
+        # id -> monotonic second, for a card closed HERE whose dismissal
+        # the engine may not have written yet (see `pressed`)
+        self._gone: dict = {}
         self._state_lock = threading.Lock()
 
     def start(self) -> None:
@@ -3969,6 +3978,19 @@ class NotifyCard(HintCard):
         if isinstance(items, dict):
             items = [items]
         import notify_card as nc
+        with self._state_lock:
+            # A card closed on this column a moment ago is not put back by
+            # a list the engine built before it heard of the close — the
+            # engine answers every press with show(live()), and two quick
+            # closes can cross: the answer to the first still names the
+            # second. GONE_S later the engine is the truth again, so a
+            # dismissal that never landed cannot hide a card for good.
+            now = time.monotonic()
+            self._gone = {k: t for k, t in self._gone.items()
+                          if now - t < NOTIFY_GONE_S}
+            gone = set(self._gone)
+        if gone:
+            items = [i for i in items if i.get("id") not in gone]
         cards = []
         for item in items:
             try:
@@ -4050,10 +4072,15 @@ class NotifyCard(HintCard):
         for a missing one here would quietly turn the dismiss key into a
         one-card dismissal.
 
-        The whole column comes down on any press, whichever card was hit.
-        The engine answers with `show(live())` — or `hide()` when nothing
-        is left — so what goes back up is the truth about the store rather
-        than this thread's guess at it.
+        A press that names nobody (Esc, the dismiss key, the Clear-all
+        pill) takes the whole column down. A press on ONE card of several
+        takes only that card off, at once, and leaves the others standing
+        (2026-10-18 — until then every press took the column down and the
+        owner watched all of them blink out and come back). Either way the
+        engine answers with `show(live())` — or `hide()` when nothing is
+        left — so what stays up is the truth about the store rather than
+        this thread's guess at it; `_gone` keeps an answer that crossed a
+        second close from putting that card back.
 
         Neither is HintCard.dismissed() — that writes enabled=false into
         config.toml, and this is "seen", not "never again".
@@ -4073,15 +4100,41 @@ class NotifyCard(HintCard):
             return
         if name not in ("dismiss", "open") or item_id == nc.PIN_ID:
             return                 # the pin is never dismissed or opened
+        callback = self._on_open if name == "open" else self._on_dismiss
+        defer = False
         with self._state_lock:
-            was, self._current, self._cards = self._current, None, []
+            if item_id is not None:
+                self._gone[item_id] = time.monotonic()
+            if item_id is None or len(self._cards) <= 1:
+                was, self._current, self._cards = self._current, None, []
+            else:
+                # ONE CARD OF SEVERAL (2026-10-18): only that card leaves,
+                # now, and the rest stay exactly where they are. This used
+                # to take the whole column down and wait for the engine's
+                # show(live()) to put the others back — the owner's "all
+                # the cards vanish for a second and come back without the
+                # one I closed". A card that is not on the column any more
+                # is a second click on one already gone: no report.
+                keep = [c for c in self._cards if c.get("id") != item_id]
+                if len(keep) == len(self._cards):
+                    return
+                # A column cut short ("+N earlier" on its last card) is
+                # NOT redrawn here: the engine's answer, milliseconds
+                # behind, brings the next one up from underneath, and
+                # drawing the column one card short first would make it
+                # jump twice — shrink, then grow back. The picture stays
+                # as it is until that answer replaces it in place.
+                defer = (callback is not None
+                         and int(self._cards[-1].get("more") or 0) > 0)
+                was = self._current
+                self._cards = keep
+                self._current = keep[0]["id"]
             drawn = self._drawn()
-        if self._thread is not None:
+        if self._thread is not None and not defer:
             if not drawn:
                 self._q.put(None)
             elif was is not None:
                 self._q.put(drawn)
-        callback = self._on_open if name == "open" else self._on_dismiss
         if was is None or callback is None:
             return
         try:
@@ -4277,7 +4330,12 @@ class NotifyCard(HintCard):
         def put_up(cards: list) -> None:
             st["cards"], st["hover"] = list(cards), None
             st["press"] = None
-            cache.clear()
+            # The text cache is KEPT across columns (2026-10-18): the
+            # cards that stayed are the same strings, and drawing them all
+            # again through DrawTextW is the pause that made a closed card
+            # take the others with it for a moment. hide() still empties it.
+            if len(cache) > 400:
+                cache.clear()
             seconds = float(cards[0].get("seconds") or 0) if cards else 0
             st["deadline"] = ((time.monotonic() + seconds)
                               if seconds > 0 else None)
@@ -4373,6 +4431,9 @@ class NotifyCard(HintCard):
                 # The × of ONE card, named by its own id: everything else
                 # in the column stays unread.
                 self.pressed("dismiss", ident(where[0]))
+            elif code == nc.HTCLIENT and what == nc.CLEAR:
+                # Clear all: no id, which is "every unread one".
+                self.pressed("dismiss", None)
             elif code == nc.HTCLIENT and what == nc.BUTTON:
                 self.pressed("button", ident(where[0]))
             elif code == nc.HTCAPTION:
