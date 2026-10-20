@@ -49514,6 +49514,11 @@ def test_the_return_watch_warms_the_model_when_the_person_is_back():
     app._waker = wake_mod.Waker(away_s=1200)
     start = time.monotonic()
     touched = [start - 3600]
+    # The model's last run BEFORE the hour away, on the same clock. It
+    # was 0.0 once, and on a CI runner booted less than an hour earlier
+    # monotonic 0 falls INSIDE that hour — "it ran while you were away",
+    # so no warm-up, and the test failed on GitHub only (PR #25).
+    app._model_used_at = start - 7200
     asked: list[int] = []
 
     def gpu_memory(timeout=5):
