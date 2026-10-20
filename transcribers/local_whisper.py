@@ -657,6 +657,18 @@ class LocalWhisperTranscriber:
         list(model.transcribe(audio, language=language,
                               vad_filter=True)[0])
 
+    def rewarm(self) -> float:
+        """The load-time warm-ups again, on the models already loaded —
+        for a person coming back to a machine that pushed them out of
+        memory meanwhile (wake.py has the 11.8 s this paid on 2026-10-20).
+        The detector first, as a dictation runs them. Seconds taken; a
+        failure raises, like the load's probe — the caller logs it."""
+        started = time.perf_counter()
+        if getattr(self, "_english", None) is not None:
+            self._warm_detector()
+        self._warm(self._model, self._language)
+        return time.perf_counter() - started
+
     def _warm_detector(self, detector=None) -> None:
         """Pay the first-inference cost at startup, not on the first
         dictation.

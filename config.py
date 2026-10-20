@@ -344,6 +344,11 @@ class LocalConfig:
     # edge of that noise; at 8 s it is plainly worse (13.9% against 7.5%
     # WER). Cuts always land in a pause, never mid-word.
     rolling_window_s: float = 25.0
+    # Warm the models again when the person comes back after this many
+    # minutes with no key or mouse (wake.py): Windows pushes an idle model
+    # out of memory, and the first dictation then paid 7-12 s to bring it
+    # back (measured 2026-10-20). 0 = off.
+    warm_after_away_min: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -1832,6 +1837,8 @@ def build(data: dict) -> Config:
             rolling=bool(local.get("rolling", LocalConfig.rolling)),
             rolling_window_s=float(local.get(
                 "rolling_window_s", LocalConfig.rolling_window_s)),
+            warm_after_away_min=float(local.get(
+                "warm_after_away_min", LocalConfig.warm_after_away_min)),
         ),
         feedback=FeedbackConfig(
             placeholder=str(feedback.get("placeholder",
@@ -2346,6 +2353,9 @@ def build(data: dict) -> Config:
                           "seconds (Whisper's own window is 30; this app "
                           "shipped at 25, and below 20 it was measured to "
                           "cost words)")
+    if cfg.local.warm_after_away_min < 0:
+        raise ConfigError("local.warm_after_away_min must be >= 0 (minutes "
+                          "away before the model is warmed again; 0 = off)")
     if cfg.polish.min_chars < 0:
         raise ConfigError("polish.min_chars must be >= 0")
     if cfg.polish.max_wait_s <= 0:

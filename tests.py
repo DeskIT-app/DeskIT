@@ -49298,6 +49298,297 @@ def test_the_screens_key_is_live_while_paused_and_nothing_else_is() -> None:
     assert spy.events[-1] == "tap:capture", spy.events
 
 
+import logging  # noqa: E402 — the wake tests' log catcher below
+
+
+class _CatchApp(logging.Handler):
+    """The "app" log's messages, for the wake tests below."""
+
+    def __init__(self, sink):
+        super().__init__()
+        self.sink = sink
+
+    def emit(self, record):
+        self.sink.append(record.getMessage())
+
+
+def test_the_waker_warms_once_when_the_person_comes_back():
+    """wake.Waker, the decision: input after 20 min with none, and the
+    model idle all that time, is ONE warm-up, said with how long the
+    absence was. At the desk all along, or away for less, is none."""
+    import wake as wake_mod
+
+    room = lambda: 12 * wake_mod.GB                     # noqa: E731
+    w = wake_mod.Waker(away_s=1200)
+    assert w.look(100.0, 99.0, 0.0, False, room) is None
+    assert w.look(3700.0, 100.0, 0.0, False, room) is None     # away
+    assert w.look(3702.0, 3701.0, 0.0, False, room) == \
+        "back after 60 min away"
+    assert w.look(3704.0, 3703.0, 0.0, False, room) is None    # only once
+    # ten minutes away is not away
+    w = wake_mod.Waker(away_s=1200)
+    assert w.look(700.0, 100.0, 0.0, False, room) is None
+    assert w.look(702.0, 701.0, 0.0, False, room) is None
+    # 0 = off, whatever happens
+    w = wake_mod.Waker(away_s=0)
+    assert w.look(3700.0, 100.0, 0.0, False, room) is None
+    assert w.look(3702.0, 3701.0, 0.0, False, room) is None
+    # Windows refused GetLastInputInfo (0.0): never away, never a warm-up
+    w = wake_mod.Waker(away_s=1200)
+    assert w.look(3700.0, 0.0, 0.0, False, room) is None
+    assert w.look(3702.0, 0.0, 0.0, False, room) is None
+
+
+def test_the_waker_leaves_a_model_that_ran_while_the_person_was_away():
+    """A phone dictation while the desk was empty already woke the model:
+    coming back owes nothing. One that ran BEFORE the absence does."""
+    import wake as wake_mod
+
+    room = lambda: 12 * wake_mod.GB                     # noqa: E731
+    w = wake_mod.Waker(away_s=1200)
+    w.look(5000.0, 100.0, 50.0, False, room)
+    assert w.look(5002.0, 5001.0, 3000.0, False, room) is None
+    w = wake_mod.Waker(away_s=1200)
+    w.look(5000.0, 100.0, 50.0, False, room)
+    assert w.look(5002.0, 5001.0, 50.0, False, room) == \
+        "back after 82 min away"
+
+
+def test_the_waker_waits_out_a_full_card_and_a_pause():
+    """Someone else holding the card (the night's training, a game) is
+    asked again a minute later, not every poll, and the warm-up goes the
+    moment there is room. Paused, it does nothing — lifting the pause is
+    its own reason. No card to ask (None) goes ahead."""
+    import wake as wake_mod
+
+    GB = wake_mod.GB
+    free, asked = [1 * GB], []
+
+    def card():
+        asked.append(1)
+        return free[0]
+
+    w = wake_mod.Waker(away_s=1200, retry_s=60)
+    w.look(5000.0, 100.0, 0.0, False, card)
+    assert not asked                                  # never asked while away
+    assert w.look(5002.0, 5001.0, 0.0, False, card) is None and len(asked) == 1
+    assert w.look(5030.0, 5029.0, 0.0, False, card) is None and len(asked) == 1
+    free[0] = 12 * GB
+    assert w.look(5063.0, 5062.0, 0.0, False, card) == \
+        "back after 82 min away" and len(asked) == 2
+    # back while paused: nothing now and nothing later...
+    w = wake_mod.Waker(away_s=1200)
+    w.look(5000.0, 100.0, 0.0, False, card)
+    assert w.look(5002.0, 5001.0, 0.0, True, card) is None
+    assert w.look(5004.0, 5003.0, 0.0, False, card) is None
+    # ...until the pause lifts, unless the model ran after that
+    w.resumed(6000.0)
+    assert w.look(6002.0, 6001.0, 0.0, False, card) == "after the pause"
+    w.resumed(7000.0)
+    assert w.look(7002.0, 7001.0, 7001.5, False, card) is None
+    # no NVIDIA card to ask: it goes ahead
+    w = wake_mod.Waker(away_s=1200)
+    w.look(5000.0, 100.0, 0.0, False, lambda: None)
+    assert w.look(5002.0, 5001.0, 0.0, False, lambda: None) == \
+        "back after 82 min away"
+
+
+def test_rewarm_runs_the_load_warm_ups_again_detector_first():
+    """local_whisper.rewarm: the detector's two passes, then the Hebrew
+    model's two — the order a dictation runs them in — on the models
+    already loaded. Without a detector (none configured, or set aside
+    for a game) the Hebrew model alone."""
+    from transcribers import local_whisper as lw
+
+    order: list[tuple] = []
+
+    class Hebrew:
+        def transcribe(self, audio, **kw):
+            order.append(("hebrew", kw.get("vad_filter")))
+            return iter(()), None
+
+    class Detector:
+        def detect_language(self, audio=None, vad_filter=None):
+            order.append(("detector", vad_filter))
+            return "he", 1.0, []
+
+    t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+    t._model, t._language, t._english = Hebrew(), "he", Detector()
+    t._guards = lw.hallucination_guards(True)
+    assert t.rewarm() >= 0
+    assert order == [("detector", True), ("detector", False),
+                     ("hebrew", False), ("hebrew", True)], order
+    order.clear()
+    t._english = None
+    t.rewarm()
+    assert order == [("hebrew", False), ("hebrew", True)], order
+
+
+def _wake_app(backend):
+    import main as main_mod
+
+    class Machine:
+        state = hotkey_mod.IDLE
+        paused = False
+
+    app = main_mod.App.__new__(main_mod.App)
+    app.transcriber, app.machine = backend, Machine()
+    app._model_state, app._model_lock = "on", threading.Lock()
+    app._model_used_at = 0.0
+    return app
+
+
+class _WarmBackend:
+    name = "local"
+
+    def __init__(self, took=0.3):
+        self.calls, self.took, self.error = 0, took, None
+
+    def rewarm(self):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.took
+
+
+def test_the_app_warms_the_model_only_when_it_is_on_and_free():
+    """App._rewarm: one warm-up under the model lock, its seconds in the
+    log — and a slow one says the model had been pushed out, the line to
+    grep for next time. A decode holding the lock IS the warm-up, so it
+    is skipped, not waited for; the model off or loading, a recording on
+    its way, or a backend with no rewarm (the cloud) is nothing at all; a
+    warm-up that fails is a log line, never a crash."""
+    lines: list[str] = []
+    catch = _CatchApp(lines)
+    app_log = logging.getLogger("app")
+    level = app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catch)
+    try:
+        backend = _WarmBackend()
+        app = _wake_app(backend)
+        app._rewarm("back after 60 min away")
+        assert backend.calls == 1 and app._model_used_at > 0
+        assert lines[-1] == "model warmed back after 60 min away: 0.3 s", lines
+        backend.took = 11.8
+        app._rewarm("back after 60 min away")
+        assert "11.8 s — it had been pushed out of memory" in lines[-1], lines
+        with app._model_lock:
+            started = time.monotonic()
+            app._rewarm("back after 60 min away")
+            assert time.monotonic() - started < 0.5
+        assert backend.calls == 2
+        for state in ("off", "loading", "unloading"):
+            app._model_state = state
+            app._rewarm("back after 60 min away")
+        app._model_state = "on"
+        app.machine.state = hotkey_mod.RECORDING
+        app._rewarm("back after 60 min away")
+        app.machine.state = hotkey_mod.IDLE
+        assert backend.calls == 2
+        app.transcriber = object()
+        app._rewarm("back after 60 min away")
+        app.transcriber = backend
+        backend.error = RuntimeError("CUDA failed")
+        count = len(lines)
+        app._rewarm("back after 60 min away")
+        assert backend.calls == 3 and len(lines) == count + 1
+        assert "could not warm the model" in lines[-1], lines
+        assert app._model_lock.acquire(blocking=False)
+        app._model_lock.release()
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+
+
+def test_the_return_watch_warms_the_model_when_the_person_is_back():
+    """The poll end to end, on a real thread: no input for an hour, then
+    a touch, and the model is warmed once — with the card's free memory
+    read off nvidia-smi (here a stand-in) only at that moment."""
+    import main as main_mod
+    import wake as wake_mod
+
+    backend = _WarmBackend()
+    app = _wake_app(backend)
+    app._stopping = threading.Event()
+    app._waker = wake_mod.Waker(away_s=1200)
+    start = time.monotonic()
+    touched = [start - 3600]
+    asked: list[int] = []
+
+    def gpu_memory(timeout=5):
+        asked.append(1)
+        return 2 * wake_mod.GB, 16 * wake_mod.GB
+
+    real = (main_mod.awake_mod.last_input, main_mod.awake_mod.gpu_memory,
+            wake_mod.POLL_S)
+    main_mod.awake_mod.last_input = lambda: touched[0]
+    main_mod.awake_mod.gpu_memory = gpu_memory
+    wake_mod.POLL_S = 0.01
+    thread = threading.Thread(target=app._watch_return, daemon=True)
+    try:
+        thread.start()
+        time.sleep(0.1)
+        assert backend.calls == 0 and not asked       # still away
+        touched[0] = time.monotonic()
+        deadline = time.monotonic() + 3
+        while backend.calls == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.1)
+        assert backend.calls == 1 and len(asked) == 1, (backend.calls, asked)
+    finally:
+        app._stopping.set()
+        thread.join(2)
+        (main_mod.awake_mod.last_input, main_mod.awake_mod.gpu_memory,
+         wake_mod.POLL_S) = real
+
+
+def test_lifting_the_pause_owes_the_model_a_warm_up():
+    """App._on_pause(False) tells the waker: the pause is for games, and
+    a game is the other thing that pushes the model off the card."""
+    import main as main_mod
+    import wake as wake_mod
+
+    app = _wake_app(_WarmBackend())
+    app.cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    app._waker = wake_mod.Waker(away_s=1200)
+    app._locking, app._auto_paused = False, False
+    app._set_state = lambda state: None
+    app._say = lambda words: None
+    real_beep = main_mod.beep
+    main_mod.beep = lambda *a, **k: None
+    try:
+        app._on_pause(False)
+    finally:
+        main_mod.beep = real_beep
+    now = time.monotonic()
+    assert app._waker.look(now, now, 0.0, False, lambda: None) == \
+        "after the pause"
+
+
+def test_warm_after_away_min_parses_and_is_bounded():
+    """[local] warm_after_away_min: 20 by default, read from the file, 0
+    turns it off, and a negative number is refused loudly."""
+    import tempfile as _tempfile
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.local.warm_after_away_min == 20.0
+    base = (Path(__file__).resolve().parent / "defaults.toml").read_text("utf-8")
+    with _tempfile.TemporaryDirectory() as d:
+        copy = Path(d) / "config.toml"
+        copy.write_text(base.replace("warm_after_away_min = 20.0",
+                                     "warm_after_away_min = 0"), "utf-8")
+        assert config_mod.load(copy).local.warm_after_away_min == 0.0
+        copy.write_text(base.replace("warm_after_away_min = 20.0",
+                                     "warm_after_away_min = -1"), "utf-8")
+        try:
+            config_mod.load(copy)
+        except config_mod.ConfigError as e:
+            assert "warm_after_away_min" in str(e), e
+        else:
+            raise AssertionError("warm_after_away_min = -1 was accepted")
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
