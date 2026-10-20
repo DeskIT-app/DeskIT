@@ -217,6 +217,22 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night12 (armed for 2026-10-21 00:30, `night_teacher12.ps1`) — the first
+  Stage 2 night, his choice**: night10's exact recipe plus ONE new source,
+  ~40 h of ivrit-ai/knesset-committees (`build_knesset_data.py` →
+  `data\train_knesset`; ivrit.ai licence, training allowed — unlike Reversim,
+  this part could ship). The protocols are edited, not verbatim — finding 8's
+  trap again — so a segment is kept only when, against the Whisper transcript
+  the dataset ships, its text drops NO heard word and adds at most one, with
+  a median alignment score ≥ 0.7 and both edge words ≥ 0.5. Measured first:
+  the night8-style test (≤ 1 missing, by word middles) kept 36% of the
+  segments of a session but let edge words through — the forced alignment
+  stretches a written word over an unwritten one ("רשמנו", p 0.12, over
+  "וכך הלאה"), 3 of 6 clips decoded on the CPU lacked a spoken word at an
+  edge; counting every heard word that TOUCHES a segment fixed it, 10 of 10
+  clean, ~7 min kept per session. Scored on the six sets and on Knesset
+  phrases nobody said (`knesset_phrase_check.py`: 0 for today's, night10
+  and night11).
 - **night11 (done 2026-10-20, `night_teacher11.ps1`) — no better than
   night10.** night10 with the top SIX encoder layers (26-31); with Ollama
   unloaded first it did not run out of memory (no fallback), the epoch in
