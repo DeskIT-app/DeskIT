@@ -305,6 +305,31 @@ The base has not seen these:
   API ~$0.85 per 1,000 clips (measured), so 30,000 clips (~80 h) ~$26,
   60,000 ~$51 — asked as a separate yes, with the cap enforced in code as
   on 2026-10-10.
+  **Measured 2026-10-20 before any such spend** (`teacher_measure.py`,
+  $3.93 of a $5 cap, key `teacher/anthropic`): on our sets with a human
+  reference, Claude saw night10's and today's transcripts (never the
+  reference) and wrote what it thought was said — exactly the audio-v2 job.
+  Words wrong, night10 → teacher: WhatsApp 693 → 628 (Sonnet, −9.4%) / 627
+  (Opus, −9.5%); d1 492 → 468 / 463 (−4.9% / −5.9%); Reversim dev 805 → 871
+  with Sonnet, all of it words B heard that the EDITED reference lacks
+  (finding 8), not a loss. The hearing errors alone (`error_kinds.py`
+  "misheard"): WhatsApp 380 → 332 / 316, d1 222 → 203 / 200 — 9-17%. Opus ≈
+  Sonnet at twice the price. Under the 15% bar set before the run, so not
+  spent: labels 90% our own model's would mostly teach it itself. Revisit
+  only if new audio with HUMAN text (night12, the Knesset) is shown to move
+  the hearing errors at all. The audio-v2 facts (2026-10-20 survey): ~22,000
+  h of opus at 14.9 MB/h, transcripts by the 2025.04.03 checkpoint of our own
+  base (so as labels they teach nothing), Geekonomy ~1,700 h of which the
+  base heard ~5% via crowd-transcribe; eval-d1 is ONE Mindset episode that is
+  in audio-v2 — never train on it.
+- **What training has and has not moved** (`error_kinds.py`, 2026-10-20, six
+  sets): night10 against today's — words added 1,453 → 836, English as Latin
+  837 → 500, dropped 875 → 792, but MISHEARD 3,170 → 3,198: every night so far
+  taught the writing, none the hearing. Half of all errors are hearing
+  errors in spontaneous speech (ישירות→ישיבות, חתול→חתום, שלהם→שלהן). The
+  base's own data was crowd-transcribe (which we rehearse) and 4,700 h of
+  Knesset PLENUMS three times over — so new audio with human text is the
+  test, and knesset-committees is the only large such source after the base.
 - a **name-style pass** on all training text (foreign place and person names
   in Hebrew letters, tech terms in Latin) — aimed at the FLEURS style gap;
   cheap, only clips with names; estimated before asking.
