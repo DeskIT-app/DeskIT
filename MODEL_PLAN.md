@@ -60,7 +60,8 @@ Reversim test and night6's d1 are lower than in the pen 1.0 rows):
 | night7 (night6 + verbatim labels) | **1,093** | 824 | 788 | 547 | 2,542 | 741 |
 | night8 (night7, clips still missing 2+ heard words left out) | 1,100 | 851 | 767 | 539 | 2,541 | 741 |
 | night9 (night8 again) | 1,097 | 863 | 763 | 549 | **2,501** | 740 |
-| **night10** (night8 + top 4 encoder layers) | 1,117 | **805** | 693 | **492** | 2,548 | **707** |
+| **night10** (night8 + top 4 encoder layers) | 1,117 | 805 | 693 | **492** | 2,548 | 707 |
+| night11 (night8 + top 6 encoder layers) | 1,132 | **782** | 707 | 512 | 2,552 | **685** |
 
 **night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
 5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
@@ -216,11 +217,18 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
-- **night11 (armed for 2026-10-20 00:30, `night_teacher11.ps1`)**: night10 with
-  the top SIX encoder layers (26-31). Not smoke-tested by day (he was
-  dictating; Ollama held the card); the runner unloads Ollama first and, if
-  six layers still run out of memory, falls back to night10's recipe as
-  `night10b` — a repeat, so the night is not lost.
+- **night11 (done 2026-10-20, `night_teacher11.ps1`) — no better than
+  night10.** night10 with the top SIX encoder layers (26-31); with Ollama
+  unloaded first it did not run out of memory (no fallback), the epoch in
+  506 min. Against night10: Reversim dev −23 (past the spread) and the
+  Reversim test −22 (inside it) — the training domain; FLEURS dev +15 (past
+  the spread) — read speech; WhatsApp +14, d1 +20, FLEURS test +4, all inside
+  the spread. English words right 586 of 916 over the six sets (night10 582,
+  today's 334); decode time the same (0.035 of the audio, today's 0.038).
+  Two more hearing layers fit the podcasts a little more and buy nothing
+  for speech that sounds like dictation, so the layer count is not the road:
+  night10 stays in his Dev copy, and the next gain has to come from data the
+  base has not heard (Stage 2).
 - **night10 (done 2026-10-19) — the best model so far.** The full epoch in
   447 min, peak 8.5 GiB. Against night8/9 the hearing part paid: WhatsApp
   −70/−74, d1 −47/−57, Reversim dev −46/−58, Reversim test −33, all past the
