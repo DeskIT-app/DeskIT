@@ -218,6 +218,29 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night13 (armed for 2026-10-22 00:00, `night_teacher13.ps1`) — his ask
+  after night12: "research directions we have not tried; trying only teaches
+  us".** Three searches (2026-10-21): (1) no newer ivrit model exists (our
+  2025.05.13 weights are their latest Whisper); on ivrit's own leaderboard the
+  SUBSTITUTIONS (our "misheard") are flat across every good model, cloud ones
+  included (Soniox −6% on WhatsApp) — we may be nearer the floor than it
+  looked; the one claim of a real gain is OzLabs/Caspi-1.7B (Qwen3-ASR-1.7B on
+  the same ivrit data, d1 4.2 / WhatsApp 6.0 self-reported, CC-BY-NC: research
+  only). (2) Training: none of our audio sounds like a phone, and codec/noise/
+  echo simulation is what the literature measures moving a channel (MP3-23k
+  13.6 → 10.6 WER, clean 10.5 → 10.0, Narayanan 2018). (3) Decode time: both
+  models' 5-best + a corrector choosing only at disagreement slots + Whisper's
+  own `align()` score as a veto (Apple's correction-first decoding −27-32%) —
+  a product idea, not tried yet. So night13 = night10's recipe + ONE change:
+  60% of the clips from a phone-sounding copy (`make_phone_aug.py`: Opus 8-24
+  kbps or an 8 kHz µ-law line, OpenSLR-28 noise 5-20 dB, room echo; checked on
+  14 clips: the base goes 9.6% → 13.5%, hard but intelligible), scored on the
+  six sets and a phone-sounding FLEURS dev (`make_phone_dev.py`). Then, on
+  four sets: soup1012 (night10+night12 averaged, `soup.py`), turbo0403 (ivrit's
+  2025.04.03 weights, better on the leaderboard's WhatsApp), night10dec
+  (night10 without its encoder adapters: did they learn anything?) and Caspi
+  (`eval_qwen.py`, qwen_venv). Waits for 15 quiet minutes in app.log to start
+  and 5 before each scoring block; nothing starts after 09:45.
 - **night12 RESULT (2026-10-21) — new audio with human text did not move the
   hearing.** Against night10: FLEURS dev −10, Reversim dev −10 (both just past
   the spread), WhatsApp −12, d1 +21, FLEURS test −27, Reversim test −24 (all
