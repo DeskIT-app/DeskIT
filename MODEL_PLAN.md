@@ -61,7 +61,8 @@ Reversim test and night6's d1 are lower than in the pen 1.0 rows):
 | night8 (night7, clips still missing 2+ heard words left out) | 1,100 | 851 | 767 | 539 | 2,541 | 741 |
 | night9 (night8 again) | 1,097 | 863 | 763 | 549 | **2,501** | 740 |
 | **night10** (night8 + top 4 encoder layers) | 1,117 | 805 | 693 | **492** | 2,548 | 707 |
-| night11 (night8 + top 6 encoder layers) | 1,132 | **782** | 707 | 512 | 2,552 | **685** |
+| night11 (night8 + top 6 encoder layers) | 1,132 | **782** | 707 | 512 | 2,552 | 685 |
+| night12 (night10 + 40 h Knesset committees) | 1,107 | 795 | 681 | 513 | 2,521 | **683** |
 
 **night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
 5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
@@ -217,6 +218,18 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night12 RESULT (2026-10-21) — new audio with human text did not move the
+  hearing.** Against night10: FLEURS dev −10, Reversim dev −10 (both just past
+  the spread), WhatsApp −12, d1 +21, FLEURS test −27, Reversim test −24 (all
+  inside it); 6,454 → 6,388 words over the six sets (−1%). The hearing errors
+  (`error_kinds.py` "misheard") 3,198 → 3,202 — WhatsApp 380 → 414; English
+  582/916 and speed unchanged. And the trap it was watched for showed once:
+  d1 ended a stretch with "תודה רבה לך, אדוני." (`knesset_phrase_check.py`: 2
+  phrases, 0 for night10). 40 h of new speakers with human text is ~9% of the
+  mix against the base's 4,700 h of Knesset ×3; a LoRA on the top four
+  encoder layers cannot move the hearing with that. night10 stays; night13's
+  merged Knesset (`build_knesset_merged.py`) and the Claude teacher are not
+  worth running on this evidence.
 - **night12 (armed for 2026-10-21 00:30, `night_teacher12.ps1`) — the first
   Stage 2 night, his choice**: night10's exact recipe plus ONE new source,
   ~40 h of ivrit-ai/knesset-committees (`build_knesset_data.py` →
