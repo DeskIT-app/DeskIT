@@ -218,6 +218,26 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night13 RESULT (2026-10-22) — the training died, the candidates lost.**
+  The phone-audio training ran normally (2.1 s a step, 7.4 GiB) and died at
+  step ~230 for want of HOST commit: event 2004 named the trainer 13.9 GB,
+  DeskIT 6.3 GB, vmmem 4.3 GB, the commit at its 43.9 GB limit (the pagefile
+  is system-managed and grows on demand, slower than a trainer asks; on this
+  PC what sits on the card is charged to commit too). Re-armed as night13r
+  (`night_teacher13r.ps1`, his window until 10:00): `grow_commit.py` grows the
+  pagefile in untouched steps first, one retry on a memory death, the CUDA
+  allocator told to give back what it is not using. The candidates, words
+  wrong on fleurs_dev / reversim_dev / whatsapp / d1 (night10: 1,117 / 805 /
+  693 / 492): soup1012 1,112 / 809 / 696 / 493 — the same as night10;
+  turbo0403 1,223 / 1,401 / **650** / 537 — WhatsApp better than any model,
+  everything else worse; night10dec (night10 without its encoder adapters)
+  1,104 / 1,179 / 665 / 504 — so the encoder adapters DID learn: −374 on
+  Reversim dev, and they cost +28 on WhatsApp, +13 on FLEURS: podcast sound
+  learned, phone sound a little worse — the gap night13 aims at. Caspi
+  1,638 / 1,515 on the short-clip sets (+47% / +88% against night10, twice
+  the decode time, RTF 0.064); its d1 / WhatsApp (9,001 / 6,100) were cut
+  short by `eval_qwen.py`'s 1,024-token cap, re-run as caspi8k in night13r.
+  Caspi is not the road; nor, therefore, our own Qwen3-ASR model for now.
 - **night13 (armed for 2026-10-22 00:00, `night_teacher13.ps1`) — his ask
   after night12: "research directions we have not tried; trying only teaches
   us".** Three searches (2026-10-21): (1) no newer ivrit model exists (our
