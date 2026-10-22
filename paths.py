@@ -360,8 +360,58 @@ def ensure() -> Path:
     return DATA_DIR
 
 
+#: Windows' own folders a setting may start with, as ``{pictures}/DeskIT``
+#: (the KNOWNFOLDERID GUIDs). Since 2026-10-03 the pictures and the
+#: recordings go there by default: the old ``captures`` sat under
+#: ``DATA_DIR``, which nobody finds, and which a Store uninstall deletes
+#: with the app — the person's own screenshots and videos with it (the
+#: owner's Store walk, item 17). A full-trust package writes these real
+#: folders, not a virtualised copy, and they outlive an uninstall.
+KNOWN_FOLDERS = {"pictures": "33E28130-4E1E-4676-835A-98395C3BC3BB",
+                 "videos": "18989B1D-99B5-455B-841C-AB7C74E4DDFC"}
+_FALLBACK_FOLDERS = {"pictures": "Pictures", "videos": "Videos"}
+
+
+def known_folder(name: str) -> Path:
+    """Where Windows keeps `name` ("pictures", "videos") for this user —
+    SHGetKnownFolderPath, so a Pictures folder moved to another drive or
+    into OneDrive is the one answered. ``~\\Pictures`` when the call fails.
+
+    A private ``WinDLL``: declaring argtypes on ``ctypes.windll.shell32``
+    would change them for every module (AGENTS, the capture.py trap)."""
+    guid = KNOWN_FOLDERS[name]
+    try:
+        import ctypes
+        import uuid
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_uint32), ("b", ctypes.c_uint16),
+                        ("c", ctypes.c_uint16), ("d", ctypes.c_ubyte * 8)]
+
+        u = uuid.UUID(guid)
+        g = GUID(u.fields[0], u.fields[1], u.fields[2],
+                 (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+        shell = ctypes.WinDLL("shell32")
+        ole = ctypes.WinDLL("ole32")
+        shell.SHGetKnownFolderPath.argtypes = [
+            ctypes.POINTER(GUID), ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_wchar_p)]
+        shell.SHGetKnownFolderPath.restype = ctypes.c_long
+        out = ctypes.c_wchar_p()
+        hr = shell.SHGetKnownFolderPath(ctypes.byref(g), 0, None, ctypes.byref(out))
+        try:
+            if hr == 0 and out.value:
+                return Path(out.value)
+        finally:
+            ole.CoTaskMemFree(out)
+    except Exception:                                      # noqa: BLE001
+        pass
+    return Path.home() / _FALLBACK_FOLDERS[name]
+
+
 def resolve_folder(folder: str | os.PathLike) -> Path:
-    """A user-typed folder: absolute stays; relative is under ``DATA_DIR``.
+    """A user-typed folder: absolute stays; relative is under ``DATA_DIR``;
+    ``{pictures}/…`` and ``{videos}/…`` start in Windows' own folders.
 
     Used for ``[capture] folder`` and friends. Relative to the DATA folder
     and not the working directory, because the app is launched from a
@@ -369,7 +419,14 @@ def resolve_folder(folder: str | os.PathLike) -> Path:
     ideas about the working directory. In portable mode ``DATA_DIR`` is the
     code folder, which is exactly what those settings meant before.
     """
-    path = Path(folder).expanduser()
+    text = os.fspath(folder)
+    for name in KNOWN_FOLDERS:
+        mark = "{" + name + "}"
+        if text.lower().startswith(mark):
+            rest = text[len(mark):].lstrip("/\\")
+            base = known_folder(name)
+            return base / rest if rest else base
+    path = Path(text).expanduser()
     if not path.is_absolute():
         path = DATA_DIR / path
     return path
