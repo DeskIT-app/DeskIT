@@ -342,8 +342,12 @@ def run(card) -> None:
         if abs(x - placed_at[0]) + abs(y - placed_at[1]) < CLICK_PX:
             if dismissing:
                 return
+            target = ident(caption)
+            if target == nc.PIN_ID:
+                return             # a click on the pinned card's body is
+                                   # nothing — and must not take the latch
             dismissing = True
-            card.pressed("open", ident(caption))
+            card.pressed("open", target)
             return
         placed_at = (x, y)
         card.placed(x + SHADOW, y + SHADOW)
@@ -366,6 +370,10 @@ def run(card) -> None:
         if code == nc.HTCLIENT and what == nc.DISMISS:
             dismissing = True
             card.pressed("dismiss", ident(where[0]))
+        elif code == nc.HTCLIENT and what == nc.BUTTON:
+            # No latch: the pin is not taken down by this press, and a
+            # second click while the screens come back is harmless.
+            card.pressed("button", ident(where[0]))
 
     def paint(progress: float):
         """One frame: a face per card, painted fresh, each with its own

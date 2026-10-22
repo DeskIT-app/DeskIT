@@ -509,9 +509,13 @@ class App:
         # hold goes up in start()), and the screens off on a key. Built
         # whether or not the key is bound — the dashboard's button goes
         # through the control channel and needs the engine either way.
+        # `on_dark` is how the "Screens off" card hears the mode flip, from
+        # every road that flips it (the key, the desk, the shelf, the
+        # phone, the card's own button, the exit) — see _screens_card.
         self.awake = awake_mod.Engine(paths.DATA_DIR, getattr(cfg, "awake", None),
                                       state_path=paths.AWAKE_STATE,
-                                      log_path=paths.AWAKE_LOG)
+                                      log_path=paths.AWAKE_LOG,
+                                      on_dark=self._screens_card)
         # What the dot is showing, kept here so the dashboard can report the
         # same thing in words. Every set_state goes through _set_state.
         self._activity = "ready"
@@ -709,12 +713,22 @@ class App:
         # inert card and everything else (route, store, log, key) works.
         ncfg = getattr(cfg, "notify", None)
         card_cls = getattr(overlay_mod, "NotifyCard", None)
-        if card_cls is not None and ncfg is not None and ncfg.enabled:
+        # THE COLUMN EXISTS FOR TWO REASONS: notifications, and the pinned
+        # "Screens off" card ([awake] screens_card). With notifications
+        # switched off and the screens card on, the window is still built —
+        # but the engine below is handed an inert card, so a person who
+        # turned notifications off still never gets one.
+        notifications = ncfg is not None and ncfg.enabled
+        screens_card = bool(getattr(getattr(cfg, "awake", None),
+                                    "screens_card", True))
+        if card_cls is not None and ncfg is not None and (
+                notifications or screens_card):
             fields = dict(
                 x=ncfg.x, y=ncfg.y, scale=ncfg.scale,
                 on_change=self._save_notify_card,
                 on_dismiss=self._notify_dismissed,
                 on_open=self._notify_opened,
+                on_pin_press=self._screens_card_pressed,
                 seconds=ncfg.card_seconds,
                 anchor=getattr(ncfg, "anchor", "bottom"))
             # `anchor` lands with the card package (2026-09-04) — which
@@ -734,7 +748,9 @@ class App:
         else:
             self.notify_card = notify_mod.NullCard()
         self.notify = notify_mod.Engine(paths.DATA_DIR, ncfg, cue=beep,
-                                        card=self.notify_card,
+                                        card=(self.notify_card
+                                              if notifications
+                                              else notify_mod.NullCard()),
                                         store_path=paths.NOTIFY_FILE,
                                         log_path=paths.NOTIFY_LOG)
         # The half of Claude that cannot knock (notify_watch.py). A Cowork
@@ -3815,6 +3831,49 @@ class App:
             else:
                 self._say("screens on")
         threading.Thread(target=work, daemon=True, name="screens-key").start()
+
+    def _screens_card(self, state: dict) -> None:
+        """The screens mode just flipped (awake.Engine's `on_dark`): pin
+        the "Screens off" card, or take it down. The ONE road — the key,
+        the desk, the shelf, the phone, the card's button and the exit all
+        change the mode through the engine, so none of them can leave a
+        stale card or forget to put one up.
+
+        Only enqueues (the engine may call this on the keyboard hook,
+        holding its lock), and never raises: a card that cannot paint must
+        not cost the screens going off or coming back. The model is not
+        involved at all — the column is built whether or not it is on."""
+        try:
+            column = getattr(self, "notify_card", None)
+            if column is None or not hasattr(column, "pin"):
+                return
+            acfg = getattr(self.cfg, "awake", None)
+            if state.get("dark") and getattr(acfg, "screens_card", True):
+                import notify_card as nc
+                key = (hint_mod.pretty(acfg.hotkey)
+                       if acfg is not None and acfg.enabled and acfg.hotkey
+                       else "")
+                column.pin(nc.pinned_card(
+                    since=state.get("since") or time.time(),
+                    keep_s=state.get("keep_screens_off_s", 0), key=key))
+            else:
+                column.unpin()
+        except Exception:                        # noqa: BLE001
+            log.debug("the screens card would not %s",
+                      "go up" if state.get("dark") else "come down",
+                      exc_info=True)
+
+    def _screens_card_pressed(self) -> None:
+        """The pill on the "Screens off" card. Arrives on the card's own
+        thread, so the engine's work goes to one of its own; the card then
+        comes down through `_screens_card`, like every other way out."""
+        def work() -> None:
+            if not self.awake.dark:
+                return
+            self.awake.lighten(by="card")
+            self._say("screens on")
+        threading.Thread(target=work, daemon=True,
+                         name="screens-card").start()
 
     def _tap_notify_dismiss(self) -> None:
         """The notification card down and everything marked seen, from
