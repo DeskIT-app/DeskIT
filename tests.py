@@ -2598,6 +2598,34 @@ def test_cleanup_never_empties_real_content() -> None:
     assert clean("אה אמ המ").strip() != ""
 
 
+def test_no_bidi_control_survives_a_transcript() -> None:
+    """The Store walk's dictation (2026-10-03) came back from the decoder
+    with U+202B (RIGHT-TO-LEFT EMBEDDING) glued to "שפצי" — invisible, and
+    pasted it flips the line around it. Nobody can say one, so every
+    Bidi_Control goes: in cleanup.clean, and on the local backend's way
+    out even with the cleanup switched off."""
+    import cleanup
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    raw = "בשעה 3.30 \u202bשפצי."
+    assert cleanup.clean(raw) == "בשעה 3.30 שפצי.", repr(cleanup.clean(raw))
+    every = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e" \
+            "\u2066\u2067\u2068\u2069"
+    assert cleanup.strip_bidi_controls(f"א{every}ב c{every}d") == "אב cd"
+    # The joiners are not bidi controls and are left alone.
+    assert cleanup.strip_bidi_controls("a\u200db\u200cc") == "a\u200db\u200cc"
+    # Only bidi controls in it: nothing to paste, not the marks.
+    assert cleanup.clean("\u202b") == ""
+
+    backend = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    backend._fillers = cleanup.DEFAULT_FILLERS
+    for switch in (True, False):
+        backend._cleanup = switch
+        out = backend.clean_text(raw)
+        assert not cleanup.BIDI_CONTROLS.search(out), (switch, repr(out))
+        assert "שפצי" in out, out
+
+
 class _StubDetector:
     def __init__(self, lang, prob):
         self.lang, self.prob = lang, prob
@@ -31282,7 +31310,8 @@ def test_a_cut_falls_in_the_latest_pause_once_enough_audio_has_settled():
     in progress is cut, made on the audio alone: never before window_s
     of it is pending, never inside the last LAG_S, always in a pause —
     the LATEST one, through its middle — and, with no pause at all by
-    MAX_WINDOW_S, at the quietest chunk of the last five seconds."""
+    MAX_WINDOW_S, in the longest quiet run of the last five seconds (the
+    next test), or at the quietest chunk when there is no quiet at all."""
     import rolling
 
     rate, chunk = 1000, 100                 # ten chunks a second
@@ -31332,6 +31361,37 @@ def test_a_cut_falls_in_the_latest_pause_once_enough_audio_has_settled():
     peaks = stretch(9, quiet)
     cut = rolling.cut_at(peaks, sizes(peaks), rate, 8.0)
     assert cut is not None and 0 < cut < len(peaks), cut
+
+
+def test_a_forced_cut_goes_to_the_longest_quiet_not_the_quietest_chunk():
+    """Read aloud without a 0.5 s pause for 27 s, the Store walk's
+    dictation (2026-10-03) was forced at its quietest 10 ms — peak 0.0001,
+    the closure of the last ט of "מייקרוסופט" — and "הפגישה" after it
+    fell between the two decodes. The same five seconds held a 0.18 s
+    quiet run between two words. The shape of that, at 100 chunks a
+    second: the longest run wins and is cut through its middle, however
+    much quieter a lone chunk is."""
+    import rolling
+
+    rate, chunk = 1600, 16                  # 10 ms chunks
+    sizes = lambda peaks: [chunk] * len(peaks)  # noqa: E731
+    peaks = [0.30] * 2810                   # 28.1 s of unbroken speech
+    run_at = len(peaks) - 290               # 2.9 s from the end
+    peaks[run_at:run_at + 18] = [0.002] * 18    # 0.18 s between two words
+    closure = len(peaks) - 100              # 1.0 s from the end
+    peaks[closure:closure + 8] = [0.0001] * 8   # 0.08 s inside a word
+    cut = rolling.cut_at(peaks, sizes(peaks), rate, 25.0)
+    assert run_at < cut < run_at + 18, (cut, run_at)
+    assert cut == run_at + 9, cut
+    # Equal runs: the later one, which makes the longer window.
+    peaks[closure:closure + 18] = [0.002] * 18
+    cut = rolling.cut_at(peaks, sizes(peaks), rate, 25.0)
+    assert cut == closure + 9, cut
+    # Nothing quiet at all in those five seconds: the quietest chunk, as
+    # before (the test above pins that branch).
+    peaks = [0.30] * 2810
+    peaks[-200] = 0.10
+    assert rolling.cut_at(peaks, sizes(peaks), rate, 25.0) == len(peaks) - 200
 
 
 def test_quiet_is_relative_to_how_loud_the_microphone_is():
