@@ -18,7 +18,7 @@ line here fails the build.
 
 | Host | Purpose words | Why | Sends a secret? | Gate |
 |---|---|---|---|---|
-| `127.0.0.1` | `ollama`, `notify` | Ollama on this PC; the app's own phone listener (the Claude Code hook knocks on it) | the phone token, to our own listener only | none — loopback is the one host allowed in Offline mode |
+| `127.0.0.1` | `ollama`, `notify`, `room` | Ollama on this PC; the app's own phone listener (the Claude Code hook knocks on it); `room` is the app asking Ollama which models it holds and unloading them while a game needs the graphics card — and while it does, every other request to Ollama is refused before a socket | the phone token, to our own listener only | none — loopback is the one host allowed in Offline mode |
 | `generativelanguage.googleapis.com` | `polish`, `punctuate`, `translate`, `lookup`, `review`, `study`, `reading`, `transcribe`, `ask-screen`, `key-test`, `catalog` | Gemini, with your own key | your Gemini key, in the `x-goog-api-key` header, to this host only | cloud text / cloud audio / cloud screenshots consent |
 | `api.groq.com` | the same words, and `summary` — the one sentence a "Claude finished" card says instead of the message's first lines (the head and the tail of the message Claude ended with; Groq only, never Gemini) | Groq, with your own key | your Groq key, as a bearer, to this host only | the same consents (`summary` under cloud text) |
 | `huggingface.co` | `model-download` | the Hebrew model, once, from its model card's repository at a pinned commit | never — the repositories need no token and the app has none | the download step itself is the consent |
