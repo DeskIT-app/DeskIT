@@ -4,7 +4,7 @@ One object holds every path the six screens look at, so a test can point
 the whole app at a scratch folder and nothing reaches the owner's real
 stores. Nothing here opens a file for writing: the master's only writes
 are its own state (``store.py``) and the folders ``export.py`` creates
-outside the repo (MASTER.md rules 1 and 2).
+in the checkout's ``exports`` folder (MASTER.md rules 1 and 2).
 """
 from __future__ import annotations
 
