@@ -1,9 +1,9 @@
 """The master's one verb: take a row to a chat.
 
 A row becomes a folder — one document and every file that belongs to it —
-outside the repo, where he already files this sort of thing:
+where he already files this sort of thing:
 
-    Desktop\\Organized\\Projects\\DeskIT-exports\\<date>\\<kind>-<id>\\
+    Desktop\\Organized\\Projects\\DeskIT\\exports\\<date>\\<kind>-<id>\\
         report.md          the document
         shot.jpg           the screenshot, as it was taken
         dictation.wav      the recording, as it was recorded
@@ -31,9 +31,10 @@ from . import clipboard
 from .root import Root
 from .rows import Row
 
-#: beside DeskIT-reports\ and DeskIT-design\, which is where his own
-#: filing already puts this kind of thing.
-DEFAULT_HOME = Path.home() / "Desktop" / "Organized" / "Projects" / "DeskIT-exports"
+#: beside reports\ and design\ in the checkout, which is where his own
+#: filing already puts this kind of thing (moved in from Projects\DeskIT-*
+#: on 2026-10-22, his ask; kept out of git by .git\info\exclude).
+DEFAULT_HOME = Path.home() / "Desktop" / "Organized" / "Projects" / "DeskIT" / "exports"
 
 FENCE = "```"
 

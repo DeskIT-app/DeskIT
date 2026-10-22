@@ -6,9 +6,9 @@ the object stays FLAT (no attribute of an attribute), because the
 dispatcher that pywebview ships getattr's any dotted path it is given.
 
 Six names, and five of them read. The one that writes is `take`, and it
-writes outside the repo (export.py). `tick` writes the master's own
-state and nothing else — it is here because the box is his hand, and a
-click is the only thing that may move it (MASTER.md §6.5).
+writes in the checkout's exports folder (export.py). `tick` writes the
+master's own state and nothing else — it is here because the box is his
+hand, and a click is the only thing that may move it (MASTER.md §6.5).
 
 The screens that ask git, gh or the account are slow (0.3-3 s), so what
 a screen answered is kept until the window asks for it again with

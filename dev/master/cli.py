@@ -83,7 +83,7 @@ def main(argv=None) -> int:
     ap.add_argument("row", nargs="?", help="the row id, for export and tick")
     ap.add_argument("--root", help="the DeskIT checkout to read (default: this one)")
     ap.add_argument("--state", help="where the master keeps its ticks (default: dev/master/state)")
-    ap.add_argument("--home", help="where an export lands (default: Desktop\\...\\DeskIT-exports)")
+    ap.add_argument("--home", help="where an export lands (default: Desktop\\...\\DeskIT\\exports)")
     ap.add_argument("--no-net", action="store_true", help="do not ask GitHub or the server")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--off", action="store_true", help="tick: take the mark off")

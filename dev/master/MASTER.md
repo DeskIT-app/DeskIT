@@ -35,7 +35,7 @@ here, and then **what he tests in Dev is exactly what a user gets** (§8).
 1. **It never writes into the app's stores.** `problems.json`,
    `transcripts.log`, `config.toml`, `corpus\`, `vocab.json`, `state.json`,
    `consent.json` are read-only to it. Its only writes are its own ledger
-   (§6.4) and the export folders it creates outside the repo.
+   (§6.4) and the export folders it creates under `exports\` (§6.1).
 2. **It performs no action on anything.** No close or reopen of a report, no
    push, merge or tag, no stop-the-tests, no settings write, no server write.
    Reading from the server is reading, so pulling strangers' reports is
@@ -166,10 +166,13 @@ from.
 ## 6. The export, in detail
 
 ### 6.1 Where it lands
-`C:\Users\shimr\Desktop\Organized\Projects\DeskIT-exports\<date>\<kind>-<id>\`
-— beside `DeskIT-reports\` and `DeskIT-design\`, which is where he already
-files this sort of thing. Outside the repo, so nothing is gitignored and
-nothing is at risk of a `git clean`.
+`C:\Users\shimr\Desktop\Organized\Projects\DeskIT\exports\<date>\<kind>-<id>\`
+— beside `reports\` and `design\`, which is where he already files this
+sort of thing. Until 2026-10-22 all three sat outside the repo as
+`Projects\DeskIT-exports\` and its siblings; he asked for everything DeskIT
+in one folder, so they moved into the checkout. They are kept out of git by
+`.git\info\exclude` (not `.gitignore`), and like `corpus\` and `recent\`
+they are what a `git clean -x` would delete — never run one here.
 
 ### 6.2 What is in the folder
 ```
@@ -294,7 +297,7 @@ and hands it `api.Api` — six calls and no others (`rows`, `tick`,
   fixture folders in a scratch home — never his real stores — the export's
   shape, the allowlist, and a test that no source module writes.
 - **Pictures first.** Drawn 2026-09-23, before any code, in
-  `Desktop\Organized\Projects\DeskIT-design\2026-09-23\master\` — `home.png`,
+  `Desktop\Organized\Projects\DeskIT\design\2026-09-23\master\` — `home.png`,
   `reports.png`, `tests.png`, `code.png`, `server.png`, `data.png` and
   `export.png` (the sheet), with their sources (`pages.py`, `master.css`,
   `extra.css`, the B+ `bplus.css`) beside them. B+ exactly as approved: the
