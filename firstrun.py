@@ -31,31 +31,36 @@ The pages, and the ORDER is the point:
      session exists. Remembered until Sign out.
   2. Microphone — one row per physical microphone, the live meter, the
      trap named once, the fix one click away
-  3. This computer — what the probe found, and the downloads this PC
-     needs, asked before a byte moves: the Hebrew model (models.py),
-     NVIDIA's libraries on a card that has one (packs.py), the English
-     detector where there is room for it. The download keeps running
-     while the wizard moves on.
-  4. Say one sentence — recorded and read back through the real backend,
+  3. Say one sentence — recorded and read back through the real backend,
      the decode time on its own, the model's load time said once
-  5. Keys — the bindings as chips; a click rebinds one, through the same
+  4. Keys — the bindings as chips; a click rebinds one, through the same
      path Settings > Keys writes
-  6. Extras — the five switches of D33, each one thing that leaves this
+  5. Extras — the five switches of D33, each one thing that leaves this
      PC or changes Windows: the cloud repair (its consent card first —
      privacy.py, consent_card.py), keep-awake, the weekly update check,
      the Claude Code door, the Snipping-Tool key. Drawn as they stand
      (D34: the defaults are what the owner runs) and written only when
      moved.
-  7. Ready — the hotkey named, Start-with-Windows and the phone asked
+  6. Ready — the hotkey named, Start-with-Windows and the phone asked
      once, and — signed in — the words-and-settings sync, ON by
      default (the owner, 2026-09-20: nobody found the gate in
      Settings; the row says what leaves and how to turn it off, and
      Start records the consent — a row nobody saw is never one); the
      desk one button away
 
-At most four real decisions (arch-A §1 P2): the microphone (only when
-more than one input exists), the downloads, the extras, and nothing
-else; every page has a way through without deciding.
+THE DOWNLOADS ARE NOT A PAGE (the owner, 2026-10-03, walking the Store
+copy, whose install could not download and whose page 4 stopped on a
+[Download] button): every part this computer can use — the Hebrew model,
+the Recording pack, NVIDIA's libraries and the English detector where
+the card can run them — starts downloading the moment the wizard opens,
+on every copy, in the background (downloads.py). The one sign of it is
+a slim bar with a short label in the top row of every page (`_strip`);
+the sentence page's Record waits for the model; whatever is still
+coming when Start is pressed goes on in the running app.
+
+At most three real decisions (arch-A §1 P2): the microphone (only when
+more than one input exists), the extras, and nothing else; every page
+has a way through without deciding.
 
 THE WORDS ARE ENGLISH — the owner's verdict of 2026-09-19, walking the
 installed copy as a stranger: "the design must be redone here, and the
@@ -101,8 +106,8 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 import config as config_mod
+import downloads
 import paths
-import steps
 import ui
 
 log = logging.getLogger("app")
@@ -129,7 +134,9 @@ QUIET_S = 6.0
 SPEECH = 0.045
 TEST_S = 3.0                        # how long the sample recording runs
 
-PAGES = ("welcome", "account", "mic", "computer", "say", "keys", "extras", "done")
+PAGES = ("welcome", "account", "mic", "say", "keys", "extras", "done")
+#: The strip's bar in the top row of every page (`_strip`).
+STRIP_W, STRIP_H = 120, 4
 #: The screenshot key when the Snipping-Tool switch is on / off (screen 13).
 SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 
@@ -238,42 +245,13 @@ WORDS = {
                  "microphone”. DeskIT appears in that list only after its first "
                  "recording."),
     "mic.open": "Open Windows settings",
-    "computer.title": "This computer",
-    "computer.sub": ("What is missing downloads once. Next opens when the download is done; "
-                     "Pause it if you must go on, and finish it later from the desk."),
-    "computer.wait": "Downloading — Next opens when it is done, or press Pause.",
-    "computer.ready": "Everything this computer needs is already on the disk.",
-    "computer.portable": "Portable copy: the models come from the Hugging Face cache, as always.",
-    "computer.cpu": ("Without an NVIDIA card DeskIT works, only slower. Later you can add a "
-                     "free Groq key for fast transcription in the cloud (Settings > Privacy)."),
-    "computer.pack": "Use the NVIDIA card",
-    "computer.pack.help": "{size} of NVIDIA's CUDA libraries from PyPI, under NVIDIA's licence.",
-    "computer.detector": "Detect English automatically",
-    "computer.detector.help": "{size} more on the disk, and the same in video memory.",
-    "computer.recording": "Screen recording and the camera",
-    "computer.recording.help": "{size} from PyPI: PyAV with FFmpeg (a GPL build), for the record key, the photo key and the phone's audio.",
-    "computer.queue": "{n} of {total} · {name} · ",
-    "step.model.title": "The Hebrew model",
-    "step.model.body": ("DeskIT transcribes on this computer, without the cloud, with a "
-                        "Hebrew model that downloads once — {size} from huggingface.co "
-                        "into DeskIT's folder. Pause any time; the next start continues "
-                        "from the same point."),
-    "step.pack.title": "Speed from the NVIDIA card",
-    "step.pack.body": ("An NVIDIA card was found. To transcribe on it — many times faster "
-                       "than on the processor — DeskIT needs NVIDIA's CUDA libraries: "
-                       "{size} from PyPI, under NVIDIA's licence."),
-    "step.detector.title": "English detection",
-    "step.detector.body": ("A second, general model that notices when you spoke English and "
-                           "transcribes it as English: {size} more on the disk and in video "
-                           "memory. Without it an English sentence comes out in Hebrew letters."),
-    "step.recording.title": "Screen recording and the camera",
-    "step.recording.body": ("The record key, the photo key and the phone's audio need PyAV — "
-                            "{size} from PyPI, with FFmpeg (a GPL build), under their own licences."),
-    "step.done": "Downloaded and verified.",
-    "step.offline": ("No internet connection. DeskIT asks again at the next start, and the "
-                     "download continues from the same point."),
-    "step.paused": "Paused. The next start continues from the same point.",
-    "step.failed": "The download failed ({why}). DeskIT asks again at the next start.",
+    # The strip in the top row of every page while the parts download in
+    # the background (the owner, 2026-10-03: a bar and a few words, no
+    # page). Which part, its size and its licence are the desk's and the
+    # guide's (01-install#downloads), never the wizard's.
+    "strip.running": "Downloading app parts",
+    "strip.offline": "No connection — trying again",
+    "strip.failed": "Download stopped — the next start tries again",
     "say.title": "Say one sentence",
     "say.sub": ("Two steps. First load the speech model — once, a few seconds. "
                 "Then press Record, talk for three seconds, and read what came out."),
@@ -281,9 +259,10 @@ WORDS = {
     "say.loading_model": "Loading the speech model… a few seconds, once. Every sentence after this is fast.",
     "say.loaded_ready": "Model loaded in {seconds:.1f} s — now press Record and say a sentence.",
     "say.load_failed": "The model could not load: {error}",
-    "say.waiting": "The model is still downloading — the bar above. You can skip and try from the desk.",
-    "say.waiting.idle": "The model is not downloaded yet — press Download above, or skip and get it from the desk.",
-    "say.waiting.stopped": "The download stopped — Download above continues it, or skip and finish it from the desk.",
+    "say.waiting": ("The speech model is still downloading (the bar at the top) — the button "
+                    "opens when it lands. Or skip, and try it from the desk."),
+    "say.waiting.stopped": ("The speech model's download stopped — DeskIT keeps trying by "
+                            "itself. You can skip, and try it from the desk."),
     "say.placeholder": "Your sentence appears here.",
     "say.button": "Record 3 seconds",
     "say.recording": "Recording…",
@@ -353,8 +332,8 @@ WORDS = {
                        "Settings > Privacy > Withdraw turns it off."),
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
-    "done.deferred": ("DeskIT is installed. The Hebrew model can be downloaded from the desk "
-                      "whenever you like."),
+    "done.deferred": ("The speech model is still downloading, in the background — dictation "
+                      "starts the moment it lands. Start opens the desk."),
     "done.hold": "Hold",
     "next": "Next", "back": "Back", "skip": "Skip", "finish": "Start",
     "saved.error": "Could not save: {error}",
@@ -362,6 +341,10 @@ WORDS = {
 
 GUIDE_PRIVACY_CHECK = f"{paths.PAGES_URL}/en/04-privacy"      # guide chapter 4, in the wizard's language
 PRIVACY_URL = f"{paths.PAGES_URL}/privacy"
+#: What each part is, its exact size and its licence — the installer's
+#: "More about these downloads" goes to the same table; the strip's words
+#: open it.
+DOWNLOADS_URL = f"{paths.PAGES_URL}/en/01-install#downloads"
 
 
 # ------------------------------------------------------------ the palette
@@ -821,106 +804,10 @@ def transcribe_timed(cfg, wav: bytes, backend=None) -> tuple[Heard, object]:
     return Heard(text=text, load_s=load_s, decode_s=decode_s), backend
 
 
-# ------------------------------------------------------- this computer
-
-def card_tier(facts: dict | None) -> str:
-    """The tier the CARD earns once NVIDIA's libraries are there — what
-    page 2 speaks of, since on a first start the pack is not installed
-    yet and hardware.tier_for says cpu until it is. "" without a usable
-    card."""
-    facts = facts or {}
-    if int(facts.get("cuda_devices") or 0) < 1:
-        return ""
-    if not facts.get("driver_ok", True):
-        return ""
-    import hardware
-    vram = int(facts.get("vram_mb") or 0)
-    if vram and vram < hardware.GPU_SMALL_MB:
-        return ""
-    if vram and vram < hardware.GPU_MB:
-        return "gpu-small"
-    return "gpu"
-
-
-def hardware_line(facts: dict | None) -> str:
-    """The top line of page 2, chapter 9.2's three sentences — for the
-    card this PC has, not for the tier it runs at before the pack."""
-    facts = facts or {}
-    if not facts.get("tier"):
-        return "This computer has not been probed yet"
-    vram = int(facts.get("vram_mb") or 0)
-    card = card_tier(facts)
-    if card == "gpu":
-        return f"NVIDIA card, {vram / 1024:.0f} GB — fast transcription"
-    if card == "gpu-small":
-        return f"NVIDIA card, {vram / 1024:.0f} GB — fast, smaller mode"
-    if int(facts.get("cuda_devices") or 0) and not facts.get("driver_ok"):
-        return ("NVIDIA card with a driver too old for CUDA 12.3 — "
-                "transcription on the processor, about as long as you spoke")
-    return "No NVIDIA card found — transcription will take about as long as you spoke"
-
-
-def cfg_mod_english(cfg) -> str:
-    """local.english_model as the defaults and settings.toml say — the
-    machine layer may hold "" for the cpu tier (hardware.DERIVED)."""
-    try:
-        chosen = config_mod.read_settings(paths.SETTINGS_FILE)
-        if "local.english_model" in chosen:
-            return str(chosen["local.english_model"] or "")
-        return str(config_mod.defaults_flat().get("local.english_model") or "")
-    except Exception:                                      # noqa: BLE001
-        return str(getattr(cfg.local, "english_model", "") or "")
-
-
-def downloads_for(cfg, facts: dict | None) -> dict:
-    """What page 2 offers on THIS copy: the runs it may queue, in order,
-    and the two switches. Nothing on a portable copy (D4: the global
-    cache, as always). Everything that is already on disk is left out,
-    so `--setup` on a finished install shows an empty page."""
-    out = {"portable": paths.PORTABLE, "model": None, "pack": None,
-           "detector": None, "recording": None, "tier": (facts or {}).get("tier", "")}
-    if paths.PORTABLE:
-        return out
-    import models
-    import packs
-    repo = cfg.local.model
-    if cfg.backend == "local" and models.state(repo) != "ready":
-        out["model"] = models.entry(repo)
-    if packs.wanted(cfg, facts):
-        out["pack"] = packs.pack("gpu")
-    # The Recording pack (PyAV, 13.4): offered HERE, on by default, so
-    # nobody meets "needs the Recording pack" on the record key later —
-    # the owner's stranger walk, 2026-09-19 evening: "the software comes
-    # with everything; nobody installs things in the middle". It stays a
-    # download rather than a line in the installer because PyAV's wheel
-    # bundles a GPL FFmpeg (D24) — fetched with its licences shown.
-    if packs.state("recording") in ("missing", "stale"):
-        out["recording"] = packs.pack("recording")
-    # The detector goes with the CARD, not with the tier of the moment:
-    # on a first start the pack is not there yet, the tier says cpu, and
-    # the cpu tier's machine layer blanks local.english_model — so the
-    # name is read from the layers UNDER it (the file's default, the
-    # person's settings), never from the layer the tier wrote.
-    english = str(cfg_mod_english(cfg))
-    if (card_tier(facts) == "gpu" and english and cfg.backend == "local"
-            and models.state(english) != "ready"):
-        out["detector"] = models.entry(english)
-    return out
-
-
-def english_step(kind: str, step: steps.Step, size: int) -> steps.Step:
-    """The step with the wizard's English words on it. models.py and
-    packs.py speak Hebrew — that is the standalone window's design — and
-    the wizard's pages are English, so the copy the wizard hosts carries
-    its own title, paragraph and end sentences. The work, the size line,
-    the links and the button are the step's own."""
-    words = WORDS
-    title = words.get(f"step.{kind}.title", step.title)
-    body = words.get(f"step.{kind}.body", step.body).format(size=steps.human(size))
-    said = {"done": words["step.done"], "offline": words["step.offline"],
-            "paused": words["step.paused"], "failed": words["step.failed"]}
-    return dataclasses.replace(step, title=title, body=body, said=said)
-
+# ------------------------------------------------------- the downloads
+# Which parts this copy downloads, and the queue that does it in the
+# background, are downloads.py's (2026-10-03): the wizard only starts
+# the queue, draws its strip and hands what is left to the app.
 
 class KeyRefused(Exception):
     """Groq answered, and the answer was no (a 4xx): the key is wrong."""
@@ -1015,20 +902,24 @@ class Result:
         #: their back (the owner, 2026-09-19 evening: "I pressed the red
         #: X and the model just started out of nowhere").
         self.closed = closed
+        #: The background queue (downloads.Queue) when Start was pressed
+        #: with parts still coming: main pumps it on in the running app
+        #: (downloads.carry_on). None when everything had landed.
+        self.downloads = None
 
     def __bool__(self) -> bool:
         return self.saved
 
 
 class Wizard:
-    """Eight pages in one window, and a Back that actually goes back.
+    """Seven pages in one window, and a Back that actually goes back.
 
     Not a chain of modal dialogs: every page here can fail in a way whose
     fix is on the PREVIOUS page ("no, it was the other microphone"), and
     a dialog chain you cannot walk back turns that into starting over.
 
     `facts` are the hardware probe's (hardware.recorded() when None);
-    `offers` replaces downloads_for() in a test, `stepper(kind, entry)`
+    `offers` replaces downloads.wanted() in a test, `stepper(kind, entry)`
     the steps.Step a download is made from.
     """
 
@@ -1059,8 +950,7 @@ class Wizard:
         self.rings: dict = {}
         self.meter = None
         self.hint = None
-        self.pane: steps.StepPane | None = None
-        self._stepper = stepper or self._step_for
+        self.strip = None
         if facts is None:
             try:
                 import hardware
@@ -1068,15 +958,18 @@ class Wizard:
             except Exception:                              # noqa: BLE001
                 facts = {}
         self.facts = facts
-        self.offers = offers if offers is not None else downloads_for(cfg, facts)
-        # The downloads: built once, pressed on page 2, pumped on every
-        # page after it. `queue` is the order; `active` the index.
-        self.runs: dict[str, steps.StepRun] = {}
-        self.queue: list[str] = []
-        self.active: int = -1
-        self.want = {"pack": self.offers.get("pack") is not None,
-                     "detector": self.offers.get("detector") is not None,
-                     "recording": self.offers.get("recording") is not None}
+        # Every part this computer can use, downloading from the first
+        # second, in the background, on every copy (downloads.py — the
+        # owner, 2026-10-03: no page, no button, no switch). The tick
+        # pumps it; Start hands what is left to the app (Result.downloads).
+        if offers is None:
+            try:
+                offers = downloads.wanted(cfg, facts)
+            except Exception:                              # noqa: BLE001
+                log.warning("setup: could not tell which parts are missing", exc_info=True)
+                offers = {}
+        self.downloads = downloads.Queue(offers, stepper, on_landed=self._landed)
+        self.downloads.start()
         # The extras page shows each switch as it STANDS (D34: the
         # defaults are what the owner runs — keep-awake ships on, the
         # update check ships on, the phone and autostart off) and writes
@@ -1219,9 +1112,9 @@ class Wizard:
 
     def _clear(self) -> None:
         self._stop_capture()
-        self.pane = None
         self.meter = None
         self.hint = None
+        self.strip = None
         self.say = None
         self.waiting = None
         self.list_holder = None
@@ -1246,10 +1139,54 @@ class Wizard:
         shown = [name for name in PAGES if not self._hidden(name)]
         tk.Label(row, text=WORDS["step"].format(n=shown.index(self.name) + 1, total=len(shown)),
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)).pack(side="right")
+        self._strip(row)
         tk.Label(self.body, text=title, bg=ui.BG, fg=ui.FG,
                  font=(ui.DISPLAY, 18), anchor="w").pack(fill="x", pady=(16, 2))
         if sub:
             self._line(sub, colour=ui.DIM, size=10, pady=(0, 14))
+
+    def _strip(self, row) -> None:
+        """The one sign of the background downloads (the owner,
+        2026-10-03: "a bar and a short line saying it downloads the app's
+        parts — nobody needs to see more"): a few words and a slim bar in
+        the middle of a page's top row, kept by the tick (_strip_tick),
+        gone once everything has landed. The words open the guide's table
+        of what each part is, its size and its licence — the installer's
+        "More about these downloads", one click away and never in the way."""
+        if not self.downloads.order or self.downloads.done:
+            return
+        holder = tk.Frame(row, bg=ui.BG)
+        holder.pack(side="left", expand=True)
+        label = tk.Label(holder, text="", bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9),
+                         cursor="hand2")
+        label.pack(side="left", padx=(0, 10))
+        label.bind("<Button-1>", lambda _e: self._open(DOWNLOADS_URL))
+        bar = tk.Canvas(holder, width=STRIP_W, height=STRIP_H, bg=ui.BG,
+                        highlightthickness=0, bd=0)
+        bar.pack(side="left", pady=(2, 0))
+        bar.create_rectangle(0, 0, STRIP_W, STRIP_H, fill=ui.LINE, outline="")
+        fill = bar.create_rectangle(0, 0, 0, STRIP_H, fill=ui.ACCENT, outline="")
+        self.strip = (holder, label, bar, fill)
+        self._strip_tick()
+
+    def _strip_tick(self) -> None:
+        if self.strip is None:
+            return
+        holder, label, bar, fill = self.strip
+        q = self.downloads
+        if q.done:
+            holder.destroy()              # everything landed: nothing to say
+            self.strip = None
+            return
+        if q.state == "failed":
+            text, colour = WORDS["strip.failed"], ui.AMBER
+        elif q.offline:
+            text, colour = WORDS["strip.offline"], ui.AMBER
+        else:
+            text, colour = WORDS["strip.running"], ui.FAINT
+        if label.cget("text") != text or label.cget("fg") != colour:
+            label.configure(text=text, fg=colour)
+        bar.coords(fill, 0, 0, int(STRIP_W * q.fraction), STRIP_H)
 
     def _para(self, text: str, *, pt: int, colour: str, lines: int = 4,
               pady=(0, 0), parent=None, bg: str | None = None) -> tk.Label:
@@ -1362,9 +1299,14 @@ class Wizard:
     def _page_welcome(self) -> None:
         """The mark, the name, three sentences, two quiet links — the
         installer's side picture continued: dark tile, DeskIT, a gold
-        rule."""
+        rule. The downloads' strip (_strip) has a top row of its own
+        here — this page has no head row — and the space it takes comes
+        out of the mark's margin, so the page does not move."""
+        top = tk.Frame(self.body, bg=ui.BG)
+        top.pack(fill="x")
+        self._strip(top)
         head = tk.Frame(self.body, bg=ui.BG)
-        head.pack(fill="x", pady=(22, 0))
+        head.pack(fill="x", pady=(22 if self.strip is None else 12, 0))
         mark = ui.icon_bitmap(APP_DIR / "icon.png", 84, ui.BG)
         if mark is not None:
             badge = tk.Label(head, image=mark, bg=ui.BG)
@@ -1704,8 +1646,8 @@ class Wizard:
         """[Open DeskIT] on the account page of a returning person: the
         sync consent is recorded (this card said what is stored, the
         line said what comes along), the words and settings are pulled
-        now, then the downloads page if anything is left to fetch,
-        otherwise straight to Start's work — the app and the desk."""
+        now, then straight to Start's work — the app and the desk; any
+        part this PC still lacks goes on downloading in the app."""
         if self._returning_state == "bringing":
             return
         self._returning_state = "bringing"
@@ -1758,10 +1700,7 @@ class Wizard:
             # with the way to do it later
             self._link_open()
             return
-        if self._hidden("computer"):
-            self._open_desk()
-        else:
-            self._advance()
+        self._open_desk()           # the parts this PC lacks keep downloading in the app
 
     # ------------------------------------------------------- the link step
     # The account lock (2026-09-21, what Apple's "approve from another
@@ -1892,8 +1831,8 @@ class Wizard:
         self._link_poll_later()
 
     def _link_done(self, approved: bool) -> None:
-        """Approved, recovered, or Later: on to the desk (or the
-        downloads page) the way the returning road promised."""
+        """Approved, recovered, or Later: on to the desk the way the
+        returning road promised."""
         self._link_state = "idle"
         self._link_cancel()
         if approved:
@@ -1905,10 +1844,7 @@ class Wizard:
                 box.set("")
         if self.name != "account":
             return
-        if self._hidden("computer"):
-            self._open_desk()
-        else:
-            self._advance()
+        self._open_desk()           # the parts this PC lacks keep downloading in the app
 
     def _sign_in(self) -> None:
         """[Continue with Google] / [Sign in with Google]: the consent
@@ -2123,81 +2059,14 @@ class Wizard:
             return 0
         return len(self.hint.winfo_children())
 
-    # --------------------------------------------------------- this computer
-    def _page_computer(self) -> None:
-        self._head(WORDS["computer.title"], WORDS["computer.sub"])
-        self._line(hardware_line(self.facts), colour=ui.FG, size=11,
-                   pady=(0, 4))
-        offers = self.offers
-        if offers.get("portable"):
-            self._line(WORDS["computer.portable"], colour=ui.DIM, size=10)
-            return
-        if not any(offers.get(k) for k in ("model", "pack", "detector", "recording")):
-            self._line(WORDS["computer.ready"], colour=ui.GREEN, size=11)
-            return
-        self._ensure_runs()
-        current = self._current_run()
-        started = self.active >= 0
-        if current is not None:
-            self.pane = steps.StepPane(
-                self.body, current, width=INNER, bg=ui.BG, secondary=None,
-                closing=None, on_end=self._run_ended, compact=False,
-                prefix=self._prefix(), on_go=self._download, title_pt=13,
-                body_lines=3)
-            self.pane.pack(fill="x", pady=(0, 8))
-            # [Download] is the action here until it is pressed; then the
-            # bar runs by itself and the way on is the action again.
-            self._foot(started)
-        if not card_tier(self.facts):
-            self._line(WORDS["computer.cpu"], colour=ui.DIM, size=9,
-                       pady=(0, 12))
-        if offers.get("pack") is not None:
-            p = offers["pack"]
-            switch = self._switch_row(
-                WORDS["computer.pack"],
-                WORDS["computer.pack.help"].format(size=steps.human(p.bytes)),
-                self.want["pack"], lambda _v=None: self._flip("pack"))
-            if started:
-                switch.configure(state="disabled")
-        if offers.get("detector") is not None:
-            e = offers["detector"]
-            switch = self._switch_row(
-                WORDS["computer.detector"],
-                WORDS["computer.detector.help"].format(size=steps.human(e.bytes)),
-                self.want["detector"], lambda _v=None: self._flip("detector"))
-            if started:
-                switch.configure(state="disabled")
-        if offers.get("recording") is not None:
-            r = offers["recording"]
-            switch = self._switch_row(
-                WORDS["computer.recording"],
-                WORDS["computer.recording.help"].format(size=steps.human(r.bytes)),
-                self.want["recording"], lambda _v=None: self._flip("recording"))
-            if started:
-                switch.configure(state="disabled")
-
-    def _flip(self, which: str) -> None:
-        if self.active >= 0:
-            return                       # the queue is running; too late
-        self.want[which] = not self.want[which]
-
     # ------------------------------------------------------- say one sentence
     def _page_say(self) -> None:
         self._head(WORDS["say.title"], WORDS["say.sub"])
-        current = self._current_run()
-        if current is not None and not self._all_landed():
-            self.pane = steps.StepPane(
-                self.body, current, width=INNER, bg=ui.BG, secondary=None,
-                closing=None, on_end=self._run_ended, compact=True,
-                prefix=self._prefix(), on_go=self._download)
-            self.pane.pack(fill="x", pady=(0, 14))
         self.waiting = None
         if self._model_missing():
-            # Three ways to be without the model, three sentences: the
-            # stranger who pressed Next past page 4 without Download
-            # (the checkout's own walk, 2026-09-19) read "still
-            # downloading" over a bar that had never moved. The tick
-            # keeps the sentence with the run (_say_ready).
+            # The model still coming in the background: one sentence, and
+            # the strip at the top is the bar. The tick keeps the sentence
+            # with the queue (_say_ready) and takes it away when it lands.
             self.waiting = self._line(WORDS[self._waiting_key()], colour=ui.AMBER,
                                       size=10, pady=(0, 12))
         # One primary button, two jobs in order: load the model, then
@@ -2239,14 +2108,13 @@ class Wizard:
         self._fit(card)
 
     def _waiting_key(self) -> str:
-        state = self.runs["model"].state
-        return ("say.waiting" if state == "running"
-                else "say.waiting.idle" if state == "idle"
-                else "say.waiting.stopped")
+        run = self.downloads.runs.get("model")
+        stopped = run is not None and run.state in ("offline", "failed", "paused")
+        return "say.waiting.stopped" if stopped else "say.waiting"
 
     def _say_ready(self) -> None:
-        """The record button waits for the model: a queue still running
-        means the backend would load a half-written folder or the CPU."""
+        """The record button waits for the model: a download still
+        running means the backend would load a half-written folder."""
         if getattr(self, "say", None) is None:
             return
         waiting = self._model_missing()
@@ -2256,27 +2124,14 @@ class Wizard:
         line = getattr(self, "waiting", None)
         if line is not None:
             if not waiting:
-                line.pack_forget()            # it landed while this page was up
+                line.destroy()                # it landed while this page was up
                 self.waiting = None
             elif line.cget("text") != WORDS[self._waiting_key()]:
                 line.configure(text=WORDS[self._waiting_key()])
 
-    def _computer_gate(self) -> None:
-        """Next waits for the downloads of this page: the owner watched
-        a stranger's Next stay live under a running bar (2026-09-19) and
-        asked that nobody could leave mid-download. Paused, failed,
-        offline or done: the way on opens again; the foot note says why
-        it is shut while it is."""
-        busy = any(run.running for run in self.runs.values())
-        for twin in (self.next_loud, self.next_quiet):
-            twin.enable(not busy)
-        self.note.configure(text=WORDS["computer.wait"] if busy else "", fg=ui.DIM)
-
     def _model_missing(self) -> bool:
-        run = self.runs.get("model")
-        if run is None:
-            return False
-        return run.state != "done" and not self.offers.get("portable")
+        """The Hebrew model is one of the parts still coming."""
+        return self.downloads.has("model")
 
     # ------------------------------------------------------------------ keys
     def _page_keys(self) -> None:
@@ -2775,86 +2630,18 @@ class Wizard:
         self._finish()
 
     # -------------------------------------------------------- the downloads
-    def _step_for(self, kind: str, thing) -> steps.Step:
-        import models
-        import packs
-        if kind in ("pack", "recording"):
-            return packs.step(thing)
-        if kind == "detector":
-            return models.step(thing, words=models.DETECTOR_TEXT)
-        return models.step(thing)
-
-    def _ensure_runs(self) -> None:
-        for kind in ("model", "pack", "detector", "recording"):
-            thing = self.offers.get(kind)
-            if thing is not None and kind not in self.runs:
-                step = self._stepper(kind, thing)
-                size = int(getattr(thing, "bytes", 0) or step.total)
-                self.runs[kind] = steps.StepRun(english_step(kind, step, size))
-
-    def _download(self) -> None:
-        """[Download] on page 2: the queue is decided by the switches
-        as they stand now, then the first run starts."""
-        if self.active >= 0:
-            run = self._current_run()
-            if run is not None and run.state in ("paused", "offline", "failed"):
-                run.start()
-                if self.pane is not None:
-                    self.pane.refresh()
-            return
-        self.queue = [k for k in ("model", "pack", "detector", "recording")
-                      if k in self.runs and (k == "model" or self.want.get(k))]
-        if not self.queue:
-            return
-        self.active = 0
-        self.runs[self.queue[0]].start()
-        if self.pane is not None:
-            self.pane.attach(self.runs[self.queue[0]])
-            self.pane.prefix = self._prefix()
-            self.pane.refresh()
-        if self.name == "computer":
-            self._show_page()             # the switches lock
-
-    def _current_run(self) -> steps.StepRun | None:
-        if self.active < 0:
-            return self.runs.get("model") or next(iter(self.runs.values()), None)
-        if self.active < len(self.queue):
-            return self.runs[self.queue[self.active]]
-        return self.runs[self.queue[-1]]
-
-    def _prefix(self) -> str:
-        if self.active < 0 or len(self.queue) < 2:
-            return ""
-        i = min(self.active, len(self.queue) - 1)
-        name = self.runs[self.queue[i]].step.name or self.queue[i]
-        return WORDS["computer.queue"].format(n=i + 1, total=len(self.queue), name=name)
-
-    def _all_landed(self) -> bool:
-        return self.active >= len(self.queue) - 1 and \
-            (self._current_run() is None or self._current_run().ended)
-
-    def _run_ended(self, word: str) -> None:
-        """One run's end word, from the pane. `done` starts the next of
-        the queue; anything else leaves the queue where it stopped and
-        the [Download] button re-armed on the same run."""
-        if word == "done":
-            kind = self.queue[self.active] if 0 <= self.active < len(self.queue) else ""
-            if kind == "pack":
-                self._after_pack()
-            if kind == "recording":
-                try:
-                    import packs
-                    packs.activate("recording")   # the record key works from here
-                except Exception:                              # noqa: BLE001
-                    log.info("the Recording pack landed but was not activated", exc_info=True)
-            if self.active + 1 < len(self.queue):
-                self.active += 1
-                nxt = self.runs[self.queue[self.active]]
-                nxt.start()
-                if self.pane is not None:
-                    self.pane.prefix = self._prefix()
-                    self.pane.attach(nxt)
-            self._say_ready()
+    def _landed(self, kind: str) -> None:
+        """One part arrived (downloads.Queue.on_landed, on the Tk thread —
+        the tick pumps the queue): what it changes right away."""
+        if kind == "pack":
+            self._after_pack()
+        elif kind == "recording":
+            try:
+                import packs
+                packs.activate("recording")   # the record key works from here
+            except Exception:                              # noqa: BLE001
+                log.info("the Recording pack landed but was not activated", exc_info=True)
+        self._say_ready()
 
     def _after_pack(self) -> None:
         """NVIDIA's libraries landed: the probe runs again so the tier and
@@ -2867,18 +2654,6 @@ class Wizard:
                 self.cfg = config_mod.load_layered()
         except Exception:                                  # noqa: BLE001
             log.warning("the hardware probe failed after the pack", exc_info=True)
-
-    def _pump_runs(self) -> None:
-        """Every tick, on every page: the threads' news into the runs,
-        the pane redrawn if one is up. A run that ends while its pane is
-        not on screen is picked up here too."""
-        for run in self.runs.values():
-            if run.state == "running":
-                landed = run.pump()
-                if landed and self.pane is None:
-                    self._run_ended(landed[0])
-        if self.pane is not None:
-            self.pane.refresh()
 
     # ------------------------------------------------------------- the loop
     def _tick(self) -> None:
@@ -2903,9 +2678,8 @@ class Wizard:
                         and self.meter.peak < SPEECH
                         and time.monotonic() - self._quiet_since > QUIET_S):
                     self._warn_silent()
-            self._pump_runs()
-            if self.name == "computer":
-                self._computer_gate()
+            self.downloads.pump()                 # _landed hears what arrived
+            self._strip_tick()
             if self.name == "say":
                 self._say_ready()
             if self.name == "extras":
@@ -3025,7 +2799,7 @@ class Wizard:
             self._said_loaded = True
             line += " · " + WORDS["say.loaded"].format(seconds=load_s)
         self.status.configure(text=line, fg=ui.GREEN)
-        if not card_tier(self.facts) and getattr(self, "cpu_note", None) is None:
+        if not downloads.card_tier(self.facts) and getattr(self, "cpu_note", None) is None:
             self.cpu_note = self._line(WORDS["say.cpu"], colour=ui.DIM, size=9,
                                        pady=(6, 0))
 
@@ -3042,16 +2816,11 @@ class Wizard:
 
     # ----------------------------------------------------------- navigation
     def _hidden(self, name: str) -> bool:
-        """A page with nothing on it is not shown (the owner, 2026-09-19
-        evening: "I do not want the installation page"): the computer
-        page when nothing is left to download — a copy whose downloads
-        landed, or a portable one."""
-        if self._returning and name in ("mic", "say", "keys", "extras", "done"):
-            return True          # a returning person: only what this PC still lacks
-        if name != "computer":
-            return False
-        offers = self.offers
-        return not any(offers.get(k) for k in ("model", "pack", "detector", "recording"))
+        """A page this person does not need: a returning account skips
+        everything after the sign-in (its words and settings came down;
+        the parts this PC lacks download in the background). There is no
+        downloads page to hide any more (2026-10-03)."""
+        return self._returning and name in ("mic", "say", "keys", "extras", "done")
 
     def _back(self) -> None:
         if self.page == 0:
@@ -3092,8 +2861,7 @@ class Wizard:
         while self.page < len(PAGES) - 1 and self._hidden(self.name):
             self.page += 1
         if self._returning and self.name == "done":
-            # the downloads were the last thing this PC needed
-            self._open_desk()
+            self._open_desk()             # a returning person has nothing past the sign-in
             return
         if self.name == "say":
             # the sentence page records: the stream is opened again
@@ -3223,9 +2991,12 @@ class Wizard:
             self.result.closed = True      # the X, not Start
         self._closing = True
         self.listener.close()
-        for run in self.runs.values():
-            if run.running:
-                run.pause()           # the part stays; the next start resumes
+        if self.result.saved and not self.downloads.done and self.downloads.order:
+            # Start with parts still coming: they go on in the running app
+            # (main hands this to downloads.carry_on) — nobody waits here.
+            self.result.downloads = self.downloads
+        else:
+            self.downloads.pause()    # the X: the part stays; the next start resumes
         self._link_cancel()
         try:
             self.root.destroy()
