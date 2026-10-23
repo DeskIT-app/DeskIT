@@ -1,45 +1,62 @@
-// The desk. Home is drawn here; the other four places say they are still
-// in the old desk and open it there. Every word comes from deskweb.py —
-// the page only draws, and asks again every POLL_MS.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+// The desk's frame — SHARED, and frozen while the places are built in
+// parallel (web/README.md): the bar with its sliding bubble, the router
+// (#/place or #/place/sub), the toast, and Home's poll, which feeds the
+// bar's state and Home itself. Each place is a file of its own under
+// places/; every word comes from Python — the page only draws.
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { call, inDesk } from "./bridge";
-import type { Acted, Bar, Button, DayLine, Door, Home, PileRow, Seg } from "./types";
+import { Away, DeskContext, HomeContext, IC, type Desk } from "./kit";
+import CorrectionsPlace from "./places/corrections";
+import HomePlace, { Landing } from "./places/home";
+import KeysPlace from "./places/keys";
+import SaidPlace from "./places/said";
+import SettingsPlace from "./places/settings";
+import type { Acted, Bar, Home } from "./types";
 
 const PLACES = ["Home", "Corrections", "Said", "Keys", "Settings"] as const;
 type Place = (typeof PLACES)[number];
+type Route = { place: Place; sub: string };
+const VIEWS: Record<Place, (props: { sub: string }) => ReactNode> = {
+  Home: HomePlace, Corrections: CorrectionsPlace, Said: SaidPlace, Keys: KeysPlace,
+  Settings: SettingsPlace,
+};
 const POLL_MS = 800;
 const NOTE_MS = 3600;
 
-// Segoe Fluent glyphs (bplus.css .ic)
-const IC: Record<string, string> = {
-  bell: "", edit: "", globe: "", key: "", up: "",
-  chip: "", lock: "", history: "", keyboard: "",
-  settings: "", close: "", tick: "", left: "", right: "",
-  stop: "", moon: "", sun: "", pause: "", play: "",
-  info: "", open: "",
-};
-
-const AWAY: Record<string, string> = {
-  Corrections: "Every proposal of the second reading, and the words it has learned.",
-  Said: "Everything you said, with the search over it.",
-  Keys: "Every key lit on a drawn keyboard — click one to see it or change it.",
-  Settings: "Everything you can change, in plain words.",
-};
-
-function hashPlace(): Place {
-  const want = window.location.hash.replace(/^#\/?/, "").toLowerCase();
-  return (PLACES.find((p) => p.toLowerCase() === want) ?? "Home") as Place;
+function placeOf(name: string): Place | undefined {
+  const want = name.toLowerCase();
+  return PLACES.find((p) => p.toLowerCase() === want);
 }
 
+/** #/settings/privacy -> Settings, "privacy"; anything else is Home. */
+function hashRoute(): Route {
+  const [head = "", ...rest] = window.location.hash.replace(/^#\/?/, "").split("/");
+  const place = placeOf(head);
+  return place ? { place, sub: decodeURIComponent(rest.join("/")) } : { place: "Home", sub: "" };
+}
+
+function routeHash(r: Route): string {
+  if (r.place === "Home" && !r.sub) return "";
+  return `#/${r.place.toLowerCase()}${r.sub ? `/${encodeURIComponent(r.sub)}` : ""}`;
+}
+
+// The place's own view, drawn again only when the route changes: Home's
+// poll redraws the frame, never a place that does not read it.
+const PlaceView = memo(function PlaceView({ place, sub }: Route) {
+  const View = VIEWS[place];
+  return <View sub={sub} />;
+});
+
 export default function App() {
-  const [place, setPlace] = useState<Place>(hashPlace);
+  const [route, setRoute] = useState<Route>(hashRoute);
   const [home, setHome] = useState<Home | null>(null);
-  const [leaving, setLeaving] = useState<Set<string>>(new Set());
   const [pressed, setPressed] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const acting = useRef(0);
   const noteTimer = useRef<number>(0);
+  const where = useRef(route);
+  where.current = route;
   // the last answer as text: a poll that brings nothing new draws nothing
   const lastRead = useRef("");
 
@@ -83,66 +100,68 @@ export default function App() {
   }, [read]);
 
   useEffect(() => {
-    const onHash = () => setPlace(hashPlace());
+    const onHash = () => {
+      const next = hashRoute();
+      setRoute((old) => (old.place === next.place && old.sub === next.sub ? old : next));
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const go = (p: Place) => {
-    if (p === place) return;
-    window.location.hash = p === "Home" ? "" : `#/${p.toLowerCase()}`;
-    setPlace(p);
-  };
+  // The place that is lit, with no sub asked for, stays as it is — the
+  // bar's own rule (dashboard._nav_go).
+  const go = useCallback((name: string, sub?: string) => {
+    const place = placeOf(name);
+    if (!place) return;
+    const now = where.current;
+    if (place === now.place && (sub === undefined || sub === now.sub)) return;
+    const next = { place, sub: sub ?? "" };
+    window.location.hash = routeHash(next);
+    setRoute(next);
+  }, []);
 
-  // One press: the row it belongs to leaves at once, the button shows it
-  // was pressed, and the answer is Home again — drawn the moment it lands.
-  const act = useCallback((b: { act: string; arg?: unknown }, rowId?: string) => {
-    const key = `${b.act}:${String(b.arg ?? "")}`;
+  // One press of a desk button: it shows it was pressed, and the answer is
+  // Home again — drawn the moment it lands.
+  const act = useCallback((b: { act: string; arg?: unknown }): Promise<Acted | null> => {
     acting.current += 1;
-    setPressed(key);
-    const goes = rowId && /^(notify\.dismiss|review\.|consent\.|keys\.later|hardware\.seen)/.test(b.act);
-    if (goes && rowId) setLeaving((old) => new Set(old).add(rowId));
-    if (b.act === "notify.dismiss_all") {
-      setLeaving((old) => {
-        const next = new Set(old);
-        home?.pile.filter((r) => r.kind === "notify").forEach((r) => next.add(r.id));
-        return next;
-      });
-    }
-    call<Acted>("act", { do: b.act, arg: b.arg ?? null }, 8000)
+    setPressed(`${b.act}:${String(b.arg ?? "")}`);
+    return call<Acted>("act", { do: b.act, arg: b.arg ?? null }, 8000)
       .then((r) => {
         lastRead.current = JSON.stringify(r.home);
         setHome(r.home);
         say(r.note);
+        return r;
       })
-      .catch((e: Error) => say(e.message))
+      .catch((e: Error) => {
+        say(e.message);
+        return null;
+      })
       .finally(() => {
         acting.current -= 1;
         setPressed("");
-        setLeaving(new Set());
       });
-  }, [home, say]);
+  }, [say]);
 
-  useEffect(() => {
-    document.body.classList.toggle("calm", place === "Home" && !!home && !home.locked && home.pile.length === 0);
-  }, [place, home]);
+  const desk = useMemo<Desk>(() => ({ say, go, act }), [say, go, act]);
+  const homeRead = useMemo(() => ({ home, pressed }), [home, pressed]);
 
   return (
-    <>
-      <div className="sky"><i className="indigo" /><i className="blue" /><i className="plum" /><i className="teal" />
-        <i className="lamp-light" /><i className="rib r1" /><i className="rib r2" /></div>
-      <div className="grain" />
-      <TopBar place={place} go={go} bar={home?.bar} locked={!!home?.locked} pressed={pressed} act={act} />
-      <div className="page">
-        {!inDesk() ? <Away place={place} text="This page only works inside the desk's window." act={act} plain />
-          : home?.locked ? <Landing act={act} />
-          : place === "Home" ? (home ? <HomePlace home={home} leaving={leaving} pressed={pressed} act={act} go={go} /> : null)
-          : <Away place={place} text={AWAY[place] ?? ""} act={act} />}
-      </div>
-      <div className={`toast glass${note || error ? " up" : ""}`}>
-        <i className="ic">{IC.info}</i>{note || error}
-      </div>
-    </>
+    <DeskContext.Provider value={desk}>
+      <HomeContext.Provider value={homeRead}>
+        <div className="sky"><i className="indigo" /><i className="blue" /><i className="plum" /><i className="teal" />
+          <i className="lamp-light" /><i className="rib r1" /><i className="rib r2" /></div>
+        <div className="grain" />
+        <TopBar place={route.place} go={go} bar={home?.bar} locked={!!home?.locked} pressed={pressed} act={act} />
+        <div className="page">
+          {!inDesk() ? <Away place={route.place} text="This page only works inside the desk's window." plain />
+            : home?.locked ? <Landing />
+            : <PlaceView place={route.place} sub={route.sub} />}
+        </div>
+        <div className={`toast glass${note || error ? " up" : ""}`}>
+          <i className="ic">{IC.info}</i>{note || error}
+        </div>
+      </HomeContext.Provider>
+    </DeskContext.Provider>
   );
 }
 
@@ -162,7 +181,7 @@ function Mark({ dev }: { dev: string }) {
 }
 
 function TopBar({ place, go, bar, locked, pressed, act }: {
-  place: Place; go: (p: Place) => void; bar?: Bar; locked: boolean; pressed: string;
+  place: Place; go: (place: string) => void; bar?: Bar; locked: boolean; pressed: string;
   act: (b: { act: string; arg?: unknown }) => void;
 }) {
   const track = useRef<HTMLDivElement>(null);
@@ -219,202 +238,6 @@ function TopBar({ place, go, bar, locked, pressed, act }: {
       </div>
       <div className={`btn run${pressed === "run:" ? " down" : ""}`} onClick={() => act({ act: "run" })}>
         <i className="ic">{runIcon}</i>{run}
-      </div>
-    </div>
-  );
-}
-
-// -------------------------------------------------------------------- Home
-
-function HomePlace({ home, leaving, pressed, act, go }: {
-  home: Home; leaving: Set<string>; pressed: string;
-  act: (b: { act: string; arg?: unknown }, rowId?: string) => void; go: (p: Place) => void;
-}) {
-  const calm = home.pile.length === 0;
-  return (
-    <>
-      <div className="head">
-        <div className="title">{home.head}</div>
-        <div className="sub">{home.sub}</div>
-        {home.unread ? (
-          <div className="dismiss">
-            <span className="lnk" onClick={() => act({ act: "notify.dismiss_all" })}>Dismiss all</span>
-            {home.dismiss_key.length ? <Caps caps={home.dismiss_key} /> : null}
-          </div>
-        ) : null}
-      </div>
-
-      {calm ? (
-        <div className="quiet">
-          <div className="big">Nothing is waiting.</div>
-          <div className="sub2">Nothing else on the desk needs you right now.</div>
-          <div className="state">
-            <span className={`lamp ${home.bar.lamp}`} /><b>{home.bar.word}</b>
-            {home.hold_key !== "off" ? (
-              <><span>·</span><span>hold</span><Caps caps={[home.hold_key]} /><span>and speak.</span></>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="main">
-        {calm ? null : (
-          <div className="pile">
-            {home.pile.map((row, i) => (
-              <Slip key={row.id} row={row} lead={i === 0} leaving={leaving.has(row.id)}
-                    pressed={pressed} act={act} />
-            ))}
-          </div>
-        )}
-        {home.held ? <div className="held">{home.held}</div> : null}
-        <Day lines={home.rest} act={act} go={go} />
-      </div>
-
-      <div className="aside glass">
-        {home.doors.map((d) => <DoorTile key={d.place} door={d} go={go} />)}
-      </div>
-
-      <div className="foot">
-        <div className="l"><i className="ic">{IC.moon}</i><span>{home.strip.awake}</span></div>
-        <div className="r">
-          {home.strip.phone ? <span className="live" /> : null}
-          {home.strip.phone ? "phone live" : "phone off"}
-          {home.strip.facts.map((f) => <span key={f}><span className="sep">·</span>{f}</span>)}
-        </div>
-      </div>
-    </>
-  );
-}
-
-function Caps({ caps }: { caps: string[] }) {
-  return (
-    <span className="keys">
-      {caps.map((c, i) => (
-        <span key={`${c}${i}`}>{i ? <span className="plus">+</span> : null}<span className="cap">{c}</span></span>
-      ))}
-    </span>
-  );
-}
-
-function Slip({ row, lead, leaving, pressed, act }: {
-  row: PileRow; lead: boolean; leaving: boolean; pressed: string;
-  act: (b: { act: string; arg?: unknown }, rowId?: string) => void;
-}) {
-  const showNote = !!row.note && row.kind !== "review" && row.kind !== "notify";
-  return (
-    <div className={`slip glass${lead ? " lead" : ""}${leaving ? " leaving" : ""}${showNote ? " noted" : ""}`}
-         title={row.kind === "review" && row.note ? row.note : undefined}>
-      <div className={`mk ${row.tone}`}><i className="ic">{IC[row.glyph] ?? IC.info}</i></div>
-      <div className="tx">
-        <div className="eb"><b>{row.title}</b>{row.meta ? <span>{row.meta}</span> : null}</div>
-        <div className={`s${row.rtl ? " he" : ""}`} dir={row.rtl ? "rtl" : "ltr"}>
-          {row.segs ? <Segs segs={row.segs} rtl={row.rtl} /> : row.text}
-        </div>
-        {showNote ? <div className="nt">{row.note}</div> : null}
-      </div>
-      <div className="acts">
-        {row.buttons.map((b) => <SlipButton key={`${b.act}${String(b.arg ?? "")}`} b={b} row={row}
-                                             pressed={pressed} act={act} />)}
-      </div>
-    </div>
-  );
-}
-
-function SlipButton({ b, row, pressed, act }: {
-  b: Button; row: PileRow; pressed: string;
-  act: (b: { act: string; arg?: unknown }, rowId?: string) => void;
-}) {
-  const down = pressed === `${b.act}:${String(b.arg ?? "")}` ? " down" : "";
-  if (b.tone === "close") {
-    return <div className={`x${down}`} title="Dismiss" onClick={() => act(b, row.id)}><i className="ic">{IC.close}</i></div>;
-  }
-  return (
-    <div className={`btn${b.tone === "primary" ? " primary" : ""}${down}`} onClick={() => act(b, row.id)}>
-      {b.label}
-    </div>
-  );
-}
-
-function Segs({ segs, rtl }: { segs: Seg[]; rtl: boolean }) {
-  return (
-    <>
-      {segs.map((s, i) => {
-        if (s.t === "ctx") return <span key={i} className="ctx">{s.s}</span>;
-        if (s.t === "drop") return <span key={i} className="chg"><span className="pill heard">{s.s}</span></span>;
-        return (
-          <span key={i} className="chg">
-            <span className="pill heard" dir="auto">{s.heard}</span>
-            <i className="ic arrow">{rtl ? IC.left : IC.right}</i>
-            <span className="pill prop"><i className="ic">{IC.tick}</i><span dir="auto">{s.meant}</span></span>
-          </span>
-        );
-      })}
-    </>
-  );
-}
-
-function Day({ lines, act, go }: {
-  lines: DayLine[]; act: (b: { act: string; arg?: unknown }) => void; go: (p: Place) => void;
-}) {
-  return (
-    <div className="day">
-      <div className="eyebrow">The rest of the day</div>
-      <div className="lines">
-        {lines.length ? lines.map((l) => (
-          <div key={l.label} className="line"
-               onClick={() => (l.act ? act({ act: l.act }) : l.go ? go(l.go as Place) : undefined)}>
-            <span className="l">{l.label}</span>
-            <span className="t num">{l.when}</span>
-            <span className={`x${l.rtl ? " he" : ""}`} dir={l.rtl ? "rtl" : "ltr"}>{l.text}</span>
-            <span className="m">{l.meta}</span>
-          </div>
-        )) : <div className="line empty"><span className="x">Nothing dictated yet.</span></div>}
-      </div>
-    </div>
-  );
-}
-
-function DoorTile({ door, go }: { door: Door; go: (p: Place) => void }) {
-  return (
-    <div className={`door${door.n ? "" : " z"}`} onClick={() => go(door.place as Place)}>
-      <div className="top"><span className="n num">{door.n}</span><span className="w">{door.w}</span></div>
-      <i className="ic dic">{IC[door.glyph] ?? IC.info}</i>
-      <div className="note">{door.note}</div>
-    </div>
-  );
-}
-
-// ------------------------------------------------- places not moved yet
-
-function Away({ place, text, act, plain }: {
-  place: Place; text: string; act: (b: { act: string; arg?: unknown }) => void; plain?: boolean;
-}) {
-  return (
-    <div className="away">
-      <div className="title">{place}</div>
-      <div className="card glass awaycard">
-        <div className="a1">{plain ? text : `${place} is still in the old desk.`}</div>
-        {plain ? null : <div className="a2">{text} It moves here next — one place at a time.</div>}
-        {plain ? null : (
-          <div className="btn" onClick={() => act({ act: "old", arg: place })}>
-            <i className="ic">{IC.open}</i>Open it in the old desk
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Landing({ act }: { act: (b: { act: string; arg?: unknown }) => void }) {
-  return (
-    <div className="away">
-      <div className="title">Sign in to DeskIT</div>
-      <div className="card glass awaycard">
-        <div className="a1">Dictation waits for an account on this PC.</div>
-        <div className="a2">Signing in is still in the old desk.</div>
-        <div className="btn primary" onClick={() => act({ act: "old", arg: "Home" })}>
-          <i className="ic">{IC.open}</i>Open the old desk
-        </div>
       </div>
     </div>
   );

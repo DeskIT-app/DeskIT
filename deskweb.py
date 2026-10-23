@@ -17,7 +17,11 @@ so, with one button that opens the Tk desk at that place (`dashboard.py
 stand side by side while the move is under way. `[desk] web` in
 defaults.toml opens this instead of the Tk desk, in the checkout only
 (dashboard.main); the release keeps Tk until all five are here — never a
-half-moved window in a release (the owner, 2026-09-22).
+half-moved window in a release (the owner, 2026-09-22). Each of the four
+has a module of its own (`PLACES_MOD`: desk_corrections.py, desk_said.py,
+desk_keys.py, desk_settings.py) and a page of its own (web/src/places/),
+reached through `Api.place` — so five sessions can build the five places
+at once without editing one file (web/README.md says who owns what).
 
 THE MODEL IS PYTHON, THE PICTURE IS THE PAGE. `Model.home()` answers one
 question — everything Home shows, as plain data — read from the same
@@ -82,7 +86,15 @@ WEBDESK_SHOW = paths.kernel_name(r"Local\DeskIT.webdesk.show")
 APP_ID = paths.APP_ID if paths.PACKAGED else paths.APP_ID + ".Dashboard"
 
 #: What the page may call (webdesk's dispatcher checks this list).
-CALLS = ("home", "act", "ping")
+CALLS = ("home", "act", "place", "ping")
+
+#: The places drawn by modules of their own, each built by a session of its
+#: own in parallel (web/README.md): the page's place call reaches them by
+#: these names. Home is drawn by the Model below.
+PLACES_MOD = {"corrections": "desk_corrections", "said": "desk_said",
+              "keys": "desk_keys", "settings": "desk_settings"}
+#: What a place call may do: read the place, or press one of its buttons.
+PLACE_OPS = ("read", "act")
 
 #: activity -> (the lamp, the word) — dashboard.LOOKS, said as the four
 #: lamps B+ draws (bplus.css .lamp.listen / rec / write / idle).
@@ -982,19 +994,59 @@ def open_old_desk(place: str = "Home") -> bool:
 
 
 class Api:
-    """What the page may ask — flat, the three names in CALLS and nothing
+    """What the page may ask — flat, the four names in CALLS and nothing
     else public (webdesk's dispatcher getattr's the name it is given)."""
 
     CALLS = CALLS
 
     def __init__(self, model: Model | None = None) -> None:
         self._model = model or Model()
+        #: one Place per window and per place, built on its first call
+        self._places: dict = {}
+        self._places_lock = threading.Lock()
 
     def home(self):
         return self._model.home()
 
     def act(self, do: str, arg=None):
         return self._model.act(do, arg)
+
+    def place(self, name: str, op: str = "read", args=None):
+        """One call to a place's module (PLACES_MOD): "read" is
+        Place.read(**args), "act" is Place.act(do, arg) with args {do,
+        arg}. Anything else is refused in words, and a place that raises
+        answers {ok: False, error: <the exception's type>} — never a
+        traceback to the page, and never more than the type in app.log."""
+        name, op = str(name or ""), str(op or "")
+        if name not in PLACES_MOD:
+            return {"ok": False, "error": f"{name[:40]!r} is not a desk place"}
+        if op not in PLACE_OPS:
+            return {"ok": False, "error": f"{op[:40]!r} is not a place call"}
+        args = {} if args is None else args
+        if not isinstance(args, dict):
+            return {"ok": False, "error": "a place call's args are a dict"}
+        if op == "act" and (not isinstance(args.get("do"), str) or set(args) - {"do", "arg"}):
+            return {"ok": False, "error": "a place's act takes do and arg"}
+        try:
+            place = self._place(name)
+            if op == "read":
+                return place.read(**args)
+            return place.act(args["do"], args.get("arg"))
+        except Exception as e:            # noqa: BLE001 — the page gets words, not a traceback
+            log.warning("web desk: %s %s failed: %s", name, op, type(e).__name__)
+            return {"ok": False, "error": type(e).__name__}
+
+    def _place(self, name: str):
+        """The place's module, imported on its first call, and its one
+        Place for this window — handed the Model's pipe function, so a
+        test's or a probe's stubbed pipe is the place's pipe too."""
+        import importlib
+        with self._places_lock:
+            place = self._places.get(name)
+            if place is None:
+                module = importlib.import_module(PLACES_MOD[name])
+                place = self._places[name] = module.Place(self._model._send)
+            return place
 
     def ping(self):
         return {"ok": True}
@@ -1083,9 +1135,11 @@ def _watch_show(desk_handle: dict, stop: threading.Event) -> None:
 
 
 def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
-               hidden: bool = False) -> int:
+               hidden: bool = False, storage=None) -> int:
     """Open the desk and block until it closes (webdesk.run's codes: 0 ran,
-    2 no WebView2, 3 no pages)."""
+    2 no WebView2, 3 no pages). `storage`: the browser's folder, when not
+    paths.WEBVIEW_DIR — which the owner's own desk holds while it is open,
+    and a second browser on it fails with 0x800700AA."""
     import webdesk
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
@@ -1117,6 +1171,7 @@ def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
                            api=api or Api(), width=CLIENT_W + 16, height=CLIENT_H + 39,
                            icon=paths.ICON_ICO if paths.ICON_ICO.is_file() else None,
                            on_form=_on_form, resizable=False, hidden=hidden,
+                           storage=storage,
                            on_ready=ready_then if on_ready is not None else None)
     finally:
         stop.set()
@@ -1167,15 +1222,31 @@ def main(argv=None) -> int:
     parser.add_argument("--shot", help="photograph the page into this PNG, hidden, and close")
     parser.add_argument("--place", default="Home", help="open on this place")
     ns = parser.parse_args(argv)
+    route = "" if ns.place == "Home" else ns.place.lower()
+    if ns.shot:
+        # A photograph is not the desk: no mutex — a worktree's name is the
+        # checkout's, so with his desk open the shot would only raise HIS
+        # window — and a browser folder of its own, which his desk holds.
+        import shutil
+        import tempfile
+        storage = tempfile.mkdtemp(prefix="DeskIT-shot-")
+        try:
+            return run_window(route=route, on_ready=_shot(ns.shot, ns.place),
+                              storage=storage)
+        finally:
+            # the browser's processes let go of the folder a moment after
+            # the window has closed
+            for _ in range(50):
+                shutil.rmtree(storage, ignore_errors=True)
+                if not Path(storage).exists():
+                    break
+                time.sleep(0.1)
     try:
         lock = singleton.InstanceLock(WEBDESK_MUTEX)
     except singleton.AlreadyRunning:
         singleton.signal(WEBDESK_SHOW)
         return 0
     try:
-        route = "" if ns.place == "Home" else ns.place.lower()
-        if ns.shot:
-            return run_window(route=route, on_ready=_shot(ns.shot, ns.place))
         bring_up_the_keys()
         code = run_window(route=route)
         if code == 0:
