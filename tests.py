@@ -38416,6 +38416,19 @@ def test_the_web_window_is_held_shut_and_network_md_says_how():
 
     flags = webdesk.BASE_ARGS
     assert sum(a.startswith("--disable-features=") for a in flags) == 1, flags
+    # nothing that loosens the window's isolation, in the flags or in
+    # what deskweb hands webdesk.run (the census reads the browser's real
+    # command line: dev\web_census.py's browser_flags)
+    for loose in ("--remote-debugging", "--allow-file-access", "--disable-web-security",
+                  "--no-sandbox", "--disable-site-isolation", "--allow-running-insecure-content",
+                  "--ignore-certificate-errors", "--disable-gpu-sandbox", "--user-data-dir"):
+        assert loose not in webdesk.browser_args(), loose
+    window = (REPO / "deskweb.py").read_text("utf-8")
+    window = window[window.index("def run_window("):window.index("def bring_up_the_keys(")]
+    assert "extra_args" not in window and "debug" not in window, "the desk widens its own flags"
+    run_src = (REPO / "webdesk.py").read_text("utf-8")
+    run_src = run_src[run_src.index("def run("):run_src.index("run.last = None")]
+    assert 'webview.settings["ALLOW_FILE_URLS"] = False' in run_src and "debug=False" in run_src
     disabled = set(flags[0].split("=", 1)[1].split(","))
     assert {"msSmartScreenProtection", "msOneAuthWAM"} <= disabled, disabled
     for flag in ("--disable-background-networking", "--disable-component-update",
@@ -43253,26 +43266,44 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
     import manifest
 
     rel = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    # the npm toolchain is third-party code: built in a job of its own that
+    # holds no secret, no OIDC token, a read-only token and no credentials
+    # in .git/config, with the exact Node ci.yml builds with
+    job = rel[rel.index("\n  pages:"):rel.index("\n  stage:")]
+    for must in ("permissions:\n      contents: read", "persist-credentials: false",
+                 "actions/setup-node@v5", "node-version: ${{ env.NODE_VERSION }}",
+                 "npm ci --ignore-scripts", "npm run build", "actions/upload-artifact@v4",
+                 "name: web-dist", "if-no-files-found: error"):
+        assert must in job, must
+    assert "secrets." not in job and "id-token" not in job, "the pages job holds a secret"
+    node = re.search(r'^  NODE_VERSION: "(\d+)\.(\d+)\.(\d+)"$', rel, re.M)
+    assert node and tuple(map(int, node.groups())) >= (22, 12, 0), "Node is not pinned exactly"
+    stage = rel[rel.index("\n  stage:"):]
+    assert stage.index("needs: pages") < stage.index("steps:")
     archive = rel.index("- name: git archive")
+    take = rel.index("- uses: actions/download-artifact@v4")
     pages = rel.index("- name: The web desk's pages")
     listed = rel.index("- name: MANIFEST.sha256")
-    assert archive < pages < listed, "the pages are placed after the manifest is written"
-    forbidden = rel[archive:pages]
+    assert archive < take < pages < listed, "the pages are placed after the manifest is written"
+    forbidden = rel[archive:take]
     assert '"packaging", "android", "web",' in forbidden, "the archive is not checked for web\\"
-    assert "actions/setup-node@v5" in forbidden and 'node-version: "22"' in forbidden
+    assert "name: web-dist" in rel[take:pages] and "path: stage/app/web/dist" in rel[take:pages]
     step = rel[pages:listed]
-    for must in ("npm ci --ignore-scripts", "npm run build", "Copy-Item -Recurse web/dist stage/app/web/dist",
-                 '"*.map"', "index.html"):
+    for must in ('"*.map"', "index.html", 'StartsWith("assets\\")', "-Force"):
         assert must in step, must
+    assert "npm ci" not in stage and "npm run" not in stage, \
+        "third-party build code back in the job that holds the secrets"
     assert "app/web/dist/index.html" in rel[listed:rel.index("- name: Attest MANIFEST.sha256")]
     start = rel[rel.index("- name: The staged tree starts"):rel.index("- name: CHANNEL")]
     assert "sounddevice, webview, clr" in start and "$LASTEXITCODE" in start
     assert "app\\web\\dist\\index.html" in rel[rel.index("- name: Silent install, verify, uninstall"):]
     ci = (REPO / ".github" / "workflows" / "ci.yml").read_text("utf-8")
     job = ci[ci.index("\n  pages:"):]
-    for must in ("actions/setup-node@v5", 'node-version: "22"', "working-directory: web",
-                 "npm ci --ignore-scripts", "npm run build"):
+    for must in ("actions/setup-node@v5", f'node-version: "{".".join(node.groups())}"',
+                 "working-directory: web", "npm ci --ignore-scripts", "npm run build",
+                 "permissions:\n      contents: read", "persist-credentials: false"):
         assert must in job, must
+    assert "secrets." not in ci, "a secret in the workflow that runs pull requests"
     local = (REPO / "packaging" / "build_local.ps1").read_text("utf-8")
     assert local.index("npm run build") < local.index('app\\web\\dist")') < local.index("manifest.py\") write")
     assert "sounddevice, webview, clr" in local

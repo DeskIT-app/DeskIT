@@ -40,7 +40,8 @@ Run it HIDDEN (house rule 8) and from the venv that has pywebview:
 MEASURED 2026-10-23, runtime 155.0.4283.62 (numbers in NETWORK.md): with
 the flags of 2026-09-22 a fresh profile held no socket for 180 s, and
 each of 6 warm starts held two TLS connections to substrate.office.com
-2-4 s after load — Edge's OneAuth sign-in through Windows' account broker
+(in two of them a third that closed at once) 2-4 s after load — Edge's
+OneAuth sign-in through Windows' account broker
 (encrypted, not read; msedge.dll names the Windows account's profile and
 photo on that host); msOneAuthWAM stops it. Re-run after a runtime
 update before quoting this.
@@ -156,6 +157,20 @@ class Census:
             row["last_s"] = round(now, 2)
         self.samples += 1
 
+    def browser_flags(self) -> list:
+        """The `--` switches of the browser process(es) of the window, as
+        Windows started them — what WebView2 really runs with, which is
+        not necessarily the string webdesk.py handed it."""
+        flags = set()
+        for proc in self.me.children(recursive=True):
+            try:
+                if proc.name().lower() == "msedgewebview2.exe" and _role(proc) == "browser":
+                    flags.update(p.split("=", 1)[0] if p.startswith("--user-data-dir") else p
+                                 for p in proc.cmdline() if p.startswith("--"))
+            except Exception:              # noqa: BLE001 — it exited
+                continue
+        return sorted(flags)
+
     def external(self) -> list:
         return [r for r in self.ours.values()
                 if r["raddr"] and r["raddr"].rsplit(":", 1)[0].strip("[]") not in LOOPBACK]
@@ -200,6 +215,7 @@ def main(argv=None) -> int:
 
     def on_ready(desk):
         started = time.time()
+        note["browser_flags"] = census.browser_flags()
         while time.time() - started < ns.seconds:
             census.sample()
             time.sleep(0.25)

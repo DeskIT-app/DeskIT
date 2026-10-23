@@ -89,23 +89,30 @@ jobs:
         shell: pwsh
         run: python dev/test_docs.py
 
-  # The web desk's pages, built exactly as release.yml's step 6a builds
-  # them — Node 22, the committed lock, no install script — so a page that
-  # does not type-check or bundle shows on the push that broke it and not
-  # on the day of a release. Its own job: the product suite needs no pages
-  # (deskweb.ready() is False without them, which is what the suite tests).
+  # The web desk's pages, built exactly as release.yml's pages job builds
+  # them — the same exact Node (release.yml's NODE_VERSION), the committed
+  # lock, no install script — so a page that does not type-check or
+  # bundle shows on the push that broke it and not on the day of a
+  # release. Its own job: the product suite needs no pages (deskweb.ready()
+  # is False without them, which is what the suite tests). An npm
+  # toolchain is third-party code, and this job runs on pull requests
+  # too: a read-only token, and no credentials left in .git/config.
   pages:
     runs-on: windows-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     concurrency:
       group: pages-sha-${{ github.sha }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "22.23.4"
 
       - name: Build the pages
         shell: pwsh

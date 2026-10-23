@@ -447,8 +447,8 @@ exactly what classic did.
   and a browser netlog cannot see all of it.** WebView2's browser
   process also resolves and connects through WINDOWS' own code: on
   2026-10-23 a clean netlog and `--host-resolver-rules` hid two TLS
-  connections to substrate.office.com that every start after the first
-  held (Edge's OneAuth sign-in through WAM; encrypted, so not read —
+  connections to substrate.office.com that each of 6 starts after a
+  first one held (Edge's OneAuth sign-in through WAM; encrypted, so not read —
   msedge.dll's strings put the Windows account's profile and photo
   there); `msOneAuthWAM` in `webdesk.BASE_ARGS`
   stops it, measured to 0 sockets over 15 minutes. After a runtime

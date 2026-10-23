@@ -50,8 +50,9 @@ measured:
 - The page is DeskIT's own files from the app folder (`app\web\dist`),
   mapped onto a name reserved never to exist on the internet
   (deskit.example) — no server, no port. Every request and every
-  navigation to anything else is refused before it starts, and the
-  page's own security policy allows no connection of any kind.
+  navigation to anything else is refused before it starts (`webdesk.py`),
+  and the page's own security policy forbids it to fetch, load or send
+  anything that is not its own.
 - The window's own services are switched off when it starts
   (`webdesk.py`): SmartScreen, Edge's experimentation service, the
   component updater, proxy discovery, every name lookup inside its
@@ -66,7 +67,8 @@ measured:
 - What the sign-in switch stopped: without it, a first start held no
   connection, but each of the 6 starts after a first one opened two
   encrypted connections to substrate.office.com (Microsoft 365) 2 to 4
-  seconds after the page loaded, and kept them. Windows' own name
+  seconds after the page loaded, and kept them (in two of the six, a
+  third that closed at once). Windows' own name
   lookup found that host, not the browser's, which is why a browser
   network log never showed them. They were encrypted, so what they
   carried was not read; the browser's own code names the Windows

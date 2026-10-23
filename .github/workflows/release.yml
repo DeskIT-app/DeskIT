@@ -31,6 +31,10 @@ on:
 env:
   PYTHON_VERSION: "3.11.9"
   EMBED_URL: "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+  # the Node the web desk's pages are built with, exact like the Python
+  # above (verified 2026-10-23: npm ci + npm run build on 22.23.4 / npm
+  # 10.9.9 gave the same bytes as 25.7.0); ci.yml builds with the same one
+  NODE_VERSION: "22.23.4"
 
 permissions:
   contents: write        # the draft release and its assets (step 14)
@@ -38,7 +42,50 @@ permissions:
   attestations: write
 
 jobs:
+  # 6a, built APART: the web desk's pages come out of an npm toolchain —
+  # some two dozen third-party packages with native binaries, run here —
+  # so they are built in a job that holds nothing worth taking: a
+  # read-only token, no secret (SIGNPATH_API_TOKEN is the stage job's), no
+  # OIDC token, and no credentials left in .git/config by the checkout.
+  # The stage job takes web\dist as this run's artifact (step 6a there).
+  # Node exact; npm ci from the committed package-lock.json (it checks
+  # every package's integrity hash) with no install script of any package
+  # run (--ignore-scripts, and web\.npmrc says it too).
+  pages:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build the pages
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE) { throw "npm ci failed" }
+          npm run build
+          if ($LASTEXITCODE) { throw "npm run build failed" }
+          if (-not (Test-Path dist/index.html)) { throw "web/dist has no index.html" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 1
+
   stage:
+    needs: pages
     runs-on: windows-latest
     timeout-minutes: 180        # step 10b may wait up to two hours for the owner's approval
     defaults:
@@ -145,31 +192,22 @@ jobs:
 
       # 6a. the web desk's pages (deskweb.py, webdesk.py) — web\ is
       #     export-ignored, sources and npm lock alike, so the archive has
-      #     none of it: the BUILT pages go in at paths.WEB_DIST, app\web\dist,
-      #     before step 7 lists every file. Node 22 (package.json's engines),
-      #     the committed package-lock.json (npm ci checks every package's
-      #     integrity hash), no install script of any package run
-      #     (--ignore-scripts, and web\.npmrc says it too), and nothing but
-      #     index.html and assets\ in what ships — no source map.
-      - uses: actions/setup-node@v5
+      #     none of it: the pages job's BUILT pages go in at
+      #     paths.WEB_DIST, app\web\dist, before step 7 lists every file,
+      #     and nothing but index.html and assets\ — no source map.
+      - uses: actions/download-artifact@v4
         with:
-          node-version: "22"
+          name: web-dist
+          path: stage/app/web/dist
 
       - name: The web desk's pages
         run: |
-          Push-Location web
-          npm ci --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE) { throw "npm ci failed" }
-          npm run build
-          if ($LASTEXITCODE) { throw "npm run build failed" }
-          Pop-Location
-          if (-not (Test-Path web/dist/index.html)) { throw "web/dist has no index.html" }
-          $odd = Get-ChildItem -Recurse web/dist -File | Where-Object {
-            $rel = $_.FullName.Substring((Resolve-Path web/dist).Path.Length + 1)
+          $dist = "stage/app/web/dist"
+          if (-not (Test-Path "$dist/index.html")) { throw "the pages job's artifact has no index.html" }
+          $odd = Get-ChildItem -Recurse -Force $dist -File | Where-Object {
+            $rel = $_.FullName.Substring((Resolve-Path $dist).Path.Length + 1)
             ($rel -ne "index.html" -and -not $rel.StartsWith("assets\")) -or $_.Name -like "*.map" }
           if ($odd) { $odd | ForEach-Object { $_.FullName }; throw "web/dist holds more than index.html and assets\" }
-          New-Item -ItemType Directory -Force stage/app/web | Out-Null
-          Copy-Item -Recurse web/dist stage/app/web/dist
           Get-ChildItem -Recurse stage/app/web -File | ForEach-Object { "{0,10}  {1}" -f $_.Length, $_.FullName.Substring((Resolve-Path stage/app).Path.Length + 1) }
 
       # 6b. notices — the generated half (pip-licenses over the staged
