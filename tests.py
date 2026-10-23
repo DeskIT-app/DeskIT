@@ -44843,6 +44843,76 @@ def test_the_room_says_it_is_watching_and_names_a_game_still_under_the_bar():
         app_log.setLevel(level)
 
 
+def test_a_full_screen_game_under_the_bar_makes_room_and_dictation_stays():
+    """2026-10-23, measured: Fortnite at 1.83 GB of the card + 0.13 GB
+    shared, commit 93% of the limit, rung 0. A program that fills the
+    screen in the foreground counts from room.NOTE (1 GB); the same
+    program NOT full screen does not, nor a light full-screen window (a
+    film); with keep_speech (the default) the ladder stops at the English
+    model however short the machine stays, and everything comes back when
+    the game goes. The full-screen reading never names this app, a
+    NEVER program or the shell's own desktop."""
+    import room as room_mod
+
+    G = 1 << 30
+    fortnite = room_mod.Competitor("fortniteclient-win64-shipping", 67488,
+                                   int(1.83 * G), int(0.13 * G))
+    film = room_mod.Competitor("vlc", 5, int(0.3 * G), 0)
+    ladder = room_mod.Ladder(top=room_mod.ENGLISH, game_gb=room_mod.NOTE / G)
+
+    def at(t, *, game=None, heavy=fortnite, commit=0.93):
+        want = ladder.want(room_mod.Reading(heavy, commit, game), float(t))
+        if want != ladder.rung:
+            ladder.moved(want, float(t))
+        return ladder.rung
+
+    # the heaviest program, but not full screen: an ordinary day
+    for t in (0, 5, 10):
+        assert at(t) == 0
+    assert at(15, game=film, heavy=film) == 0, "a film is not a game"
+    # full screen: the second look holds the local model off
+    assert at(20, game=fortnite) == 0
+    assert at(25, game=fortnite) == room_mod.LOCAL and ladder.holder == fortnite.name
+    # short of commit: the English model, settled — and never the speech model
+    assert at(45, game=fortnite) == room_mod.ENGLISH
+    for t in (65, 85, 105, 125):
+        assert at(t, game=fortnite, commit=0.99) == room_mod.ENGLISH
+    # alt-tabbed out for a minute is still the same game; gone is gone
+    assert at(130, game=None) == room_mod.ENGLISH
+    assert at(189, game=None, heavy=None) == room_mod.ENGLISH
+    assert at(191, game=None, heavy=None) == 0
+    # with keep_speech off, the third step is still there
+    off = room_mod.Ladder(game_gb=room_mod.NOTE / G)
+    for t in (0, 5, 25, 45):
+        want = off.want(room_mod.Reading(None, 0.95, fortnite), float(t))
+        if want != off.rung:
+            off.moved(want, float(t))
+    assert off.rung == room_mod.SPEECH
+    assert config_mod.RoomConfig().keep_speech is True
+
+    # the reading: who may be the full-screen game at all
+    ded = {67488: fortnite.dedicated, 1: 9 * G, 2: 2 * G, 3: 2 * G}
+    shr = {67488: fortnite.shared}
+    names = {67488: "fortniteclient-win64-shipping", 1: "dwm", 2: "pythonw", 3: "chrome"}
+    assert room_mod.full_screen(ded, shr, names, 99, 67488) == fortnite
+    assert room_mod.full_screen(ded, shr, names, 99, 1) is None, "NEVER"
+    assert room_mod.full_screen(ded, shr, names, 2, 2) is None, "this app"
+    assert room_mod.full_screen(ded, shr, names, 99, None) is None
+    assert room_mod.full_screen(ded, shr, names, 99, 3).total == 2 * G
+    # exclusive or borderless covers the monitor, the left one at x -1920
+    # included; a window that stops at the taskbar does not (a maximised
+    # one is refused before the rectangle is even read: IsZoomed)
+    assert room_mod.covers((0, 0, 2560, 1440), (0, 0, 2560, 1440))
+    assert room_mod.covers((-1920, 0, 0, 1080), (-1920, 0, 0, 1080))
+    assert not room_mod.covers((0, 0, 2560, 1392), (0, 0, 2560, 1440))
+    src = Path(room_mod.__file__).read_text("utf-8")
+    assert "IsZoomed" in src.split("def full_screen_pid", 1)[1]
+    assert "progman" in room_mod.SHELL_CLASSES and "workerw" in room_mod.SHELL_CLASSES
+    # the real foreground answers without raising, whatever it is
+    pid = room_mod.full_screen_pid()
+    assert pid is None or pid > 0
+
+
 def test_the_room_section_is_in_the_file_bounded_and_off_the_screen():
     """[room] in defaults.toml is exactly RoomConfig's defaults — the
     developer's numbers, not a line of the Settings place — and each one

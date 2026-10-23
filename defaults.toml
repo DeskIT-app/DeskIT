@@ -1137,10 +1137,15 @@ pin_timeouts = false           # also set Windows' own "sleep after" and
 # models here step aside, one at a time and only while the machine is
 # still short: the local language model first (~9 GB of the card,
 # ~12 GB of commit, dictation untouched), then the English model
-# (dictation goes on in Hebrew), then the Hebrew model (the model is off
-# until the game is gone). All of it comes back by itself. The processor
-# is not a step: measured the same evening, a dictation took 9-10 s on
-# all 12 cores against 0.3-0.5 s on the card.
+# (dictation goes on in Hebrew). The Hebrew model stays (keep_speech).
+# All of it comes back by itself. The processor is not a step: measured
+# the same evening, a dictation took 9-10 s on all 12 cores against
+# 0.3-0.5 s on the card.
+# A game that never reaches competitor_gb counts too while its window
+# fills the screen in the foreground and it holds 1 GB or more (room.NOTE):
+# on 2026-10-23 Fortnite held 1.83 GB of the card + 0.13 GB shared with
+# commit at 93% of the limit and nothing stepped aside. No other program
+# on this PC holds even 0.5 GB, so an ordinary day never starts it.
 enabled = true                 # false = the models never step aside
 competitor_gb = 2.5            # a program holding at least this much
                                # graphics memory - the card's own plus what
@@ -1161,6 +1166,10 @@ settle_s = 15                  # seconds after one step before the next,
 exit_s = 60                    # seconds without a game before everything
                                # comes back (Hebrew model ~7 s, English
                                # ~16 s, the local model on its next use)
+keep_speech = true             # the Hebrew model stays while a game runs,
+                               # so dictation keeps working - the owner's
+                               # word on 2026-10-23; false = a third step
+                               # takes it off until the game is gone
 
 [notify]
 # A DOOR FOR OTHER PROGRAMS TO KNOCK ON. Claude Code's own "finished"

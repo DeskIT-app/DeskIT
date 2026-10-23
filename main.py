@@ -2628,16 +2628,21 @@ class App:
         if rcfg is None or not rcfg.enabled or not room_mod.LIVE:
             self._room_looked.set()
             return
+        top = room_mod.ENGLISH if rcfg.keep_speech else room_mod.TOP
         self._room = room_mod.Ladder(
             competitor_gb=rcfg.competitor_gb, commit_tight=rcfg.commit_tight,
-            spill_gb=rcfg.spill_gb, settle_s=rcfg.settle_s, exit_s=rcfg.exit_s)
+            spill_gb=rcfg.spill_gb, settle_s=rcfg.settle_s, exit_s=rcfg.exit_s,
+            top=top, game_gb=room_mod.NOTE / room_mod.GB)
         # Said once, so a log with no "room:" step in it can be told from a
         # watch that never started (2026-10-23: nine days of silence and
         # nothing to say which).
-        log.info("room: watching the card — a program holding %.1f GB or "
-                 "more, seen twice, holds the local model off; the English "
-                 "and speech models follow only at commit %d%% of the limit",
-                 rcfg.competitor_gb, round(100 * rcfg.commit_tight))
+        log.info("room: watching the card — a program holding %.1f GB, or a "
+                 "full-screen one holding %.1f GB, seen twice, holds the "
+                 "local model off; at commit %d%% of the limit the English "
+                 "model follows%s",
+                 rcfg.competitor_gb, room_mod.NOTE / room_mod.GB,
+                 round(100 * rcfg.commit_tight),
+                 "" if rcfg.keep_speech else ", then the speech model")
         threading.Thread(target=self._room_loop, daemon=True,
                          name="room").start()
 
@@ -2680,13 +2685,14 @@ class App:
             self._room_keep_speech = False
             ladder.keep_speech(now)
         c = reading.competitor
-        if c is not None and c.total >= room_mod.NOTE and not ladder.counts(c) \
-                and c.pid != self._room_noted:
-            # a heavy program under the bar, once per process: what a game
-            # that never reached it looked like (room.NOTE)
+        if c is not None and c.total >= room_mod.NOTE \
+                and ladder.pick(reading) is None and c.pid != self._room_noted:
+            # a heavy program under the bar and not full screen, once per
+            # process: what a game that never reached it looked like
             self._room_noted = c.pid
-            log.info("room: %s — under the %.1f GB that makes room",
-                     self._room_numbers(reading), self.cfg.room.competitor_gb)
+            log.info("room: %s — under the %.1f GB that makes room, and not "
+                     "full screen", self._room_numbers(reading),
+                     self.cfg.room.competitor_gb)
         want = ladder.want(reading, now)
         if not self.cfg.room.enabled:
             want = 0
@@ -2708,10 +2714,11 @@ class App:
                          "unloaded (%s still holds the card)",
                          ", ".join(gone), ladder.holder)
 
-    @staticmethod
-    def _room_numbers(reading) -> str:
+    def _room_numbers(self, reading) -> str:
         parts = []
-        c = reading.competitor
+        ladder = getattr(self, "_room", None)
+        c = (ladder.pick(reading) if ladder is not None else None) \
+            or reading.competitor
         if c is not None:
             parts.append(f"{c.name} holds {c.dedicated / (1 << 30):.1f} GB of "
                          f"the card and {c.shared / (1 << 30):.1f} GB more")

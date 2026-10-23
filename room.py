@@ -43,10 +43,17 @@ enough room, and every rung comes back at once when the game is gone:
                 loses its own model.
     3  SPEECH   the Hebrew model goes too — the model is off exactly as
                 the desk's Stop leaves it, and every key that needs no
-                model keeps working.
+                model keeps working. ONLY with `[room] keep_speech =
+                false`: since 2026-10-23 the ladder stops at ENGLISH by
+                default (the owner: dictation stays possible while he
+                plays; the Hebrew model at int8_float16 is ~1.2 GB of the
+                card with CUDA's own context).
 
 WHEN. A competitor is a program — not this app, not Ollama, not dwm, not
-another Python — holding at least `competitor_gb` of graphics memory,
+another Python — holding at least `competitor_gb` of graphics memory, or
+the program whose window fills its screen in the foreground holding at
+least NOTE (Ladder.pick; Fortnite on 2026-10-23 held 1.96 GB in all and
+never reached 2.5),
 the card's own plus what spilled into system memory: Windows' "GPU
 Process Memory" counters, the per-process numbers Task Manager's Details
 tab shows, read through PDH in a fifth of a millisecond, unelevated, and
@@ -113,8 +120,9 @@ RECHECK_S = 30.0
 
 GB = 1 << 30
 
-#: A program this heavy that is still UNDER competitor_gb is named in the
-#: log once (main.App._room_tick). Without it a game that never reached
+#: A full-screen foreground program this heavy is a game (Ladder.pick);
+#: one this heavy that is neither full screen nor at competitor_gb is
+#: named in the log once (main.App._room_tick). Without it a game that never reached
 #: the bar left no trace: on 2026-10-23 GTA V ran 3 min 20 s (BattlEye
 #: loaded 14:39:32, unloaded 14:42:52) under commit at 90% and the log
 #: could not say whether the watch was alive or the game was still under
@@ -139,10 +147,13 @@ class Competitor:
 @dataclass(frozen=True)
 class Reading:
     """One look at the machine. `competitor` is the heaviest program that
-    counts, or None; `commit` the fraction of the commit limit in use, or
-    None when Windows would not say."""
+    may count, or None; `commit` the fraction of the commit limit in use,
+    or None when Windows would not say; `game` the program whose window
+    fills its screen in the foreground, with its graphics memory, or None
+    (not one of NEVER, never this app)."""
     competitor: Competitor | None
     commit: float | None
+    game: Competitor | None = None
 
 
 class Ladder:
@@ -153,19 +164,32 @@ class Ladder:
     dictation in progress) simply comes up again on the next reading.
     `ceiling` is how far down this episode may go: a Start pressed while
     the speech model stood aside is the person saying they want it, and
-    it is not taken from them again until the game is over."""
+    it is not taken from them again until the game is over. `top` is how
+    far down ANY episode may go: ENGLISH unless the person said otherwise
+    ([room] keep_speech, the owner on 2026-10-23: dictation stays possible
+    while a game runs).
+
+    Two ways to be a game (`pick`): any program at `competitor_gb` or
+    more, as before; or the program filling the screen in the foreground
+    at `game_gb` or more. The second is what 2026-10-23 measured: Fortnite
+    at 1.83 GB of the card + 0.13 GB shared, under 2.5, with commit at 93%
+    of the limit and the ladder at rung 0 by its own rule. A full-screen
+    window is what keeps the second way out of an ordinary day: no other
+    program on this PC holds even 0.5 GB of the card."""
 
     def __init__(self, competitor_gb: float = 2.5, commit_tight: float = 0.90,
                  spill_gb: float = 1.0, settle_s: float = 15.0,
-                 exit_s: float = 60.0):
+                 exit_s: float = 60.0, top: int = TOP, game_gb: float = 1.0):
         self.competitor_bytes = int(competitor_gb * GB)
+        self.game_bytes = int(game_gb * GB)
         self.commit_tight = float(commit_tight)
         self.spill_bytes = int(spill_gb * GB)
         self.settle_s = float(settle_s)
         self.exit_s = float(exit_s)
+        self.top = int(top)
         self.rung = 0
         self.since = 0.0
-        self.ceiling = TOP
+        self.ceiling = self.top
         self.seen = 0
         self.gone_since: float | None = None
         self.holder = ""
@@ -173,29 +197,39 @@ class Ladder:
     def counts(self, c: Competitor | None) -> bool:
         return c is not None and c.total >= self.competitor_bytes
 
+    def pick(self, r: Reading) -> Competitor | None:
+        """The program this reading makes room for, or None (above)."""
+        if self.counts(r.competitor):
+            return r.competitor
+        g = r.game
+        if g is not None and g.total >= self.game_bytes:
+            return g
+        return None
+
     def short(self, r: Reading) -> bool:
         """Is the machine still short of room with the competitor there?"""
         if r.commit is not None and r.commit >= self.commit_tight:
             return True
-        c = r.competitor
+        c = self.pick(r) or r.competitor
         return c is not None and c.shared >= self.spill_bytes
 
     def want(self, r: Reading, now: float) -> int:
         """The rung to stand on after this reading. At most one rung down
         per reading; all the way up at once."""
-        if self.counts(r.competitor):
+        who = self.pick(r)
+        if who is not None:
             self.seen += 1
             self.gone_since = None
-            self.holder = r.competitor.name
+            self.holder = who.name
         else:
             self.seen = 0
             if self.gone_since is None:
                 self.gone_since = now
         if self.rung == 0:
             return LOCAL if self.seen >= CONFIRM else 0
-        if not self.counts(r.competitor):
+        if who is None:
             return 0 if now - self.gone_since >= self.exit_s else self.rung
-        if (self.rung < min(TOP, self.ceiling) and self.short(r)
+        if (self.rung < min(self.top, self.ceiling) and self.short(r)
                 and now - self.since >= self.settle_s):
             return self.rung + 1
         return self.rung
@@ -204,7 +238,7 @@ class Ladder:
         self.rung = rung
         self.since = now
         if rung == 0:
-            self.ceiling = TOP
+            self.ceiling = self.top
             self.holder = ""
 
     def keep_speech(self, now: float) -> None:
@@ -260,9 +294,26 @@ class _MemoryStatus(ctypes.Structure):
                 ("ullAvailExtendedVirtual", ctypes.c_uint64)]
 
 
+class _Rect(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", _Rect),
+                ("rcWork", _Rect), ("dwFlags", wintypes.DWORD)]
+
+
+MONITOR_DEFAULTTONULL = 0
+#: The shell's own windows cover a screen too (the desktop behind every
+#: window, the taskbar): never a game.
+SHELL_CLASSES = frozenset({"progman", "workerw", "shell_traywnd",
+                           "shell_secondarytraywnd"})
+
 _dll_lock = threading.Lock()
 _pdh = None
 _k32 = None
+_u32 = None
 
 
 def _dlls():
@@ -297,6 +348,76 @@ def _dlls():
             k.GlobalMemoryStatusEx.restype = wintypes.BOOL
             _pdh, _k32 = p, k
     return _pdh, _k32
+
+
+def _user32():
+    global _u32
+    with _dll_lock:
+        if _u32 is None:
+            u = ctypes.WinDLL("user32")
+            u.GetForegroundWindow.argtypes = []
+            u.GetForegroundWindow.restype = ctypes.c_void_p
+            u.GetWindowThreadProcessId.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+            u.GetWindowThreadProcessId.restype = wintypes.DWORD
+            u.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_Rect)]
+            u.GetWindowRect.restype = wintypes.BOOL
+            u.MonitorFromWindow.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+            u.MonitorFromWindow.restype = ctypes.c_void_p
+            u.GetMonitorInfoW.argtypes = [ctypes.c_void_p,
+                                          ctypes.POINTER(_MonitorInfo)]
+            u.GetMonitorInfoW.restype = wintypes.BOOL
+            u.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                        ctypes.c_int]
+            u.GetClassNameW.restype = ctypes.c_int
+            u.IsZoomed.argtypes = [ctypes.c_void_p]
+            u.IsZoomed.restype = wintypes.BOOL
+            _u32 = u
+    return _u32
+
+
+def covers(window: tuple[int, int, int, int],
+           monitor: tuple[int, int, int, int]) -> bool:
+    """Does a window rectangle (left, top, right, bottom) cover the whole
+    of its monitor — exclusive full screen or a borderless window?"""
+    return (window[0] <= monitor[0] and window[1] <= monitor[1]
+            and window[2] >= monitor[2] and window[3] >= monitor[3])
+
+
+def full_screen_pid() -> int | None:
+    """The process whose foreground window fills its monitor, or None.
+    Reads window rectangles and a pid; opens no process, so a game behind
+    an anti-cheat answers like any other."""
+    u = _user32()
+    hwnd = u.GetForegroundWindow()
+    if not hwnd:
+        return None
+    name = ctypes.create_unicode_buffer(64)
+    u.GetClassNameW(hwnd, name, 64)
+    if name.value.lower() in SHELL_CLASSES:
+        return None
+    if u.IsZoomed(hwnd):
+        # a maximised window is an ordinary program; with the taskbar
+        # hidden (or on another screen) its rectangle covers the monitor
+        # too. A game's full screen or borderless window is not maximised.
+        return None
+    rect = _Rect()
+    if not u.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    monitor = u.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)
+    if not monitor:
+        return None
+    info = _MonitorInfo()
+    info.cbSize = ctypes.sizeof(info)
+    if not u.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return None
+    m = info.rcMonitor
+    if not covers((rect.left, rect.top, rect.right, rect.bottom),
+                  (m.left, m.top, m.right, m.bottom)):
+        return None
+    pid = wintypes.DWORD(0)
+    u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value) or None
 
 
 def _per_pid(path: str) -> dict[int, int]:
@@ -392,13 +513,34 @@ def heaviest(dedicated: dict[int, int], shared: dict[int, int],
     return best
 
 
+def full_screen(dedicated: dict[int, int], shared: dict[int, int],
+                images: dict[int, str], me: int,
+                pid: int | None) -> Competitor | None:
+    """The full-screen foreground program with its graphics memory, when
+    it may count at all — never this process, never one of NEVER."""
+    if not pid or pid == me:
+        return None
+    name = images.get(pid, "")
+    if not name or name in NEVER:
+        return None
+    return Competitor(name, pid, dedicated.get(pid, 0), shared.get(pid, 0))
+
+
 def reading() -> Reading:
     """One look at the machine. Never raises: a reading Windows refuses
     is a machine with nothing on the card, which moves nothing."""
+    game = None
     try:
         dedicated = _per_pid(_DEDICATED)
         shared = _per_pid(_SHARED)
-        who = heaviest(dedicated, shared, _images(), os.getpid())
+        images = _images()
+        who = heaviest(dedicated, shared, images, os.getpid())
+        try:
+            game = full_screen(dedicated, shared, images, os.getpid(),
+                               full_screen_pid())
+        except Exception:                                # noqa: BLE001
+            log.debug("room: the foreground window did not answer",
+                      exc_info=True)
     except Exception:                                    # noqa: BLE001
         log.debug("room: the graphics memory counters did not answer",
                   exc_info=True)
@@ -407,7 +549,7 @@ def reading() -> Reading:
         used = commit()
     except Exception:                                    # noqa: BLE001
         used = None
-    return Reading(who, used)
+    return Reading(who, used, game)
 
 
 # ------------------------------------------------------------------ Ollama
