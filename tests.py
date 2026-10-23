@@ -43366,6 +43366,13 @@ class _FakeSupabase:
     TOKEN = "eyJfixture_access." + "a" * 40 + ".sig"
     REFRESH = "refresh-fixture-token"
     UID = "11111111-2222-3333-4444-555555555555"
+    #: The columns the migrations hold to is_sealed() (0004, 0005). The
+    #: real server refuses the WHOLE request when one row's value is not
+    #: one, and so does this — until 2026-10-23 it took anything, and a
+    #: lookup sealed past the cap was refused live for three days with
+    #: every test green.
+    SEALED = {"history": ("cipher",), "vault": ("cipher",), "recovery": ("wrapped",),
+              "pairings": ("applicant", "handed")}
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -43455,6 +43462,9 @@ class _FakeSupabase:
                 if method == "DELETE":
                     rows[:] = [r for r in rows if not any(r is h for h in hit)]
                     return _FakeRaw(b"", 204)
+                refused = self._refused(table, [payload or {}])
+                if refused:
+                    return refused
                 for r in hit:
                     r.update(payload or {})
                     r["updated_at"] = stamp
@@ -43466,6 +43476,9 @@ class _FakeSupabase:
                 # same keys the way merge-duplicates does; a plain insert appends
                 keys = [k for k in str(query.get("on_conflict", "")).split(",") if k]
                 items = payload if isinstance(payload, list) else [payload]
+                refused = self._refused(table, items)
+                if refused:
+                    return refused
                 stamped = []
                 for item in items:
                     item = dict(item)
@@ -43490,6 +43503,20 @@ class _FakeSupabase:
         if path.startswith("storage/v1/object/reports") and method == "DELETE":
             return _FakeRaw(b"[]", 200)
         return _FakeRaw(b'{"message":"no such route in the fixture"}', 404)
+
+    def _refused(self, table: str, items: list) -> "_FakeRaw | None":
+        """Postgres's answer to a row whose sealed column fails the
+        check, or None: the first such row refuses them all."""
+        import vault
+        for item in items:
+            for column in self.SEALED.get(table, ()):
+                value = (item or {}).get(column)
+                if value is not None and not vault.is_sealed(str(value)):
+                    return _FakeRaw(json.dumps({
+                        "code": "23514", "details": None, "hint": None,
+                        "message": f'new row for relation "{table}" violates check '
+                                   f'constraint "{table}_{column}_check"'}).encode(), 400)
+        return None
 
     def to_project(self) -> list[dict]:
         return [c for c in self.calls if f"{self.REF}.supabase.co" in c["url"]]
@@ -44444,6 +44471,82 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
     finally:
         for pc in (a, b, c):
             pc.gone()
+
+
+def test_a_history_row_past_the_seal_cap_still_travels_and_frees_its_batch():
+    """2026-10-20 to 10-23, measured in the owner's app.log: one lookup
+    (1,933 characters of answer, 2,477 of what was selected — 5,956 bytes
+    inside) sealed to 7,983 characters against is_sealed()'s 7,603, the
+    server refused the whole 136-row batch it led ("violates check
+    constraint history_cipher_check", 387 times in a day), and the cursor
+    never moved past it, so nothing he said after it reached his other PC.
+
+    Against the fake project, which refuses a whole request the way
+    Postgres does now: the row as it was sealed before is refused, the
+    batch with it, and the cursor stays; the next pass with the fit puts
+    every row up — the refused ones included, from the same cursor — each
+    within the cap. A row whose text and raw are over keeps its whole
+    text and drops raw (the other PC never reads a lookup's or a
+    dictation's raw); a text alone past the cap keeps the longest head
+    that fits; a learned pair keeps its raw; and no text of any shape —
+    four-byte characters, characters JSON escapes — can seal past it."""
+    import sb
+    import secretstore
+    import sync as sync_mod
+    import vault
+
+    answer = ("התשובה על מה שסומן " * 120)[:1933]
+    selected = ("הטקסט שסומן בחלון " * 160)[:2477]
+    said = ("משפט ארוך שנאמר " * 300)[:sync_mod.TEXT_MAX]
+    assert not vault.fits_json({"text": answer, "raw": selected}), "the fixture is not the failing shape"
+    assert not vault.fits_json({"text": said, "raw": None})
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with a:
+                a.log.write_text(
+                    "2026-10-20 16:12:34,641 | OK | 1.0s | local | 0.4s latency | לפני\n"
+                    f"2026-10-20 16:17:13,645 | LOOKUP-IN | 0.0s | {selected}\n"
+                    f"2026-10-20 16:17:15,000 | LOOKUP-OUT | 1.4s | groq | {answer}\n"
+                    f"2026-10-20 16:20:00,000 | OK | 90.0s | local | 0.9s latency | {said}\n"
+                    "2026-10-20 16:21:00,000 | REVIEW | accepted | הדב || הדבר\n"
+                    "2026-10-20 16:25:00,000 | OK | 1.0s | local | 0.4s latency | אחרי\n", "utf-8")
+                secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+                sb.forget_cache()
+                config_mod.save({"account.device_name": "desk"})
+                # as it was: the lookup sealed whole, past the cap
+                with _patched(sb, "_fit_history", lambda text, raw: (text, raw)):
+                    out = sb.sync_now()
+                assert "history_cipher_check" in out["history"], out
+                assert not fake.tables.get("history"), "a refused batch left rows behind"
+                assert not sync_mod.read_cursor().get("history_pushed_ts"), "the cursor moved past a refusal"
+                # the next pass, with the fit: everything, from the same cursor
+                out = sb.sync_now()
+                assert out["history"] == "pulled 0, pushed 5", out
+                rows = sorted(fake.tables["history"], key=lambda r: r["ts"])
+                assert all(vault.is_sealed(r["cipher"]) and len(r["cipher"]) <= vault.SEALED_MAX
+                           for r in rows), [len(r["cipher"]) for r in rows]
+                key = vault.key(fake.UID)
+                inside = [vault.open_json(key, r["cipher"], sb._history_aad(fake.UID, r)) for r in rows]
+                assert [r["kind"] for r in rows] == ["dictation", "lookup", "dictation", "learned", "dictation"]
+                assert inside[1] == {"text": answer, "raw": None}, "the lookup lost its answer"
+                cut = inside[2]["text"]
+                assert inside[2]["raw"] is None and said.startswith(cut) and len(cut) < len(said)
+                assert not vault.fits_json({"text": said[:len(cut) + 1], "raw": None}), \
+                    "the cut text is shorter than the cap allows"
+                assert inside[3] == {"text": "הדבר", "raw": "הדב"}, inside[3]
+                assert inside[0]["text"] == "לפני" and inside[4]["text"] == "אחרי"
+                assert sync_mod.read_cursor()["history_pushed_ts"] == rows[-1]["ts"]
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+                # no text of any shape seals past the cap
+                for text, raw in (("\U0001F600" * sync_mod.TEXT_MAX, "א" * sync_mod.TEXT_MAX),
+                                  ('"\n\\' * (sync_mod.TEXT_MAX // 3), None),
+                                  ("\x01" * sync_mod.TEXT_MAX, None)):
+                    t, r = sb._fit_history(text, raw)
+                    assert r is None and text.startswith(t) and t, (len(t), r)
+                    assert vault.is_sealed(vault.seal_json(key, {"text": t, "raw": r}, "fit"))
+    finally:
+        a.gone()
 
 
 def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():

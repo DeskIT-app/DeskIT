@@ -1147,10 +1147,33 @@ def _history_aad(uid: str, row: dict) -> str:
                                     ts=ts, kind=str(row.get("kind") or ""))
 
 
+def _fit_history(text: str, raw):
+    """``text`` and ``raw`` as much as fits one sealed value
+    (vault.PLAIN_MAX, 5,672 bytes): whole when they fit, which is every
+    row but one of the owner's 1,486 on 2026-10-23; else ``raw`` is
+    dropped — the other PC reads a row's raw only for a learned pair
+    (sync.remote_line), a few words that never come near the cap — and
+    then, past about 2,800 Hebrew characters, the text keeps its head.
+    The whole text stays in this PC's transcripts.log either way."""
+    if vault.fits_json({"text": text, "raw": raw}):
+        return text, raw
+    keep, most = 0, len(text)                       # the longest head that fits
+    while keep < most:
+        mid = (keep + most + 1) // 2
+        if vault.fits_json({"text": text[:mid], "raw": None}):
+            keep = mid
+        else:
+            most = mid - 1
+    return text[:keep], None
+
+
 def _seal_history(key: bytes, uid: str, row: dict) -> dict:
     """The row as it leaves: ``text`` and ``raw`` gone, ``cipher`` in
-    their place."""
-    text, raw = row.pop("text", ""), row.pop("raw", None)
+    their place — always within the server's is_sealed() cap, because
+    one row it refuses refuses the batch, and the cursor waits on that
+    batch for good (2026-10-20 to 10-23: one long lookup held every
+    later row back)."""
+    text, raw = _fit_history(row.pop("text", ""), row.pop("raw", None))
     row["cipher"] = vault.seal_json(key, {"text": text, "raw": raw}, _history_aad(uid, row))
     return row
 
