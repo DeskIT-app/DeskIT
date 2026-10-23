@@ -1121,6 +1121,9 @@ class Dashboard:
         # draws the next of it (_corr_draw).
         self._corr_after = None
         self._corr_left: list = []
+        # Notifications ✕'d here and not yet written seen by the app: off
+        # the pile already (_notify_one).
+        self._notify_gone: set = set()
         # How wide a drawn row is on the place that is up. The Said list
         # shares its place with the vocabulary panel, so it is narrower
         # than the sheet; every other list is the full width.
@@ -1764,9 +1767,14 @@ class Dashboard:
                             if row.get("kind") in ("update", "keys")))
 
     #: The arrival: how far below its place the new screen is on each
-    #: frame, 18 ms apart — a cubic ease-out baked into a table, because
-    #: computing an easing curve for six integers is showing off.
-    SLIDE = (16, 10, 6, 3, 1, 0)
+    #: frame, SLIDE_MS apart. It was six frames, 16 px up to 0 — and in
+    #: the owner's clip of 2026-10-23 every switch was a page landing
+    #: 16 px low and climbing: "everything feels laggy and jumpy". A
+    #: place kept since that afternoon is ready the moment it is asked
+    #: for, so it arrives where it belongs, in one frame, with its word
+    #: in the bar. The machinery stays: a table of one zero is the slide
+    #: that does not move.
+    SLIDE = (0,)
     SLIDE_MS = 18
     #: How many rounds of window events and idle work _settle may take.
     #: Measured 2026-09-22 on the hidden desktop: on every screen one
@@ -1961,12 +1969,12 @@ class Dashboard:
             self._show(*wish)
 
     def _slide_in(self, step: int = 0) -> None:
-        """The new screen eases up into place — six frames, ~100 ms.
+        """The new screen put in place, on a window with no cover.
 
-        Movement, not decoration: the slide is what says "this is a new
-        page" when the palette is identical from screen to screen. The
-        offsets are a cubic ease-out baked into a table, because computing
-        an easing curve for six integers is showing off.
+        It used to ease up from 16 px low over six frames, ~100 ms, as
+        the "this is a new page" a same-coloured screen does not say by
+        itself; the owner's clip of 2026-10-23 read it as the page
+        jumping (see SLIDE), and the lit word in the bar says it now.
         """
         if self.closing:
             # No animation while the window is going away — but the sheet
@@ -1978,7 +1986,7 @@ class Dashboard:
             self.sheet.place(x=0, y=0)
             self._slide_after = None
             return
-        offsets = (16, 10, 6, 3, 1, 0)
+        offsets = self.SLIDE
         self.sheet.place(x=0, y=offsets[step])
         if step + 1 < len(offsets):
             self._slide_after = self.root.after(
@@ -2478,7 +2486,7 @@ class Dashboard:
         if self._words_editing is not None:
             return          # never rebuild the list under his typing
         if self._corr_stat() != getattr(self, "_corr_stamp", None):
-            self._fill_corrections()
+            self._redraw(self._fill_corrections)
 
     def _corr_stat(self):
         return (self._review_stat(), self._vocab_stat())
@@ -2829,16 +2837,19 @@ class Dashboard:
         if "corr_list" not in self.parts:
             return
         self._words_editing = heard
-        self._fill_corrections()
-        if not heard:
-            try:
-                self.parts["page"].to_top()
-            except Exception:             # noqa: BLE001 — no such method
-                pass
+
+        def fill() -> None:
+            self._fill_corrections()
+            if not heard:
+                try:
+                    self.parts["page"].to_top()
+                except Exception:         # noqa: BLE001 — no such method
+                    pass
+        self._redraw(fill)
 
     def _words_cancel(self) -> None:
         self._words_editing = None
-        self._fill_corrections()
+        self._redraw(self._fill_corrections)
 
     def _words_save(self, heard: str, meant: str) -> None:
         heard, meant = " ".join(heard.split()), " ".join(meant.split())
@@ -2854,11 +2865,11 @@ class Dashboard:
         else:
             self._vocab_change("learn", heard=heard, meant=meant)
         self._words_editing = None
-        self._fill_corrections()
+        self._redraw(self._fill_corrections)
 
     def _words_forget(self, heard: str) -> None:
         self._vocab_change("forget", heard=heard)
-        self._fill_corrections()
+        self._redraw(self._fill_corrections)
 
     def _vocab_change(self, do: str, **args) -> None:
         """One of the three doors, through the running app — it owns
@@ -2949,8 +2960,20 @@ class Dashboard:
                  self._hardware_stat(), self._lock_stat(),
                  self._consent_stat())
         if stamp != getattr(self, "_pile_stamp", None):
-            self._fill_waiting()
+            self._redraw_pile()
         self._paint_rest()
+
+    def _redraw(self, fill) -> None:
+        """A list redrawn in place where it is seen — the pile after an
+        answer, the Corrections column when its files move — under the
+        switch's cover (_held), so the page goes from what it was to
+        what it is in one frame. Drawn in the open, the clear and the
+        rows coming back one by one were the "jumpy" of his clip of
+        2026-10-23."""
+        self._held(fill)
+
+    def _redraw_pile(self) -> None:
+        self._redraw(self._fill_waiting)
 
     # -- the pile
 
@@ -3107,7 +3130,7 @@ class Dashboard:
 
     def _needs_key_dismiss(self, when: float) -> None:
         self._needs_key_later = when
-        self._fill_waiting()
+        self._redraw_pile()
 
     def _waiting_hardware(self) -> list[dict]:
         """The rows of chapter 9's screen 10 and 6.9, on the pile rather
@@ -3197,18 +3220,18 @@ class Dashboard:
     def _hardware_retry(self) -> None:
         packs_mod.clear_failure("gpu")
         self._note("GPU speed will be tried again at the next start")
-        self._fill_waiting()
+        self._redraw_pile()
 
     def _hardware_remove(self) -> None:
         packs_mod.remove("gpu")
         # turned off by hand: the background downloads never fetch it again
         packs_mod.decline("gpu")
         self._note("faster dictation is off — Settings > Dictation offers it again")
-        self._fill_waiting()
+        self._redraw_pile()
 
     def _hardware_seen(self) -> None:
         hardware_mod.clear_change()
-        self._fill_waiting()
+        self._redraw_pile()
 
     @staticmethod
     def _stamp_of(text: str, fmt: str) -> float:
@@ -3224,6 +3247,12 @@ class Dashboard:
                       if not i.get("seen")]
         except Exception:                 # noqa: BLE001 — a broken file
             return []
+        # A ✕ pressed here is gone from the pile at once, before the app
+        # has written it seen; the id is forgotten once the file agrees.
+        gone = getattr(self, "_notify_gone", None)
+        if gone:
+            gone &= {i.get("id") for i in unread}
+            unread = [i for i in unread if i.get("id") not in gone]
         rows = []
         for item in unread:
             ident = item.get("id")
@@ -3933,6 +3962,13 @@ class Dashboard:
             self._busy_until = time.monotonic() + 1
             self._ask("notify", then=lambda r: self._notify_answered(r, do),
                       do=do, id=ident)
+            if do == "dismiss" and ident is not None:
+                # THE ROW GOES WITH THE PRESS, not with the app's answer.
+                # The answer is a round trip down the pipe and then a turn
+                # of the 80 ms pump before anything moved: in his clip of
+                # 2026-10-23 a ✕ was a click that seemed not to land.
+                self._notify_gone.add(ident)
+                self._redraw_pile()
             return
         if do == "open":
             self._note("nothing is running — start it to reach what sent "
@@ -3944,7 +3980,7 @@ class Dashboard:
                 store.mark_seen([ident])
         except Exception as e:            # noqa: BLE001
             self._note(f"could not mark that seen: {e}")
-        self._fill_waiting()
+        self._redraw_pile()
 
     # -- the rest of the day
 
@@ -4478,7 +4514,14 @@ class Dashboard:
             self._note("accepted — the app will learn it"
                        if verdict == "accepted" else "rejected")
             self._ask("review_absorb")
-        self._fill_waiting()
+        # The answered row goes NOW, on the place it was answered on. On
+        # Corrections it used to stay up until the next poll (up to
+        # 0.8 s) and then the whole column was cleared and drawn again
+        # in plain sight, row by row: his clip of 2026-10-23.
+        if self.screen == "Corrections":
+            self._redraw(self._fill_corrections)
+        else:
+            self._redraw_pile()
 
     # ----------------------------------------------------------- problems
 
@@ -5882,6 +5925,16 @@ class Dashboard:
         self._busy_until = time.monotonic() + 1
         self._ask("notify", then=lambda r: self._notify_answered(r, do),
                   do=do)
+        if do == "dismiss":
+            # every row goes with the press, as a single ✕ does (_notify_one)
+            try:
+                store = self._notify_store()
+                self._notify_gone |= {i.get("id") for i in
+                                      (store.recent(30) if store else [])
+                                      if not i.get("seen")}
+            except Exception:             # noqa: BLE001 — a broken file
+                pass
+            self._redraw_pile()
 
     def _notify_answered(self, reply: dict | None, do: str) -> None:
         self._announce(reply, {"dismiss": "all marked seen",
@@ -5893,7 +5946,9 @@ class Dashboard:
         if reply and reply.get("ok") and isinstance(reply.get("notify"),
                                                     dict):
             self.status["notify"] = reply["notify"]
-        self._fill_waiting()
+        if reply is None or not reply.get("ok"):
+            self._notify_gone.clear()     # not dismissed after all: back
+        self._redraw_pile()
 
     def _notify_open_log(self) -> None:
         path = paths.NOTIFY_LOG
@@ -7830,7 +7885,7 @@ class Dashboard:
             if later is None:
                 later = self._consent_later = set()
             later.add(kind)
-        self._fill_waiting()
+        self._redraw_pile()
 
     def _waiting_lock(self) -> list[dict]:
         """The lock on the pile (the owner, 2026-09-21, meeting the
