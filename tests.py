@@ -13402,6 +13402,132 @@ def test_a_click_on_the_place_that_is_up_does_nothing() -> None:
         _let_the_switch_land(board)
 
 
+def test_a_place_is_built_once_and_redraws_only_what_moved() -> None:
+    """His report of 2026-10-23: a change of place froze the PC a bit.
+    What was left of a switch after the desk-speed branch was building
+    every widget of the place again — Keys 0.98 s, Corrections 0.96 —
+    so a place is built on its first visit and KEPT: a switch back to it
+    puts the same sheet, the same parts and the same widgets on the
+    glass, and no builder runs. Only what moved is drawn again: a new
+    line in the log redraws the Said rows, a store the Corrections
+    column watches redraws the column, a Settings tab chosen from
+    elsewhere refills the tab, a pile row no stamp watches redraws the
+    pile — and a binding that changed builds Keys again, because the
+    board is drawn from them. The place that is up, asked for again, is
+    still built again. And a kept Entry gives the keyboard back: typing
+    on the next place must not land in the Said search behind it."""
+    import datetime
+
+    import dashboard as dash
+    import history as history_mod
+    when = datetime.datetime(2026, 8, 20, 10, 0, 0)
+    log = [history_mod.Event(when, "dictation", text="hello there"),
+           history_mod.Event(when, "dictation", text="and again")]
+    with _window(log) as board:
+        if board is None:
+            return
+        _let_the_switch_land(board)
+        built = {name: 0 for name in dash.KEPT}
+        for name, attr in (("Home", "_screen_home"),
+                           ("Corrections", "_screen_corrections"),
+                           ("Said", "_screen_said"), ("Keys", "_screen_keys"),
+                           ("Settings", "_screen_settings")):
+            real = getattr(board, attr)
+            setattr(board, attr, lambda n=name, r=real: (
+                built.__setitem__(n, built[n] + 1), r()))
+
+        def go(place: str) -> None:
+            board._show(place)
+            _let_the_switch_land(board)
+            left = board.ROWS.get(place, ("",))[0]
+            assert not left or _until(lambda: not getattr(board, left), 10,
+                                      pump=board.root.update), \
+                f"{place}'s list never finished drawing"
+
+        seen: dict = {}
+        for place in ("Corrections", "Said", "Keys", "Settings", "Home"):
+            go(place)
+            seen[place] = (board.sheet, board.parts,
+                           list(board.sheet.winfo_children()))
+        # Home was built with the window, before the spy
+        assert built == {"Home": 0, "Corrections": 1, "Said": 1, "Keys": 1,
+                         "Settings": 1}, built
+        for place in ("Keys", "Said", "Settings", "Corrections", "Home"):
+            go(place)
+            sheet, parts, children = seen[place]
+            assert board.sheet is sheet and board.parts is parts, place
+            assert list(board.sheet.winfo_children()) == children, place
+            # winfo_children is in stacking order, lowest first
+            stack = [w for w in board.pane.winfo_children()
+                     if w in board._sheets.values() and w.place_info()]
+            assert stack[-1] is sheet, f"{place} is not the sheet on top"
+            assert int(sheet.place_info()["y"]) == 0
+            assert board.parts["state"] is seen["Home"][1]["state"]
+        assert built == {"Home": 0, "Corrections": 1, "Said": 1, "Keys": 1,
+                         "Settings": 1}, f"a revisit built a place: {built}"
+
+        # a new line in the log: the rows, not the place
+        rows = seen["Said"][1]["list"]
+        before = list(rows.inner.winfo_children())
+        assert len(before) == 2, before
+        board.log = [history_mod.Event(when, "dictation", text="a third")] + log
+        go("Said")
+        after = list(rows.inner.winfo_children())
+        assert len(after) == 3 and not set(after) & set(before), \
+            "the Said rows did not follow the log"
+        assert built["Said"] == 1
+        # a word typed and switched away from before its search ran
+        board.parts["search"].insert(0, "third")
+        board.parts["search"].focus_set()
+        board._search_soon("third")
+        go("Keys")
+        last = board.root.focus_lastfor()
+        assert not str(last).startswith(str(seen["Said"][0]) + "."), \
+            "the hidden Said search kept the keyboard"
+        go("Said")
+        assert board._query == "third"
+        assert len(rows.inner.winfo_children()) == 1, "the search was lost"
+
+        # a store the Corrections column watches
+        column = seen["Corrections"][1]["corr_list"].inner
+        before = list(column.winfo_children())
+        board._corr_stat = lambda: ("moved",)
+        go("Corrections")
+        assert not set(column.winfo_children()) & set(before), \
+            "the Corrections column did not follow its store"
+        assert built["Corrections"] == 1
+
+        # a Settings tab chosen from somewhere else
+        import settings as settings_mod
+        board._settings_tab = settings_mod.ABOUT
+        go("Settings")
+        assert board._settings_drawn == settings_mod.ABOUT
+        assert board.parts["settings_tabs"][settings_mod.ABOUT]._active
+        assert built["Settings"] == 1
+
+        # a pile row no stamp watches
+        board._waiting_keys = lambda: [{
+            "at": 1.0, "kind": "keys", "mark": "keys", "eyebrow": "Your cloud keys",
+            "text": "Translate needs a free cloud key", "note": "a note",
+            "buttons": []}]
+        go("Home")
+        assert board._pile_extra_drawn, "the pile did not draw the new row"
+        assert board.parts["pile_card"].winfo_manager()
+
+        # a binding that changed: the board is drawn from them
+        real_keys = board._read_keys
+        board._read_keys = lambda: dict(real_keys(), translate_hotkey="ctrl+alt+f9")
+        go("Keys")
+        assert built["Keys"] == 2, built
+        assert board.sheet is seen["Keys"][0], "Keys did not keep its sheet"
+        board._read_keys = real_keys
+
+        # the place that is up, asked for again: built again, on purpose
+        board._show("Keys")
+        assert built["Keys"] == 3, built
+        _let_the_switch_land(board)
+
+
 def test_the_bars_words_stay_put_when_the_lit_one_changes() -> None:
     """The lit place is bold, and bold is wider. Each word used to sit
     in a holder as wide as the word, so lighting one pushed every word to
@@ -13641,7 +13767,10 @@ def test_a_door_that_lands_on_a_tab_shows_nothing_but_the_old_screen_and_the_new
             press(door)
             assert board.screen == "Settings" and board._settings_tab == settings_mod.ACCOUNT, \
                 (board.screen, board._settings_tab)
-            assert fills == [settings_mod.ACCOUNT], ("one press, one build", fills)
+            # Settings is kept since 2026-10-23, and it was left on Account
+            # by the first door: no build at all is the right answer, one
+            # of Account the most there may be
+            assert fills in ([], [settings_mod.ACCOUNT]), ("one press, one build", fills)
             labels = [w.itemcget(w._label, "text")
                       for w in board.parts["account_strip"].winfo_children() if hasattr(w, "_label")]
             assert board._account_asking == "everywhere" and \
@@ -29563,7 +29692,8 @@ def test_the_skin_notify_card_dismisses_drags_and_hit_tests_like_the_flat_one(
 def test_a_notification_lands_on_the_waiting_place_not_a_screen_of_its_own():
     """Notify was one of nine rail rows; it is now one of the four
     sources of the Waiting pile, so the registrations moved with it. The
-    place is still five things (NAV, ICON, _show, _refresh, and for its
+    place is still five things (NAV, ICON, _build_place — _show's table
+    of builders — _paint_place — _refresh's table of polls — and for its
     key KEY_GROUPS + NESTED_HOTKEYS) — missing any one is a KeyError the
     first time somebody clicks — and _waiting_notify is the reader that
     replaced the screen."""
@@ -29574,8 +29704,8 @@ def test_a_notification_lands_on_the_waiting_place_not_a_screen_of_its_own():
     assert names[0] == "home", names
     glyph = ui.ICON[dash.NAV_GLYPH["home"]]
     assert len(glyph) == 1 and ord(glyph) < 0x10000, repr(glyph)
-    assert '"Home"' in inspect.getsource(dash.Dashboard._show)
-    assert '"Home"' in inspect.getsource(dash.Dashboard._refresh)
+    assert '"Home"' in inspect.getsource(dash.Dashboard._build_place)
+    assert '"Home"' in inspect.getsource(dash.Dashboard._paint_place)
     assert not hasattr(dash.Dashboard, "_screen_notify"), \
         "the Notify screen is gone; the pile is where a notification is"
     named = {f for _title, fields in dash.KEY_GROUPS for f in fields}
@@ -31738,7 +31868,12 @@ def test_home_keeps_what_did_not_change_between_two_polls() -> None:
         board._fill_waiting()
         assert board._door_tiles == tiles, "the doors were built again for a new number"
         assert number.cget("text") == "1", number.cget("text")
+        # A return to Home is the same page since places are kept
+        # (2026-10-23): the same doors. Home asked for while it is up is
+        # built again, and a new page has doors of its own.
         board._show("Corrections")
+        board._show("Home")
+        assert board._door_tiles == tiles, "a return to Home built its doors again"
         board._show("Home")
         assert board._door_tiles != tiles, "a new page keeps the old page's doors"
 
@@ -31923,8 +32058,11 @@ def test_the_corrections_place_shows_a_screenful_and_draws_the_rest_after(
     """Eleven proposals and 136 learned pairs, every one of them built
     before the place was shown, held the window 3.2-4.4 s on each visit
     (2026-10-23). A screenful is drawn at once and the rest a tick at a
-    time, in the same order; a search or another place meanwhile drops
-    what was still to come instead of finishing it under the new one."""
+    time, in the same order; a search meanwhile drops what was still to
+    come. Another place PAUSES it — nothing is drawn under the new place
+    — and since places are kept, the column goes on from where it was
+    when Corrections is shown again: a visit shorter than the column used
+    to start it over on every return."""
     entries = [{"heard": f"שמע{i}", "meant": f"word{i}", "hits": 1,
                 "last": f"2026-10-{1 + i // 10:02d} 10:{i:02d}:00"}
                for i in range(60)]
@@ -31956,7 +32094,14 @@ def test_the_corrections_place_shows_a_screenful_and_draws_the_rest_after(
             board._words_search("")
             assert board._corr_left
             board._show("Home")
-            assert not board._corr_left and board._corr_after is None
+            assert board._corr_after is None, "the column went on under Home"
+            left = len(board._corr_left)
+            assert left, "the rest of the column was thrown away"
+            board._show("Corrections")
+            assert len(board._corr_left) <= left, "the column started over"
+            assert _until(lambda: not board._corr_left, 10,
+                          pump=board.root.update), len(board._corr_left)
+            assert list(board.parts["word_rows"]) == newest, "the order moved"
     finally:
         if was is None:
             paths.VOCAB_FILE.unlink(missing_ok=True)
@@ -32822,8 +32967,9 @@ def test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day() -> None:
 
 
 def test_the_window_has_five_places_and_every_one_of_them_is_registered():
-    """A place is five registrations (NAV, ICON, _show, _refresh, and for
-    a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
+    """A place is five registrations (NAV, ICON, _build_place — _show's
+    table of builders — _paint_place — _refresh's table of polls — and
+    for a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
     KeyError the first time somebody clicks.
 
     There are FIVE, in this order: Home (a summary and nothing more),
@@ -32855,8 +33001,8 @@ def test_the_window_has_five_places_and_every_one_of_them_is_registered():
     for key, label in dash.NAV:
         glyph = ui.ICON[dash.NAV_GLYPH.get(key, key)]
         assert len(glyph) == 1 and ord(glyph) < 0x10000, (key, repr(glyph))
-        assert f'"{label}"' in inspect.getsource(dash.Dashboard._show), label
-        assert f'"{label}"' in inspect.getsource(dash.Dashboard._refresh), \
+        assert f'"{label}"' in inspect.getsource(dash.Dashboard._build_place), label
+        assert f'"{label}"' in inspect.getsource(dash.Dashboard._paint_place), \
             label
     named = {f for _title, fields in dash.KEY_GROUPS for f in fields}
     assert "report_hotkey" in named, "no group on the Keys screen"

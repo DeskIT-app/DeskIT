@@ -1111,6 +1111,20 @@ exactly what classic did.
   (Keys 0.45 s, Settings 0.35 s click-to-settled) is the first map of
   90-odd widgets; the road below that is keeping the screens built and
   remapping (10 ms), not another language.
+  **Since 2026-10-23 the five places ARE kept built** (`_sheet_for`,
+  `_place_fresh`, `_place_back`): a place is built on its first visit, a
+  switch back raises its sheet over the others — never `place_forget`,
+  which unmaps every window under it and maps them all again
+  (Corrections: 326 Map events a return) — and redraws only what moved.
+  A revisit, back to back on copies of his data, wall / Tk CPU ms:
+  Corrections 874/320 → 204/55, Said 699/258 → 177/70, Keys 839/258 →
+  255/94, Settings 449/125 → 150/31, Home 684/227 → 207/70. What is left
+  is the raised sheet repainting: a raw-Tk frame of 65 widgets cost
+  214/47 on the same hidden desktop that afternoon (the 10 ms above was
+  a quieter machine). `_place_sig` names what a builder read that no
+  poll repaints, and a change there builds the place again; a builder
+  that starts reading a new source its poll does not repaint must add it
+  there or to `_place_back`, or a revisit shows the old picture.
 - **A switch is paint-held, and the cover has to be a WINDOW OF ITS OWN,
   not a widget.** His 1.0.3 clip still jumped with the sheet unmapped:
   putting it back started Tk's map-and-paint cascade in the open, racing
