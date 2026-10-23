@@ -43307,9 +43307,9 @@ def test_entry_points_put_their_own_folder_on_sys_path():
     ours = set(product_modules())
     points = entry_points()
     names = sorted(p.name for p in points)
-    assert names == ["dashboard.py", "deskit.pyw", "firstrun.py", "lookup.py",
-                     "main.py", "migrate.py", "models.py", "notify_hook.py",
-                     "packs.py"], names
+    assert names == ["dashboard.py", "deskit.pyw", "deskweb.py", "firstrun.py",
+                     "lookup.py", "main.py", "migrate.py", "models.py",
+                     "notify_hook.py", "packs.py", "webdesk.py"], names
     offenders = []
     for path in points:
         if path.name in _ENTRY_POINT_EXCUSED:
@@ -50433,6 +50433,284 @@ def test_warm_after_away_min_parses_and_is_bounded():
             assert "warm_after_away_min" in str(e), e
         else:
             raise AssertionError("warm_after_away_min = -1 was accepted")
+
+
+# ------------------------------------------------ the web desk (2026-10-23)
+# webdesk.py is the shell (the spike of 2026-09-22), deskweb.py the desk
+# that runs in it. CI's venv has no pywebview, so these are the parts that
+# must hold without it; the window itself is photographed on the hidden
+# desktop by `deskweb.py --shot`.
+
+
+def test_webdesk_imports_nothing_of_webview_and_guards_its_doors():
+    """Importing webdesk.py or deskweb.py pulls in nothing of pywebview,
+    pythonnet or their chain (every product module is imported by the
+    suite, and the MSHTML fallback happens AT the import of pywebview's
+    winforms half); precheck() answers from the registry without
+    raising; scrub_env() takes every WEBVIEW2_/PYWEBVIEW_/PYTHONNET_ name
+    and pins netfx; status() never hands a page the phone link; send()
+    refuses a verb outside its allowlist before the pipe is asked; every
+    start carries the four flags the netlog proved, and never
+    --allow-file-access-from-files."""
+    probe = ("import sys, webdesk, deskweb; print(sorted(m for m in sys.modules if "
+             "m.split('.')[0] in ('webview', 'clr', 'pythonnet', 'clr_loader', "
+             "'bottle', 'proxy_tools', 'System')))")
+    out = subprocess.run([sys.executable, "-c", probe], cwd=str(REPO),
+                         capture_output=True, text=True, timeout=120,
+                         creationflags=0x08000000)
+    assert out.returncode == 0 and out.stdout.strip() == "[]", \
+        (out.stdout, out.stderr[-600:])
+    import webdesk
+    pre = webdesk.precheck()
+    assert isinstance(pre.ok, bool) and isinstance(pre.netfx_release, int)
+    assert pre.ok == (not pre.why), pre
+    env = {"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--remote-debugging-port=9222",
+           "webview2_user_data_folder": "x", "PYWEBVIEW_GUI": "mshtml",
+           "PYTHONNET_RUNTIME": "coreclr", "PATH": "kept"}
+    gone = webdesk.scrub_env(env)
+    assert gone == sorted(["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "PYTHONNET_RUNTIME",
+                           "PYWEBVIEW_GUI", "webview2_user_data_folder"]), gone
+    assert env == {"PATH": "kept", "PYTHONNET_RUNTIME": "netfx"}, env
+    assert webdesk.CALLS == ("send", "status", "ping")
+    public = sorted(n for n in dir(webdesk.Api) if not n.startswith("_"))
+    assert public == ["ping", "send", "status"], public
+    import control
+    asked: list = []
+
+    def fake_send(command, timeout_ms=2000, **args):
+        asked.append(command)
+        return {"ok": True, "state": "idle", "phone": {"url": "http://x/?t=secret"}}
+
+    with _patched(control, "send", fake_send):
+        api = webdesk.Api(allow={"status"})
+        assert "phone" not in api.status()
+        assert "phone" not in api.send("status")
+        refused = api.send("quit")
+        assert refused["ok"] is False and "quit" in refused["error"], refused
+        assert asked == ["status", "status"], asked
+        assert api.ping() == {"ok": True}
+    args = webdesk.browser_args()
+    for flag in ("msSmartScreenProtection", "--disable-background-networking",
+                 "--disable-component-update", '--host-resolver-rules="MAP * ~NOTFOUND"',
+                 "--no-proxy-server"):
+        assert flag in args, (flag, args)
+    assert "--allow-file-access-from-files" not in args
+    # the browser's folder: under cache\ on an installed copy, and never
+    # beside the code in a checkout (D4: the checkout grows no folder)
+    if paths.FLAT:
+        assert paths.APP_DIR not in paths.WEBVIEW_DIR.parents, paths.WEBVIEW_DIR
+    else:
+        assert paths.WEBVIEW_DIR == paths.CACHE_DIR / "webview", paths.WEBVIEW_DIR
+    assert webdesk.ORIGIN == "https://deskit.example"
+
+
+@contextlib.contextmanager
+def _web_desk(status):
+    """A deskweb.Model over scratch stores: review.json and notify.json in
+    a folder of the test's own, an empty transcripts.log, no instance
+    mutex, and a pipe that answers `status` with `status` (None: nothing
+    running) and every other verb with ok — and records what it was
+    asked. Yields (model, folder, asked)."""
+    import deskweb
+    import history as history_mod
+
+    folder = Path(tempfile.mkdtemp(prefix="webdesk-", dir=_SCRATCH_HOME))
+    asked: list = []
+
+    def send(command, timeout_ms=2000, **args):
+        asked.append((command, args))
+        if command == "status":
+            return dict(status) if status is not None else None
+        return {"ok": True, "paused": False}
+
+    with _patched(paths, "REVIEW_FILE", folder / "review.json"), \
+            _patched(paths, "NOTIFY_FILE", folder / "notify.json"), \
+            _patched(history_mod, "load", lambda *a, **k: []), \
+            _patched(history_mod, "stamp", lambda: ("fixed",)), \
+            _patched(singleton, "is_running", lambda *a, **k: False):
+        yield deskweb.Model(send=send), folder, asked
+
+
+_WEB_STATUS = {"ok": True, "stage": "running", "activity": "ready", "model": "on",
+               "uptime_s": 3700, "paused": False, "phone": "http://x/?t=secret",
+               "awake": {"held": True},
+               "keys": {"dismiss_hotkey": "ctrl+alt+m", "hotkey": "right ctrl"}}
+
+
+def _web_desk_fill(folder: Path) -> tuple[list, list]:
+    """Two unread notifications and two pending proposals, the older of
+    each first. Returns (notify ids, review ids)."""
+    import notify as notify_mod
+    import review as review_mod
+    note = notify_mod.Store(paths.NOTIFY_FILE)
+    nids = [note.add({"title": "Claude finished", "body": "מיזגתי את שני הענפים.",
+                      "kind": "done", "source": "claude-code",
+                      "label": "Claude Code"})["id"] for _ in range(2)]
+    store = review_mod.Store(paths.REVIEW_FILE)
+    lead = " ".join(f"מילה{i}" for i in range(20))
+    sids = []
+    for k, when in enumerate(("2026-10-20 10:00:00", "2026-10-21 10:00:00")):
+        sid = f"r{k}"
+        store.add({"id": sid, "when": when, "status": review_mod.PENDING,
+                   "text": f"{lead} הרליסס שיהיו רק באנגלית.",
+                   "proposed": f"{lead} ה-releases שיהיו רק באנגלית.",
+                   "changes": [{"before": "הרליסס", "after": "ה-releases",
+                                "span": [20, 21], "why": "a name"}]})
+        sids.append(sid)
+    return nids, sids
+
+
+def test_the_web_desk_home_says_what_the_tk_home_says():
+    """deskweb.Model.home(): the Tk desk's headline and subline words,
+    the newest three of the merged pile with ONE lit button across all
+    of it, the bar by the state (his rule: Pause, Stop and Screens off
+    while the model is on; Start alone with nothing running), the doors'
+    counts, and never the phone link in anything the page receives."""
+    import json
+
+    with _web_desk(_WEB_STATUS) as (model, folder, _asked):
+        nids, sids = _web_desk_fill(folder)
+        home = model.home()
+        assert home["head"] == "Four things want an answer.", home["head"]
+        assert home["sub"] == "The newest three are here, and one more is waiting.", home["sub"]
+        assert len(home["pile"]) == 3
+        ats = [r["at"] for r in home["pile"]]
+        assert ats == sorted(ats, reverse=True), ats
+        lit = [b for r in model.pile() for b in r["buttons"] if b["tone"] == "primary"]
+        assert len(lit) == 1, lit
+        assert "secret" not in json.dumps(home, ensure_ascii=False)
+        assert home["strip"]["phone"] is True
+        bar = home["bar"]
+        assert (bar["lamp"], bar["word"], bar["run"], bar["stop"], bar["screens"]) == \
+            ("listen", "Listening", "Pause", True, "Screens off"), bar
+        assert bar["meta"] == "up 1h 01m", bar
+        assert home["dismiss_key"] == ["Ctrl", "Alt", "M"]
+        assert home["unread"] == 2
+        doors = {d["place"]: d["n"] for d in home["doors"]}
+        assert doors["Corrections"] == 2 and doors["Keys"] == len(config_mod.HOTKEY_FIELDS), doors
+        review = next(r for r in model.pile() if r["kind"] == "review")
+        assert review["meta"].startswith("one word changed"), review["meta"]
+        assert review["rtl"] is True
+        assert [s["t"] for s in review["segs"]] == ["ctx", "chg", "ctx"], review["segs"]
+        assert review["segs"][1] == {"t": "chg", "heard": "הרליסס", "meant": "ה-releases"}
+    with _web_desk(None) as (model, _folder, _asked):
+        home = model.home()
+        bar = home["bar"]
+        assert (bar["run"], bar["stop"], bar["meta"], bar["lamp"]) == \
+            ("Start", False, "not running", "idle"), bar
+        assert home["head"] == "Nothing is waiting." and home["pile"] == []
+        assert home["strip"]["awake"].startswith("Nothing is running"), home["strip"]
+
+
+def test_the_web_desk_buttons_answer_with_home():
+    """deskweb.Model.act(): every press answers with Home read after it.
+    Yes writes the verdict into review.json and tells the app; a ✕ goes
+    down the pipe and the row is gone from the answer at once (the Tk
+    desk's _notify_gone), even before the file agrees; the bar's three
+    buttons are the pipe verbs the Tk desk sends; an unknown action is
+    refused in words. The Api offers the page three names and no more."""
+    import deskweb
+    import review as review_mod
+
+    with _web_desk(_WEB_STATUS) as (model, folder, asked):
+        nids, sids = _web_desk_fill(folder)
+        got = model.act("review.accepted", sids[1])
+        assert got["ok"] and got["note"] == "accepted — the app will learn it", got["note"]
+        assert review_mod.Store(paths.REVIEW_FILE).get(sids[1])["status"] == "accepted"
+        assert ("review_absorb", {}) in asked
+        assert f"review:{sids[1]}" not in [r["id"] for r in got["home"]["pile"]]
+        got = model.act("notify.dismiss", nids[1])
+        assert ("notify", {"do": "dismiss", "id": nids[1]}) in asked, asked
+        assert f"notify:{nids[1]}" not in [r["id"] for r in model.pile()]
+        asked.clear()
+        model.act("run")
+        model.act("stop")
+        model.act("screens")
+        verbs = [c for c, _a in asked if c != "status"]
+        assert verbs == ["toggle", "unload", "screens"], verbs
+        assert ("screens", {"do": "toggle"}) in asked
+        assert "not a desk action" in model.act("format c:")["note"]
+    assert deskweb.Api.CALLS == deskweb.CALLS == ("home", "act", "ping")
+    public = sorted(n for n in dir(deskweb.Api) if not n.startswith("_"))
+    assert public == ["CALLS", "act", "home", "ping"], public
+
+
+def test_the_web_desk_keeps_the_change_in_sight():
+    """A proposal's line on the web desk is cut by the page at its far
+    end, so the words BEFORE a change are few (six) — a long lead-in
+    pushed the change itself out of sight in the first picture — the
+    words after it many, the sentence's own stop ends either side, and
+    a change that is a deletion is drawn as the words that would go."""
+    import deskweb
+
+    lead = " ".join(f"א{i}" for i in range(20))
+    segs, shown = deskweb.change_segments(f"{lead} הרליסס ב1 ב2.", [
+        {"before": "הרליסס", "after": "ה-releases", "span": [20, 21]}])
+    assert shown == 1
+    assert segs[0]["t"] == "ctx" and segs[0]["s"].startswith("… ")
+    assert len(segs[0]["s"].split()) == 1 + deskweb._HEAD_WORDS, segs[0]
+    assert segs[1] == {"t": "chg", "heard": "הרליסס", "meant": "ה-releases"}
+    assert segs[2] == {"t": "ctx", "s": "ב1 ב2."}
+    segs, _ = deskweb.change_segments("משפט קודם. ואז הרליסס כאן", [
+        {"before": "הרליסס", "after": "ה-releases"}])
+    assert segs[0] == {"t": "ctx", "s": "ואז"}, segs
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked):
+        import review as review_mod
+        review_mod.Store(paths.REVIEW_FILE).add({
+            "id": "d", "when": "2026-10-22 10:00:00", "status": review_mod.PENDING,
+            "text": "אמרתי משהו. תודה רבה", "proposed": "אמרתי משהו.",
+            "changes": [{"before": "תודה רבה", "after": "", "kind": "drop"}]})
+        row = next(r for r in model.pile() if r["kind"] == "review")
+        assert row["segs"][0] == {"t": "drop", "s": "תודה רבה"}, row["segs"]
+        assert row["meta"].startswith("one word to delete"), row["meta"]
+
+
+def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
+    """[desk] web is off by default and honoured only in the checkout, and
+    only where the window can open (pages built, WebView2 there); the Tk
+    desk asks before it takes its own mutex, `--tk` skips the question,
+    and the page calls nothing the Api does not offer and presses
+    nothing Model._do does not handle."""
+    import re
+
+    import deskweb
+
+    base = config_mod.load(REPO / "defaults.toml")
+    assert base.desk.web is False
+    text = (REPO / "defaults.toml").read_text("utf-8")
+    assert text.count("\nweb = false") == 1
+    copy = Path(tempfile.mkdtemp(dir=_SCRATCH_HOME)) / "config.toml"
+    copy.write_text(text.replace("\nweb = false", "\nweb = true"), "utf-8")
+    assert config_mod.load(copy).desk.web is True
+    on = dataclasses.replace(base, desk=config_mod.DeskConfig(web=True))
+    with _patched(config_mod, "load_layered", lambda *a, **k: on):
+        with _patched(paths, "DEVELOPER", False), _patched(deskweb, "ready", lambda: True):
+            assert deskweb.wanted() is False
+        with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: False):
+            assert deskweb.wanted() is False
+        with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: True):
+            assert deskweb.wanted() is True
+    src = (REPO / "dashboard.py").read_text("utf-8")
+    body = src[src.index("def main() -> int:"):]
+    assert body.index('"--tk" not in argv') < body.index("deskweb.wanted()") \
+        < body.index("singleton.InstanceLock(singleton.DASHBOARD_MUTEX)")
+    # the X closes everything, as the Tk desk's does — but only after a
+    # window the person opened, never after a photograph
+    web_main = (REPO / "deskweb.py").read_text("utf-8")
+    web_main = web_main[web_main.index("def main(argv=None)"):]
+    assert web_main.index("if ns.shot:") < web_main.index("bring_up_the_keys()") \
+        < web_main.index("code = run_window(route=route)") \
+        < web_main.index("singleton.request_quit()")
+    page = "\n".join(p.read_text("utf-8") for p in (REPO / "web" / "src").glob("*.tsx"))
+    called = set(re.findall(r'call<[^>]*>\("(\w+)"', page))
+    assert called and called <= set(deskweb.CALLS), called
+    pressed = set(re.findall(r'act: "([\w.]+)"', page))
+    made = set(re.findall(r'"act": "([\w.]+)"', (REPO / "deskweb.py").read_text("utf-8")))
+    handled = (REPO / "deskweb.py").read_text("utf-8")
+    handled = handled[handled.index("    def _do(self"):handled.index("    def _run(self")]
+    for name in pressed | made:
+        assert f'"{name}"' in handled or name.startswith("review."), name
+    assert "review.accepted" in made and "review.rejected" in made
 
 
 if __name__ == "__main__":
