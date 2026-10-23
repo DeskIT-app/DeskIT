@@ -40,12 +40,12 @@ settings sync to your account.
 
 ## The desk's web window (WebView2) — outside `net.py`
 
-When the desk opens as a web page (`deskweb.py` — in the developer's
-own copy today, on every copy once it launches), the page is drawn by
-Microsoft Edge WebView2, a component of Windows that DeskIT does not
-ship and cannot change. WebView2 has network code of its own, so
-`net.py`, the Network screen and Offline mode do not reach it. It is
-kept quiet another way, and measured:
+When the desk opens as a web page (`deskweb.py`; today only in the
+developer's own copy), the page is drawn by Microsoft Edge WebView2, a
+component of Windows that DeskIT does not ship and cannot change.
+WebView2 has network code of its own, so `net.py`, the Network screen
+and Offline mode do not reach it. It is kept quiet another way, and
+measured:
 
 - The page is DeskIT's own files from the app folder (`app\web\dist`),
   mapped onto a name reserved never to exist on the internet
@@ -53,27 +53,31 @@ kept quiet another way, and measured:
   navigation to anything else is refused before it starts, and the
   page's own security policy allows no connection of any kind.
 - The window's own services are switched off when it starts
-  (`webdesk.BASE_ARGS`): SmartScreen, Edge's experimentation service,
-  the component updater, proxy discovery, every name lookup inside its
+  (`webdesk.py`): SmartScreen, Edge's experimentation service, the
+  component updater, proxy discovery, every name lookup inside its
   network code, and Edge's sign-in with the Windows account
   (`msOneAuthWAM`). Crash reports stay on this PC.
 - Measured on 2026-10-23, WebView2 Runtime 155.0.4283.62, with
   `dev\web_census.py`, which asks Windows for every socket of every
-  process of the window four times a second: a first start, 180 s — 0
+  process of the window four times a second: a first start, 60 s — 0
   sockets; the start after it, 180 s — 0; a later start held open for
-  15 minutes and 10 seconds past its close — 0 (3,230 samples, up to 7
-  processes). Before the sign-in switch, every start after the first
-  opened two encrypted connections to substrate.office.com (Microsoft
-  365) about 2 seconds after the page loaded and kept them: Edge
-  fetching the Windows account's profile and photo through Windows' own
-  HTTP stack, which is why a browser network log never showed them.
+  15 minutes, and 10 seconds past its close — 0 (3,230 samples, up to
+  7 processes).
+- What the sign-in switch stopped: without it, a first start held no
+  connection, but each of the 6 starts after a first one opened two
+  encrypted connections to substrate.office.com (Microsoft 365) 2 to 4
+  seconds after the page loaded, and kept them. Windows' own name
+  lookup found that host, not the browser's, which is why a browser
+  network log never showed them. They were encrypted, so what they
+  carried was not read; the browser's own code names the Windows
+  account's profile and photo on that host.
 - What no app can switch off: Microsoft documents that WebView2 collects
   some required diagnostic data whatever the Windows diagnostic setting
-  says, and that the optional part follows Settings > Privacy & security
-  > Diagnostics & feedback. None of it appeared as a socket of the
-  window in the runs above. It is Windows reporting on its own
-  component, under Microsoft's privacy statement — nothing DeskIT sends
-  or can read.
+  says, and that the optional part follows the Windows setting under
+  Privacy & security, Diagnostics & feedback. None of it appeared as a
+  socket of the window in the runs above. It is Microsoft's data about
+  its own component, under Microsoft's privacy statement — nothing
+  DeskIT sends or can read.
 
 ## What never goes out
 

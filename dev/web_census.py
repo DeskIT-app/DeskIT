@@ -23,18 +23,27 @@ Run it HIDDEN (house rule 8) and from the venv that has pywebview:
 
     .venv\\Scripts\\python.exe -c "import tests_quiet as q, pathlib; q.run_hidden(r'.venv\\Scripts\\python.exe dev\\web_census.py OUT 180', pathlib.Path('.'), desktop='DeskITCensus')"
 
-    OUT                 a folder: OUT\\profile is the WebView2 profile, OUT\\census.json the result
+    OUT                 a NEW folder: OUT\\profile is the WebView2 profile,
+                        OUT\\census.json the result (a folder that already
+                        holds a profile is refused: it would be a warm start
+                        reported as a first one)
     SECONDS             how long to watch after the page has loaded
     --warm FOLDER       start from a copy of an earlier run's profile (the
                         second start of a copy is the one that talked)
     --features a,b      add these to --disable-features, to bisect
+    --control           the positive control: the window also opens a
+                        loopback debugging port, which this must see as a
+                        listening socket of the browser (exit 0 only if it
+                        did) — so a zero from the real run means "nothing",
+                        not "the census went blind"
 
 MEASURED 2026-10-23, runtime 155.0.4283.62 (numbers in NETWORK.md): with
 the flags of 2026-09-22 a fresh profile held no socket for 180 s, and
-every warm start held two TLS connections to substrate.office.com ~2 s
-after load — Edge's OneAuth sign-in through Windows' account broker,
-fetching the Windows account's profile and photo; msOneAuthWAM stops it.
-Re-run after a runtime update before quoting this.
+each of 6 warm starts held two TLS connections to substrate.office.com
+2-4 s after load — Edge's OneAuth sign-in through Windows' account broker
+(encrypted, not read; msedge.dll names the Windows account's profile and
+photo on that host); msOneAuthWAM stops it. Re-run after a runtime
+update before quoting this.
 """
 from __future__ import annotations
 
@@ -158,7 +167,14 @@ def main(argv=None) -> int:
     parser.add_argument("seconds", type=float)
     parser.add_argument("--warm", help="an earlier run's folder whose profile to start from")
     parser.add_argument("--features", default="", help="more names for --disable-features")
+    parser.add_argument("--control", action="store_true",
+                        help="positive control: open a loopback debugging port the census must see")
     ns = parser.parse_args(argv)
+
+    out = Path(ns.out)
+    if (out / "profile").exists():
+        parser.error(f"{out} already holds a profile: a re-run there is a warm start; "
+                     "use a new folder (and --warm to start from an old one)")
 
     import control
     import deskweb
@@ -166,10 +182,10 @@ def main(argv=None) -> int:
 
     if ns.features:
         webdesk.BASE_ARGS = (webdesk.BASE_ARGS[0] + "," + ns.features, *webdesk.BASE_ARGS[1:])
-    out = Path(ns.out)
+    extra = ("--remote-debugging-port=0",) if ns.control else ()
     out.mkdir(parents=True, exist_ok=True)
     if ns.warm:
-        shutil.copytree(Path(ns.warm) / "profile", out / "profile", dirs_exist_ok=True)
+        shutil.copytree(Path(ns.warm) / "profile", out / "profile")
 
     def status_only(command, timeout_ms=2000, **args):
         # the pipe of a checkout is the owner's LIVE app: it is asked for
@@ -179,8 +195,8 @@ def main(argv=None) -> int:
         return control.send("status", timeout_ms=timeout_ms)
 
     census = Census()
-    note: dict = {"args": webdesk.browser_args(), "seconds": ns.seconds,
-                  "warm": bool(ns.warm)}
+    note: dict = {"args": webdesk.browser_args(extra), "seconds": ns.seconds,
+                  "warm": bool(ns.warm), "control": ns.control}
 
     def on_ready(desk):
         started = time.time()
@@ -195,18 +211,25 @@ def main(argv=None) -> int:
     note["code"] = webdesk.run(
         title="DeskIT census", api=deskweb.Api(deskweb.Model(send=status_only)),
         width=deskweb.CLIENT_W + 16, height=deskweb.CLIENT_H + 39,
-        storage=out / "profile", on_ready=on_ready, on_form=deskweb._on_form)
+        storage=out / "profile", on_ready=on_ready, on_form=deskweb._on_form,
+        extra_args=extra)
     closed = time.time()
     while time.time() - closed < 10:       # anything said on the way out
         census.sample()
         time.sleep(0.25)
     ext = census.external()
+    listening = [r for r in census.ours.values() if "LISTEN" in r["states"]]
     note.update(samples=census.samples, tree_max=census.tree_max,
                 ours=sorted(census.ours.values(), key=lambda r: r["first_s"]),
-                ours_external=len(ext), others=list(census.others.values()))
+                ours_external=len(ext), listening=len(listening),
+                others=list(census.others.values()))
     (out / "census.json").write_text(json.dumps(note, indent=1, default=str), "utf-8")
     print(f"{len(ext)} outside socket(s) in the window's tree over {census.samples} samples "
           f"of up to {census.tree_max} processes; {len(census.others)} of other WebView2 hosts")
+    if ns.control:
+        print(f"control: {len(listening)} listening socket(s) seen in the window's tree "
+              f"({'the census sees sockets' if listening else 'BLIND — do not trust a zero'})")
+        return 0 if listening else 2
     return 1 if ext else 0
 
 

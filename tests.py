@@ -38431,9 +38431,22 @@ def test_the_web_window_is_held_shut_and_network_md_says_how():
     policy = " ".join((REPO / "docs" / "privacy.md").read_text("utf-8").split())
     assert "Microsoft Edge WebView2" in policy and "Diagnostics & feedback" in policy
     assert "DeskIT neither sends it nor sees it" in policy
+    # a line opening with ">" is a blockquote in Markdown, mid-list
+    for doc in (page, (REPO / "docs" / "privacy.md").read_text("utf-8")):
+        assert not re.search(r"^\s*>", doc, re.M), "a sentence wrapped into a blockquote"
     census = (REPO / "dev" / "web_census.py").read_text("utf-8")
     assert census.index("winsound.PlaySound = lambda") < census.index("import control")
     assert "\nimport psutil" not in census and "\nimport webview" not in census
+    assert "--control" in census and "--remote-debugging-port=0" in census
+    # re-runnable: a folder that already holds a profile is refused before
+    # any window, so a second run there is never a warm start reported as
+    # a first one
+    used = Path(tempfile.mkdtemp(prefix="census-used-", dir=_SCRATCH_HOME))
+    (used / "profile").mkdir()
+    out = subprocess.run([sys.executable, str(REPO / "dev" / "web_census.py"), str(used), "1"],
+                         capture_output=True, text=True, timeout=60, creationflags=0x08000000)
+    assert out.returncode == 2 and "already holds a profile" in out.stderr, (out.returncode, out.stderr[-400:])
+    assert not (used / "census.json").exists()
 
 
 def test_diagnose_leaves_out_log_lines_that_hold_hebrew():
@@ -43216,6 +43229,14 @@ def test_the_web_desk_is_in_the_lock_with_its_own_proxy_tools_wheel():
         raise AssertionError("a module that is not the sdist's was packed")
     attrs = (REPO / ".gitattributes").read_text("utf-8")
     assert "packaging/wheels/*.whl          binary" in attrs, "a checkout could rewrite the wheel's bytes"
+    # where the lock is installed (CI installs it whole), the pythonnet
+    # that came is the facades wheel: the none-any one has no netstandard
+    import importlib.util
+    spec = importlib.util.find_spec("pythonnet")
+    if spec is not None:
+        runtime = Path(spec.origin).parent / "runtime"
+        assert (runtime / "netstandard.dll").is_file() and (runtime / "Python.Runtime.dll").is_file(), \
+            "pythonnet without the .NET Framework facades"
 
 
 def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
@@ -43324,6 +43345,10 @@ def test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback():
     assert wanted(True, False, off, True, state_text='{"desk.web": true}',
                   settings_text="[desk]\nweb = false\n") is True
     assert wanted(True, False, off, True, settings_text="[desk\nweb = ") is False
+    # only a real bool counts: a stray word in state.json is not a "no"
+    assert wanted(True, False, off, True, state_text='{"desk.web": "no"}') is True
+    assert wanted(True, False, off, True, state_text='{"desk.web": "no"}',
+                  settings_text="[desk]\nweb = false\n") is False
     body = (REPO / "dashboard.py").read_text("utf-8")
     body = body[body.index("def main() -> int:"):]
     assert "deskweb.wanted() and deskweb.main([]) not in (2, 3)" in body

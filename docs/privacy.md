@@ -40,8 +40,8 @@ Everything personal lives on your PC, in `%LOCALAPPDATA%\DeskIT`:
 - pictures and clips go to your Pictures and Videos folders.
 
 Nothing leaves the PC until you switch a cloud feature on through its
-consent card. (The one thing DeskIT cannot hold back is what Windows
-reports about its own WebView2 component while the desk is open as a
+consent card. (The one thing DeskIT cannot hold back is what Microsoft
+collects about its own WebView2 component while the desk is open as a
 web page — section 8.) To delete: Settings > Your data, per store, or "Delete
 everything on this PC"; the uninstaller asks "Remove my data too?".
 
@@ -160,13 +160,14 @@ EVERY CONNECTION) and mirrored to
 `127.0.0.1`.
 
 The desk's web window is the one exception to that screen. When the
-desk opens as a web page it is drawn by Microsoft Edge WebView2, a part
-of Windows with network code of its own, which `net.py` does not carry.
-DeskIT loads only its own files into it, refuses every other address,
-switches off the window's own services (SmartScreen, Edge's
-experimentation and update checks, Edge's sign-in with your Windows
-account) and keeps its crash reports on your PC; measured, the window
-opens no connection at all (`NETWORK.md` has the numbers). Microsoft
+desk opens as a web page (today only in the developer's own copy), it
+is drawn by Microsoft Edge WebView2, a part of Windows with network
+code of its own, outside `net.py`. DeskIT loads only its own files into
+it, refuses every other address, switches off the window's own services
+(SmartScreen, Edge's experimentation and update checks, Edge's sign-in
+with your Windows account) and keeps its crash reports on your PC. In
+our measurements the window opened no connection at all (`NETWORK.md`
+has the numbers). Microsoft
 collects some required diagnostic data about WebView2 whatever your
 settings say, and the optional part follows Windows' Settings > Privacy
 & security > Diagnostics & feedback. That data is Microsoft's, under

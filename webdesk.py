@@ -187,16 +187,17 @@ SCRUB_PREFIXES = ("WEBVIEW2_", "PYWEBVIEW_", "PYTHONNET_")
 #:
 #: msOneAuthWAM — what the netlog could NOT see (2026-10-23, runtime
 #: 155.0.4283.62, dev\web_census.py: every socket of every process under
-#: the desk, 4x a second). A fresh profile held no socket for 180 s; on
-#: every start AFTER the first, the BROWSER process opened two TLS
-#: connections to substrate.office.com (40.99.44.x, the DNS cache said so
-#: at the moment they opened) ~2 s after the page loaded and kept them,
-#: plus a port-80 certificate check to Akamai. It is Edge's own sign-in:
-#: OneAuth asks Windows' account broker (WAM) for the Windows account's
-#: token and fetches that account's profile and photo
-#: (edge_auth/account_info_fetcher, substrate.office.com/profileb2 and
-#: /imageb2 in msedge.dll) — through Windows' HTTP stack and resolver,
-#: which is why --host-resolver-rules and the netlog never saw it.
+#: the desk, 4x a second). A fresh profile held no socket for 180 s; in
+#: each of the 6 starts AFTER a first one, the BROWSER process opened two
+#: TLS connections to substrate.office.com (40.99.44.x — Windows' own DNS
+#: cache held that name for the address the moment they opened) 2-4 s
+#: after the page loaded and kept them; one run also showed a plain-HTTP
+#: connection to an Akamai address. Windows' resolver, not Chromium's, so
+#: --host-resolver-rules and the netlog never saw any of it. It is Edge's
+#: own sign-in, OneAuth through Windows' account broker (WAM): the
+#: connections are encrypted and were not read, and msedge.dll's strings
+#: put the Windows account's profile and photo on that host
+#: (edge_auth/account_info_fetcher, /profileb2, /imageb2).
 #: Bisected on a copy of that warm profile, 45 s a run: msOneAuthWAM
 #: alone -> 0 sockets; msImplicitSignin alone 3, msIdentityCore alone 2,
 #: msEdgeOSAccountInfoSubstrate alone 2. With it in the list, a fresh

@@ -445,11 +445,12 @@ exactly what classic did.
   nothing; only a key press the person made may open a card.
 - **The web desk's window is the one network door that is not `net.py`,
   and a browser netlog cannot see all of it.** WebView2's browser
-  process also talks through WINDOWS' HTTP stack and resolver: on
+  process also resolves and connects through WINDOWS' own code: on
   2026-10-23 a clean netlog and `--host-resolver-rules` hid two TLS
   connections to substrate.office.com that every start after the first
-  held (Edge's OneAuth sign-in through WAM, fetching the Windows
-  account's profile and photo); `msOneAuthWAM` in `webdesk.BASE_ARGS`
+  held (Edge's OneAuth sign-in through WAM; encrypted, so not read —
+  msedge.dll's strings put the Windows account's profile and photo
+  there); `msOneAuthWAM` in `webdesk.BASE_ARGS`
   stops it, measured to 0 sockets over 15 minutes. After a runtime
   update or any flag change, re-run `dev\web_census.py` (every socket of
   the window's own process tree, from Windows' table, hidden) — and
