@@ -218,6 +218,23 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night14 (armed for 2026-10-24 00:00-09:15, `night_teacher14.ps1`) — night10
+  on the REAL length of a recording, his choice "both, in stages".** The
+  lighter-app work with DeskIT - 1 (plan in notes\DeskIT-light-plan-2026-10-22.md)
+  found: night10 at int8_float16 inside the noise on all six sets (1,214 MB of
+  graphics memory against 2,238 at float16 — his yes to switching both
+  models, DeskIT - 1's branch); the cloud's generic turbo +50% on Hebrew
+  (Groq is not the road); night10 cannot do English (34% WER pinned to en,
+  its language guess says Hebrew for everything — the second model stays for
+  that); zipformer2-66m on the CPU about level with today's model on speech
+  and the fallback weak-PC tier. And the speed road: on the CPU (int8) the
+  encoder alone costs 2.1 s for 500 frames against 17.3 s for 3,000, but an
+  untrained short window costs 23-37% more errors (night10-dynctx 1,389 /
+  1,110 against its full window 1,133 / 808). So night14 = FUTO's audio-context
+  fine-tuning (`train_acft.py`): night10 at the full window teaches night10 +
+  a LoRA on every layer at the clip's own window (+0-300 frames), MSE on all
+  decoder layers' states under the true transcript. Bar: dynctx inside the
+  spread of fullctx, CPU time near the untrained short window's.
 - **night13r RESULT (2026-10-23) — phone-sounding audio did not move the
   hearing either.** The training ran whole this time (`grow_commit.py` took
   the commit limit 43.9 → 53.1 GB before it; 13,161 steps, 446 min). Against
