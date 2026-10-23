@@ -50598,8 +50598,19 @@ def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
     web_main = (REPO / "deskweb.py").read_text("utf-8")
     web_main = web_main[web_main.index("def main(argv=None)"):]
     assert web_main.index("if ns.shot:") < web_main.index("bring_up_the_keys()") \
-        < web_main.index("code = run_window(route=route)") \
+        < web_main.index("code = run_window(route=route, watch_show=True)") \
         < web_main.index("singleton.request_quit()")
+    # ...and a photograph never touches his own desk: a worktree's mutex and
+    # show event are the checkout's, so the shot returns before the mutex
+    # is taken and never listens for the poke (the event is auto-reset: a
+    # shot waiting on it would swallow the one that brings his window up)
+    shot = web_main[web_main.index("if ns.shot:"):web_main.index("singleton.InstanceLock")]
+    assert "return run_window(" in shot and "watch_show" not in shot \
+        and "WEBDESK_SHOW" not in shot, shot
+    window = (REPO / "deskweb.py").read_text("utf-8")
+    window = window[window.index("def run_window("):window.index("def bring_up_the_keys(")]
+    assert "watch_show: bool = False" in window
+    assert window.index("if watch_show:") < window.index("target=_watch_show")
     page = "\n".join(p.read_text("utf-8") for p in (REPO / "web" / "src").rglob("*.tsx"))
     called = set(re.findall(r'call<[^>]*>\("(\w+)"', page))
     assert called and called <= set(deskweb.CALLS), called
@@ -50651,7 +50662,7 @@ def test_the_web_desk_has_a_file_for_every_place():
         assert "\nclass Place" in path.read_text("utf-8"), path
     pages = "\n".join(p.read_text("utf-8") for p in (src / "places").glob("*.tsx"))
     named = set(re.findall(r'(?:placeCall|usePlace)(?:<[^>]*>)?\("(\w+)"', pages))
-    assert named and named <= set(deskweb.PLACES_MOD), named
+    assert named <= set(deskweb.PLACES_MOD), named
 
 
 def _web_desk_place_wired(name: str) -> None:

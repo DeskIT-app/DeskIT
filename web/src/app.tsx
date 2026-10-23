@@ -32,7 +32,14 @@ function placeOf(name: string): Place | undefined {
 function hashRoute(): Route {
   const [head = "", ...rest] = window.location.hash.replace(/^#\/?/, "").split("/");
   const place = placeOf(head);
-  return place ? { place, sub: decodeURIComponent(rest.join("/")) } : { place: "Home", sub: "" };
+  if (!place) return { place: "Home", sub: "" };
+  let sub = rest.join("/");
+  try {
+    sub = decodeURIComponent(sub);
+  } catch {
+    // a stray "%" typed into the address: the sub as it stands
+  }
+  return { place, sub };
 }
 
 function routeHash(r: Route): string {

@@ -135,6 +135,9 @@ export function usePlace<T>(name: string, args: Record<string, unknown> = {},
   }, [read, take]);
 
   useEffect(() => {
+    // A new question (name or args): an answer to the old one that lands
+    // after this is older than what is asked now, and is dropped.
+    shown.current = ++asked.current;
     read();
     if (!(pollMs > 0)) return undefined;
     const tick = () => { if (!flying.current) read(); };

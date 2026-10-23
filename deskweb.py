@@ -1135,11 +1135,15 @@ def _watch_show(desk_handle: dict, stop: threading.Event) -> None:
 
 
 def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
-               hidden: bool = False, storage=None) -> int:
+               hidden: bool = False, storage=None, watch_show: bool = False) -> int:
     """Open the desk and block until it closes (webdesk.run's codes: 0 ran,
     2 no WebView2, 3 no pages). `storage`: the browser's folder, when not
     paths.WEBVIEW_DIR — which the owner's own desk holds while it is open,
-    and a second browser on it fails with 0x800700AA."""
+    and a second browser on it fails with 0x800700AA. `watch_show`: come
+    to the front when a second launch pokes WEBDESK_SHOW — only for the
+    window that holds the mutex (main): the event is auto-reset and its
+    name is the checkout's in a worktree too, so a shot or a probe that
+    waited on it could swallow the poke meant for his own desk."""
     import webdesk
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
@@ -1147,8 +1151,9 @@ def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
         pass
     handle: dict = {}
     stop = threading.Event()
-    threading.Thread(target=_watch_show, args=(handle, stop), daemon=True,
-                     name="webdesk-show").start()
+    if watch_show:
+        threading.Thread(target=_watch_show, args=(handle, stop), daemon=True,
+                         name="webdesk-show").start()
 
     def ready_then(desk):
         handle["desk"] = desk
@@ -1165,7 +1170,8 @@ def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
                 return
             time.sleep(0.05)
 
-    threading.Thread(target=grab, daemon=True, name="webdesk-grab").start()
+    if watch_show:
+        threading.Thread(target=grab, daemon=True, name="webdesk-grab").start()
     try:
         return webdesk.run(route=route, title=f"DeskIT {paths.DEV_TAG}".strip(),
                            api=api or Api(), width=CLIENT_W + 16, height=CLIENT_H + 39,
@@ -1248,7 +1254,7 @@ def main(argv=None) -> int:
         return 0
     try:
         bring_up_the_keys()
-        code = run_window(route=route)
+        code = run_window(route=route, watch_show=True)
         if code == 0:
             # THE X CLOSES EVERYTHING — his rule of 2026-09-19, and the Tk
             # desk's (_close): the window a person opened, closed, is
