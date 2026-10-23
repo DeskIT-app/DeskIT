@@ -35,58 +35,57 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 # ---------------------------------------------------------------- palette
-# LAMPLIGHT, in the window's own hand. These are skin\palette.py's values
-# spelled out, and a test holds the two in step — so the window is warm
-# graphite and gold WITH the skin pack and WITHOUT it. Until 2026-09-19
-# this block was the old blue (COBALT: #0d1017 ground, #2d6cdf accent)
-# and `repaint` below turned it warm only when skia was here; a fresh
-# install has no skia, so every stranger's desk was the blue one while
-# the dot, the cards and the icon were the lamp. The one window that
-# disagreed with the mark was the window.
-BG          = "#14110c"   # the window, and the sidebar on it   L*  5.2
-PANE        = "#1c1813"   # the content pane                    L*  8.5
-CARD        = "#24201a"   # a card face                         L* 12.5
-CARD_HI     = "#2e2921"   # a card face under the pointer       L* 16.9
-LINE        = "#3a342a"   # hairline border                     L* 22.0
-FG          = "#f1ece2"   # text                       15.99:1 on BG
-DIM         = "#b2a896"   # secondary text              8.01:1
-FAINT       = "#7e7564"   # tertiary text               4.14:1 — labels, rules
-ACCENT      = "#e3a63c"   # the lamp
-ACCENT_HI   = "#f0b854"
-ACCENT_DOWN = "#c68c28"
-ACCENT_SOFT = "#332711"   # the accent at card weight, for selected states
-ACCENT_TEXT = "#f0ba5c"   # the accent at text weight — 10.66:1
-RED         = "#f1867a"
-RED_SOFT    = "#3d1a16"   # the danger red at card weight — the pill under a misheard word (review_card.RED_SOFT)
-AMBER       = "#e3a63c"   # = ACCENT, deliberately (skin\palette.py, rule 3)
-GREEN       = "#63c88c"
-VIOLET      = "#c3a2ec"
-TEAL        = "#7fc8c8"
-EDGE        = "#29241d"   # a secondary button
-EDGE_HI     = "#332d24"
-EDGE_DOWN   = "#1f1b15"
-STROKE      = "#3a342a"   # = LINE
+# B+, in the window's own hand. These are skin\palette.py's values spelled
+# out, and a test holds the two in step — so the window is the same night
+# WITH the skin pack and WITHOUT it. It was LAMPLIGHT (warm graphite and
+# gold) from 2026-09-19 to 2026-10-23, and the old blue (COBALT) before
+# that; the reason the values live here at all is the 2026-09-19 one: a
+# copy without skia never ran `repaint`, and its desk disagreed with the
+# dot, the cards and the icon.
+BG          = "#0b0d19"   # the window, and the sidebar on it   L*  3.9
+PANE        = "#121527"   # the content pane                    L*  7.3
+CARD        = "#1a1e35"   # a card face                         L* 12.0
+CARD_HI     = "#242944"   # a card face under the pointer       L* 17.4
+LINE        = "#30365a"   # hairline border                     L* 23.7
+FG          = "#efedf7"   # text                       16.69:1 on BG
+DIM         = "#c0c3d8"   # secondary text             11.09:1
+FAINT       = "#70758e"   # tertiary text               4.26:1 — labels, rules
+ACCENT      = "#a597ff"   # iris: the one soft light
+ACCENT_HI   = "#b9aeff"
+ACCENT_DOWN = "#9486ee"
+ACCENT_SOFT = "#393961"   # the accent at card weight, for selected states
+ACCENT_TEXT = "#c2b9ff"   # the accent at text weight — 10.75:1
+RED         = "#ff6e7e"
+RED_SOFT    = "#482e44"   # the danger red at card weight — the pill under a misheard word (review_card.RED_SOFT)
+AMBER       = "#ffb84d"   # working, and worth a look — no longer the accent
+GREEN       = "#5fdba6"
+VIOLET      = "#d4a8f0"
+TEAL        = "#5ed0c4"
+EDGE        = "#1f2340"   # a secondary button
+EDGE_HI     = "#2a3050"
+EDGE_DOWN   = "#161a2e"
+STROKE      = "#30365a"   # = LINE
 
 # The eight colours dashboard.py used to spell out inline. A palette can
 # reach them because they have names, and a shade that lives in one place
 # can no longer drift from the ramp it belongs to.
-RULE        = "#211d17"   # the hairline between the sidebar and the pane
-ACCENT_EDGE = "#5a431a"   # the border of a selected sidebar row
-SIDE_IDLE   = "#1a1610"   # a sidebar row that is not selected
-SIDE_CARD   = "#1c1813"   # the state card at the foot of the sidebar = PANE
-QUOTE_BG    = "#24201a"   # the quoted-transcript panel = CARD
-QUOTE_EDGE  = "#3a342a"   # = LINE
-TILE_EDGE   = "#5a5240"   # a tile or row under the pointer
-CHIP_BG     = "#292419"   # the small square behind a row's icon
+RULE        = "#171a2e"   # the hairline between the sidebar and the pane
+ACCENT_EDGE = "#595490"   # the border of a selected sidebar row
+SIDE_IDLE   = "#0f1222"   # a sidebar row that is not selected
+SIDE_CARD   = "#121527"   # the state card at the foot of the sidebar = PANE
+QUOTE_BG    = "#1a1e35"   # the quoted-transcript panel = CARD
+QUOTE_EDGE  = "#30365a"   # = LINE
+TILE_EDGE   = "#525a88"   # a tile or row under the pointer
+CHIP_BG     = "#20243f"   # the small square behind a row's icon
 
 # Five names skin\palette.py had before this module did, so `repaint` was
 # silently skipping them — it only writes over names that already exist
 # here.
-LINE_HI     = "#4e4737"   # a border that is being interacted with
-FOCUS       = "#e3a63c"   # the focus ring IS the accent
-ACCENT_ON   = "#1a1409"   # text ON the accent fill — 8.52:1 on the gold
-COOL        = "#8fc0f0"   # informational: a link, the listening dot
-RECORDING   = "#ff5b4e"   # the dot while it is capturing
+LINE_HI     = "#454c78"   # a border that is being interacted with
+FOCUS       = "#a597ff"   # the focus ring IS the accent
+ACCENT_ON   = "#140f33"   # text ON the accent fill — 7.39:1 on the iris
+COOL        = "#4db8ff"   # informational: a link, the listening lamp
+RECORDING   = "#ff5d6e"   # the dot while it is capturing
 
 # The thirteen shades this file used to spell out INSIDE its own widget
 # constructors — the disabled button, the chip's three faces, the switch's
@@ -94,18 +93,18 @@ RECORDING   = "#ff5b4e"   # the dot while it is capturing
 # them was invisible to a repalette, so the filter chips and every key cap
 # stayed on the old colours while the rest of the window changed. They
 # have names now, and a test forbids a hex below the SKIN marker.
-BTN_OFF         = "#211d17"   # a disabled button's face — RULE, flat
-BTN_OFF_EDGE    = "#2b2620"
-CHIP_ON_EDGE    = "#5a431a"   # a chip that is on — ACCENT_SOFT plus an edge
-CHIP_OFF        = "#1f1b15"   # a chip, a pill and a pair pill at rest
-CHIP_OFF_EDGE   = "#332d24"
-CHIP_HOVER      = "#29241d"
-CHIP_HOVER_EDGE = "#4e4737"
-TRACK_OFF       = "#4e4737"   # the switch's track when it is off — LINE_HI
-KEY_BG          = "#29241d"   # a key cap
-KEY_EDGE        = "#4e4737"
-KEY_HI          = "#332d24"   # a key cap under the pointer
-THUMB           = "#4e4737"   # the scroller's thumb — LINE_HI
+BTN_OFF         = "#171a2e"   # a disabled button's face — RULE, flat
+BTN_OFF_EDGE    = "#22263f"
+CHIP_ON_EDGE    = "#595490"   # a chip that is on — ACCENT_SOFT plus an edge
+CHIP_OFF        = "#161a2e"   # a chip, a pill and a pair pill at rest
+CHIP_OFF_EDGE   = "#2a3050"
+CHIP_HOVER      = "#1f2340"
+CHIP_HOVER_EDGE = "#454c78"
+TRACK_OFF       = "#454c78"   # the switch's track when it is off — LINE_HI
+KEY_BG          = "#1b2036"   # a key cap
+KEY_EDGE        = "#3a4068"
+KEY_HI          = "#252b47"   # a key cap under the pointer
+THUMB           = "#454c78"   # the scroller's thumb — LINE_HI
 
 # --- SKIN -----------------------------------------------------------------
 # One hook, and it has to be HERE rather than anywhere later: `from ui

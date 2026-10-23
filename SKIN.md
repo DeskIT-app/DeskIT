@@ -11,9 +11,12 @@ half state.
 set HD_SKIN=0
 ```
 for one run — the app starts on its original Tk overlays. The palette
-stays: since 2026-09-19 `ui.py`'s own literals ARE LAMPLIGHT (a test holds
-them to `skin\palette.py`), because a fresh install has no skia and the
-blue it fell back to was the one window that disagreed with the mark.
+stays: since 2026-09-19 `ui.py`'s own literals ARE the palette's (a test
+holds them to `skin\palette.py`; B+ since 2026-10-23, LAMPLIGHT before),
+because a fresh install had no skia and the blue it fell back to was the
+one window that disagreed with the mark. The card painters outside the
+folder draw B+ either way: their pieces come from `look.py`, which reads
+`skin\palette.py` by name and spells the same values out when it is gone.
 
 ```
 skin\__init__.py  ->  ENABLED = False
@@ -80,13 +83,13 @@ makes the answer true.
 
 | file | job |
 |---|---|
-| `palette.py` | LAMPLIGHT: the elevation ladder, the contrast table, the light ramp, `UI_NAMES` (47), `DOT_STATES` as `(fill, ring, pulses)` and `NO_HALO` |
+| `palette.py` | B+ (since 2026-10-23; LAMPLIGHT before): the night ladder, the contrast table, the desktop glass's densities, the four lamps, the light ramp, `UI_NAMES` (47), `DOT_STATES` as `(fill, ring, pulses)` and `NO_HALO` |
 | `ease.py` | the curves, as one-line canonical formulas |
 | `gl.py` | an OpenGL context, so Skia can use the graphics card |
 | `glass.py` | a click-through, never-focusable layered window Skia paints on — or, since 2026-09-19, that `present()` hands a Pillow picture to, so a copy WITHOUT skia (every fresh install: skia is the skin pack) still gets per-pixel alpha |
 | `mark.py` | the mark drawn small by Pillow — Corner, on `dev\make_logo.py`'s 64-unit grid and at its 94 %: a tile with its drop shadow and hairline rim, the corner's stroke as one filled area, the lamp at the centre of its curve and the lamp's light inside the curve. `Mark(tile, box)` bakes the static half once; `frame()` is three pastes. One user: the boot card's badge at 44 px (`boot.Lite`). A test holds its shape to `make_logo.mark` |
 | `boot.py` | the corner card, the waveform, and the thread that drives both — and `Lite`, the card a copy without skia gets: the mark, the wordmark, one line of status and a thin gold progress line, on `face.py`'s plate, the same milestones and the same protocol, no release |
-| `face.py` | a card's face by Pillow — shadow, CARD-to-BG surface, LINE rim, specular hairline — the plate under every painter that cannot assume skia |
+| `face.py` | the plate under every painter that cannot assume skia — since 2026-10-23 it hands over to `look.plate` (B+'s pane: the glass, its frosted rim, its long soft shadow) — and the small Pillow shapes the key card draws with |
 | `reveal.py` | the release, on the GPU |
 | `burst.py` | the release, for machines with no GPU |
 | `dot.py` | the status dot: a disc with its halo in the 38 px box, and the disc's colour is the state (the mark's tile stood in for it for one afternoon on 2026-09-19, and he asked for the disc back that evening). Five states, the halo gated on `NO_HALO` — paused is the one that casts no light, checked on the rendered pixel 3 px out from the lamp rather than on the colour table, because the rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the tile and HTTRANSPARENT on the shadow and the corners, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default) while `spot()` prefers wherever it was dragged to (`[dot] x/y`), the tile answers HTCAPTION instead while `move()` is armed so Windows drags it, and the shadow is zeroed on the window's border so nothing reaches the edge. Painted by skia on the glass (`skin.dot_run`); without skia, overlay's Tk disc |
@@ -99,7 +102,116 @@ makes the answer true.
 
 ## The design
 
-### LAMPLIGHT — one lamp on a dark desk
+### B+ — a deep night, glass on it, one soft light (since 2026-10-23)
+
+The desk window became a web page in the look the owner approved on
+2026-09-23 (`web\src\bplus.css`: the night ground, panes of frosted glass
+whose rim catches the light top-left, 22–24 px corners, ONE iris accent,
+Rubik, soft fades). On 2026-10-23 he asked for "everything in the new
+design, including everything", and chose to move only the desk to web
+technology — so every other window keeps its technology and takes B+'s
+look. He approved the before-and-after sheets of every one of them the
+same evening (the dot, the shelf, the notification column, the second
+reading, the key card, the report box, the consent card, the tour, the
+move frame, the boot card and the release), and asked for two things on
+the way: the report box and the consent card "more classic" — they became
+classic dialogs, the consent card's facts a two-column table and both
+cards' answers on a darker command strip at the foot — and the dot's
+sound and the release on the screen checked against each other (below).
+
+**The pieces live in `look.py`, outside this folder.** A card painter
+(`notify_card`, `shelf_card`, `review_card`, `problem_card`,
+`consent_card`, `tour_card`, `move_card`) has to draw with `skin\`
+deleted, so B+'s parts are a top-level module of Pillow and numpy:
+`glass` (the pane), `plate` (the pane with its shadow), `rim`, `quiet`
+(a pill of frost), `primary` (the soft iris pill, its light pooled UNDER
+it, never a ring), `bubble` (the chosen one of a set — the desk's
+selected place), `disc` (the round X), `slip` (a row's own frost),
+`lamp`, `mark`, `keycap`, `switch`, `pill` (the second reading's heard
+and proposed words), `well`, `fade_rule`, `glyph`, and `text` — Latin by
+FreeType at Rubik's real weights (400 words, 460 labels, 500 the strong
+word) and anything with Hebrew through `visual_qa.text_pil`. Each piece is
+drawn on a patch the size of its own box and composited once, which is
+what keeps a hover repaint fast.
+
+**The ladder**, navy at about 232°, the desk's own floor lifted one step
+so a flat Tk window still reads as night:
+
+| token | hex | L\* | step |
+|---|---|---|---|
+| `BG` | `#0B0D19` | 3.9 | — |
+| `PANE` | `#121527` | 7.3 | +3.4 |
+| `CARD` | `#1A1E35` | 12.0 | +4.7 |
+| `CARD_HI` | `#242944` | 17.4 | +5.4 |
+| `LINE` | `#30365A` | 23.7 | +6.3 |
+| `LINE_HI` | `#454C78` | 33.5 | +9.8 |
+
+**The text, and the one light:**
+
+| token | hex | on ground | on card | on card-hi |
+|---|---|---|---|---|
+| `FG` | `#EFEDF7` | 16.69 | 14.15 | 12.28 |
+| `DIM` | `#C0C3D8` | 11.09 | 9.40 | 8.16 |
+| `MUTED` | `#A4A9C2` | 8.32 | 7.05 | 6.12 — times, eyebrows, facts (the desk's ink-3) |
+| `FAINT` | `#70758E` | 4.26 | 3.61 | 3.13 — rules and labels only |
+| `ACCENT` (iris) | `#A597FF` | 7.80 | 6.61 | 5.74 |
+| `ACCENT_TEXT` | `#C2B9FF` | 10.75 | 9.12 | 7.91 |
+| `GREEN` | `#5FDBA6` | 11.21 | 9.50 | 8.25 |
+| `AMBER` | `#FFB84D` | 11.25 | 9.54 | 8.28 |
+| `RED` | `#FF6E7E` | 7.17 | 6.08 | 5.27 |
+| `COOL` (listening) | `#4DB8FF` | 8.86 | 7.51 | 6.52 |
+
+`ACCENT_ON` (`#140F33`) on the iris is 7.39 : 1 (9.22 at the button's
+top); `FG` on it would be 2.3. **Warning is no longer the accent**:
+LAMPLIGHT made them one colour, B+ separates them — `AMBER` is the
+working lamp and a needs-you mark, iris is the action.
+
+**The glass on the desktop is denser than the desk's.** A card sits on
+whatever is behind it, not on the desk's floor, so its face is
+`GLASS_TOP` / `GLASS_BOT` at .90 / .93 (the desk's sheet is .84). The
+worst case is a white page behind: the face's top composites to
+`#393E5A`, where `MUTED` is 4.49 and `DIM` 5.99 — the lightest surface any
+word meets outside the desk. Its own light (.06) pools at the top-left,
+an inner line lights its top edge (.07), and the rim runs from white .26
+where the light hits it through .08 and .025 to a violet .10 coming back
+at the bottom-right (155°, as the desk draws every pane).
+
+**The notification column's live blur keeps B+'s corner.** Windows rounds
+a blur-behind window at 8 px and at nothing else (`glass.DWM_RADIUS`;
+measured 2026-10-19, see AGENTS.md), so until now the faces over the live
+blur were drawn at 8 px too. Each blur window is now inset under its
+piece (`skin\notify.blur_inset`: (r − 8)(1 − 1/√2) + 2 px, 6 px for 22),
+which puts Windows' corner wholly inside the face's, and the face is
+nearly opaque (.97) over the band round its edge where the desktop is not
+blurred, easing to its own density 7 px in (`look.glass(dense_edge=)`).
+That was simulated in the picture he approved and NOT yet seen on a real
+screen — the hidden desktop composes nothing.
+
+**The four lamps** are the desk's: listening `#4DB8FF` (with its hot
+centre, `LAMP_CORE` `#C9ECFF`), recording `#FF5D6E`, working `#FFB84D`,
+idle `#8A93A8` with no light at all. The dot, the shelf's head, the key
+card's bead and the move map's beads all draw them; the dot adds the
+lamp's two soft rings (.16 for 3 px, .06 for the next 3), gated with its
+halo so paused still casts nothing. Against `#1A1A1A`: 7.97 / 5.84
+(recording) / 7.89 (locked, `#FF8D99`) / 10.12 / 5.65.
+
+**The release** keeps its shape and its luminance order (1.00 / .89 /
+.66 / .53 / .51 / .01 in `reveal.py`): a lavender-white heart, the iris
+in the middle, the listening blue at the corona. Its arrival in the dot
+now has TWO rings — the first on the "ready" cue's first note, the second
+`reveal.CUE_GAP_MS` (90) later on the resolving one, in the dot's own
+blue. Measured on the GPU path that evening: the cue is fired at 1040 ms
+on the release's clock, the first ring leaves at 1040–1050, the light at
+the dot reaches full brightness at 1130 — the second note — and the
+second ring leaves then; PlaySound's own start-up puts the sound a few
+tens of ms after the picture, which is the side the ear forgives.
+
+### LAMPLIGHT — one lamp on a dark desk (2026-09-07 to 2026-10-23)
+
+What follows is the palette B+ replaced, kept for its reasoning — the
+ladder discipline, the contrast test, the dot's rules and the boot
+moment all carried over. Its NUMBERS are history: the values in force are
+the B+ tables above and `skin\palette.py`.
 
 The palette was COBALT (`#11151b` ground, `#1d6dd4` accent). Since
 2026-09-07 it is **LAMPLIGHT**: the app is the light, not the furniture.
