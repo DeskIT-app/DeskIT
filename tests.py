@@ -47790,6 +47790,7 @@ def test_the_app_makes_room_for_a_game_and_takes_it_back():
     app._room_keep_speech = False
     app._room_took_model = False
     app._room_checked_at = 0.0
+    app._room_noted = 0
     app._model_off_words = App.MODEL_OFF_WORDS
     G = 1 << 30
     game = room_mod.Competitor("fortniteclient-win64-shipping", 4242, 7 * G, 0)
@@ -47882,6 +47883,132 @@ def test_the_app_makes_room_for_a_game_and_takes_it_back():
             assert net_mod.held(url) is None
         finally:
             net_mod.release(url)
+
+
+def test_the_room_says_it_is_watching_and_names_a_game_still_under_the_bar():
+    """2026-10-23: GTA V ran 3 min 20 s at commit 90% and app.log could not
+    say whether the watch was alive or the game was still under 2.5 GB.
+    The watch says once that it started, with its bars; a program over
+    room.NOTE that does not count yet is named ONCE per process, with its
+    numbers; a light one, or the same process again, says nothing; and the
+    ladder itself is untouched by the line."""
+    import logging
+    import main as main_mod
+    import room as room_mod
+
+    lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    app_log = logging.getLogger("app")
+    catch, level = _Catch(), app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catch)
+    App = main_mod.App
+    try:
+        app = App.__new__(App)
+        app.cfg = type("C", (), {"room": config_mod.RoomConfig()})()
+        app._room = None
+        app._room_looked = threading.Event()
+        with _patched(room_mod, "LIVE", True), \
+                _patched(App, "_room_loop", lambda self: None):
+            app._start_room()
+        started = [s for s in lines if s.startswith("room: watching")]
+        assert len(started) == 1 and "2.5 GB" in started[0] and "90%" in started[0], lines
+        assert isinstance(app._room, room_mod.Ladder)
+
+        lines.clear()
+        app._room_keep_speech = False
+        app._room_checked_at = 0.0
+        app._room_noted = 0
+        G = 1 << 30
+        loading = room_mod.Competitor("gta5", 777, int(1.4 * G), 0)
+        for t in (0, 5, 10):
+            app._room_tick(room_mod.Reading(loading, 0.90), float(t))
+        under = [s for s in lines if "under the 2.5 GB" in s]
+        assert len(under) == 1, lines
+        assert "gta5 holds 1.4 GB" in under[0] and "commit 90%" in under[0], under
+        assert app._room.rung == 0, "a line is not a step"
+        # a light program is nobody's business; a new process is named again
+        app._room_tick(room_mod.Reading(room_mod.Competitor("discord", 9, G // 2, 0), 0.8), 15.0)
+        app._room_tick(room_mod.Reading(room_mod.Competitor("gta5", 778, int(1.1 * G), 0), 0.8), 20.0)
+        assert len([s for s in lines if "under the" in s]) == 2, lines
+        assert not any("discord" in s for s in lines), lines
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+
+
+def test_a_full_screen_game_under_the_bar_makes_room_and_dictation_stays():
+    """2026-10-23, measured: Fortnite at 1.83 GB of the card + 0.13 GB
+    shared, commit 93% of the limit, rung 0. A program that fills the
+    screen in the foreground counts from room.NOTE (1 GB); the same
+    program NOT full screen does not, nor a light full-screen window (a
+    film); with keep_speech (the default) the ladder stops at the English
+    model however short the machine stays, and everything comes back when
+    the game goes. The full-screen reading never names this app, a
+    NEVER program or the shell's own desktop."""
+    import room as room_mod
+
+    G = 1 << 30
+    fortnite = room_mod.Competitor("fortniteclient-win64-shipping", 67488,
+                                   int(1.83 * G), int(0.13 * G))
+    film = room_mod.Competitor("vlc", 5, int(0.3 * G), 0)
+    ladder = room_mod.Ladder(top=room_mod.ENGLISH, game_gb=room_mod.NOTE / G)
+
+    def at(t, *, game=None, heavy=fortnite, commit=0.93):
+        want = ladder.want(room_mod.Reading(heavy, commit, game), float(t))
+        if want != ladder.rung:
+            ladder.moved(want, float(t))
+        return ladder.rung
+
+    # the heaviest program, but not full screen: an ordinary day
+    for t in (0, 5, 10):
+        assert at(t) == 0
+    assert at(15, game=film, heavy=film) == 0, "a film is not a game"
+    # full screen: the second look holds the local model off
+    assert at(20, game=fortnite) == 0
+    assert at(25, game=fortnite) == room_mod.LOCAL and ladder.holder == fortnite.name
+    # short of commit: the English model, settled — and never the speech model
+    assert at(45, game=fortnite) == room_mod.ENGLISH
+    for t in (65, 85, 105, 125):
+        assert at(t, game=fortnite, commit=0.99) == room_mod.ENGLISH
+    # alt-tabbed out for a minute is still the same game; gone is gone
+    assert at(130, game=None) == room_mod.ENGLISH
+    assert at(189, game=None, heavy=None) == room_mod.ENGLISH
+    assert at(191, game=None, heavy=None) == 0
+    # with keep_speech off, the third step is still there
+    off = room_mod.Ladder(game_gb=room_mod.NOTE / G)
+    for t in (0, 5, 25, 45):
+        want = off.want(room_mod.Reading(None, 0.95, fortnite), float(t))
+        if want != off.rung:
+            off.moved(want, float(t))
+    assert off.rung == room_mod.SPEECH
+    assert config_mod.RoomConfig().keep_speech is True
+
+    # the reading: who may be the full-screen game at all
+    ded = {67488: fortnite.dedicated, 1: 9 * G, 2: 2 * G, 3: 2 * G}
+    shr = {67488: fortnite.shared}
+    names = {67488: "fortniteclient-win64-shipping", 1: "dwm", 2: "pythonw", 3: "chrome"}
+    assert room_mod.full_screen(ded, shr, names, 99, 67488) == fortnite
+    assert room_mod.full_screen(ded, shr, names, 99, 1) is None, "NEVER"
+    assert room_mod.full_screen(ded, shr, names, 2, 2) is None, "this app"
+    assert room_mod.full_screen(ded, shr, names, 99, None) is None
+    assert room_mod.full_screen(ded, shr, names, 99, 3).total == 2 * G
+    # exclusive or borderless covers the monitor, the left one at x -1920
+    # included; a window that stops at the taskbar does not (a maximised
+    # one is refused before the rectangle is even read: IsZoomed)
+    assert room_mod.covers((0, 0, 2560, 1440), (0, 0, 2560, 1440))
+    assert room_mod.covers((-1920, 0, 0, 1080), (-1920, 0, 0, 1080))
+    assert not room_mod.covers((0, 0, 2560, 1392), (0, 0, 2560, 1440))
+    src = Path(room_mod.__file__).read_text("utf-8")
+    assert "IsZoomed" in src.split("def full_screen_pid", 1)[1]
+    assert "progman" in room_mod.SHELL_CLASSES and "workerw" in room_mod.SHELL_CLASSES
+    # the real foreground answers without raising, whatever it is
+    pid = room_mod.full_screen_pid()
+    assert pid is None or pid > 0
 
 
 def test_the_room_section_is_in_the_file_bounded_and_off_the_screen():

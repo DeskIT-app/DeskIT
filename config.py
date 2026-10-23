@@ -807,9 +807,10 @@ class AwakeConfig:
 @dataclass(frozen=True)
 class RoomConfig:
     """Room for a game — see room.py. While another program holds a lot
-    of graphics memory, the local language model, then the English
-    model, then the Hebrew model step aside, each only while the machine
-    is still short; all of it comes back when the program is gone."""
+    of graphics memory (or a full-screen one holds some), the local
+    language model, then the English model — and the Hebrew model only
+    with keep_speech off — step aside, each only while the machine is
+    still short; all of it comes back when the program is gone."""
     enabled: bool = True
     # A program holding at least this much graphics memory (the card's
     # own plus what spilled into system memory) is a competitor.
@@ -823,6 +824,10 @@ class RoomConfig:
     poll_s: float = 5.0
     settle_s: float = 15.0
     exit_s: float = 60.0
+    # The Hebrew model stays while a game runs: the English model and the
+    # local language model step aside, dictation goes on (the owner,
+    # 2026-10-23). False brings back the third step, the model off.
+    keep_speech: bool = True
 
 
 @dataclass(frozen=True)
@@ -2137,6 +2142,7 @@ def build(data: dict) -> Config:
             poll_s=float(room.get("poll_s", RoomConfig.poll_s)),
             settle_s=float(room.get("settle_s", RoomConfig.settle_s)),
             exit_s=float(room.get("exit_s", RoomConfig.exit_s)),
+            keep_speech=bool(room.get("keep_speech", RoomConfig.keep_speech)),
         ),
         notify=NotifyConfig(
             enabled=bool(notify.get("enabled", NotifyConfig.enabled)),
