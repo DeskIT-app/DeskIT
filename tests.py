@@ -13746,7 +13746,10 @@ def test_a_door_that_lands_on_a_tab_shows_nothing_but_the_old_screen_and_the_new
                       for w in board.parts["lock_strip"].winfo_children() if hasattr(w, "_label")]
             assert board._lock_mode == "typing" and labels == ["Open", "Cancel"], labels
             if covered:
-                assert [o for o, _p, _l in tape][:2] == [None, 16], [o for o, _p, _l in tape]
+                # one photograph of the old screen and no frame after it:
+                # the new place is on the glass, in place, the moment the
+                # cover lifts (no slide since 2026-10-23, dashboard.SLIDE)
+                assert [o for o, _p, _l in tape] == [None], [o for o, _p, _l in tape]
                 field = board.parts["lock_field"]
                 assert field.winfo_ismapped(), "the field is not open on the screen"
                 assert board.root.focus_lastfor() == field.entry, "the caret is not in the field"
@@ -13817,23 +13820,26 @@ def test_a_door_that_lands_on_a_tab_shows_nothing_but_the_old_screen_and_the_new
 
 def test_a_tab_asked_for_inside_the_old_slide_leaves_the_page_in_place() -> None:
     """A window with no cover (withdrawn while the dot moves, not mapped
-    yet, GitHub's runner) switches the old way: sheet unmapped, then the
-    six-frame slide. A Settings tab asked for inside that slide
-    cancelled it — and the sheet stayed where the slide had it, 16 px
-    low, for as long as the page was up (review of 2026-09-22). Whatever
-    a rebuild stops is finished, at y 0."""
+    yet, GitHub's runner) switches the old way: sheet unmapped, then put
+    back. That used to be a six-frame slide up from 16 px low, and a
+    Settings tab asked for inside it cancelled it and left the sheet
+    16 px low for as long as the page was up (review of 2026-09-22).
+    Since 2026-10-23 there is no slide (dashboard.SLIDE, his clip read it
+    as the page jumping): the page is at y 0 at once, and a tab asked for
+    right after leaves it there."""
+    import dashboard as dash
     import settings as settings_mod
     with _window() as board:
         if board is None:
             return
+        assert dash.Dashboard.SLIDE == (0,), "the arrival moves again"
         _let_the_switch_land(board)
         board.root.withdraw()
         board.root.update()
         assert board._hold._where() is None
         board._show("Settings")
-        assert board._slide_after is not None and board._arrival_next is None, \
-            "no old slide to stop"
-        assert int(board.sheet.place_info()["y"]) == 16, board.sheet.place_info()
+        assert board._slide_after is None and board._arrival_next is None
+        assert int(board.sheet.place_info()["y"]) == 0, board.sheet.place_info()
         board._settings_go(settings_mod.PRIVACY)
         assert board._slide_after is None
         assert int(board.sheet.place_info()["y"]) == 0, board.sheet.place_info()
@@ -32178,6 +32184,125 @@ def test_a_long_sentence_is_cut_to_the_same_words_without_measuring_every_step(
     pieces = [piece for piece, _c, _p in runs if isinstance(piece, str)]
     assert shown == 1 and pieces == expect, (pieces, expect)
     assert fast * 20 < slow, f"{fast} characters measured against {slow}"
+
+
+def test_a_bar_word_keeps_its_window_whether_it_is_bold_or_not() -> None:
+    """His clip of 2026-10-23: after he left Corrections the bar read
+    "Corrections:" for up to a second, a strip of the bold word left on
+    the glass. The label was packed at its own width, so going regular
+    shrank its window and nothing repainted what it uncovered. It fills
+    its holder now, the bold width, in both weights."""
+    import widgets as widgets_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        tabs = widgets_mod.Tabs(root, ["Home", "Corrections", "Said"],
+                                selected="Corrections")
+        tabs.pack()
+        root.update()
+
+        def widths() -> dict:
+            return {name: (label.winfo_width(), label.master.winfo_width())
+                    for name, (label, _bar) in tabs.items.items()}
+
+        lit = widths()
+        assert all(w == holder for w, holder in lit.values()), lit
+        tabs.select("Said")
+        root.update()
+        assert widths() == lit, (lit, widths())
+    finally:
+        root.destroy()
+
+
+def test_an_answer_leaves_its_list_at_once_and_never_in_the_open() -> None:
+    """His clip of 2026-10-23: a No on Corrections stayed on the screen
+    until the next poll (up to 0.8 s), and then the whole column was
+    cleared and came back row by row in plain sight. The answered row
+    goes with the press now, on Corrections and on Home alike, and the
+    list is redrawn under the switch's cover (`_redraw`); a ✕ on a
+    notification takes its row off before the app has even answered."""
+    import dashboard as dash
+    import notify as notify_mod
+    import ui
+    import widgets as widgets_mod
+
+    class Fake:
+        def __init__(self, items):
+            self.items = items
+
+        def pending(self):
+            return [i for i in self.items if i["status"] == "pending"]
+
+        def decide(self, sid, verdict, by="card"):
+            for item in self.items:
+                if item["id"] == sid and item["status"] == "pending":
+                    item["status"] = verdict
+                    return item
+            return None
+
+    store = Fake([{"id": f"r{i}", "when": f"2026-10-23 12:0{i}:00",
+                   "status": "pending", "proposed": "הטקסט הזה נכון עכשיו.",
+                   "text": "הטקסט הזה נכן עכשיו.",
+                   "changes": [{"before": "נכן", "after": "נכון",
+                                "why": "הגייה דומה"}]} for i in range(3)])
+    with tempfile.TemporaryDirectory() as d, _window() as board:
+        if board is None:
+            return
+        notes = notify_mod.Store(Path(d) / "notify.json")
+        board._review_store = lambda: store
+        board._notify_store = lambda: notes
+        sent: list = []
+        board._ask = lambda command, then=None, **args: sent.append((command, args))
+        covered = board._hold._where() is not None
+        covers: list = []
+        real_cover = board._hold.cover
+        board._hold.cover = lambda: covers.append(1) or real_cover()
+
+        board._show("Corrections")
+        _let_the_switch_land(board)
+
+        def cards() -> int:
+            return sum(1 for w in board.parts["corr_list"].inner.winfo_children()
+                       if isinstance(w, ui.Card))
+
+        assert cards() == 3, cards()
+        covers.clear()
+        board._review_decide("r0", "rejected")
+        assert cards() == 2, "the answered row waited for the poll"
+        assert not board._hold.up and (covers or not covered), \
+            "the column was drawn again in the open"
+
+        board._show("Home")
+        _let_the_switch_land(board)
+
+        def rows() -> int:
+            return sum(1 for w in board.parts["pile_list"].inner.winfo_children()
+                       if isinstance(w, widgets_mod.PileRow))
+
+        def kinds() -> list:
+            return [r["kind"] for r in board._waiting_items()]
+
+        def drawn_as_waiting() -> bool:
+            return rows() == min(dash.PILE_CAP, len(kinds()))
+
+        covers.clear()
+        board._review_decide("r1", "accepted")
+        assert kinds().count("review") == 1 and drawn_as_waiting(), (kinds(), rows())
+        assert not board._hold.up and (covers or not covered)
+
+        one = notes.add({"title": "done", "kind": "done", "source": "test"})
+        board._pile_stamp = object()
+        board._poll_waiting()
+        assert "notify" in kinds() and drawn_as_waiting()
+        board.running = True
+        board._notify_one("dismiss", one["id"])
+        assert sent[-1] == ("notify", {"do": "dismiss", "id": one["id"]}), sent
+        assert "notify" not in kinds() and drawn_as_waiting(), \
+            "the ✕ waited for the app's answer"
+        notes.mark_seen([one["id"]])          # the app's own write, later
+        board._waiting_items()
+        assert not board._notify_gone, "a dismissed id outlived the file's word"
 
 
 def test_a_change_draws_heard_arrow_and_proposal_in_reading_order() -> None:
