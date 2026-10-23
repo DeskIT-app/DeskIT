@@ -18,6 +18,10 @@ Op "read" is Place.read(**args); op "act" is Place.act(do, arg). Calls
 come on threads of their own: hold a lock, as deskweb.Model does. Answer
 a dict with "ok"; {"ok": False, "error": words} is a refusal the page
 shows, and an exception reaches the page as its type name only.
+Everything that comes from the page (do, arg, read's args) is untrusted:
+allowlist do, check every argument before it reaches a file path, a
+process, a URL, a pipe verb or a consent, and answer a failure with the
+exception's type, never its text.
 
 WHO OWNS IT. The Corrections session: this file,
 web/src/places/corrections.tsx and corrections.css, and the Corrections

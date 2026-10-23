@@ -867,26 +867,45 @@ class Model:
             return str(reply.get("error") or "that did not work")
         return str(reply.get("message") or done)
 
+    @staticmethod
+    def _notify_id(arg) -> int | None:
+        """A notification's id as the page sent it: a whole number, or
+        nothing. The app reads an id that will not survive int() as NO id,
+        and no id means every card (main.py's `notify` verb) — so a
+        malformed one from the page would turn "this one" into "all of
+        them", and must never reach the pipe."""
+        if isinstance(arg, bool):
+            return None
+        if isinstance(arg, int):
+            return arg
+        if isinstance(arg, str) and arg.strip().isdigit() and len(arg) < 20:
+            return int(arg)
+        return None
+
     def _do(self, do: str, arg) -> str:
+        if do in ("notify.dismiss", "notify.open"):
+            ident = self._notify_id(arg)
+            if ident is None:
+                return "that message is not here"
         if do == "notify.dismiss":
             if not self.running:
                 try:
                     import notify as notify_mod
-                    notify_mod.Store(paths.NOTIFY_FILE).mark_seen([arg])
+                    notify_mod.Store(paths.NOTIFY_FILE).mark_seen([ident])
                 except Exception as e:    # noqa: BLE001
-                    return f"could not mark that seen: {e}"
+                    return f"could not mark that seen ({type(e).__name__})"
                 return ""
             # the row goes with the press, not with the app's answer
-            self._gone.add(arg)
-            reply = self._ask("notify", do="dismiss", id=arg)
+            self._gone.add(ident)
+            reply = self._ask("notify", do="dismiss", id=ident)
             if reply is None or not reply.get("ok"):
-                self._gone.discard(arg)
+                self._gone.discard(ident)
                 return self._said(reply, "")
             return ""
         if do == "notify.open":
             if not self.running:
                 return "nothing is running — start it to reach what sent that"
-            return self._said(self._ask("notify", do="open", id=arg), "")
+            return self._said(self._ask("notify", do="open", id=ident), "")
         if do == "notify.dismiss_all":
             try:
                 import notify as notify_mod
@@ -900,7 +919,7 @@ class Model:
                     import notify as notify_mod
                     notify_mod.Store(paths.NOTIFY_FILE).mark_seen()
                 except Exception as e:    # noqa: BLE001
-                    return f"could not mark them seen: {e}"
+                    return f"could not mark them seen ({type(e).__name__})"
                 return "all marked seen"
             reply = self._ask("notify", do="dismiss")
             if reply is None or not reply.get("ok"):
@@ -913,7 +932,7 @@ class Model:
                 item = review_mod.Store(paths.REVIEW_FILE).decide(str(arg), verdict,
                                                                   by="dashboard")
             except Exception as e:        # noqa: BLE001
-                return f"could not save that: {e}"
+                return f"could not save that ({type(e).__name__})"
             if item is None:
                 return "that one was already decided"
             self._send("review_absorb", timeout_ms=1500)
@@ -930,11 +949,25 @@ class Model:
             return self._said(reply, "screens off — they stay off until you tap again"
                               if dark else "screens on")
         if do == "consent.on":
+            # The kind comes from the page: only a gate this desk is asking
+            # about again (its words changed, not waved away) may be granted
+            # here — the Tk desk binds it from its own row. privacy.grant
+            # takes any known kind, and a gate opens only through its card.
             try:
                 import privacy
-                privacy.grant(str(arg))
+                privacy.configure(config_mod.load_layered())
+                waiting = [k for k in privacy.stale() if k not in self._consent_later]
             except Exception as e:        # noqa: BLE001
-                log.warning("could not record the consent for %s: %s", arg, e)
+                log.warning("could not read the consents: %s", type(e).__name__)
+                return "could not record that"
+            kind = arg if isinstance(arg, str) else ""
+            if kind not in waiting:
+                return "that consent is not waiting for an answer"
+            try:
+                privacy.grant(kind)
+            except Exception as e:        # noqa: BLE001
+                log.warning("could not record the consent for %s: %s", kind,
+                            type(e).__name__)
                 return "could not record that"
             return "turned on"
         if do == "consent.later":
@@ -1202,7 +1235,7 @@ def _shot(path: str, place: str):
         note: dict = {}
         try:
             if place and place != "Home":
-                desk.js(f"window.location.hash = '#/{place.lower()}'")
+                desk.js("window.location.hash = " + json.dumps("#/" + place.lower()))
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
                 if desk.js("document.body.dataset.read === '1'") is True:

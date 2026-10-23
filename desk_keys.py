@@ -16,6 +16,10 @@ None) — a test's or a probe's stubbed pipe arrives the same way. Op
 on threads of their own: hold a lock, as deskweb.Model does. Answer a
 dict with "ok"; {"ok": False, "error": words} is a refusal the page
 shows, and an exception reaches the page as its type name only.
+Everything that comes from the page (do, arg, read's args) is untrusted:
+allowlist do, check every argument before it reaches a file path, a
+process, a URL, a pipe verb or a consent, and answer a failure with the
+exception's type, never its text.
 
 WHO OWNS IT. The Keys session: this file, web/src/places/keys.tsx and
 keys.css, and the Keys section of tests.py (web/README.md).

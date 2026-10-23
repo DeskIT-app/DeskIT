@@ -87,6 +87,10 @@ in `kit.css` and `bplus.css`.
 by `deskweb.Api.place` with the window's pipe function (`send`, as
 `control.send`). `read(**args)` answers what the page draws, `act(do, arg)`
 does a button; both answer a dict with `"ok"`, `{"ok": False, "error":
-words}` to refuse. Calls arrive on threads of their own — hold a lock, as
+words}` to refuse. Everything that comes from the page — `do`,
+`arg`, `read`'s args — is untrusted: allowlist `do`, and check every
+argument before it reaches a file path, a process, a URL, a pipe verb or
+a consent (`deskweb.Model._do`'s `consent.on` and `open_old_desk` are the
+pattern); a failure answers with the exception's type, never its text. Calls arrive on threads of their own — hold a lock, as
 `deskweb.Model` does. Same sources and same words as the Tk desk's
 builder for that place (each stub's docstring names it).

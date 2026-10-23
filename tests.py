@@ -50753,6 +50753,55 @@ def test_web_desk_home_is_wired():
     assert 'import HomePlace, { Landing } from "./places/home";' in app
 
 
+def test_the_web_desk_trusts_no_argument_from_the_page():
+    """The page names what its buttons answer, and the page is not trusted
+    with it. consent.on grants only a gate this desk is asking about again
+    (privacy.stale, not waved away with Not now) — never another gate,
+    which opens only through its own card, and never on an argument that
+    is not a plain name; a notification's id is a whole number or the
+    press is refused, because the app reads a malformed id as every card;
+    the old desk opens only at a place on the bar; and a press that fails
+    says so with the exception's type, never its text (a path, a
+    message)."""
+    import deskweb
+    import notify as notify_mod
+    import privacy
+
+    granted, spawned = [], []
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked),             _patched(privacy, "stale", lambda: ["cloud_text"]),             _patched(privacy, "configure", lambda cfg: None),             _patched(privacy, "grant", lambda kind, *a, **k: granted.append(kind) or {}):
+        for arg in ("cloud_audio", "account", ["cloud_text"], {"k": 1}, None, "x" * 5000):
+            note = model.act("consent.on", arg)["note"]
+            assert note == "that consent is not waiting for an answer", (arg, note)
+        model.act("consent.later", "cloud_text")
+        assert model.act("consent.on", "cloud_text")["note"]             == "that consent is not waiting for an answer"
+        assert granted == []
+        model._consent_later.clear()
+        assert model.act("consent.on", "cloud_text")["note"] == "turned on"
+        assert granted == ["cloud_text"]
+    # a notification's id: the app reads one it cannot int() as no id, and
+    # no id means EVERY card — a malformed one never reaches the pipe
+    with _web_desk(_WEB_STATUS) as (model, _folder, asked):
+        for do in ("notify.dismiss", "notify.open"):
+            for arg in (None, "", "abc", "1; x", [3], {"id": 3}, True, 1.5, "9" * 40):
+                assert model.act(do, arg)["note"] == "that message is not here", (do, arg)
+        assert not [c for c, _a in asked if c == "notify"], asked
+        model.act("notify.dismiss", 7)
+        model.act("notify.open", "8")
+        assert [a for c, a in asked if c == "notify"] == [{"do": "dismiss", "id": 7},
+                                                         {"do": "open", "id": 8}], asked
+    with _patched(deskweb.launch, "spawn", lambda args: spawned.append(args) or True):
+        for place in ("Said", "Nowhere", "--config=x", ["Keys"], None):
+            deskweb.open_old_desk(place if isinstance(place, str) else str(place))
+    assert [a[1:] for a in spawned] == [["--tk", "--place", "Said"]] + [["--tk"]] * 4, spawned
+
+    def refused(self, ids=None):
+        raise PermissionError(13, "denied", r"C:\Users\someone\secret.json")
+
+    with _web_desk(None) as (model, _folder, _asked),             _patched(notify_mod.Store, "mark_seen", refused):
+        note = model.act("notify.dismiss", 1)["note"]
+    assert note == "could not mark that seen (PermissionError)", note
+
+
 def test_the_web_desk_home_says_what_the_tk_home_says():
     """deskweb.Model.home(): the Tk desk's headline and subline words,
     the newest three of the merged pile with ONE lit button across all
