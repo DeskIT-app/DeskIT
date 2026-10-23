@@ -10,12 +10,29 @@
 # file with --no-deps; vendor/av answers the import and the Recording
 # pack brings the real one. test_lock_has_hashes holds av out.
 #
+# ...and the web desk's five are put IN by hand (2026-10-23): pywebview,
+# pythonnet, clr-loader, bottle and proxy-tools, each hash read from
+# PyPI's JSON API (urls[].digests.sha256, file by file — never a summary,
+# never the blake2b digest beside it). pythonnet carries ONE hash, its
+# none-win32.win_amd64 wheel's: that wheel holds the netstandard facades
+# .NET Framework needs, the none-any one does not. proxy-tools exists on
+# PyPI only as an sdist, so its wheel is built from that sdist byte for
+# byte by dev/proxy_tools_wheel.py and committed in packaging/wheels/;
+# the hash below is that file's, and the line under this comment is
+# where pip finds it (a relative path in a requirements file is read
+# from the file's own folder).
+#
+--find-links packaging/wheels
+
 anyio==4.14.2 \
     --hash=sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494 \
     --hash=sha256:cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f
     # via
     #   -c constraints.txt
     #   httpx
+bottle==0.13.4 \
+    --hash=sha256:045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e
+    # via pywebview
 certifi==2026.7.22 \
     --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
     --hash=sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55
@@ -126,6 +143,7 @@ cffi==2.1.1 \
     --hash=sha256:fcd22650c908d7b7da162bbfaab594a1227a15d1643a98c68b122ac642fa2264
     # via
     #   -c constraints.txt
+    #   clr-loader
     #   sounddevice
 click==8.4.2 \
     --hash=sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6 \
@@ -133,6 +151,9 @@ click==8.4.2 \
     # via
     #   -c constraints.txt
     #   huggingface-hub
+clr-loader==0.3.1 \
+    --hash=sha256:cbad189de20d202a7d621956b0fc38049e13c9bf7ca2923441eff725cd121aa1
+    # via pythonnet
 colorama==0.4.6 \
     --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
     --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
@@ -481,6 +502,9 @@ protobuf==7.35.1 \
     # via
     #   -c constraints.txt
     #   onnxruntime
+proxy-tools==0.1.0 \
+    --hash=sha256:8572f3d437d3d01e8ba184f6264dfe123c1eded5c4174f680d76bc6ab2106132
+    # via pywebview
 psutil==7.2.2 \
     --hash=sha256:0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372 \
     --hash=sha256:076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9 \
@@ -518,6 +542,12 @@ pycparser==3.0 \
     # via
     #   -c constraints.txt
     #   cffi
+pythonnet==3.1.0 \
+    --hash=sha256:7bdd4de03df3547a48122a3989265c8b31d5be0d19dadffa009eec7df8085e0b
+    # via pywebview
+pywebview==6.2.1 \
+    --hash=sha256:9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46
+    # via -r requirements.txt
 pywin32==312 \
     --hash=sha256:02ebca0f0242b75292e218065004310d6a477407c09fa449bfe4f6022bc0c0fc \
     --hash=sha256:17948aeadbdb091f0ced6ef0841620794e68327b94ee415571c1203594b7215c \
@@ -666,6 +696,7 @@ typing-extensions==4.16.0 \
     #   -c constraints.txt
     #   anyio
     #   huggingface-hub
+    #   pywebview
 
 # The following packages are considered to be unsafe in a requirements file:
 pip==26.2.1 \

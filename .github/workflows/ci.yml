@@ -88,3 +88,32 @@ jobs:
       - name: The guide
         shell: pwsh
         run: python dev/test_docs.py
+
+  # The web desk's pages, built exactly as release.yml's step 6a builds
+  # them — Node 22, the committed lock, no install script — so a page that
+  # does not type-check or bundle shows on the push that broke it and not
+  # on the day of a release. Its own job: the product suite needs no pages
+  # (deskweb.ready() is False without them, which is what the suite tests).
+  pages:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    concurrency:
+      group: pages-sha-${{ github.sha }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Build the pages
+        shell: pwsh
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE) { throw "npm ci failed" }
+          npm run build
+          if ($LASTEXITCODE) { throw "npm run build failed" }
+          if (-not (Test-Path dist/index.html)) { throw "no dist/index.html" }
+          Get-ChildItem -Recurse dist -File | ForEach-Object { "{0,10}  {1}" -f $_.Length, $_.Name }

@@ -91,6 +91,9 @@ OFL's sense: their name tables were rewritten (install_fonts.py) so
 Windows keeps the four weights apart; upstream declares no Reserved
 Font Name. The fonts are never sold on their own.
 Source: https://fonts.google.com/specimen/Rubik
+The same file as fonts\Rubik.ttf is also inside the web desk's built
+pages, app\web\dist\assets\Rubik-<hash>.ttf (the bundler copies it there
+under a content-hashed name); the same licence covers it.
 
 --------------------------------------------------------------------------------
 Skia — the graphics library inside the skia-python wheel (skin pack)
@@ -137,6 +140,160 @@ Text: the LICENSE file of the sounddevice wheel carries PortAudio's own
 text in the generated half above; the request in that licence — to
 send improvements back to the PortAudio community — is noted here.
 Source: http://www.portaudio.com/
+
+--------------------------------------------------------------------------------
+Microsoft Edge WebView2 SDK 1.0.3856.49 — inside the pywebview wheel
+--------------------------------------------------------------------------------
+Files: webview\lib\Microsoft.Web.WebView2.Core.dll,
+Microsoft.Web.WebView2.WinForms.dll and
+runtimes\win-{x64,x86,arm64}\native\WebView2Loader.dll under
+python\Lib\site-packages (file version 1.0.3856.49). pywebview ships them
+without their licence; the text below is the LICENSE.txt of the
+Microsoft.Web.WebView2 1.0.3856.49 NuGet package, verbatim. The package's
+NOTICE.txt lists the ANTLR 3 runtime and StringTemplate 4 (BSD-3): none
+of their strings is in the three DLLs (checked 2026-10-23).
+The WebView2 Runtime these talk to is NOT shipped: it is part of Windows
+(Evergreen), under Microsoft's own terms.
+
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * The name of Microsoft Corporation, or the names of its contributors
+may not be used to endorse or promote products derived from this
+software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Source: https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3856.49
+
+--------------------------------------------------------------------------------
+.NET Standard 2.0 facades for .NET Framework — inside the pythonnet wheel
+--------------------------------------------------------------------------------
+Files: netstandard.dll and the 95 Microsoft.Win32.*/System.*.dll beside
+it in python\Lib\site-packages\pythonnet\runtime (file version
+4.6.26011, "(c) Microsoft Corporation"), carried by pythonnet's
+none-win32.win_amd64 wheel so that its netstandard2.0 runtime loads on
+.NET Framework 4.7.2+. pythonnet's own MIT licence (Python.Runtime.dll)
+is in the generated half above. The facades are part of .NET; the text
+below is the LICENSE.TXT of the NETStandard.Library 2.0.3 NuGet package,
+verbatim.
+
+The MIT License (MIT)
+
+Copyright (c) .NET Foundation and Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Source: https://github.com/dotnet/standard
+
+--------------------------------------------------------------------------------
+proxy_tools 0.1.0 — a dependency of pywebview
+--------------------------------------------------------------------------------
+Copyright (c) 2014 Jonathan Tushman
+Licence: MIT (the sdist's PKG-INFO: "License: MIT"); the MIT text is the
+one under Whisper above. The sdist carries no licence file of its own,
+and the wheel DeskIT installs is made from that sdist by
+dev/proxy_tools_wheel.py with the module unchanged.
+The module's own header says it is "Extracted from Werkzeug",
+"(c) 2013 by Armin Ronacher", under "BSD, see LICENSE for more details"
+— a LICENSE the sdist does not include. Werkzeug is published under the
+BSD 3-Clause licence; its conditions, as the OSI publishes the 3-clause
+form:
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Source: https://pypi.org/project/proxy_tools/0.1.0/
+https://github.com/jtushman/proxy_tools
+
+--------------------------------------------------------------------------------
+React 19.3.0, react-dom 19.3.0, scheduler 0.28.0 — in the web desk's pages
+--------------------------------------------------------------------------------
+Bundled into app\web\dist\assets\index-<hash>.js by the build (npm ci
+from web\package-lock.json, then vite build); the bundler drops the
+packages' own licence comments, so the notice is here. The three
+packages carry the same LICENSE file, verbatim:
+
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Source: https://github.com/facebook/react
 
 --------------------------------------------------------------------------------
 Ollama — not shipped; installed by the user for "on this computer"

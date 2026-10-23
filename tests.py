@@ -38399,6 +38399,43 @@ def test_network_md_matches_net_py():
     assert "us.aws.cdn.hf.co" in page and "Offline" in page
 
 
+def test_the_web_window_is_held_shut_and_network_md_says_how():
+    """The web desk's WebView2 is the one window outside net.py, so its
+    start flags carry what the 2026-10-23 census proved: one
+    --disable-features list (SmartScreen, and msOneAuthWAM — Edge's
+    sign-in with the Windows account, which opened two connections to
+    substrate.office.com on every start after the first, unseen by any
+    netlog), no background networking, no component updater, no name
+    lookups, no proxy. NETWORK.md and the privacy policy say so with the
+    numbers and say what no app can switch off (WebView2's required
+    diagnostic data); substrate.office.com is named there as what WAS
+    seen, never as a host DeskIT talks to (no backticks — the allowlist
+    test above reads those). The census tool silences sound before it
+    imports anything of the app (house rule 8)."""
+    import webdesk
+
+    flags = webdesk.BASE_ARGS
+    assert sum(a.startswith("--disable-features=") for a in flags) == 1, flags
+    disabled = set(flags[0].split("=", 1)[1].split(","))
+    assert {"msSmartScreenProtection", "msOneAuthWAM"} <= disabled, disabled
+    for flag in ("--disable-background-networking", "--disable-component-update",
+                 '--host-resolver-rules="MAP * ~NOTFOUND"', "--no-proxy-server"):
+        assert flag in flags, flag
+    page = (REPO / "NETWORK.md").read_text("utf-8")
+    section = page[page.index("## The desk's web window (WebView2)"):page.index("## What never goes out")]
+    for must in ("`msOneAuthWAM`", "155.0.4283.62", "substrate.office.com", "`dev\\web_census.py`",
+                 "180 s — 0", "15 minutes", "required diagnostic data", "deskit.example"):
+        assert must in section, must
+    assert "`substrate.office.com`" not in page and "`deskit.example`" not in page
+    assert page.index("the web desk's\nWebView2") < page.index("## Hosts")
+    policy = " ".join((REPO / "docs" / "privacy.md").read_text("utf-8").split())
+    assert "Microsoft Edge WebView2" in policy and "Diagnostics & feedback" in policy
+    assert "DeskIT neither sends it nor sees it" in policy
+    census = (REPO / "dev" / "web_census.py").read_text("utf-8")
+    assert census.index("winsound.PlaySound = lambda") < census.index("import control")
+    assert "\nimport psutil" not in census and "\nimport webview" not in census
+
+
 def test_diagnose_leaves_out_log_lines_that_hold_hebrew():
     """The second belt behind D8 (2026-09-23 audit: 136 lines with Hebrew
     in six days of the owner's app.log, and Copy diagnostics says "no
@@ -43106,6 +43143,223 @@ def test_lock_has_hashes():
         assert gone not in pinned, f"{gone} is in the lock"
     assert "--index-url" not in lock and "--extra-index-url" not in lock, \
         "the lock names an index; the build uses --no-index"
+
+
+# ------------------------- the web desk in the release (2026-10-23, web-ship)
+#
+# The release CARRIES the web desk before it opens it: the five packages
+# in the lock, the built pages in app\web\dist, the notices, and one line
+# (deskweb.LAUNCHED) that the launch flips.
+
+#: PyPI's own digests (the JSON API's urls[].digests.sha256, read file by
+#: file on 2026-10-23), except proxy-tools: that is OUR wheel's.
+WEB_DESK_PINS = {
+    "pywebview": ("6.2.1", "9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46"),
+    "pythonnet": ("3.1.0", "7bdd4de03df3547a48122a3989265c8b31d5be0d19dadffa009eec7df8085e0b"),
+    "clr-loader": ("0.3.1", "cbad189de20d202a7d621956b0fc38049e13c9bf7ca2923441eff725cd121aa1"),
+    "bottle": ("0.13.4", "045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e"),
+    "proxy-tools": ("0.1.0", "8572f3d437d3d01e8ba184f6264dfe123c1eded5c4174f680d76bc6ab2106132"),
+}
+
+
+def _proxy_tools_wheel_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "proxy_tools_wheel", REPO / "dev" / "proxy_tools_wheel.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_web_desk_is_in_the_lock_with_its_own_proxy_tools_wheel():
+    """pywebview and its four are pinned in requirements.lock with ONE
+    hash each — pythonnet's is its none-win32.win_amd64 wheel, the one
+    that carries the .NET Framework facades — and requirements.txt asks
+    for pywebview. proxy-tools is an sdist on PyPI and the builds take
+    wheels only, so its pin is the committed packaging/wheels file, found
+    through the lock's own --find-links; that file's module is the
+    sdist's byte for byte, and dev/proxy_tools_wheel.py rebuilds the
+    whole file from it identically (STORED entries, one timestamp). The
+    hashes webdesk.py's docstring names are the lock's, so the two
+    places cannot drift."""
+    import hashlib
+    import zipfile
+
+    lock = (REPO / "requirements.lock").read_text("utf-8")
+    for name, (version, sha) in WEB_DESK_PINS.items():
+        m = re.search(rf"^{re.escape(name)}=={re.escape(version)} \\\n((?:    --hash=sha256:\w+(?: \\)?\n)+)",
+                      lock, re.M)
+        assert m, f"{name}=={version} is not pinned the lock's way"
+        assert re.findall(r"sha256:(\w+)", m.group(1)) == [sha], (name, m.group(1))
+    assert re.search(r"^--find-links packaging/wheels$", lock, re.M), "pip cannot find the wheel"
+    assert "pywebview" in _requirement_names((REPO / "requirements.txt").read_text("utf-8"))
+    doc = (REPO / "webdesk.py").read_text("utf-8")
+    for name in ("pywebview", "pythonnet", "clr-loader", "bottle"):
+        assert WEB_DESK_PINS[name][1] in doc, f"webdesk.py names another {name} than the lock"
+    ptw = _proxy_tools_wheel_module()
+    wheels = REPO / "packaging" / "wheels"
+    assert sorted(p.name for p in wheels.iterdir()) == [ptw.WHEEL]
+    data = (wheels / ptw.WHEEL).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == WEB_DESK_PINS["proxy-tools"][1]
+    with zipfile.ZipFile(wheels / ptw.WHEEL) as z:
+        module = z.read("proxy_tools/__init__.py")
+        assert {i.compress_type for i in z.infolist()} == {zipfile.ZIP_STORED}
+        record = z.read("proxy_tools-0.1.0.dist-info/RECORD").decode()
+    assert hashlib.sha256(module).hexdigest() == ptw.MODULE_SHA256
+    assert "proxy_tools/__init__.py,sha256=" in record and record.endswith("RECORD,,\n")
+    assert ptw.build(module) == data, "the committed wheel is not what the builder makes"
+    try:
+        ptw.build(module + b"\n")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a module that is not the sdist's was packed")
+    attrs = (REPO / ".gitattributes").read_text("utf-8")
+    assert "packaging/wheels/*.whl          binary" in attrs, "a checkout could rewrite the wheel's bytes"
+
+
+def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
+    """web\\ is export-ignored, sources and npm lock alike; release.yml
+    builds the pages (Node 22, npm ci from the committed lock with no
+    install script, npm run build) and puts web\\dist into app\\web\\dist
+    — paths.WEB_DIST — after the archive and before the manifest, which
+    then lists them (and a changed page is a difference --verify names).
+    The staged tree imports webview and clr, because release.yml never
+    runs pip check; the installed tree is checked for the pages; ci.yml
+    builds the pages on every push, build_local.ps1 the way the release
+    does; store.yml takes app\\ whole from the release's installer and
+    verifies it, so the Store copy inherits the pages."""
+    import manifest
+
+    rel = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    archive = rel.index("- name: git archive")
+    pages = rel.index("- name: The web desk's pages")
+    listed = rel.index("- name: MANIFEST.sha256")
+    assert archive < pages < listed, "the pages are placed after the manifest is written"
+    forbidden = rel[archive:pages]
+    assert '"packaging", "android", "web",' in forbidden, "the archive is not checked for web\\"
+    assert "actions/setup-node@v5" in forbidden and 'node-version: "22"' in forbidden
+    step = rel[pages:listed]
+    for must in ("npm ci --ignore-scripts", "npm run build", "Copy-Item -Recurse web/dist stage/app/web/dist",
+                 '"*.map"', "index.html"):
+        assert must in step, must
+    assert "app/web/dist/index.html" in rel[listed:rel.index("- name: Attest MANIFEST.sha256")]
+    start = rel[rel.index("- name: The staged tree starts"):rel.index("- name: CHANNEL")]
+    assert "sounddevice, webview, clr" in start and "$LASTEXITCODE" in start
+    assert "app\\web\\dist\\index.html" in rel[rel.index("- name: Silent install, verify, uninstall"):]
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text("utf-8")
+    job = ci[ci.index("\n  pages:"):]
+    for must in ("actions/setup-node@v5", 'node-version: "22"', "working-directory: web",
+                 "npm ci --ignore-scripts", "npm run build"):
+        assert must in job, must
+    local = (REPO / "packaging" / "build_local.ps1").read_text("utf-8")
+    assert local.index("npm run build") < local.index('app\\web\\dist")') < local.index("manifest.py\") write")
+    assert "sounddevice, webview, clr" in local
+    attrs = (REPO / ".gitattributes").read_text("utf-8")
+    assert re.search(r"^web/\s+export-ignore$", attrs, re.M)
+    assert "ignore-scripts=true" in (REPO / "web" / ".npmrc").read_text("utf-8")
+    assert json.loads((REPO / "web" / "package.json").read_text("utf-8"))["engines"]["node"].startswith(">=22")
+    assert (REPO / "web" / "package-lock.json").is_file()
+    assert paths.WEB_DIST == paths.APP_DIR / "web" / "dist"
+    tree = Path(tempfile.mkdtemp(prefix="webship-tree-", dir=_SCRATCH_HOME))
+    for rel_path, body in (("python/python.exe", b"py"), ("app/main.py", b"main"),
+                           ("app/web/dist/index.html", b"<!doctype html>"),
+                           ("app/web/dist/assets/index-x.js", b"js")):
+        (tree / rel_path).parent.mkdir(parents=True, exist_ok=True)
+        (tree / rel_path).write_bytes(body)
+    manifest.write(tree)
+    rows = {r for _s, _n, r in manifest.read(tree / manifest.NAME)}
+    assert {"app/web/dist/index.html", "app/web/dist/assets/index-x.js"} <= rows, rows
+    (tree / "app/web/dist/assets/index-x.js").write_bytes(b"changed")
+    assert manifest.verify(tree) == ["changed: app/web/dist/assets/index-x.js"]
+    store = (REPO / ".github" / "workflows" / "store.yml").read_text("utf-8")
+    assert 'foreach ($part in "python", "app")' in store and "main.py --verify" in store
+
+
+def test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback():
+    """deskweb.LAUNCHED is the launch, one line, and it is not flipped:
+    False — the web desk is the checkout's, and only when [desk] web asks;
+    True — every copy's, defaults.toml's `false` no longer decides, a
+    person's own `[desk] web = false` (state.json over settings.toml)
+    still opens Tk, and wherever the window cannot open (ready() no) the
+    Tk desk opens; a broken settings file is Tk, never a crash. And
+    dashboard.main opens Tk when the web desk answers 2 or 3."""
+    import deskweb
+
+    src = (REPO / "deskweb.py").read_text("utf-8")
+    assert re.findall(r"^LAUNCHED = (\w+)$", src, re.M) == ["False"], \
+        "the launch is ONE line, and it is the launch session's to flip"
+    assert deskweb.LAUNCHED is False
+    folder = Path(tempfile.mkdtemp(prefix="webdesk-launch-", dir=_SCRATCH_HOME))
+    state, settings = folder / "state.json", folder / "settings.toml"
+    off = config_mod.load(REPO / "defaults.toml")
+    assert off.desk.web is False
+    on = dataclasses.replace(off, desk=config_mod.DeskConfig(web=True))
+
+    def wanted(launched, developer, layered, ready, state_text=None, settings_text=None):
+        for f in (state, settings):
+            f.unlink(missing_ok=True)
+        if state_text is not None:
+            state.write_text(state_text, "utf-8")
+        if settings_text is not None:
+            settings.write_text(settings_text, "utf-8")
+        with _patched(deskweb, "LAUNCHED", launched), _patched(paths, "DEVELOPER", developer), \
+                _patched(paths, "STATE_FILE", state), _patched(paths, "SETTINGS_FILE", settings), \
+                _patched(config_mod, "load_layered", lambda *a, **k: layered), \
+                _patched(deskweb, "ready", lambda: ready):
+            return deskweb.wanted()
+
+    # today: a release never opens it, the checkout does when asked
+    assert wanted(False, False, on, True) is False
+    assert wanted(False, True, off, True) is False
+    assert wanted(False, True, on, True) is True
+    assert wanted(False, True, on, False) is False
+    # launched: every copy, Tk where it cannot open or where its person said so
+    assert wanted(True, False, off, True) is True
+    assert wanted(True, True, off, True) is True
+    assert wanted(True, False, off, False) is False
+    assert wanted(True, False, off, True, state_text='{"desk.web": false}') is False
+    assert wanted(True, False, off, True, settings_text="[desk]\nweb = false\n") is False
+    assert wanted(True, False, off, True, settings_text="[desk]\nweb = true\n") is True
+    assert wanted(True, False, off, True, state_text='{"desk.web": true}',
+                  settings_text="[desk]\nweb = false\n") is True
+    assert wanted(True, False, off, True, settings_text="[desk\nweb = ") is False
+    body = (REPO / "dashboard.py").read_text("utf-8")
+    body = body[body.index("def main() -> int:"):]
+    assert "deskweb.wanted() and deskweb.main([]) not in (2, 3)" in body
+    assert body.index("deskweb.wanted()") < body.index("desk = Dashboard()")
+
+
+def test_the_web_desk_notices_name_what_its_wheels_and_pages_carry():
+    """THIRD-PARTY-NOTICES' hand-written half names what pip-licenses
+    cannot see: the WebView2 SDK DLLs inside pywebview's wheel (BSD-3, at
+    the version those DLLs are), the .NET facades inside pythonnet's,
+    proxy_tools (no licence file in its sdist), and React, react-dom and
+    scheduler, bundled into the pages with their comments stripped — at
+    the versions web\\package-lock.json holds, so a bump fails here
+    until the notice follows."""
+    text = (REPO / "dev" / "notices-extra.txt").read_text("utf-8")
+    for heading in ("Microsoft Edge WebView2 SDK 1.0.3856.49 — inside the pywebview wheel",
+                    ".NET Standard 2.0 facades for .NET Framework — inside the pythonnet wheel",
+                    "proxy_tools 0.1.0 — a dependency of pywebview",
+                    "React 19.3.0, react-dom 19.3.0, scheduler 0.28.0 — in the web desk's pages"):
+        assert heading in text, heading
+    assert "Copyright (C) Microsoft Corporation. All rights reserved." in text
+    assert "Copyright (c) .NET Foundation and Contributors" in text
+    assert "Copyright (c) Meta Platforms, Inc. and affiliates." in text
+    npm = json.loads((REPO / "web" / "package-lock.json").read_text("utf-8"))["packages"]
+    assert [npm[f"node_modules/{p}"]["version"] for p in ("react", "react-dom", "scheduler")] == \
+        ["19.3.0", "19.3.0", "0.28.0"]
+    import importlib.util
+    spec = importlib.util.find_spec("webview")
+    if spec is None:
+        return                              # a venv without the web desk
+    import win32api
+    core = Path(spec.origin).parent / "lib" / "Microsoft.Web.WebView2.Core.dll"
+    info = win32api.GetFileVersionInfo(str(core), "\\")
+    ms, ls = info["FileVersionMS"], info["FileVersionLS"]
+    assert f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}" == "1.0.3856.49", \
+        "pywebview's WebView2 SDK moved; the notice names another version"
 
 
 def test_pth_lines():

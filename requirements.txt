@@ -12,6 +12,14 @@ comtypes                    # taskbar relaunch properties (dashboard.py), pycaw'
 pillow                      # every card, the keyboard picture, the skin's textures
 skia-python                 # the skin: the glass dot, boot, shelf and notify cards — the same look on a fresh install as on the owner's desk (2026-09-19; 10.9 MB)
 
+# The web desk (deskweb.py in webdesk.py's WebView2 window, 2026-10-23):
+# in every copy so the launch is one line (deskweb.LAUNCHED), opened only
+# where that line and [desk] web say. Brings pythonnet (pinned to its
+# win32.win_amd64 wheel, which carries the .NET Framework facades),
+# clr-loader, bottle and proxy-tools — the last one a wheel of our own
+# making from its PyPI sdist (dev/proxy_tools_wheel.py, packaging/wheels).
+pywebview
+
 # Backend B: local Hebrew transcription (no quota, works offline). Brings
 # ctranslate2, onnxruntime (Silero VAD), huggingface_hub, tokenizers and
 # av along as its own dependencies.

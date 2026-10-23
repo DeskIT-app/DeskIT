@@ -184,8 +184,26 @@ SCRUB_PREFIXES = ("WEBVIEW2_", "PYWEBVIEW_", "PYTHONNET_")
 #: (Chromium's IPv6-route probe: connect() on UDP sends no packet), and
 #: WebView2's "required diagnostic data", which goes through Windows'
 #: own telemetry and not the network service — not measurable here.
+#:
+#: msOneAuthWAM — what the netlog could NOT see (2026-10-23, runtime
+#: 155.0.4283.62, dev\web_census.py: every socket of every process under
+#: the desk, 4x a second). A fresh profile held no socket for 180 s; on
+#: every start AFTER the first, the BROWSER process opened two TLS
+#: connections to substrate.office.com (40.99.44.x, the DNS cache said so
+#: at the moment they opened) ~2 s after the page loaded and kept them,
+#: plus a port-80 certificate check to Akamai. It is Edge's own sign-in:
+#: OneAuth asks Windows' account broker (WAM) for the Windows account's
+#: token and fetches that account's profile and photo
+#: (edge_auth/account_info_fetcher, substrate.office.com/profileb2 and
+#: /imageb2 in msedge.dll) — through Windows' HTTP stack and resolver,
+#: which is why --host-resolver-rules and the netlog never saw it.
+#: Bisected on a copy of that warm profile, 45 s a run: msOneAuthWAM
+#: alone -> 0 sockets; msImplicitSignin alone 3, msIdentityCore alone 2,
+#: msEdgeOSAccountInfoSubstrate alone 2. With it in the list, a fresh
+#: start and the warm one after it held 0 sockets (numbers in
+#: NETWORK.md). Re-run the census on a new runtime before trusting this.
 BASE_ARGS = (
-    "--disable-features=ElasticOverscroll,msSmartScreenProtection",
+    "--disable-features=ElasticOverscroll,msSmartScreenProtection,msOneAuthWAM",
     "--disable-background-networking",
     "--disable-component-update",
     '--host-resolver-rules="MAP * ~NOTFOUND"',
