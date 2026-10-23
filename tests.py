@@ -20745,6 +20745,23 @@ def test_the_b_plus_pieces_stay_inside_their_own_box() -> None:
     idle = Image.new("RGBA", (60, 60), (0, 0, 0, 0))
     look.lamp(idle, 30, 30, "idle", r=4)
     assert lit.getpixel((30, 39))[3] > 0 and idle.getpixel((30, 39))[3] == 0
+    # The primary's light scales with its pill: a fixed 18 px pool was
+    # degenerate under the second reading's buttons at scale 0.6 and the
+    # card did not paint at all (ValueError, the polish pass 2026-10-23).
+    # Every small pill paints, and a box under a pixel is an empty mask.
+    for h in (6, 12, 20, 34):
+        im = Image.new("RGBA", (120, 80), (0, 0, 0, 0))
+        look.primary(im, (20, 20, 80, 20 + h))
+        assert im.getchannel("A").getbbox() is not None, h
+    assert look.rounded((10, 10), (2, 2, 2.1, 8), 3).getbbox() is None
+    import review_card as rc
+    card = rc.card_for({"id": "x", "text": "Canrout send five agents",
+                        "changes": [{"before": "Canrout", "after": "you can",
+                                     "kind": "replace", "span": [0, 1],
+                                     "why": "", "family": "term",
+                                     "support": 1}]}, seconds=20)
+    for scale in (rc.SCALE_MIN, 1.0, rc.SCALE_MAX):
+        assert rc.flat(card, scale).size == rc.measure(card, scale), scale
 
 
 def test_the_window_has_a_name_for_every_shade_its_widgets_draw() -> None:
@@ -48725,6 +48742,52 @@ def test_the_shelf_has_a_move_button_with_the_dot_on_it() -> None:
                 (scale, "the uptime line runs into the Move button")
 
 
+def test_a_cut_shelf_line_keeps_whole_words() -> None:
+    """shelf_card._fit cuts a line too long for its row, and since the
+    polish pass (2026-10-23) the cut falls in the SPACE nearest the room,
+    not through a letter — "…את כ" was a Hebrew line cut mid-letter. A
+    space is a run of empty columns wider than a gap between letters;
+    with none in reach the line is cut where it was."""
+    from PIL import Image
+    import shelf_card as sc
+
+    def line(cols, width):
+        img = Image.new("RGBA", (width, 6), (0, 0, 0, 0))
+        for x in cols:
+            for y in range(6):
+                img.putpixel((x, y), (255, 255, 255, 255))
+        return img
+
+    # a word of 21 columns, a 5-column space, a word of 35, 1-column gaps
+    # inside the second word between its "letters"
+    word2 = [x for x in range(26, 61) if x not in (33, 47)]
+    img = line(list(range(0, 21)) + word2, 61)
+    # Hebrew keeps the right: 45 columns would cut into the first word,
+    # so only the second, whole, is kept
+    assert sc._word_cut(img, 45, True, 10.0) == 35
+    # a letter gap is not a space: 30 columns cut inside the second word
+    # and find no space within reach, so the cut stays where it was
+    assert sc._word_cut(img, 30, True, 10.0) == 30
+    # Latin keeps the left, mirrored
+    mirror = img.transpose(Image.FLIP_LEFT_RIGHT)
+    assert sc._word_cut(mirror, 45, False, 10.0) == 35
+    # and the real thing: a long Hebrew row, cut, keeps whole words — the
+    # columns just inside its cut end are the empty ones of a space
+    text = ("תעדכן בבקשה את כל הקבצים של ההגדרות, ואחרי זה תריץ את כל "
+            "הבדיקות על השולחן הנסתר")
+    cache: dict = {}
+    full = sc._text(cache, text, 10.0, "ink", rtl=True)
+    room = full.width * 2 // 3
+    cut = sc._fit(cache, full, room, True, 10.0)
+    assert cut.width == room
+    kept = sc._word_cut(full, room - 20, True, 10.0)
+    assert kept < room - 20, "the cut moved back to a space"
+    alpha = full.getchannel("A")
+    start = full.width - kept
+    assert all(alpha.getpixel((start - 1, y)) <= 24
+               for y in range(full.height)), "a space before the kept words"
+
+
 def test_the_halo_is_light_at_the_edge_and_nothing_in_the_middle() -> None:
     """move_card.glow: the rim round one monitor.
 
@@ -48760,6 +48823,13 @@ def test_the_halo_is_light_at_the_edge_and_nothing_in_the_middle() -> None:
         assert abs(px[w // 2, h - 1][3] - edge) <= 1, "bottom differs"
         # a corner is the brighter of its edges, not their sum
         assert px[0, 0][3] <= max(px[0, 8][3], px[8, 0][3]) + 1, px[0, 0]
+        # ...and turned ROUND, not mitred (the polish pass, 2026-10-23):
+        # `lighter` alone meets at a 45-degree ridge the eye reads as a
+        # line, where a point on the diagonal is exactly as lit as the
+        # edge at the same depth; turned round it is lit more
+        d = span // 4
+        assert px[d, d][3] > px[d, h // 2][3], (px[d, d], px[d, h // 2])
+        assert px[w - 1 - d, h - 1 - d][3] == px[d, d][3], "corners alike"
         # iris since B+ (2026-10-23; gold before): violet light — blue
         # above red above green — and nowhere near the red that every
         # photosensitivity guideline singles out
@@ -49604,7 +49674,8 @@ def test_the_screens_card_says_what_the_plan_says() -> None:
 
     card = _pin_card()
     assert card["id"] == nc.PIN_ID and card["pinned"] is True
-    assert card["kind"] == "info" and card["label"] == "SCREENS OFF"
+    # the label in sentence case since B+ (2026-10-23), like a sender's name
+    assert card["kind"] == "info" and card["label"] == "Screens off"
     assert card["title"] == "Screens off is on"
     assert card["when"] == "since 14:35", card["when"]
     assert card["button"] == "Screens on"

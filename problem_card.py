@@ -135,6 +135,10 @@ PREVIEW_LABEL = "Preview"
 CANCEL_LABEL = "Cancel"
 SEND_TOGGLE_LABEL = "Send to the developer"
 STRIP_EYEBROW = "WHAT LEAVES THIS PC"
+# The same words in the card's own sentence case since B+ (2026-10-23);
+# the desk's report card still reads the capitals above. Spelled out, not
+# STRIP_EYEBROW.capitalize(), which painted "this pc".
+STRIP_HEAD = "What leaves this PC"
 # The four toggles' words — problems.ATTACH_WORDS, spelled here as well
 # so a painter with no problems module still draws them; a test keeps
 # the two equal.
@@ -364,7 +368,7 @@ def layout(card: dict, cache: dict | None = None) -> dict:
     attach_rows: dict[str, tuple] = {}
     if send:
         y += STRIP_GAP
-        eyebrow = _ltr(cache, STRIP_EYEBROW, 8.0, rgb("FAINT"),
+        eyebrow = _ltr(cache, STRIP_HEAD, 8.0, rgb("FAINT"),
                        INNER - STRIP_INDENT)
         strip_head = (STRIP_INDENT, y, INNER, y + eyebrow.height)
         y += eyebrow.height + 6
@@ -715,7 +719,7 @@ def compose(card: dict, cache: dict | None = None):
     put(word, cx0 + STRIP_INDENT, cy0 + (ROW_H - word.height) / 2)
     if send_on and box["strip_head"] is not None:
         hx0, hy0, _hx1, _hy1 = box["strip_head"]
-        put(look.text(cache, STRIP_EYEBROW.capitalize(), 8.5, muted,
+        put(look.text(cache, STRIP_HEAD, 8.5, muted,
                       look.W_LABEL), hx0, hy0)
         attach = card.get("attach") or {}
         sizes = card.get("sizes") or {}

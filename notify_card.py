@@ -252,7 +252,9 @@ def pinned_card(*, since: float, keep_s: int, key: str = "",
                 "light up and stay lit until the monitors' own timer.")
     footer = (f"{key} brings them back" if key
               else "The desk's Awake screen brings them back")
-    card = card_for({"id": PIN_ID, "kind": "info", "label": "SCREENS OFF",
+    # Sentence case since B+ (2026-10-23), like the sender's name on every
+    # other card in the column ("Claude Code"); SCREENS OFF before.
+    card = card_for({"id": PIN_ID, "kind": "info", "label": "Screens off",
                      "title": "Screens off is on", "body": body},
                     seconds=0)
     card.update({"pinned": True, "button": str(button), "footer": footer,
@@ -729,21 +731,21 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
         img.alpha_composite(b, (int(right - pw + (pw - b.width) / 2),
                                 int(cy - b.height / 2)))
         x_right = right - pw - 8 * s
+    # The time and the sender share ONE baseline (look.on_baseline): each
+    # centred on its own cropped box, "ago"'s descender lifted the time
+    # 2 px above the name.
+    base = cy + look.cap_height(9.0 * s) / 2
     when = card.get("when") or ""
     if when:
-        w_img = _text(cache, when, 8.5 * s, INK_MUTED)
-        img.alpha_composite(w_img, (int(x_right - w_img.width),
-                                    int(cy - w_img.height / 2)))
-        x_right -= w_img.width + 8 * s
+        x_right -= look.on_baseline(img, cache, when, 8.5 * s, x_right, base,
+                                    INK_MUTED, right=True) + 8 * s
     label = card.get("label") or ""
     lx = pad + box + 10 * s
     look.lamp(img, lx + 3.5 * s, cy, colour, r=3.5 * s, rings=True)
     if label:
         lx += 15 * s
-        l_img = _fit_line(_text(cache, label, 9.0 * s, INK_DIM,
-                                    look.W_LABEL), x_right - lx,
-                          _is_rtl(label))
-        img.alpha_composite(l_img, (int(lx), int(cy - l_img.height / 2)))
+        look.on_baseline(img, cache, label, 9.0 * s, lx, base, INK_DIM,
+                         look.W_LABEL, avail=x_right - lx)
     y += HEAD_H * s + ROW * s
 
     # -- title
@@ -846,6 +848,13 @@ def compose_clear(cards, scale: float = 1.0, hover: bool = False,
         return None
     w, h = pill[2] - pill[0], pill[3] - pill[1]
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if hover:
+        # the pill lifts under the pointer the way a quiet pill does on
+        # the desk — brighter words alone were invisible at arm's length
+        # (the polish pass, 2026-10-23)
+        img.alpha_composite(look.flat((w, h), look.c("white", 20),
+                                      look.rounded((w, h), (0, 0, w, h),
+                                                   h / 2)))
     ink = INK if hover else INK_DIM
     glyph = look.glyph("x", h * 0.62, ink + (255,), 1.5)
     x = 9 * s

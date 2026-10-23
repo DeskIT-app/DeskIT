@@ -436,7 +436,8 @@ def _fit(cache: dict, img, avail: float, rtl: bool, pt: float,
         return img
     ell = _text(cache, ELLIPSIS, pt, colour=colour, rtl=False)
     w = max(1, int(avail))
-    keep = max(1, w - ell.width - int(round(pt * 0.3)))
+    gap = int(round(pt * 0.3))
+    keep = _word_cut(img, max(1, w - ell.width - gap), rtl, pt)
     # The dots sit ON the line, not under it. Both images are cropped to
     # their own glyphs, so aligning their bottoms puts an ellipsis whose
     # box is three dots high at the very bottom of a box that is a whole
@@ -447,11 +448,43 @@ def _fit(cache: dict, img, avail: float, rtl: bool, pt: float,
     if rtl:
         out.alpha_composite(img.crop((img.width - keep, 0, img.width,
                                       img.height)), (w - keep, 0))
-        out.alpha_composite(ell, (0, ey))
+        out.alpha_composite(ell, (max(0, w - keep - gap - ell.width), ey))
     else:
         out.alpha_composite(img.crop((0, 0, keep, img.height)), (0, 0))
-        out.alpha_composite(ell, (w - ell.width, ey))
+        out.alpha_composite(ell, (min(w - ell.width, keep + gap), ey))
     return out
+
+
+def _word_cut(img, keep: int, rtl: bool, pt: float) -> int:
+    """How much of a line to keep so the cut falls BETWEEN two words.
+
+    `keep` pixels of the end that is read first fit; this walks back from
+    that cut to the nearest space — a run of empty columns wider than the
+    gap between two letters — and keeps the words before it whole. The
+    polish pass of 2026-10-23 found "…את כ" on the shelf at 3x: a Hebrew
+    line cut through a letter, which the ellipsis does not excuse. Nothing
+    nearer than a third of the way in is a word gap worth taking, so a
+    line that is one long word is cut where it was.
+    """
+    try:
+        import numpy as np
+        ink = np.asarray(img.getchannel("A")).max(axis=0) > 24
+    except Exception:
+        return keep
+    need = max(2, int(round(pt * 0.3)))
+    width = img.width
+    if rtl:
+        start = width - keep
+        for x in range(start, width - keep // 3 - need):
+            if not ink[x:x + need].any():
+                nxt = np.flatnonzero(ink[x + need:])
+                return width - (x + need + int(nxt[0])) if nxt.size else keep
+        return keep
+    for x in range(keep, max(need, keep // 3), -1):
+        if not ink[x - need:x].any():
+            last = np.flatnonzero(ink[:x - need])
+            return int(last[-1]) + 1 if last.size else keep
+    return keep
 
 
 # ---------------------------------------------------------------------------
@@ -855,15 +888,23 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     def label(words, pt, colour, weight=look.W_LABEL):
         return look.text(cache, words, pt, tuple(INK[colour]), weight)
 
+    def on_row(words, pt, colour, weight, cy, ref_pt=None, by="cap"):
+        """A line placed on its row by its BASELINE (look.row_line): each
+        word centred on its own cropped box put "Keep" and "Copy" a pixel
+        above "No" for their descenders (the polish pass, 2026-10-23)."""
+        return look.row_line(cache, words, pt, tuple(INK[colour]), weight,
+                             cy, ref_pt, by)
+
     def button(name, words, ink, glyph=None, bead=False):
         """One head button: a pill of frost in the rectangle `regions`
         claimed for it, a glyph and a word."""
         x0, y0, x1, y1 = local(name)
         lit = hover == name
         look.quiet(img, (x0, y0, x1, y1), hover=lit)
-        text = label(words, 8.5 * s, "ink" if lit else ink)
         gx = x0 + 9 * s
         cy = (y0 + y1) / 2
+        text, ty = on_row(words, 8.5 * s, "ink" if lit else ink,
+                          look.W_LABEL, cy)
         if bead:
             # THE DOT ITSELF on the Move button (2026-09-21: a four-arrow
             # glyph read as "it moves the bar"): the listening lamp, its
@@ -884,15 +925,18 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
                            + (255,), 1.5)
             place(g, gx, cy - g.height / 2)
             gx += g.width + 4 * s
-        place(text, gx, cy - text.height / 2)
+        place(text, gx, ty)
 
     # ---- 1. the state -----------------------------------------------------
     top, band_h = bands["head"]
     colour = card.get("dot") or "cool"
     look.lamp(img, left + 5 * s, top + 13 * s, tuple(INK[colour]),
               r=4.0 * s, rings=True, glow=1.0 if colour != "idle" else 0)
-    title = label(card.get("title") or "", 13.0 * s, "ink", look.W_STRONG)
-    place(title, left + 19 * s, top + 13 * s - title.height / 2 - 1 * s)
+    # the state word on the lamp's line by its x-height, so "Paused" and
+    # "Listening" sit alike beside it whatever their descenders
+    title, ty = on_row(card.get("title") or "", 13.0 * s, "ink",
+                       look.W_STRONG, top + 13 * s, by="x")
+    place(title, left + 19 * s, ty)
     sub = card.get("uptime") or ""
     if sub:
         # Cut to the room before the first button, with an ellipsis: "up
@@ -956,8 +1000,9 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
         cy = ky + band / 2
         look.lamp(img, right - 14 * s, cy, tuple(INK[colour]), r=3.2 * s,
                   rings=False, glow=0.8)
-        word = label(row.get("word") or "", 8.0 * s, "dim")
-        place(word, right - 24 * s - word.width, cy - word.height / 2)
+        word, wy = on_row(row.get("word") or "", 8.0 * s, "dim",
+                          look.W_LABEL, cy)
+        place(word, right - 24 * s - word.width, wy)
         x_right = right - 24 * s - word.width - 8 * s
         pill = row.get("pill") or ""
         if pill:
@@ -969,8 +1014,9 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
             x_right -= pw + 8 * s
         when = row.get("when") or ""
         if when:
-            w_img = label(when, 7.5 * s, "muted", look.W_BODY)
-            place(w_img, x_right - w_img.width, cy - w_img.height / 2)
+            w_img, wy = on_row(when, 7.5 * s, "muted", look.W_BODY, cy,
+                               ref_pt=8.0 * s)
+            place(w_img, x_right - w_img.width, wy)
 
         # the sentence, on its own line and across the whole slip
         room = inner - 26 * s
@@ -989,11 +1035,11 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
             x0, y0, x1, y1 = local(name)
             here = hover == name
             look.quiet(img, (x0, y0, x1, y1), hover=here)
-            lab = label(words, 8.0 * s,
-                        "ink" if (slot == "a" or here) else "dim",
-                        look.W_STRONG if slot == "a" else look.W_LABEL)
-            place(lab, x0 + ((x1 - x0) - lab.width) / 2,
-                  y0 + ((y1 - y0) - lab.height) / 2)
+            lab, ly = on_row(words, 8.0 * s,
+                             "ink" if (slot == "a" or here) else "dim",
+                             look.W_STRONG if slot == "a" else look.W_LABEL,
+                             (y0 + y1) / 2)
+            place(lab, x0 + ((x1 - x0) - lab.width) / 2, ly)
 
     if int(card.get("more") or 0) > 0:
         top, band_h = bands["more"]
@@ -1013,22 +1059,24 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
 
     # ---- 3. the last thing he said ----------------------------------------
     top, band_h = bands["lasthead"]
-    head = label("What you said last", 9.0 * s, "muted")
-    place(head, left + 2 * s, top + (band_h - head.height) / 2)
+    head, hy = on_row("What you said last", 9.0 * s, "muted", look.W_LABEL,
+                      top + band_h / 2)
+    place(head, left + 2 * s, hy)
     x0, y0, x1, y1 = local(COPY)
     lit = hover == COPY
     look.quiet(img, (x0, y0, x1, y1), hover=lit)
     g = look.glyph("copy", 10 * s, tuple(INK["ink" if lit else "dim"])
                    + (255,), 1.4)
-    t = label("Copy", 7.5 * s, "ink" if lit else "dim")
+    t, cty = on_row("Copy", 7.5 * s, "ink" if lit else "dim", look.W_LABEL,
+                    (y0 + y1) / 2)
     gx = x0 + ((x1 - x0) - g.width - 3 * s - t.width) / 2
     place(g, gx, (y0 + y1 - g.height) / 2)
-    place(t, gx + g.width + 3 * s, (y0 + y1 - t.height) / 2)
+    place(t, gx + g.width + 3 * s, cty)
     when = card.get("last_when") or ""
     if when:
-        w_img = label(when, 8.0 * s, "muted", look.W_BODY)
-        place(w_img, left + 2 * s + head.width + 10 * s,
-              top + (band_h - w_img.height) / 2)
+        w_img, wy = on_row(when, 8.0 * s, "muted", look.W_BODY,
+                           top + band_h / 2, ref_pt=9.0 * s)
+        place(w_img, left + 2 * s + head.width + 10 * s, wy)
     top, band_h = bands["last"]
     line = card.get("last") or ""
     if line:

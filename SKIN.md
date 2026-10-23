@@ -134,6 +134,14 @@ word) and anything with Hebrew through `visual_qa.text_pil`. Each piece is
 drawn on a patch the size of its own box and composited once, which is
 what keeps a hover repaint fast.
 
+**Words in one row share a baseline** (`row_line`, `on_baseline`): a Latin
+line is placed by its baseline with the capitals centred on the row (the
+x-height when it stands beside a lamp, as the shelf's state word does),
+never centred on its own cropped box — that put "5 min ago" 2 px above
+"Claude Code" and "Keep" a pixel above "No", each lifted by its
+descender (the polish pass, 2026-10-23, at 3-4x). A line that must be cut
+keeps whole words before its ellipsis (`shelf_card._word_cut`).
+
 **The ladder**, navy at about 232°, the desk's own floor lifted one step
 so a flat Tk window still reads as night:
 

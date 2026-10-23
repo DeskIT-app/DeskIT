@@ -141,6 +141,8 @@ def rounded(size, box, radius: float) -> Image.Image:
     W, H = int(size[0]), int(size[1])
     big = Image.new("L", (max(1, W * SS), max(1, H * SS)), 0)
     x0, y0, x1, y1 = box
+    if x1 - x0 < 1.0 / SS or y1 - y0 < 1.0 / SS:
+        return big.reduce(SS)           # nothing to draw — and Pillow raises
     r = max(0.0, min(float(radius), (x1 - x0) / 2.0, (y1 - y0) / 2.0))
     ImageDraw.Draw(big).rounded_rectangle(
         (x0 * SS, y0 * SS, x1 * SS - 1, y1 * SS - 1), radius=r * SS, fill=255)
@@ -392,9 +394,12 @@ def _primary_abs(img, box, hover: bool = False, glow: bool = True) -> None:
     W, H = img.size
     h = y1 - y0
     if glow:
-        pool = rounded((W, H), (x0 + 12, y0 + 10 + 12, x1 - 12,
-                                y1 + 10 - 12 + 6), h / 2)
-        pool = pool.filter(ImageFilter.GaussianBlur(7))
+        # bplus.css `0 10px 22px -12px` on a 34 px button, as shares of the
+        # button's height so the pool keeps its shape at every scale (in
+        # fixed pixels it vanished — and raised — at 0.6)
+        pool = rounded((W, H), (x0 + h * 0.35, y0 + h * 0.65, x1 - h * 0.35,
+                                y1 + h * 0.12), h / 2)
+        pool = pool.filter(ImageFilter.GaussianBlur(max(1.0, h * 0.2)))
         img.alpha_composite(flat((W, H), INK["iris_glow"]
                                  + (ALPHA["iris_glow"],), pool))
     halo = rounded((W, H), (x0 - 1, y0 - 1, x1 + 1, y1 + 1), h / 2 + 1)
@@ -909,8 +914,66 @@ def text_line(cache: dict, words: str, pt: float, colour="ink",
     return got
 
 
+def cap_height(pt: float, weight: int = W_BODY) -> float:
+    """Rubik's capital height at `pt`, in pixels. A row whose words should
+    look centred on `cy` puts its baseline at cy + cap_height / 2 — the
+    capitals and the x-height sit on the middle, and a descender ("ago")
+    hangs below it instead of lifting the whole word (the polish pass,
+    2026-10-23: "5 min ago" sat 2 px above "Claude Code", each centred on
+    its own cropped box)."""
+    font = _font(float(pt) * 96 / 72 * SS, weight)
+    return -font.getbbox("H", anchor="ls")[1] / SS
+
+
+def x_height(pt: float, weight: int = W_BODY) -> float:
+    """Rubik's x-height at `pt`, in pixels: where a lamp before a word
+    belongs (base = cy + x_height / 2), so "Listening" and "Paused" sit
+    on the same line beside it whatever their descenders."""
+    font = _font(float(pt) * 96 / 72 * SS, weight)
+    return -font.getbbox("x", anchor="ls")[1] / SS
+
+
+def row_line(cache: dict, words: str, pt: float, colour, weight: int,
+             cy: float, ref_pt: float | None = None, by: str = "cap"):
+    """(image, top) for one line centred on a row at `cy` BY ITS BASELINE:
+    the capitals (`by="cap"`, a word in a pill) or the x-height (`by="x"`,
+    a word beside a lamp) on the middle, measured at `ref_pt` so two sizes
+    on one row share a baseline. Hebrew is centred on its box — GDI's
+    picture carries no baseline."""
+    if has_hebrew(words):
+        im = text(cache, words, pt, colour, weight)
+        return im, cy - im.height / 2
+    im, b = text_line(cache, words, pt, colour, weight)
+    mid = (x_height if by == "x" else cap_height)(ref_pt or pt, weight)
+    return im, cy + mid / 2 - b
+
+
+def on_baseline(img: Image.Image, cache: dict, words: str, pt: float,
+                x: float, base: float, colour="ink", weight: int = W_BODY,
+                avail: float | None = None, right: bool = False) -> float:
+    """Draw one Latin line onto `img` with its baseline at `base`, from `x`
+    (or ending at `x` when `right`), cut to `avail` if given. Returns its
+    width. Hebrew goes through text() and is centred on the baseline's
+    row instead — GDI's box carries no baseline to keep."""
+    if has_hebrew(words):
+        line = text(cache, words, pt, colour, weight)
+        top = base - cap_height(pt) / 2 - line.height / 2
+    else:
+        line, b = text_line(cache, words, pt, colour, weight)
+        top = base - b
+    if avail is not None and line.width > avail:
+        keep = max(1, int(avail))
+        line = line.crop((line.width - keep, 0, line.width, line.height)) \
+            if is_rtl(words) else line.crop((0, 0, keep, line.height))
+    left = x - line.width if right else x
+    img.alpha_composite(line, (max(0, int(round(left))),
+                               max(0, int(round(top)))))
+    return line.width
+
+
 __all__ = ["INK", "ALPHA", "c", "rounded", "circle", "flat", "ring_of",
            "glass", "plate", "rim", "quiet", "primary", "disc", "slip",
            "lamp", "mark", "keycap", "switch", "pill", "well", "fade_rule",
-           "glyph", "text", "text_line", "is_rtl", "has_hebrew",
-           "W_BODY", "W_LABEL", "W_STRONG"]
+           "glyph", "text", "text_line", "cap_height", "x_height",
+           "row_line", "on_baseline",
+           "is_rtl", "has_hebrew", "W_BODY", "W_LABEL", "W_STRONG"]

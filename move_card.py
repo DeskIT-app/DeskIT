@@ -116,7 +116,10 @@ def _rim_mask(w: int, h: int, length: int, a0: int, power: float
               ) -> Image.Image:
     """One layer's alpha over the whole monitor: the ramp laid along all
     four edges, joined with `lighter` where two meet so a corner is the
-    brighter of the two and never their sum."""
+    brighter of the two and never their sum — and then each corner turned
+    round a quarter circle (`_corner`), because `lighter` alone meets at a
+    45-degree ridge that the eye reads as a drawn line (the polish pass,
+    2026-10-23, at 1:1 on the iris light)."""
     r = _ramp(length, a0, power)
     n = r.height
     top = r.resize((w, n))
@@ -128,7 +131,31 @@ def _rim_mask(w: int, h: int, length: int, a0: int, power: float
     m.paste(ImageChops.lighter(m.crop((0, h - n, w, h)), bottom), (0, h - n))
     m.paste(ImageChops.lighter(m.crop((0, 0, n, h)), left), (0, 0))
     m.paste(ImageChops.lighter(m.crop((w - n, 0, w, h)), right), (w - n, 0))
+    c = _corner(n, a0, power)
+    if c is not None:
+        for piece, at in ((c, (0, 0)),
+                          (c.transpose(Image.FLIP_LEFT_RIGHT), (w - n, 0)),
+                          (c.transpose(Image.FLIP_TOP_BOTTOM), (0, h - n)),
+                          (c.transpose(Image.ROTATE_180), (w - n, h - n))):
+            box = (at[0], at[1], at[0] + n, at[1] + n)
+            m.paste(ImageChops.lighter(m.crop(box), piece), at)
     return m
+
+
+def _corner(n: int, a0: int, power: float):
+    """The top-left n x n of one layer: the ramp of `_ramp` measured from
+    the corner of the dark middle, so its lines of equal light are quarter
+    circles. Equal to the edge ramp along both of its inner sides, so it
+    joins them without a step; at the screen's corner it is `a0`, the
+    edges' own value. None without numpy (the ridge stays)."""
+    try:
+        import numpy as np
+    except Exception:
+        return None
+    k = max(1, n - 1)
+    off = k - np.arange(n, dtype=np.float32)
+    t = np.minimum(np.sqrt(off[None, :] ** 2 + off[:, None] ** 2) / k, 1.0)
+    return Image.fromarray((a0 * t ** power).astype(np.uint8), "L")
 
 
 def reach(w: int, h: int) -> int:
