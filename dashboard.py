@@ -370,6 +370,11 @@ NAV = (("home", "Home"), ("corrections", "Corrections"),
 #: Settings > Privacy. What a test that walks every screen walks.
 SCREENS = tuple(name for _key, name in NAV) + ("Network",)
 
+#: The places kept built between visits (_show): the five on the bar.
+#: Network and the landing are built on every visit — one is a table of
+#: today's requests and the other is up once per sign-out.
+KEPT = tuple(name for _key, name in NAV)
+
 # A place takes its glyph from ui.ICON[key] where there is one. Home,
 # Corrections and Said are new words for old screens, and ui.py
 # is not this wave's file, so they borrow the glyphs those
@@ -1072,6 +1077,13 @@ class Dashboard:
                                    # back for one frame
         self.screen = "Home"
         self.parts: dict = {}      # the widgets of whichever screen is up
+        # The places kept built between visits (_show): each one's sheet,
+        # its parts, what its builder read (_place_sig), and how wide its
+        # rows are.
+        self._sheets: dict = {}
+        self._kept: dict = {}
+        self._sigs: dict = {}
+        self._row_ws: dict = {}
         self.log: list[history.Event] = []
         self._log_stamp: tuple[int, float] = (0, 0.0)
         self._filter: str | None = None
@@ -1239,9 +1251,10 @@ class Dashboard:
         # Screens are built onto a SHEET inside the pane, not onto the pane
         # itself, so a new screen can slide into place — the pane stays
         # put, the sheet moves. The toast lives on the pane and does not.
-        self.sheet = tk.Frame(self.pane, bg=ui.BG, width=W, height=H - TOP)
+        # One sheet per place since 2026-10-23 (_sheet_for): `self.sheet`
+        # is whichever is up.
+        self.sheet = self._sheet_for("Home")
         self.sheet.place(x=0, y=0)
-        self.sheet.pack_propagate(False)
         # The cover a switch holds over the pane (_show). Its window and
         # its two pictures go with the pane — a test's window is destroyed
         # without _close — and the binding holds the hold, not self,
@@ -1382,8 +1395,9 @@ class Dashboard:
         self._show(name)
 
     def _show(self, name: str, then=None) -> None:
-        """Swap screens. Everything the old one registered goes with it, so
-        _refresh has to ask for a widget rather than assume one.
+        """Swap screens. Everything the old one registered leaves
+        `self.parts` with it (kept in its own dict, below), so _refresh
+        has to ask for a widget rather than assume one.
 
         `then` runs once the new screen is built, under the same cover,
         before it is painted and photographed: for a door that lands on a
@@ -1423,6 +1437,23 @@ class Dashboard:
         A window that is not on the screen (withdrawn for the dot, not
         mapped yet, GitHub's runner) gets no cover and switches the way
         it did before: the sheet unmapped for the build, then the slide.
+
+        A PLACE IS BUILT ONCE AND KEPT (2026-10-23). Each of the five on
+        the bar has a sheet of its own (_sheet_for) and a parts dict of
+        its own; a switch to one already built raises its sheet over the
+        others and redraws only what can have changed since it was up
+        (_place_back, then the poll's own repaint through _refresh) —
+        unless what its builder read has moved (_place_sig), and then it
+        is built again the way every switch used to be. A return to a
+        place, measured back to back on copies of his data on the hidden
+        desktop (2026-10-23), wall / Tk-thread CPU ms, building every
+        widget again before and kept since: Corrections 874/320 ->
+        204/55, Said 699/258 -> 177/70, Keys 839/258 -> 255/94, Settings
+        449/125 -> 150/31, Home 684/227 -> 207/70. What is left is the
+        raised sheet repainting — a raw-Tk frame of 65 widgets cost
+        214/47 on the same desktop that afternoon. The place that is up,
+        asked for again, is still built again: the Corrections chips and
+        `then=` doors mean it.
         """
         if self._landing_up and name != "Landing":
             # Nothing but the landing until a sign-in: not a door on
@@ -1434,29 +1465,48 @@ class Dashboard:
             # events): the newest wish, once that one is on the screen.
             self._show_next = (name, then)
             return
+        again = name == self.screen
+        self._leave()
         self.screen = name
-        self._stop_rows()
         held, _step = self._hold_for()
         self._switching = True
         try:
-            self.sheet.place_forget()
+            old, sheet = self.sheet, self._sheet_for(name)
+            kept = not again and self._place_fresh(name)
+            if old is not None and old is not sheet and old.winfo_exists():
+                # Over the place that was up — and so under the toast and
+                # the banner, which are over that one. The place left
+                # stays where it is, mapped, underneath (_sheet_for).
+                sheet.tkraise(old)
+            if not kept:
+                sheet.place_forget()      # a builder works off the glass
+            self.sheet = sheet
             try:
-                for child in self.sheet.winfo_children():
-                    child.destroy()
-                keep = {k: self.parts[k] for k in
-                        ("hint", "lamp", "state", "uptime", "chip", "run",
-                         "bar_screens", "stop_bar", "tests_stop")
-                        if k in self.parts}
-                self.parts = keep
                 self._hide_toast()
-                {"Home": self._screen_home,
-                 "Corrections": self._screen_corrections,
-                 "Said": self._screen_said,
-                 "Keys": self._screen_keys,
-                 "Settings": self._screen_settings,
-                 "Network": self._screen_network,
-                 "Landing": self._screen_landing}[name]()
-                self._refresh(self.status or None)
+                if kept:
+                    if not sheet.place_info():
+                        sheet.place(x=0, y=0)
+                    bar = self._bar_parts()
+                    self.parts = self._kept[name]
+                    self.parts.update(bar)
+                    self._row_w = self._row_ws.get(name, CW)
+                    try:
+                        self._place_back(name)
+                    except Exception:     # noqa: BLE001
+                        # A kept place that cannot catch up is built
+                        # again, as every switch used to; said in the log.
+                        import logging
+                        logging.getLogger("app").warning(
+                            "the kept %s place did not catch up; building it "
+                            "again", name, exc_info=True)
+                        kept = False
+                        sheet.place_forget()
+                if kept:
+                    if not self._refresh(self.status or None) \
+                            and not self.closing:
+                        self._paint_place()
+                else:
+                    self._build_place(name)
                 # The first screenful of Settings' cards, before the
                 # reveal; the rest one per tick below the fold.
                 self._settings_first_view()
@@ -1466,7 +1516,9 @@ class Dashboard:
                 # A builder that died must not leave a blank window behind,
                 # nor a picture of the old one standing over a window that
                 # no longer holds it: whatever it managed to draw goes back
-                # on, in place, and the cover comes off.
+                # on, in place, and the cover comes off — and the next
+                # visit builds it again.
+                self._sigs.pop(name, None)
                 self._show_next = None
                 self.sheet.place(x=0, y=0)
                 self._paint_nav()
@@ -1490,6 +1542,226 @@ class Dashboard:
         wish, self._show_next = self._show_next, None
         if wish is not None:
             self._show(*wish)
+
+    # -- the places, kept
+
+    #: The parts the bar owns, carried into every place's parts dict:
+    #: _refresh writes the state through them whichever place is up.
+    BAR_PARTS = ("hint", "lamp", "state", "uptime", "chip", "run",
+                 "bar_screens", "stop_bar", "tests_stop")
+
+    def _bar_parts(self) -> dict:
+        return {k: self.parts[k] for k in self.BAR_PARTS if k in self.parts}
+
+    def _sheet_for(self, name: str):
+        """The sheet a place is drawn on, made the first time it is
+        asked for, at the bottom of the pane's stack: under the toast and
+        the lock's banner, which live on the pane too and may be older
+        than it, and under every other sheet until _show raises it.
+
+        A PLACE LEFT IS COVERED, NOT TAKEN DOWN. Every sheet stays placed
+        at the pane's origin, and the one up is the one on top. Taking a
+        sheet off with place_forget unmapped every window under it — the
+        packer and the placer unmap their slaves with their master — and
+        putting it back mapped them all again a level at a time:
+        Corrections, 383 windows, was 326 Map events and 243 ms on a
+        remap (probe, 2026-10-23); raised over the other sheets instead,
+        59 events and 162 ms, the rest of it the visible part repainting.
+        A covered sheet takes no click: the sheet over it is the same
+        size and opaque."""
+        sheet = self._sheets.get(name)
+        if sheet is None or not sheet.winfo_exists():
+            sheet = tk.Frame(self.pane, bg=ui.BG, width=W, height=H - TOP)
+            sheet.pack_propagate(False)
+            sheet.lower()
+            self._sheets[name] = sheet
+            self._sigs.pop(name, None)
+        return sheet
+
+    def _leave(self) -> None:
+        """What the place going off the glass leaves behind, settled
+        before another sheet covers it: its drawing paused (_pause_rows),
+        a search that had not run yet dropped (the box keeps the words;
+        _place_back reads them), and the keyboard focus off it — a kept
+        Entry that kept the focus would take the next place's typing: a
+        key pressed on Keys would land in the Said search behind it."""
+        self._pause_rows()
+        for name in ("_search_after", "_words_search_after",
+                     "_settings_after"):
+            pending = getattr(self, name, None)
+            setattr(self, name, None)
+            if pending is not None:
+                try:
+                    self.root.after_cancel(pending)
+                except Exception:         # noqa: BLE001
+                    pass
+        # focus_lastfor and not focus_get: with the desk not in front,
+        # focus_get is None and the Entry is still the one Tk hands the
+        # keyboard back to when he clicks into the window.
+        sheet = self.sheet
+        try:
+            focus = self.root.focus_lastfor()
+        except (KeyError, tk.TclError):
+            focus = None
+        if focus is not None and sheet is not None \
+                and str(focus).startswith(str(sheet) + "."):
+            self.root.focus_set()
+
+    def _build_place(self, name: str) -> None:
+        """A place built from nothing, on its own sheet — every switch,
+        until places were kept."""
+        for child in self.sheet.winfo_children():
+            child.destroy()
+        self.parts = self._bar_parts()
+        self._kept[name] = self.parts
+        self._sigs.pop(name, None)
+        self._drop_rows(name)
+        {"Home": self._screen_home,
+         "Corrections": self._screen_corrections,
+         "Said": self._screen_said,
+         "Keys": self._screen_keys,
+         "Settings": self._screen_settings,
+         "Network": self._screen_network,
+         "Landing": self._screen_landing}[name]()
+        if name in KEPT:
+            self._sigs[name] = self._place_sig(name)
+            self._row_ws[name] = self._row_w
+        self._refresh(self.status or None)
+
+    def _place_fresh(self, name: str) -> bool:
+        """Can this place be shown as it was left? Built, whole, and
+        built from what its builder would read now. A Settings search
+        is closed by a visit, as it always was."""
+        if name not in KEPT or name not in self._kept \
+                or name not in self._sigs:
+            return False
+        sheet = self._sheets.get(name)
+        if sheet is None or not sheet.winfo_exists() \
+                or not sheet.winfo_children():
+            return False
+        if name == "Settings" and self._settings_searching:
+            return False
+        return self._sigs[name] == self._place_sig(name)
+
+    def _place_sig(self, name: str):
+        """What a place's builder read that nothing repaints while it is
+        up — taken when it is built and again when it is asked for. The
+        same answer: the place stands, and the switch is a remap. Another
+        one: it is built again. What its poll repaints (the pile, the
+        day's lines, the caps, the account and the lock, the dot) and
+        what _place_back redraws (the Said rows, the Corrections column,
+        the Settings tab) is not in here, or every change would cost a
+        whole build."""
+        try:
+            keys = self.status.get("keys") or self._read_keys()
+            teach = pretty_key(keys.get("correct_hotkey", ""))
+            if name == "Home":
+                return ()
+            if name == "Keys":
+                return repr(sorted((str(k), str(v)) for k, v in keys.items()))
+            if name == "Corrections":
+                return (self._corr_tab, teach, self._vocab_cap())
+            if name == "Said":
+                # the vocabulary panel beside the rows: the count, the
+                # teach key, the last pairs (eight: more than it shows),
+                # the decoder's cap
+                return (teach, self._vocab_cap(), self._vocab_stat(),
+                        tuple(self._recent_pairs(8)))
+            if name == "Settings":
+                return self._settings_sig()
+        except Exception:                 # noqa: BLE001 — unreadable: build
+            return object()
+        return object()
+
+    def _settings_sig(self) -> tuple:
+        """Settings' builder reads the three layers of the file and the
+        consent record for its rows, and the app's word for the cards
+        that are not repainted by a poll: the phone's link, the model,
+        the downloads, whether there is an app at all — and the models'
+        and packs' folders, which a step run from here fills. Small files
+        by their bytes (a same-length rewrite in the same tick keeps its
+        stat), defaults.toml by its stat (only a new version moves it)."""
+        files = []
+        for path in (paths.SETTINGS_FILE, paths.STATE_FILE,
+                     paths.CONSENT_FILE):
+            try:
+                files.append(hash(Path(path).read_bytes()))
+            except OSError:
+                files.append(None)
+        for path in (DEFAULTS_PATH, paths.MODELS_DIR, paths.PACKS_DIR):
+            try:
+                st = Path(path).stat()
+                files.append((st.st_size, st.st_mtime_ns))
+            except OSError:
+                files.append(None)
+        status = self.status or {}
+        return (tuple(files), self.running, status.get("model"),
+                status.get("phone"), repr(status.get("downloads")))
+
+    @staticmethod
+    def _vocab_cap():
+        try:
+            return config_mod.load_layered().vocab.max_terms
+        except Exception:                 # noqa: BLE001 — unreadable config
+            return None
+
+    def _place_back(self, name: str) -> None:
+        """A kept place on the glass again: what can have changed while
+        it was away, redrawn — and only that. The poll's own repaint
+        (_refresh) follows it."""
+        p = self.parts
+        if name == "Home":
+            # The pile's poll redraws it when one of its five stores
+            # moved; two rows read no store (a release found, a text key
+            # pressed with no cloud key) and the held line reads the app.
+            self._paint_held()
+            if self._pile_extra(self._waiting_update()
+                                + self._waiting_keys()) \
+                    != getattr(self, "_pile_extra_drawn", None):
+                self._fill_waiting()
+        elif name == "Corrections":
+            box = p.get("words_search")
+            if box is not None and box.winfo_exists():
+                self._words_query = box.get()
+            use = p.get("words_use")
+            if use is not None and use.winfo_exists():
+                use.set(self._words_enabled())
+            refill = self._words_editing is not None
+            self._words_editing = None    # a visit closes the editor
+            if refill \
+                    or self._words_query != getattr(self, "_corr_drawn", None):
+                self._fill_corrections()
+        elif name == "Said":
+            entry = p.get("search")
+            if entry is not None and entry.winfo_exists():
+                self._query = entry.get()
+            drawn = getattr(self, "_said_drawn", None)
+            if drawn is None or drawn[0] is not self.log \
+                    or drawn[1:] != (self._filter, self._query,
+                                     getattr(self, "_said_shown", SAID_PAGE)):
+                self._fill_history()
+        elif name == "Keys":
+            if self._cap_selected is not None:
+                self._cap_clicked(None)   # a visit opens on no cap, as before
+        elif name == "Settings":
+            if getattr(self, "_settings_drawn", None) != self._settings_tab:
+                for tab_name, chip in (p.get("settings_tabs") or {}).items():
+                    chip.set(tab_name == self._settings_tab)
+                self._fill_settings()
+            # the Awake card reads the app and no poll repaints it; its
+            # parts outlive a tab that no longer draws it
+            awake = p.get("awake_state")
+            if awake is not None and awake.winfo_exists():
+                self._paint_awake()
+        # a list the last visit left half drawn goes on from where it was
+        self._resume_rows(name)
+
+    @staticmethod
+    def _pile_extra(rows: list) -> tuple:
+        """The pile rows no stamp watches, as what they say."""
+        return tuple(sorted((str(row.get("kind")), str(row.get("text")),
+                             str(row.get("note"))) for row in rows
+                            if row.get("kind") in ("update", "keys")))
 
     #: The arrival: how far below its place the new screen is on each
     #: frame, 18 ms apart — a cubic ease-out baked into a table, because
@@ -2267,6 +2539,7 @@ class Dashboard:
         p["corr_head"].config(text=head)
 
         self._corr_stop()
+        self._corr_drawn = self._words_query     # what _place_back compares
         column = p["corr_list"]
         column.clear()
         p["corr_empty"].place_forget()
@@ -3316,6 +3589,7 @@ class Dashboard:
                             self._consent_stat())
         p = self.parts
         items = self._waiting_items()
+        self._pile_extra_drawn = self._pile_extra(items)
         count = len(items)
         p["waiting_head"].config(
             text="Nothing is waiting." if not count else
@@ -3993,11 +4267,13 @@ class Dashboard:
         """
         if "list" not in self.parts:
             return
-        self._stop_rows()
+        self._drop_rows("Said")
+        limit = getattr(self, "_said_shown", SAID_PAGE)
+        # what the rows are drawn from, for _place_back to compare
+        self._said_drawn = (self.log, self._filter, self._query, limit)
         scroller = self.parts["list"]
         scroller.clear()
         found = history.filtered(self.log, self._filter, self._query)
-        limit = getattr(self, "_said_shown", SAID_PAGE)
         shown = found[:limit]
         self.parts["empty"].pack_forget()
         if not found:
@@ -4042,18 +4318,55 @@ class Dashboard:
         else:
             self._rows_after = None
 
+    #: The lists drawn a tick at a time, by the place that owns each:
+    #: (what is still to draw, the pending tick, what draws the next).
+    ROWS = {"Said": ("_rows_left", "_rows_after", "_draw_more_rows"),
+            "Corrections": ("_corr_left", "_corr_after", "_corr_draw"),
+            "Settings": ("_settings_left", "_settings_tick", "_draw_settings")}
+
+    def _draw_more_rows(self) -> None:
+        self._draw_rows(25)
+
     def _stop_rows(self) -> None:
-        self._corr_stop()
-        self._rows_left = []
-        self._settings_left = []
-        for name in ("_rows_after", "_settings_tick"):
-            pending = getattr(self, name)
+        """Every list still being drawn a tick at a time, dropped — for
+        a sign-out, after which every place is built again."""
+        for name in self.ROWS:
+            self._drop_rows(name)
+
+    def _drop_rows(self, name: str) -> None:
+        """One place's list dropped: its tick cancelled and the rest of
+        it forgotten — its own refill, or the place built again."""
+        self._pause_rows(name)
+        if name in self.ROWS:
+            setattr(self, self.ROWS[name][0], [])
+
+    def _pause_rows(self, name: str | None = None) -> None:
+        """The tick of one place's list — or of all of them — cancelled,
+        what is still to draw kept. A place switched away from mid-list
+        is finished when it is shown again (_resume_rows) rather than
+        drawn again from the top: Corrections takes seconds to draw its
+        136 rows a tick at a time, and a visit shorter than that used to
+        start the whole column over on every return."""
+        for place in ([name] if name else self.ROWS):
+            if place not in self.ROWS:
+                continue
+            tick = self.ROWS[place][1]
+            pending = getattr(self, tick, None)
+            setattr(self, tick, None)
             if pending is not None:
                 try:
                     self.root.after_cancel(pending)
-                except Exception:
+                except Exception:         # noqa: BLE001
                     pass
-                setattr(self, name, None)
+
+    def _resume_rows(self, name: str) -> None:
+        """A kept place's list, carried on from where its last visit left
+        it."""
+        if name not in self.ROWS:
+            return
+        left, tick, draw = self.ROWS[name]
+        if getattr(self, left, None) and getattr(self, tick, None) is None:
+            setattr(self, tick, self.root.after(16, getattr(self, draw)))
 
     def _history_row(self, scroller: ui.Scroller, event: history.Event) -> None:
         """One event, one canvas — drawn, not built out of widgets.
@@ -6147,6 +6460,14 @@ class Dashboard:
         if not caps:
             return
         keys = self.status.get("keys") or self._read_keys()
+        # Painted already with these keys: nothing to do. This runs on
+        # every poll while Keys is up and on every visit to it, and it
+        # was 23 ms of the Tk thread each time (2026-10-23).
+        said = repr(sorted((str(k), str(v)) for k, v in keys.items()))
+        seen = getattr(self, "_keys_painted", None)
+        if seen is not None and seen[0] is caps and seen[1] == said:
+            return
+        self._keys_painted = (caps, said)
         for field, cap in caps.items():
             if cap.winfo_exists():
                 cap.set(pretty_key(keys.get(field, "")))
@@ -6339,7 +6660,10 @@ class Dashboard:
         # widget still sitting in `parts`.
         if scroller is None or not scroller.winfo_exists():
             return
-        self._stop_rows()
+        self._drop_rows("Settings")
+        # the tab the cards are of, for _place_back to compare
+        self._settings_drawn = (None if self._settings_searching
+                                else self._settings_tab)
         scroller.clear()
         p["rows"] = {}
         sections = p["sections"]
@@ -9374,14 +9698,16 @@ class Dashboard:
             line += f" Tap {latch} while holding to lock the recording on."
         return line
 
-    def _refresh(self, reply: dict | None) -> None:
+    def _refresh(self, reply: dict | None) -> bool:
+        """A status from the app (or none): the bar, and the place that
+        is up. False when it painted nothing — closing, or held off."""
         if self.closing:
-            return
+            return False
         if time.monotonic() < self._busy_until and reply is not None:
             # A command was just sent. Its effect has not necessarily
             # reached the app yet, and repainting from a pre-command status
             # would flip the buttons back for one frame.
-            return
+            return False
         self.status = reply or {}
         stage = self.status.get("stage", "")
         self.running = bool(reply) and stage == "running"
@@ -9421,6 +9747,12 @@ class Dashboard:
         # Start's state from Pause's — so both live in one method.
         self._paint_bar_buttons()
         self._lock_tick()
+        self._paint_place()
+        return True
+
+    def _paint_place(self) -> None:
+        """The place that is up, repainted from the status: what each
+        place's poll redraws, and only when its stamp moved."""
         {"Home": self._poll_waiting,
          "Corrections": self._poll_corrections,
          "Said": lambda: None,
@@ -9471,6 +9803,11 @@ class Dashboard:
         they are the app's, not the desk's, and Stop still has to work."""
         self._landing_up = up
         if up:
+            # Whoever signs in next gets every place built for them: the
+            # kept ones were drawn for the account that just left, and
+            # nothing half drawn for it carries on.
+            self._sigs.clear()
+            self._stop_rows()
             self.nav.place_forget()
             self._show("Landing")
         else:
