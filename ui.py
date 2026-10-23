@@ -252,6 +252,10 @@ ICON = {
 _cache: dict = {}
 _FONTS: dict = {}
 _CLAMPS: dict = {}
+# (family, size, text) -> pixels. Plain ints, no Tk object (AGENTS.md:
+# nothing module-level may hold one); emptied with the fonts they came from.
+_WIDTHS: dict = {}
+_WIDTHS_MAX = 50_000
 
 
 def forget_images() -> None:
@@ -265,6 +269,7 @@ def forget_images() -> None:
     _cache.clear()
     _FONTS.clear()
     _CLAMPS.clear()
+    _WIDTHS.clear()
 
 
 def rounded_pil(w: int, h: int, radius: int, fill: str, bg: str,
@@ -1589,7 +1594,19 @@ def _text_width(text: str, size: int) -> int:
 
 
 def text_width(text: str, family: str, size: int) -> int:
-    return _font(family, size).measure(text)
+    """Remembered, because Tk's measure is a round trip to GDI that cost
+    0.88 ms a call on this PC (2026-10-23, 14,696 Hebrew and English
+    lines) and the desk asks the same question on every repaint: a Home
+    rebuild measured the same eleven proposals word by word, ~570 calls,
+    half a second of the window not answering a click."""
+    key = (family, size, text)
+    width = _WIDTHS.get(key)
+    if width is None:
+        width = _font(family, size).measure(text)
+        if len(_WIDTHS) >= _WIDTHS_MAX:
+            _WIDTHS.clear()
+        _WIDTHS[key] = width
+    return width
 
 
 def pill(canvas, x: int, y: int, text: str, bg: str, *,

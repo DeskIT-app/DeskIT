@@ -236,6 +236,11 @@ CORR_TABS = (("words", "Words"),)
 WORD_ROW_H = 44          # one learned pair in the Words list
 WORD_EDIT_H = 64         # the card a pair is typed or changed on
 WORD_FIELD_W = 300       # each of its two fields
+# How much of the Corrections column is drawn before the place is shown
+# (a proposal weighs 3, a learned row 1: six proposals and a dozen pairs,
+# more than the page holds), and how long each later tick may draw for.
+CORR_FIRST = 30
+CORR_TICK_S = 0.012
 
 
 def corr_tabs() -> tuple:
@@ -1100,6 +1105,10 @@ class Dashboard:
         self._landing_up = False
         self._rows_after = None
         self._rows_left: list = []
+        # The Corrections column still to be drawn, and the tick that
+        # draws the next of it (_corr_draw).
+        self._corr_after = None
+        self._corr_left: list = []
         # How wide a drawn row is on the place that is up. The Said list
         # shares its place with the vocabulary panel, so it is narrower
         # than the sheet; every other list is the full width.
@@ -2257,6 +2266,7 @@ class Dashboard:
             head = "Nothing learned yet."
         p["corr_head"].config(text=head)
 
+        self._corr_stop()
         column = p["corr_list"]
         column.clear()
         p["corr_empty"].place_forget()
@@ -2270,34 +2280,45 @@ class Dashboard:
             lab.pack(anchor="w", pady=(4, 8))
             column.bind_wheel(lab)
 
-        if items:
-            eyebrow(f"W A I T I N G   O N   Y O U  \u00b7  {len(items)}")
-            for spec in items:
-                card = ui.Card(column.inner, CW, PILE_ROW_H + 20,
-                               fill=ui.CARD, bg=ui.BG, pad=10)
-                card.pack(anchor="w", pady=(0, 8))
-                row = widgets.PileRow(
-                    card.body, CW - 20, bg=ui.CARD,
-                    mark=spec.get("mark", ""),
-                    mark_colour=spec.get("mark_colour"),
-                    eyebrow=spec.get("eyebrow", ""),
-                    eyebrow_right=spec.get("eyebrow_right", True),
-                    text=spec.get("text", ""), runs=spec.get("runs"),
-                    note=spec.get("note", ""),
-                    buttons=spec.get("buttons", ()),
-                    height=PILE_ROW_H)
-                row.pack(fill="x")
-                column.bind_wheel(card)
-                column.bind_wheel(row)
-                column.bind_wheel(row.canvas)
+        def proposal(spec: dict) -> None:
+            card = ui.Card(column.inner, CW, PILE_ROW_H + 20,
+                           fill=ui.CARD, bg=ui.BG, pad=10)
+            card.pack(anchor="w", pady=(0, 8))
+            row = widgets.PileRow(
+                card.body, CW - 20, bg=ui.CARD,
+                mark=spec.get("mark", ""),
+                mark_colour=spec.get("mark_colour"),
+                eyebrow=spec.get("eyebrow", ""),
+                eyebrow_right=spec.get("eyebrow_right", True),
+                text=spec.get("text", ""), runs=spec.get("runs"),
+                note=spec.get("note", ""),
+                buttons=spec.get("buttons", ()),
+                height=PILE_ROW_H)
+            row.pack(fill="x")
+            column.bind_wheel(card)
+            column.bind_wheel(row)
+            column.bind_wheel(row.canvas)
+
+        def rule() -> None:
             line = widgets.rule(column.inner, CW - 10, bg=ui.BG,
                                 colour=ui.LINE)
             line.pack(fill="x", pady=(6, 12))
             column.bind_wheel(line)
 
-        eyebrow("L E A R N E D")
+        # The column as pieces, in order, each with what it weighs: a
+        # proposal is a card of widgets, a learned row one canvas. They are
+        # drawn by _corr_draw, a screenful now and the rest a tick at a
+        # time, because all of them at once (eleven proposals and 136
+        # pairs) held the window 2.8-3.5 s on every visit (2026-10-23).
+        pieces: list = []
+        if items:
+            pieces.append((0, lambda n=len(items): eyebrow(
+                f"W A I T I N G   O N   Y O U  \u00b7  {n}")))
+            pieces += [(3, lambda s=spec: proposal(s)) for spec in items]
+            pieces.append((0, rule))
+        pieces.append((0, lambda: eyebrow("L E A R N E D")))
         if self._words_editing == "":
-            self._words_editor(column, None)
+            pieces.append((3, lambda: self._words_editor(column, None)))
         elif self._words_editing and not any(
                 c["heard"].lower() == self._words_editing.lower() for c in shown):
             # the row he is editing is not in the search's answer (or is
@@ -2305,7 +2326,7 @@ class Dashboard:
             held = next((c for c in entries if c["heard"].lower()
                          == self._words_editing.lower()), None)
             if held is not None:
-                self._words_editor(column, held)
+                pieces.append((3, lambda h=held: self._words_editor(column, h)))
             else:
                 self._words_editing = None
         if not entries:
@@ -2324,9 +2345,46 @@ class Dashboard:
         for entry in shown:
             if (self._words_editing and self._words_editing.lower()
                     == entry["heard"].lower()):
-                self._words_editor(column, entry)
+                pieces.append((3, lambda e=entry: self._words_editor(column, e)))
                 continue
-            self._word_row(column, entry, hot, ready_at)
+            pieces.append((1, lambda e=entry: self._word_row(
+                column, e, hot, ready_at)))
+        self._corr_left = pieces
+        self._corr_draw(first=True)
+
+    def _corr_draw(self, first: bool = False) -> None:
+        """The next pieces of the Corrections column (_fill_corrections):
+        the first call draws CORR_FIRST of weight — more than the page
+        shows — and every tick after it as many as fit in CORR_TICK_S,
+        so the window answers between two of them."""
+        self._corr_after = None
+        if "corr_list" not in self.parts or self.closing:
+            self._corr_left = []
+            return
+        left = self._corr_left
+        weight, started = 0, time.perf_counter()
+        while left:
+            if first:
+                if weight + left[0][0] > CORR_FIRST:
+                    break
+            elif weight and time.perf_counter() - started > CORR_TICK_S:
+                break
+            heavy, draw = left.pop(0)
+            weight += heavy
+            draw()
+        if left:
+            self._corr_after = self.root.after(16, self._corr_draw)
+
+    def _corr_stop(self) -> None:
+        """Whatever of the Corrections column is still to be drawn, not."""
+        self._corr_left = []
+        pending = getattr(self, "_corr_after", None)
+        self._corr_after = None
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:             # noqa: BLE001
+                pass
 
     # ------------------------------------------------------ the Words list
 
@@ -3105,6 +3163,7 @@ class Dashboard:
                 return measure(heard) + measure(meant) + 70
 
         gap = 7
+        space, ellipsis = measure(" "), measure(" …")
 
         def stop(word: str) -> bool:
             return bool(word) and word[-1] in summary.STOPS
@@ -3140,10 +3199,22 @@ class Dashboard:
                                          + (" …" if was_cut else ""))
                 return total
 
-            # the outer contexts first, a word at a time from the far
-            # ends, the longer first; then the inner ones from their
-            # middles
-            while width_of() > room:
+            def guess() -> int:
+                # width_of() off each word's own width: a few pixels from
+                # the real line (1,548 of 14,696 lines off, by 3 px at
+                # most, 2026-10-23) and no Tk call for a word seen before
+                total = fixed
+                for words_, was_cut in zip(ctx, cut):
+                    if words_:
+                        total += (sum(measure(w) for w in words_)
+                                  + space * (len(words_) - 1)
+                                  + (ellipsis if was_cut else 0))
+                return total
+
+            def trim() -> bool:
+                # the outer contexts first, a word at a time from the far
+                # ends, the longer first; then the inner ones from their
+                # middles. False: nothing left to take.
                 outer = [(len(ctx[0]), 0), (len(ctx[-1]), len(ctx) - 1)]
                 outer = [o for o in outer if o[0] > 0]
                 if outer:
@@ -3153,15 +3224,28 @@ class Dashboard:
                     else:
                         ctx[-1] = ctx[-1][:-1]
                     cut[k] = True
-                    continue
+                    return True
                 inner = [(len(ctx[k]), k) for k in range(1, len(ctx) - 1)
                          if len(ctx[k]) > 0]
                 if not inner:
-                    break
+                    return False
                 n, k = max(inner)
                 mid = len(ctx[k]) // 2
                 ctx[k] = ctx[k][:mid] + ctx[k][mid + 1:]
                 cut[k] = True
+                return True
+
+            # Every step a real measure of every context was ~0.9 ms a
+            # call, and a sentence with no full stop is a context of the
+            # whole dictation: hundreds of steps, half a second for one
+            # row. So the steps that are plainly still too wide go on the
+            # guess, with room to spare for its error, and only the last
+            # few are measured — the same cut, a word at a time, as ever.
+            slack = 12 + sum(len(c) for c in ctx) // 4
+            while guess() > room + slack and trim():
+                pass
+            while width_of() > room and trim():
+                pass
             if width_of() <= room or len(kept) == 1:
                 break
             kept.pop()                    # the last change goes to the note
@@ -3422,10 +3506,35 @@ class Dashboard:
         frame = self.parts.get("elsewhere")
         if frame is None or not frame.winfo_exists():
             return
+        doors = self._door_counts(items)
+        # THE TILES ARE KEPT and their words changed where they stand. A
+        # Yes, a No or a ✕ redraws the pile, and building the four tiles
+        # again with it — some thirty widgets destroyed, made and laid
+        # out — was the larger part of the 0.35 s the window then did not
+        # answer (2026-10-23). The tiles only ever change their numbers,
+        # and the one line that carries a count.
+        bits = getattr(self, "_door_bits", None)
+        if (bits and getattr(self, "_door_frame", None) is frame
+                and [b[0] for b in bits] == [d[0] for d in doors]
+                and all(b[2].winfo_exists() for b in bits)):
+            moved = False
+            for (_place, glyph_w, number_w, line_w, note_w), \
+                    (_p, _g, number, line, note_text) in zip(bits, doors):
+                glyph_w.configure(fg=ui.ACCENT if number else ui.FAINT)
+                number_w.configure(text=str(number),
+                                   fg=ui.FG if number else ui.FAINT)
+                for widget, text in ((line_w, line), (note_w, note_text)):
+                    if widget.cget("text") != text:
+                        widget.configure(text=text)
+                        moved = True
+            if moved:
+                self._measure_doors(frame)
+            return
         for child in frame.winfo_children():
             child.destroy()
         self._door_tiles: list[tuple] = []
-        doors = self._door_counts(items)
+        self._door_bits: list[tuple] = []
+        self._door_frame = frame
         # The band fills the row exactly. The remainder of the division
         # is handed out a pixel at a time to the tiles on the left rather
         # than left as a gap at the right edge, where it would read as
@@ -3462,25 +3571,28 @@ class Dashboard:
             # on a short tile and marooned on a tall one — the band is
             # 200 px when nothing is waiting, and an icon three lines
             # above the words it belongs to is an icon about nothing.
-            widgets.icon(head, glyph, bg=ui.CARD,
-                         colour=ui.ACCENT if number else ui.FAINT,
-                         size=12).pack(side="left", padx=(0, 9))
-            tk.Label(head, text=str(number), bg=ui.CARD,
-                     fg=ui.FG if number else ui.FAINT,
-                     font=(ui.DISPLAY, 18, "bold")).pack(side="left")
+            glyph_w = widgets.icon(head, glyph, bg=ui.CARD,
+                                   colour=ui.ACCENT if number else ui.FAINT,
+                                   size=12)
+            glyph_w.pack(side="left", padx=(0, 9))
+            number_w = tk.Label(head, text=str(number), bg=ui.CARD,
+                                fg=ui.FG if number else ui.FAINT,
+                                font=(ui.DISPLAY, 18, "bold"))
+            number_w.pack(side="left")
             # anchor "s" and 5 px of ground: it sits on the number's
             # baseline rather than at the top of the taller line.
-            tk.Label(head, text=line, bg=ui.CARD, fg=ui.DIM,
-                     font=(ui.UI, 10), anchor="w").pack(side="left",
-                                                        anchor="s",
-                                                        padx=(7, 0),
-                                                        pady=(0, 5))
+            line_w = tk.Label(head, text=line, bg=ui.CARD, fg=ui.DIM,
+                              font=(ui.UI, 10), anchor="w")
+            line_w.pack(side="left", anchor="s", padx=(7, 0), pady=(0, 5))
             note = tk.Label(block, text=note_text, bg=ui.CARD, fg=ui.FAINT,
                             font=(ui.UI, 9), anchor="w", justify="left",
                             wraplength=tile_w - 2 * DOOR_PAD)
             self._door_tiles.append((tile, block, note))
+            self._door_bits.append((place, glyph_w, number_w, line_w, note))
             self._make_door(tile, place)
+        self._measure_doors(frame)
 
+    def _measure_doors(self, frame) -> None:
         # HOW SHORT THE BAND MAY GET IS ASKED, NOT TYPED. A Card CLIPS —
         # its body is a create_window with a height on it — so a band one
         # pixel too short cuts "corrections waiting" through the middle
@@ -3571,9 +3683,6 @@ class Dashboard:
         frame = p.get("rest")
         if frame is None or not frame.winfo_exists():
             return
-        for child in frame.winfo_children():
-            child.destroy()
-        self._rest_keep: list = []
         today = time.strftime("%Y-%m-%d")
         lines = []
 
@@ -3586,14 +3695,6 @@ class Dashboard:
                           said.text or "", f"{count} today",
                           ui.is_rtl(said.text or ""),
                           lambda: self._show("Said")))
-        else:
-            # The one sentence a first run has to say. Kept as its own
-            # part because a test reads it: an empty history that says
-            # nothing at all reads as a broken screen.
-            p["last_text"] = tk.Label(frame, text="Nothing dictated yet.",
-                                      bg=ui.BG, fg=ui.FAINT,
-                                      font=(ui.UI, 10), anchor="w")
-            p["last_text"].place(x=0, y=10)
 
         took = self._last_capture()
         if took is not None:
@@ -3609,6 +3710,30 @@ class Dashboard:
                           looked.text or looked.source or "", "",
                           ui.is_rtl(looked.text or ""),
                           lambda: self._show("Said")))
+
+        # THE SAME THREE LINES ARE NOT DRAWN AGAIN. This runs on every
+        # poll while Home is up, and tearing the rows down and building
+        # them back — and the update_idletasks that lays them out — was
+        # 45-60 ms of a window that did not answer, every 800 ms
+        # (measured 2026-10-23). Drawn again only when what they say
+        # changed, or the page under them is a new one.
+        drawn = (frame, said is None, str(took[0]) if took else "",
+                 tuple(line[:5] for line in lines))
+        if drawn == getattr(self, "_rest_drawn", None):
+            self._paint_strip()
+            return
+        self._rest_drawn = drawn
+        for child in frame.winfo_children():
+            child.destroy()
+        self._rest_keep: list = []
+        if said is None:
+            # The one sentence a first run has to say. Kept as its own
+            # part because a test reads it: an empty history that says
+            # nothing at all reads as a broken screen.
+            p["last_text"] = tk.Label(frame, text="Nothing dictated yet.",
+                                      bg=ui.BG, fg=ui.FAINT,
+                                      font=(ui.UI, 10), anchor="w")
+            p["last_text"].place(x=0, y=10)
 
         y = 0
         for label, when, text, meta, rtl, command in lines:
@@ -3636,19 +3761,33 @@ class Dashboard:
             return None
         if not folder or not folder.is_dir():
             return None
+        # The folder is listed again only when it changed (a file added,
+        # removed or renamed moves its own mtime) or the day did: this is
+        # asked on every poll while Home is up, and the listing is three
+        # stat()s a picture.
+        try:
+            seen = (str(folder), folder.stat().st_mtime_ns,
+                    time.strftime("%Y-%m-%d"))
+        except OSError:
+            return None
+        last = getattr(self, "_capture_seen", None)
+        if last is not None and last[0] == seen:
+            return last[1]
         try:
             shots = [f for f in folder.iterdir()
                      if f.is_file() and f.suffix.lower() in CAPTURE_SUFFIXES]
         except OSError:
             return None
-        if not shots:
-            return None
-        shots.sort(key=lambda f: f.stat().st_mtime)
-        newest = shots[-1]
-        midnight = time.mktime(time.strptime(time.strftime("%Y-%m-%d"),
-                                             "%Y-%m-%d"))
-        today = sum(1 for f in shots if f.stat().st_mtime >= midnight)
-        return newest, newest.stat().st_mtime, today
+        found = None
+        if shots:
+            stamps = {f: f.stat().st_mtime for f in shots}
+            newest = sorted(shots, key=stamps.__getitem__)[-1]
+            midnight = time.mktime(time.strptime(time.strftime("%Y-%m-%d"),
+                                                 "%Y-%m-%d"))
+            today = sum(1 for f in shots if stamps[f] >= midnight)
+            found = (newest, stamps[newest], today)
+        self._capture_seen = (seen, found)
+        return found
 
     def _paint_strip(self) -> None:
         p = self.parts
@@ -3675,8 +3814,10 @@ class Dashboard:
             sentence = ("The model is off — every key that needs no model works; "
                         "Start loads it again." if model == "off" else
                         "The model is loading — about 25 seconds.")
-        p["strip_awake"].config(text=sentence)
-        p["strip_awake"].update_idletasks()
+        # Every poll asks; only a changed line is written and laid out.
+        if p["strip_awake"].cget("text") != sentence:
+            p["strip_awake"].config(text=sentence)
+            p["strip_awake"].update_idletasks()
 
         bits = []
         phone = (self.status or {}).get("phone")
@@ -3687,7 +3828,9 @@ class Dashboard:
         learned = _words_learned()
         if learned is not None:
             bits.append(f"{learned} words learned")
-        p["strip_facts"].config(text="   ·   ".join(bits))
+        facts = "   ·   ".join(bits)
+        if p["strip_facts"].cget("text") != facts:
+            p["strip_facts"].config(text=facts)
 
     def _vocab_panel(self, parent=None) -> None:
         """What saying things has taught it: the count, the last pairs it
@@ -3900,6 +4043,7 @@ class Dashboard:
             self._rows_after = None
 
     def _stop_rows(self) -> None:
+        self._corr_stop()
         self._rows_left = []
         self._settings_left = []
         for name in ("_rows_after", "_settings_tick"):
@@ -9500,6 +9644,7 @@ class Dashboard:
         self._resume_after_capture()
         for pending in (self._pump_after, self._toast_after,
                         self._search_after, self._rows_after,
+                        self._corr_after,
                         self._slide_after, self._breath_after):
             try:
                 if pending is not None:

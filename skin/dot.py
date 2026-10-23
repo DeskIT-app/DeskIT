@@ -184,6 +184,16 @@ class Dot:
             self.state = name
             self._blend = 0.0
 
+    def still(self, alarm_fill: str | None = None) -> bool:
+        """Whether the next frame would be the last one again: the
+        cross-fade done, nothing breathing, no sweep, no alarm blinking.
+        `run` does not draw such a frame — see the note there."""
+        if alarm_fill is not None or self._blend < 1.0 \
+                or self._shown != self.state or self.state == "busy":
+            return False
+        _fill, _ring, pulses = DOT_STATES.get(self.state, DOT_STATES["ready"])
+        return not pulses
+
     def placement(self) -> tuple[int, int, int, int]:
         """Where he dropped it, or the corner of the PRIMARY monitor's
         WORK AREA — above the taskbar, never under it. Clamped against
@@ -349,6 +359,9 @@ def run(status_dot) -> None:
 
     placed_at = [0, 0]
     alarming = [False]
+    # (moving, x, y) of the frame last handed to the window, or None for
+    # "draw the next one whatever it is" (see "A SETTLED DOT" below)
+    drawn = [None]
 
     def dropped() -> None:
         """The press on the disc was let go, and Windows' move loop has
@@ -387,11 +400,20 @@ def run(status_dot) -> None:
         status_dot.placed(at_x, at_y)
         _log.info("the dot was dropped at %d, %d", at_x, at_y)
 
+    # ON THE CPU, NOT THE GPU. Glass defaults to a GL surface, and for a
+    # 38 px picture that buys nothing and costs a great deal: measured
+    # 2026-10-23 on the hidden desktop, 450 frames, a frame flushed from
+    # the GPU took 3.7-4.1 ms (p99 10.7-13.4, worst 106 ms while a game
+    # held the card) and the painter plus the NVIDIA driver thread its
+    # context brings were 23-24% of a core; from the CPU rasteriser 0.19
+    # ms (worst 1 ms), 3.0% of a core. readPixels waits for the card with
+    # the GIL held, so every other thread in the app — the keyboard hook's
+    # callback among them — waited out those stalls too.
     if on_click is not None:
-        glass = Glass(*dot.placement(), hit=dot.hit, clicked=clicked,
-                      moved=dropped)
+        glass = Glass(*dot.placement(), gpu=False, hit=dot.hit,
+                      clicked=clicked, moved=dropped)
     else:
-        glass = Glass(*dot.placement())
+        glass = Glass(*dot.placement(), gpu=False)
     # The handle, for the move frame to slip its light UNDER (see
     # `under` below); None again in the finally, like `rect`.
     status_dot.hwnd = glass.hwnd
@@ -426,6 +448,7 @@ def run(status_dot) -> None:
                         continue
                     if item is overlay._SHOW:
                         hidden = False
+                        drawn[0] = None
                         at_x, at_y, _w, _h = dot.placement()
                         glass.move(at_x, at_y)
                         placed_at[0], placed_at[1] = at_x, at_y
@@ -498,9 +521,23 @@ def run(status_dot) -> None:
                 glass.move(at[0], at[1])
                 status_dot.rect = (at[0], at[1], at[0] + BOX, at[1] + BOX)
             alarming[0] = alarm_fill is not None
+            # A SETTLED DOT IS NOT PAINTED AGAIN. Ready and paused neither
+            # breathe nor sweep, so once a cross-fade is over every frame
+            # was the last one again — drawn, read back and handed to the
+            # compositor 45 times a second, for hours: 8.5-10% of a core
+            # for the dot thread and 7-8% for the driver thread under it
+            # on the live app (2026-10-23), the largest part of what the
+            # app spent doing nothing. The window keeps what it was last
+            # given, so a frame goes out only when the picture or the
+            # place would change; the messages still turn over every tick.
+            shown = (dot.moving, glass.x, glass.y)
+            if dot.still(alarm_fill) and drawn[0] == shown:
+                glass.pump()
+                time.sleep(FRAME_S)
+                continue
             dot.draw(glass.canvas, (time.perf_counter() - start) * 1000.0,
                      alarm_fill)
-            glass.flush()
+            drawn[0] = shown if glass.flush() else None
             glass.pump()
             time.sleep(FRAME_S)
     except Exception:
