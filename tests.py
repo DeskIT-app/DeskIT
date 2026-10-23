@@ -35980,7 +35980,11 @@ def test_hardware_probe_small_card():
     assert hardware.tier_for(_facts(vram_mb=3900)) == "cpu"
     assert hardware.tier_for(_facts(vram_mb=6144)) == "gpu"
     assert hardware.tier_for(_facts(vram_mb=4096)) == "gpu-small"
-    assert hardware.DERIVED["gpu"]["local.compute_type"] == "float16"
+    assert hardware.DERIVED["gpu"]["local.compute_type"] == "int8_float16"
+    # a small card keeps the English model since 2026-10-23: two turbos at
+    # int8_float16 are ~2.3 GB
+    assert "local.english_model" not in small
+    assert hardware.DERIVED["cpu"]["local.english_model"] == ""
     assert hardware.DERIVED["cpu"]["local.compute_type"] == "int8"
     assert hardware.DERIVED["cpu"]["review.enabled"] is False
     assert hardware.DERIVED["cpu"]["local.beam_size"] == 2
@@ -36065,9 +36069,12 @@ def test_the_probe_writes_the_machine_layer_and_a_choice_beats_it():
 
 
 def test_the_ladder_honours_the_number_format():
-    """local_whisper: auto keeps the ladder it always had; a named format
-    goes on the device asked for with int8 on the processor underneath;
-    cpu_threads reaches WhisperModel only when set."""
+    """local_whisper: auto on a card tries int8_float16, then float16 (a
+    card that refuses int8 still runs on the card); a named format goes on
+    the device asked for — int8_float16 with float16 under it — and int8
+    on the processor underneath; cpu_threads reaches WhisperModel only
+    when set; the English model loads in the format the Hebrew one
+    settled on."""
     import transcribers.local_whisper as lw
 
     built: list[tuple] = []
@@ -36084,13 +36091,21 @@ def test_the_ladder_honours_the_number_format():
     import faster_whisper
     with _patched(faster_whisper, "WhisperModel", _FakeModel), \
             _patched(lw, "_register_cuda_dlls", lambda: None):
-        lw.LocalWhisperTranscriber("m", "he", device="auto")
+        t = lw.LocalWhisperTranscriber("m", "he", device="auto")
+        assert [b[:2] for b in built] == [("cuda", "int8_float16"), ("cuda", "float16")], built
+        assert t._compute == "float16"
+        built.clear()
+        t = lw.LocalWhisperTranscriber("m", "he", device="cuda", compute_type="int8_float16",
+                                       cpu_threads=6)
+        assert [b[:2] for b in built] == [("cuda", "int8_float16"), ("cuda", "float16")], built
+        assert built[-1][2] == {"cpu_threads": 6}
+        built.clear()
+        # the English model follows the format the Hebrew one settled on
+        t._load("e")
         assert [b[:2] for b in built] == [("cuda", "float16")], built
         built.clear()
-        lw.LocalWhisperTranscriber("m", "he", device="cuda", compute_type="int8_float16",
-                                   cpu_threads=6)
-        assert [b[:2] for b in built] == [("cuda", "int8_float16"), ("cpu", "int8")], built
-        assert built[-1][2] == {"cpu_threads": 6}
+        lw.LocalWhisperTranscriber("m", "he", device="cuda", compute_type="float16")
+        assert [b[:2] for b in built] == [("cuda", "float16")], built
         built.clear()
         lw.LocalWhisperTranscriber("m", "he", device="cpu", compute_type="int8")
         assert [b[:2] for b in built] == [("cpu", "int8")] and built[0][2] == {}
