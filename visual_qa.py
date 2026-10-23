@@ -213,6 +213,11 @@ import privacy
 log = logging.getLogger("app")
 transcript_log = logging.getLogger("transcripts")
 
+#: What the start-up warm-up asks to have free, in RAM and (twice) in
+#: commit: gemma3:12b warm was 12,109 MB of llama-server's commit on his
+#: PC, 2026-10-23. See Controller.warm.
+WARM_NEEDS_MB = 12_000
+
 # What every question here is, in network.log; the warm-up that only
 # loads the projector is Ollama housekeeping.
 PURPOSE = "ask-screen"
@@ -4514,6 +4519,21 @@ class Controller:
             build = builders.get("ollama")
             if build is None:
                 return          # never warm a CLOUD backend implicitly
+            # ONLY WHERE THERE IS ROOM FOR IT. Warm, gemma3:12b is
+            # llama-server holding 12,109 MB of commit and 9,175 MB of
+            # the graphics card for five minutes (his PC, 2026-10-23) —
+            # on a 16 GB machine that is the page file, and it fell
+            # exactly when he was clicking around the desk after a
+            # start, with 0 screen questions after any of the 9 starts
+            # in the logs. A first question asked on a full machine pays
+            # the ~23 s load instead.
+            import hardware as hardware_mod
+            ram, commit = hardware_mod.free_mb()
+            if ram < WARM_NEEDS_MB or commit < 2 * WARM_NEEDS_MB:
+                log.info("vision warm-up skipped — %d MB of memory free, "
+                         "%d MB of commit; the first screen question pays "
+                         "the load", ram, commit)
+                return
             seconds = build().warm()
             log.info("vision projector warm after %.1fs — the first "
                      "screen question will not pay the load", seconds)

@@ -118,7 +118,8 @@ def driver_ok(driver: str) -> bool:
     return (major, minor) >= DRIVER_FLOOR
 
 
-def ram_mb() -> int:
+def _memory_status():
+    """GlobalMemoryStatusEx, or None."""
     class _MemoryStatus(ctypes.Structure):
         _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
                     ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
@@ -130,10 +131,26 @@ def ram_mb() -> int:
         status.dwLength = ctypes.sizeof(status)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         if kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return int(status.ullTotalPhys // (1024 * 1024))
+            return status
     except Exception:                                    # noqa: BLE001
         pass
-    return 0
+    return None
+
+
+def ram_mb() -> int:
+    status = _memory_status()
+    return int(status.ullTotalPhys // (1024 * 1024)) if status else 0
+
+
+def free_mb() -> tuple[int, int]:
+    """(RAM free, commit free) in MB now; (0, 0) when Windows will not
+    say. Commit free is what can still be promised before the page file
+    has to grow — on WDDM what sits on the graphics card is committed too."""
+    status = _memory_status()
+    if not status:
+        return 0, 0
+    return (int(status.ullAvailPhys // (1024 * 1024)),
+            int(status.ullAvailPageFile // (1024 * 1024)))
 
 
 def ollama(timeout: float = 1.0) -> tuple[bool, list[str]]:

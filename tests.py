@@ -4895,6 +4895,103 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
                 f"the {state} halo no longer reads at 14 px")
 
 
+def test_a_settled_dot_is_not_painted_again() -> None:
+    """The dot repainted itself 45 times a second whatever it showed: on
+    the live app (2026-10-23) 8.5-10% of a core for its thread and 7-8%
+    for the NVIDIA driver thread its GL context brought, for a picture
+    that had not changed since the last cross-fade. `Dot.still` is the
+    rule (no breath, no sweep, the fade done, no alarm) and `run` sends
+    no frame while it holds and nothing has moved. Driven through `run`
+    itself, with a stand-in window that counts the frames it is handed,
+    which also says the dot asks for the CPU rasteriser."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        import skia
+        from skin import dot as skin_dot
+        from skin.palette import DOT_STATES
+    except Exception:
+        return
+    import overlay as overlay_mod
+    B = skin_dot.BOX
+
+    for state, (_fill, _ring, pulses) in DOT_STATES.items():
+        d = skin_dot.Dot()
+        d.set(state)
+        assert state == "ready" or not d.still(), f"{state} is still fading in"
+        surface = skia.Surface(B, B)
+        for frame in range(12):
+            d.draw(surface.getCanvas(), frame * 22.0)
+        assert d.still() == (not pulses and state != "busy"), state
+        assert not d.still("#ff3b30"), "an alarm blinks, whatever the state"
+
+    frames: list = []
+
+    class FakeGlass:
+        def __init__(self, x, y, width, height, gpu=True, **_kw):
+            frames.append(("gpu", gpu))
+            self.x, self.y, self.width, self.height = x, y, width, height
+            self.hwnd = 0
+            self._surface = skia.Surface(width, height)
+            self.canvas = self._surface.getCanvas()
+
+        def flush(self, alpha=1.0):
+            frames.append("frame")
+            return True
+
+        def move(self, x, y):
+            self.x, self.y = int(x), int(y)
+
+        def where(self):
+            return self.x, self.y
+
+        def show(self): pass
+        def hide(self): pass
+        def raise_(self): pass
+        def pump(self): pass
+        def close(self): pass
+
+    class FakeStatus:
+        corner, x, y = "bottom-right", skin_dot.UNSET, skin_dot.UNSET
+        on_click, hidden, rect, hwnd = None, False, None, None
+
+        def __init__(self):
+            self._q = queue.Queue()
+            self._alive, self._closing = threading.Event(), threading.Event()
+            self._replace = threading.Event()
+
+        def moving(self): return False
+        def alarming(self): return None
+        def end_move(self): pass
+
+    def painted() -> int:
+        return frames.count("frame")
+
+    status = FakeStatus()
+    with _patched(skin_dot, "Glass", FakeGlass), \
+            _patched(skin_dot, "FRAME_S", 0.002):
+        runner = threading.Thread(target=skin_dot.run, args=(status,),
+                                  daemon=True)
+        runner.start()
+        try:
+            assert status._alive.wait(5), "the painter never came up"
+            time.sleep(0.4)                      # ~200 ticks
+            assert painted() <= 2, f"a dot showing one picture sent {painted()} frames"
+            status._q.put("locked")              # breathes: every tick
+            assert _until(lambda: painted() > 25, 5), painted()
+            status._q.put("ready")               # a fade back, then nothing
+            time.sleep(0.4)
+            settled = painted()
+            time.sleep(0.3)
+            assert painted() == settled, (
+                f"{painted() - settled} frames of a dot that had settled")
+        finally:
+            status._q.put(overlay_mod._DONE)
+            runner.join(5)
+    assert ("gpu", False) in frames and ("gpu", True) not in frames, frames[:2]
+
+
 def test_status_dot_ignores_states_it_does_not_know() -> None:
     """set_state is called from the keyboard hook. A typo must not raise
     there — an exception inside the hook makes Windows drop it."""
@@ -19409,12 +19506,13 @@ def test_every_skin_window_is_click_through_and_never_focusable() -> None:
                 / f"{name}.py").read_text("utf-8")
         assert "hit=" not in text, f"skin/{name}.py now takes the mouse"
     # The dot asks for the mouse ONLY when somebody wired a click up, and
-    # with nobody it is the old layer exactly.
+    # with nobody it is the old layer exactly — on the CPU either way
+    # since 2026-10-23 (test_a_settled_dot_is_not_painted_again).
     text = (Path(__file__).resolve().parent / "skin" / "dot.py").read_text(
         "utf-8")
     assert "if on_click is not None:\n        glass = Glass(*dot.placement(), " \
-           "hit=dot.hit" in text, "the dot takes the mouse unconditionally"
-    assert "else:\n        glass = Glass(*dot.placement())" in text
+           "gpu=False, hit=dot.hit" in text, "the dot takes the mouse unconditionally"
+    assert "else:\n        glass = Glass(*dot.placement(), gpu=False)" in text
     # SW_SHOWNOACTIVATE, not deiconify: AGENTS.md measured Tk taking the
     # foreground the instant it realises a window, and the fix there is to
     # take it BACK. A plain popup shown this way never takes it at all.
@@ -26019,6 +26117,38 @@ def test_the_notify_store_keeps_a_hundred_and_survives_a_broken_file() -> None:
             "after the break"
 
 
+def test_a_notification_is_saved_past_a_reader_holding_the_file() -> None:
+    """Windows will not rename onto a file another process has open
+    without delete sharing, and the desk reads notify.json for its pile:
+    one such moment lost a notification (app.log, 2026-10-23 14:59:46,
+    "notify failed: [WinError 5] Access is denied"). The save waits a
+    reader out instead of failing on it."""
+    import notify
+
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "notify.json"
+        store = notify.Store(path)
+        store.add({"title": "first"})
+        spare = Path(d) / "spare.json"
+        spare.write_text("{}", "utf-8")
+        with path.open("rb"):              # what a reader's open() shares
+            try:
+                os.replace(spare, path)
+            except PermissionError:
+                pass
+            else:
+                return                     # renames over readers here: nothing to wait out
+        reader = path.open("rb")
+        threading.Timer(0.08, reader.close).start()
+        try:
+            store.add({"title": "second"})
+        finally:
+            time.sleep(0.1)
+            reader.close()
+        assert [i["title"] for i in store.items()] == ["first", "second"], \
+            store.items()
+
+
 def test_receiving_plays_the_cue_shows_the_card_and_hands_back_counts() -> None:
     """One arrival: stored, logged, cued once, shown with its label and
     the unread count; the reply and state() carry counts, never a body;
@@ -30227,6 +30357,59 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
                 board.root.update_idletasks()
 
 
+def test_home_keeps_what_did_not_change_between_two_polls() -> None:
+    """Every poll while Home was up tore the day's three lines down and
+    built them again (45-60 ms of a window that did not answer, every
+    800 ms), and every Yes, No or ✕ rebuilt the four door tiles under the
+    pile with it (2026-10-23). The lines stay until what they say
+    changes; the tiles stay and change their numbers where they stand."""
+    import datetime as datetime_mod
+
+    import history as history_mod
+
+    class Fake:
+        def __init__(self, items):
+            self._items = items
+
+        def pending(self):
+            return list(self._items)
+
+    when = datetime_mod.datetime.now()
+    review = [{"id": f"r{i}", "when": f"2026-10-23 12:0{i}:00",
+               "status": "pending", "proposed": "הטקסט הזה נכון עכשיו.",
+               "text": "הטקסט הזה נכן עכשיו.",
+               "changes": [{"before": "נכן", "after": "נכון",
+                            "why": "הגייה דומה"}]} for i in range(2)]
+    with _window([history_mod.Event(when, "dictation", text="hello there")]) as board:
+        if board is None:
+            return
+        board._review_store = lambda: Fake(review)
+        board._notify_store = lambda: None
+        board._show("Home")
+        board.root.update_idletasks()
+        rest = board.parts["rest"]
+        lines = rest.winfo_children()
+        assert lines, "the day has a line"
+        board._poll_waiting()
+        board._paint_rest()
+        assert rest.winfo_children() == lines, "a poll with nothing new drew the day again"
+        board.log = [history_mod.Event(when, "dictation", text="something new")] + board.log
+        board._paint_rest()
+        assert rest.winfo_children() != lines, "a new dictation left the old line up"
+
+        tiles = list(board._door_tiles)
+        number = next(b[2] for b in board._door_bits if b[0] == "Corrections")
+        assert number.cget("text") == "2", number.cget("text")
+        review.pop()
+        board._pile_stamp = object()
+        board._fill_waiting()
+        assert board._door_tiles == tiles, "the doors were built again for a new number"
+        assert number.cget("text") == "1", number.cget("text")
+        board._show("Corrections")
+        board._show("Home")
+        assert board._door_tiles != tiles, "a new page keeps the old page's doors"
+
+
 def test_the_corrections_place_holds_every_proposal_and_one_gold() -> None:
     """The home shows three of them; this place shows all of them, above
     the list of learned words — "the vocabulary and all the corrections it
@@ -30400,6 +30583,123 @@ def test_the_words_list_is_the_whole_vocabulary_with_search_and_three_doors(
         assert board._corr_stamp is None
         board._vocab_answered(None, "learn")
         assert "stopped" in board._toast_text
+
+
+def test_the_corrections_place_shows_a_screenful_and_draws_the_rest_after(
+        ) -> None:
+    """Eleven proposals and 136 learned pairs, every one of them built
+    before the place was shown, held the window 3.2-4.4 s on each visit
+    (2026-10-23). A screenful is drawn at once and the rest a tick at a
+    time, in the same order; a search or another place meanwhile drops
+    what was still to come instead of finishing it under the new one."""
+    entries = [{"heard": f"שמע{i}", "meant": f"word{i}", "hits": 1,
+                "last": f"2026-10-{1 + i // 10:02d} 10:{i:02d}:00"}
+               for i in range(60)]
+    newest = [e["heard"] for e in sorted(entries, key=lambda e: e["last"],
+                                         reverse=True)]
+
+    class Fake:
+        def pending(self):
+            return []
+
+    was = paths.VOCAB_FILE.read_text("utf-8") if paths.VOCAB_FILE.exists() else None
+    paths.VOCAB_FILE.write_text(json.dumps(
+        {"version": 1, "corrections": entries}, ensure_ascii=False), "utf-8")
+    try:
+        with _window() as board:
+            if board is None:
+                return
+            board._review_store = lambda: Fake()
+            board._show("Corrections")
+            first = len(board.parts["word_rows"])
+            assert 12 <= first < 60, first
+            assert board._corr_left, "the rest waits for the next tick"
+            assert _until(lambda: not board._corr_left, 10,
+                          pump=board.root.update), len(board._corr_left)
+            assert list(board.parts["word_rows"]) == newest, "the order moved"
+            board._words_search("word5")
+            assert not board._corr_left
+            assert len(board.parts["word_rows"]) == 11, list(board.parts["word_rows"])
+            board._words_search("")
+            assert board._corr_left
+            board._show("Home")
+            assert not board._corr_left and board._corr_after is None
+    finally:
+        if was is None:
+            paths.VOCAB_FILE.unlink(missing_ok=True)
+        else:
+            paths.VOCAB_FILE.write_text(was, "utf-8")
+
+
+def test_a_long_sentence_is_cut_to_the_same_words_without_measuring_every_step(
+        ) -> None:
+    """A proposal's sentence is cut a word at a time until it fits, and
+    every step measured every context with Tk (0.88 ms a call on this PC),
+    so a dictation with no full stop in it, a context of the whole
+    dictation, cost hundreds of steps for one row: Home measured eleven
+    proposals word by word on every rebuild, half a second (2026-10-23).
+    The steps that are plainly too wide now go on each word's own width
+    and only the last few are measured. The cut must be the same one,
+    word for word; it must ask Tk a small fraction of what it did; and a
+    width once asked is remembered until the fonts are forgotten."""
+    import dashboard as dash
+    import ui
+    import widgets as widgets_mod
+
+    words = [("שלום", "עולם", "hello", "world", "מחר", "בבוקר")[i % 6]
+             for i in range(260)]
+    at = 200
+    text = " ".join(words)
+    change = {"before": words[at], "after": "תיקון", "span": [at, at + 1]}
+    room = 560
+    with _window() as board:
+        if board is None:
+            return
+        asked: list[int] = []
+        real_font = ui._font
+
+        class Counting:
+            def __init__(self, font):
+                self._font = font
+
+            def measure(self, s):
+                asked.append(len(s))
+                return self._font.measure(s)
+
+        with _patched(ui, "_font", lambda family, size: Counting(real_font(family, size))):
+            ui._WIDTHS.clear()
+            runs, shown, _where = dash.Dashboard._change_runs(text, [change], room)
+            fast = sum(asked)
+            asked.clear()
+            dash.Dashboard._change_runs(text, [change], room)
+            assert asked == [], f"a second rebuild asked Tk {len(asked)} times"
+
+            # the cut as it always was: real measures, a word at a time,
+            # the longer outer context first
+            ui._WIDTHS.clear()
+            measure = dash.Dashboard._measure
+            fixed = widgets_mod.change_size(words[at], "תיקון", 12)[0] + 7 * 2
+            ctx, cut = [words[:at], words[at + 1:]], [False, False]
+
+            def width() -> int:
+                return fixed + sum(measure(" ".join(c) + (" …" if k else ""))
+                                   for c, k in zip(ctx, cut) if c)
+
+            while width() > room:
+                n, k = max(o for o in ((len(ctx[0]), 0), (len(ctx[1]), 1)) if o[0])
+                ctx[k] = ctx[k][1:] if k == 0 else ctx[k][:-1]
+                cut[k] = True
+            slow = sum(asked)
+        ui.forget_images()
+        assert not ui._WIDTHS, "the widths outlived their fonts"
+    expect = []
+    if ctx[0]:
+        expect.append(("… " if cut[0] else "") + " ".join(ctx[0]))
+    if ctx[1]:
+        expect.append(" ".join(ctx[1]) + (" …" if cut[1] else ""))
+    pieces = [piece for piece, _c, _p in runs if isinstance(piece, str)]
+    assert shown == 1 and pieces == expect, (pieces, expect)
+    assert fast * 20 < slow, f"{fast} characters measured against {slow}"
 
 
 def test_a_change_draws_heard_arrow_and_proposal_in_reading_order() -> None:
@@ -33308,6 +33608,31 @@ def test_warmups_never_open_a_card():
     from urllib.parse import urlsplit
     remote = [u for u in tried if urlsplit(u).hostname != "127.0.0.1"]
     assert tried and not remote, (tried, remote)
+
+
+def test_the_vision_warm_up_waits_for_room_in_memory() -> None:
+    """Warm, gemma3:12b was 12 GB of commit and 9 GB of the graphics card
+    for five minutes; on his 16 GB PC (2026-10-23) that went to the page
+    file after every start, for screen questions nobody asked. The
+    start-up warm-up goes out only when the memory is there for it."""
+    import hardware as hardware_mod
+    import net as net_mod
+    import visual_qa as vq
+
+    tried: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        tried.append(url)
+        raise net_mod.NetError("refused") from ConnectionRefusedError(10061, "refused")
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    with _patched(net_mod, "_connect", fake_connect):
+        with _patched(hardware_mod, "free_mb", lambda: (3_000, 9_000)):
+            vq.Controller(lambda: cfg).warm()
+        assert tried == [], f"a full machine was asked to warm: {tried}"
+        with _patched(hardware_mod, "free_mb", lambda: (20_000, 40_000)):
+            vq.Controller(lambda: cfg).warm()
+        assert any("11434" in url for url in tried), tried
 
 
 def test_net_offline_refuses_all_but_loopback():

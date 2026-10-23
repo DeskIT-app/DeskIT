@@ -123,6 +123,7 @@ KINDS = ("done", "input", "error", "info")
 TITLE_MAX, BODY_MAX, SOURCE_MAX, PROJECT_MAX, SESSION_MAX = 80, 400, 40, 60, 64
 APP_MAX = 80                   # the sender's window title, as a label only
 KEEP = 100
+REPLACE_TRIES = 12       # x 20 ms: how long a save waits out a reader
 STACK_MAX = 5                  # cards on screen at once when the config
                                # says nothing; [notify] stack_max is the
                                # real number and config.py bounds it
@@ -425,7 +426,19 @@ class Store:
         tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                        "utf-8")
-        os.replace(tmp, self.path)
+        # Windows refuses to rename onto a file another process has open
+        # without delete sharing — the desk reading this one for its pile
+        # — with WinError 5, and one refusal LOST a notification
+        # (app.log, 2026-10-23 14:59:46, #1476). A read is a millisecond,
+        # so a few short tries wait it out; past them the error stands.
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                if attempt == REPLACE_TRIES - 1:
+                    raise
+                time.sleep(0.02)
 
     # ---- writes ----
 
