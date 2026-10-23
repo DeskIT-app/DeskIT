@@ -218,6 +218,21 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night13r RESULT (2026-10-23) — phone-sounding audio did not move the
+  hearing either.** The training ran whole this time (`grow_commit.py` took
+  the commit limit 43.9 → 53.1 GB before it; 13,161 steps, 446 min). Against
+  night10, words wrong: FLEURS dev −20, Reversim dev −11, WhatsApp **+31**,
+  d1 +31, FLEURS test −38, Reversim test +1 — 6,454 over the six sets, the
+  same number as night10's to the word. Hearing errors 3,198 → 3,179, WhatsApp
+  380 → 396; English 572/916 (night10 582). On the phone-sounding FLEURS dev
+  1,708 → 1,688 (today's 1,696): it learned the simulated channel back to
+  where the base was, and nothing on the real phone set. With night12 (new
+  speakers) and night11 (more encoder) this closes the training road for the
+  hearing on this card: the writing gains are kept by night10, the hearing
+  sits where every good Hebrew model on the leaderboard sits. caspi8k:
+  WhatsApp ran out of memory, d1 looped (89.7% words wrong, RTF 2.5) and ran
+  past his window to 11:27 (no step may outlive the window again — the
+  runner kills at it now); Caspi is closed.
 - **night13 RESULT (2026-10-22) — the training died, the candidates lost.**
   The phone-audio training ran normally (2.1 s a step, 7.4 GiB) and died at
   step ~230 for want of HOST commit: event 2004 named the trainer 13.9 GB,
