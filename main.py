@@ -381,6 +381,7 @@ class App:
         self._room_took_model = False    # rung 3 unloaded it, so rung 0 loads it
         self._room_keep_speech = False   # the person pressed Start meanwhile
         self._room_checked_at = 0.0
+        self._room_noted = 0             # the pid last named under the bar
         # What a hold key says while the model is off: Stop's sentence,
         # or the room's while it was the room that took the model.
         self._model_off_words = self.MODEL_OFF_WORDS
@@ -2630,6 +2631,13 @@ class App:
         self._room = room_mod.Ladder(
             competitor_gb=rcfg.competitor_gb, commit_tight=rcfg.commit_tight,
             spill_gb=rcfg.spill_gb, settle_s=rcfg.settle_s, exit_s=rcfg.exit_s)
+        # Said once, so a log with no "room:" step in it can be told from a
+        # watch that never started (2026-10-23: nine days of silence and
+        # nothing to say which).
+        log.info("room: watching the card — a program holding %.1f GB or "
+                 "more, seen twice, holds the local model off; the English "
+                 "and speech models follow only at commit %d%% of the limit",
+                 rcfg.competitor_gb, round(100 * rcfg.commit_tight))
         threading.Thread(target=self._room_loop, daemon=True,
                          name="room").start()
 
@@ -2671,6 +2679,14 @@ class App:
         if self._room_keep_speech:
             self._room_keep_speech = False
             ladder.keep_speech(now)
+        c = reading.competitor
+        if c is not None and c.total >= room_mod.NOTE and not ladder.counts(c) \
+                and c.pid != self._room_noted:
+            # a heavy program under the bar, once per process: what a game
+            # that never reached it looked like (room.NOTE)
+            self._room_noted = c.pid
+            log.info("room: %s — under the %.1f GB that makes room",
+                     self._room_numbers(reading), self.cfg.room.competitor_gb)
         want = ladder.want(reading, now)
         if not self.cfg.room.enabled:
             want = 0

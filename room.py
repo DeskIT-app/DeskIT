@@ -113,6 +113,16 @@ RECHECK_S = 30.0
 
 GB = 1 << 30
 
+#: A program this heavy that is still UNDER competitor_gb is named in the
+#: log once (main.App._room_tick). Without it a game that never reached
+#: the bar left no trace: on 2026-10-23 GTA V ran 3 min 20 s (BattlEye
+#: loaded 14:39:32, unloaded 14:42:52) under commit at 90% and the log
+#: could not say whether the watch was alive or the game was still under
+#: 2.5 GB; the same game's next run reached 2.9 GB 2 min 49 s after its
+#: BattlEye loaded and the ladder stepped at once. Discord, Chrome and
+#: explorer sit at 0.4-0.5 GB on this PC.
+NOTE = 1 * GB
+
 
 @dataclass(frozen=True)
 class Competitor:

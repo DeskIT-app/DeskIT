@@ -44692,6 +44692,7 @@ def test_the_app_makes_room_for_a_game_and_takes_it_back():
     app._room_keep_speech = False
     app._room_took_model = False
     app._room_checked_at = 0.0
+    app._room_noted = 0
     app._model_off_words = App.MODEL_OFF_WORDS
     G = 1 << 30
     game = room_mod.Competitor("fortniteclient-win64-shipping", 4242, 7 * G, 0)
@@ -44784,6 +44785,62 @@ def test_the_app_makes_room_for_a_game_and_takes_it_back():
             assert net_mod.held(url) is None
         finally:
             net_mod.release(url)
+
+
+def test_the_room_says_it_is_watching_and_names_a_game_still_under_the_bar():
+    """2026-10-23: GTA V ran 3 min 20 s at commit 90% and app.log could not
+    say whether the watch was alive or the game was still under 2.5 GB.
+    The watch says once that it started, with its bars; a program over
+    room.NOTE that does not count yet is named ONCE per process, with its
+    numbers; a light one, or the same process again, says nothing; and the
+    ladder itself is untouched by the line."""
+    import logging
+    import main as main_mod
+    import room as room_mod
+
+    lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    app_log = logging.getLogger("app")
+    catch, level = _Catch(), app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catch)
+    App = main_mod.App
+    try:
+        app = App.__new__(App)
+        app.cfg = type("C", (), {"room": config_mod.RoomConfig()})()
+        app._room = None
+        app._room_looked = threading.Event()
+        with _patched(room_mod, "LIVE", True), \
+                _patched(App, "_room_loop", lambda self: None):
+            app._start_room()
+        started = [s for s in lines if s.startswith("room: watching")]
+        assert len(started) == 1 and "2.5 GB" in started[0] and "90%" in started[0], lines
+        assert isinstance(app._room, room_mod.Ladder)
+
+        lines.clear()
+        app._room_keep_speech = False
+        app._room_checked_at = 0.0
+        app._room_noted = 0
+        G = 1 << 30
+        loading = room_mod.Competitor("gta5", 777, int(1.4 * G), 0)
+        for t in (0, 5, 10):
+            app._room_tick(room_mod.Reading(loading, 0.90), float(t))
+        under = [s for s in lines if "under the 2.5 GB" in s]
+        assert len(under) == 1, lines
+        assert "gta5 holds 1.4 GB" in under[0] and "commit 90%" in under[0], under
+        assert app._room.rung == 0, "a line is not a step"
+        # a light program is nobody's business; a new process is named again
+        app._room_tick(room_mod.Reading(room_mod.Competitor("discord", 9, G // 2, 0), 0.8), 15.0)
+        app._room_tick(room_mod.Reading(room_mod.Competitor("gta5", 778, int(1.1 * G), 0), 0.8), 20.0)
+        assert len([s for s in lines if "under the" in s]) == 2, lines
+        assert not any("discord" in s for s in lines), lines
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
 
 
 def test_the_room_section_is_in_the_file_bounded_and_off_the_screen():
