@@ -202,6 +202,17 @@ SECRETS_DIR = _rel("SECRETS_DIR")
 SYNC_DIR = _rel("SYNC_DIR")
 CACHE_DIR = _rel("CACHE_DIR")
 CUES_DIR = _rel("CUES_DIR")
+#: WebView2's user data folder for the web desk (webdesk.py): the browser
+#: process's own files, an InPrivate profile on top, so nothing a page
+#: stores outlives the window. A cache — may be deleted at any time, and
+#: nothing deletes it on its own. Installed: cache\webview. In the flat
+#: layout NOT beside the code: the checkout grows no folder the app did
+#: not make before paths.py existed (D4) — the spike's `cache\webview`
+#: there failed test_paths_installed_layout_through_deskit_home the first
+#: time a web desk ran from a checkout (2026-10-23) — so it is the OS's
+#: temp folder, which a cache may live in.
+WEBVIEW_DIR = (Path(os.environ.get("TEMP") or os.environ.get("TMP") or str(DATA_DIR))
+               / "DeskIT.dev-webview" if FLAT else CACHE_DIR / "webview")
 TMP_DIR = _rel("TMP_DIR")
 
 #: The tracked configuration document: every key with its measurement
@@ -225,6 +236,10 @@ FONTS_DIR = APP_DIR / "fonts"
 SKIN_DIR = APP_DIR / "skin"
 ICON_ICO = APP_DIR / "icon.ico"
 ICON_PNG = APP_DIR / "icon.png"
+#: The web desk's built pages (`npm run build` in web\, webdesk.py). The
+#: sources under web\ never ship (.gitattributes); a release that ships
+#: the web desk builds this folder in CI and places it here.
+WEB_DIST = APP_DIR / "web" / "dist"
 
 # ---- D30: the checkout is "DeskIT Dev" and never collides with the release
 

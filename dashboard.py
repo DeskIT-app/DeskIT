@@ -10147,7 +10147,23 @@ def main() -> int:
     started while this process still held the mutex would be that
     second launch — it would poke a window that is on its way out and
     exit, and he would be left with no dashboard at all.
+
+    THE WEB DESK (deskweb.py, 2026-10-23). `[desk] web` in the checkout
+    opens it instead; a PC that cannot (no WebView2, pages not built)
+    gets this window, silently. `--tk` is this window whatever the switch
+    says — the web desk opens it beside itself, `--place X`, for the
+    places it does not draw yet.
     """
+    argv = sys.argv[1:]
+    place = argv[argv.index("--place") + 1] if "--place" in argv[:-1] else ""
+    if "--tk" not in argv:
+        try:
+            import deskweb
+            if deskweb.wanted() and deskweb.main([]) not in (2, 3):
+                return 0
+        except Exception as e:                           # noqa: BLE001
+            import logging
+            logging.getLogger("app").warning("web desk did not open: %r", e)
     try:
         lock = singleton.InstanceLock(singleton.DASHBOARD_MUTEX)
     except singleton.AlreadyRunning:
@@ -10155,7 +10171,10 @@ def main() -> int:
         return 0
     try:
         bring_up_the_keys()
-        again = Dashboard().run()
+        desk = Dashboard()
+        if place in {name for _key, name in NAV} and place != "Home":
+            desk.root.after(0, lambda: desk._show(place))
+        again = desk.run()
     finally:
         lock.release()
     if again:

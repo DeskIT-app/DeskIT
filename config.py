@@ -1292,6 +1292,15 @@ class HistoryConfig:
 
 
 @dataclass(frozen=True)
+class DeskConfig:
+    """[desk]: which window the desk opens as. `web` is the React desk
+    in WebView2 (deskweb.py) and is honoured in the checkout only: the
+    release keeps the Tk desk until every place of the web one is built
+    (the owner, 2026-09-22 — one launch, never a half-moved window)."""
+    web: bool = False
+
+
+@dataclass(frozen=True)
 class PrivacyConfig:
     """What may leave this PC — DISTRIBUTION_PLAN.md 5.1, D7.
 
@@ -1432,6 +1441,7 @@ class Config:
     tests: TestsConfig = field(default_factory=TestsConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
+    desk: DeskConfig = field(default_factory=DeskConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -1768,6 +1778,7 @@ def build(data: dict) -> Config:
     tests = data.get("tests", {})
     privacy = data.get("privacy", {})
     history = data.get("history", {})
+    desk = data.get("desk", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -2221,6 +2232,7 @@ def build(data: dict) -> Config:
             for name in PrivacyConfig.__dataclass_fields__}),
         history=HistoryConfig(
             keep_days=int(history.get("keep_days", HistoryConfig.keep_days))),
+        desk=DeskConfig(web=bool(desk.get("web", DeskConfig.web))),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),

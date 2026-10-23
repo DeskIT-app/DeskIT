@@ -1540,6 +1540,15 @@ keep_days = 30                 # how long those lines are kept. Older lines
                                # copy never drops anything: its history
                                # is training data.)
 
+[desk]
+# The desk as a web page (React in WebView2, deskweb.py) instead of the Tk
+# window. Measured 2026-09-22 in the same shell: a place switch 3.5-16 ms
+# against Tk's 150-250 ms with every place kept built (2026-10-23).
+# Honoured in the checkout ONLY, and only while it is built (npm run build
+# in web\): the release keeps the Tk desk until all five places are on
+# the web one. Off, missing WebView2 or no pages: the Tk desk, silently.
+web = false
+
 [vocab]
 # The names Whisper has never heard, fed to the decoder BEFORE it runs so it
 # never produces the garble in the first place. This is the half of "learning"
