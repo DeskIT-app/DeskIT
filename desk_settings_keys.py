@@ -142,7 +142,9 @@ class Keys:
             if not value:
                 row["say"], row["tone"] = self._words(name, "empty"), "warn"
                 return ""
-            if not kr.looks_like_key(value):
+            # no provider's key is near 512 characters: a page that pastes
+            # a megabyte is answered at once, before any pattern reads it
+            if len(value) > 512 or not kr.looks_like_key(value):
                 del value
                 row["say"], row["tone"] = self._words(name, "notkey",
                                                       shape=kr.PROVIDERS[name]["shape"]), "bad"

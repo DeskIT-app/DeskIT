@@ -2,8 +2,8 @@
 pywebview owns, talking to the running app through control.py's pipe.
 
 The SHELL: deskweb.py is the desk that runs in it (its Api, its places),
-and dev\\master\\window.py the owner's master app, on a copy of this file
-from before `on_form` (2026-10-23).
+and dev\\master\\window.py the owner's master app, on this same file (its
+own copy went on 2026-10-24: one shell, one set of flags).
 
 THE SPIKE (2026-09-22). This module is the proof that the React desk can
 run the way a release runs it — from the embeddable python\\ of the
@@ -103,6 +103,7 @@ The render tool for designers is dev\\web_shot.py.
 """
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
 import logging
@@ -225,6 +226,70 @@ BASE_ARGS = (
 )
 
 BLANK = "<!doctype html><meta charset=utf-8><title>DeskIT</title>"
+
+
+# ------------------------------------------------------------ menu mode
+
+
+class MenuGuard:
+    """Keeps a bare Alt or F10 from putting the window into the menu mode.
+
+    WebView2 hands every key the page does not swallow as an accelerator
+    back to the window that hosts it, and Windows' default handling of a
+    bare Alt or F10 coming up is WM_SYSCOMMAND SC_KEYMENU: the form drops
+    into the system-menu mode (GetGUIThreadInfo flags GUI_INMENUMODE |
+    GUI_SYSTEMMENUMODE). The page still sees that key, but nothing it asks
+    Python is answered until the mode ends, and the NEXT key a person
+    presses goes to the menu instead (measured by the Keys session on the
+    hidden desktop, 2026-10-24: a bare Alt, a bare F10 and Ctrl+F10 — the
+    owner's ask-the-screen key — every one). This window has no menu bar,
+    so SC_KEYMENU with no character (lParam 0) is swallowed here, on the
+    form itself; Alt+Space (lParam ' ') still opens the window's own menu,
+    and Alt+F4 is SC_CLOSE, untouched.
+
+    A comctl32 subclass of the form's own window (SetWindowSubclass,
+    chained through DefSubclassProc), installed on the UI thread before the
+    form is shown and removed when the window goes (WM_NCDESTROY). The
+    callback is kept on this object, which the control keeps for the
+    window's life. A private comctl32 handle: argtypes declared on the
+    process-wide windll would change them for every module (AGENTS.md)."""
+
+    WM_SYSCOMMAND = 0x0112
+    WM_NCDESTROY = 0x0082
+    SC_KEYMENU = 0xF100
+    ID = 0xDE5C
+
+    def __init__(self, hwnd: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+        self.hwnd = hwnd
+        self.swallowed = 0
+        lresult = ctypes.c_ssize_t
+        proc_type = ctypes.WINFUNCTYPE(lresult, wintypes.HWND, wintypes.UINT,
+                                       wintypes.WPARAM, wintypes.LPARAM,
+                                       ctypes.c_size_t, ctypes.c_size_t)
+        comctl = ctypes.WinDLL("comctl32")
+        comctl.SetWindowSubclass.argtypes = [wintypes.HWND, proc_type, ctypes.c_size_t,
+                                             ctypes.c_size_t]
+        comctl.SetWindowSubclass.restype = wintypes.BOOL
+        comctl.RemoveWindowSubclass.argtypes = [wintypes.HWND, proc_type, ctypes.c_size_t]
+        comctl.RemoveWindowSubclass.restype = wintypes.BOOL
+        comctl.DefSubclassProc.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                           wintypes.LPARAM]
+        comctl.DefSubclassProc.restype = lresult
+
+        def proc(hwnd, msg, wparam, lparam, _ident, _data):
+            if (msg == self.WM_SYSCOMMAND and (wparam & 0xFFF0) == self.SC_KEYMENU
+                    and not lparam):
+                self.swallowed += 1
+                return 0
+            if msg == self.WM_NCDESTROY:
+                comctl.RemoveWindowSubclass(hwnd, self._proc, self.ID)
+            return comctl.DefSubclassProc(hwnd, msg, wparam, lparam)
+
+        self._proc = proc_type(proc)
+        if not comctl.SetWindowSubclass(hwnd, self._proc, self.ID, 0):
+            raise OSError("SetWindowSubclass refused the form")
 
 
 # ------------------------------------------------------------ pre-check
@@ -372,8 +437,10 @@ class Desk:
         self.window = window
         self.edge = None                    # DeskEdgeChrome, set in its __init__
         self.stamps: dict[str, float] = {}  # time.time() of each milestone
-        self.blocked: list[str] = []        # what the guards refused (URIs)
-        self.dropped: list[str] = []        # web messages not answered
+        # what the guards refused (URIs), and web messages not answered —
+        # the newest of each only: a page cannot grow them without bound
+        self.blocked: collections.deque[str] = collections.deque(maxlen=200)
+        self.dropped: collections.deque[str] = collections.deque(maxlen=200)
         self.errors: list[str] = []
         self.loaded = threading.Event()     # our page's NavigationCompleted
         self.settings_applied: dict[str, str] = {}
@@ -548,6 +615,10 @@ def _install(desks: dict):
                     self._opts.on_form(form)
                 except Exception as e:       # noqa: BLE001 — a caption is not worth a window
                     desk.errors.append(f"on_form: {e!r}")
+            try:
+                self._menu_guard = MenuGuard(int(form.Handle.ToInt64()))
+            except Exception as e:           # noqa: BLE001 — a window that can go deaf beats none
+                desk.errors.append(f"menu guard: {e!r}")
             options = CoreWebView2EnvironmentOptions()
             options.AdditionalBrowserArguments = self._opts.args
             try:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import tomllib
 import dataclasses
 from dataclasses import dataclass, field
@@ -1550,6 +1551,46 @@ def hotkey_label(field: str) -> str:
     return field
 
 
+_REFUSALS = (
+    (re.compile(r"^(\w+) must differ from (\w+) \(both are '([^']*)'\) — one key cannot "
+                r"mean two things$"),
+     lambda m: f'"{hotkey_label(m[1])}" and "{hotkey_label(m[2])}" would both be '
+               f'{m[3].title()} — one key cannot mean two things'),
+    (re.compile(r"^(\w+) is on the same key as (\w+) \('([^']*)'\), which is checked "
+                r"first — one key cannot mean two things$"),
+     lambda m: f'"{hotkey_label(m[1])}" would share {m[3].title()} with '
+               f'"{hotkey_label(m[2])}", which comes first — one key cannot mean two things'),
+    (re.compile(r"^(\w+) cannot take modifiers \('([^']*)'\) — .*$", re.S),
+     lambda m: f'"{hotkey_label(m[1])}" takes one key alone — {m[2].title()} is a '
+               f'combination, and only the tap keys take those'),
+    (re.compile(r"^(\w+) cannot be 'esc' — esc discards a locked recording"
+                r"( and closes the lookup box)?$"),
+     lambda m: f'"{hotkey_label(m[1])}" cannot be Esc — Esc throws away a locked '
+               f'recording' + (" and closes the lookup box" if m[2] else "")),
+    (re.compile(r"^hotkey must not be empty$"),
+     lambda m: f'"{hotkey_label("hotkey")}" cannot be off'),
+    (re.compile(r"^(\w+_hotkey|hotkey): (.+)$", re.S),
+     lambda m: f'"{hotkey_label(m[1])}": {m[2]}'),
+)
+
+
+def plainly(message: str) -> str:
+    """A key check_hotkeys refused, said in the Keys screen's words.
+
+    check_hotkeys speaks the file's language ("lookup_hotkey must differ
+    from translate_hotkey"), which a developer editing the file needs and
+    tests hold. A person who pressed a key on the desk read "Look up (tap)"
+    on the row (the owner, 2026-10-01: the developer's name for a line is
+    not a message for the person). Anything this does not recognise comes
+    back as it was."""
+    text = str(message or "")
+    for pattern, said in _REFUSALS:
+        found = pattern.match(text)
+        if found:
+            return said(found)
+    return text
+
+
 def rebound_sentence(field: str, key: str) -> str:
     """What a person is told when one key moved — or was turned off."""
     label = hotkey_label(field)
@@ -2991,6 +3032,13 @@ def with_followers(updates: dict[str, object]) -> dict[str, object]:
     return out
 
 
+#: One writer at a time in a process: save() reads both files, merges and
+#: writes them, and two threads doing that at once — the web desk answers
+#: each place's press on a thread of its own — would each write back a copy
+#: without the other's change (the web desk's review, 2026-10-24).
+_SAVE_LOCK = threading.RLock()
+
+
 def save(updates: dict[str, object], *, defaults=None, settings=None,
          state=None, allow_consent: bool = False,
          derived: bool = False) -> None:
@@ -3010,42 +3058,43 @@ def save(updates: dict[str, object], *, defaults=None, settings=None,
     is taken out of state.json in the same breath, so the layer on top
     never hides the layer they edit.
     """
-    _refuse_consent_keys(updates, allow_consent)
-    updates = with_followers(updates)
-    d, s, t = _layer_paths(defaults, settings, state)
-    flat_defaults = flatten(_read_toml(d))
-    overrides = read_settings(s)
-    machine = read_state(t)
-    touched_settings = touched_state = False
-    for name, value in updates.items():
-        if derived or is_state_key(name):
-            if value is None:
-                machine.pop(name, None)
+    with _SAVE_LOCK:
+        _refuse_consent_keys(updates, allow_consent)
+        updates = with_followers(updates)
+        d, s, t = _layer_paths(defaults, settings, state)
+        flat_defaults = flatten(_read_toml(d))
+        overrides = read_settings(s)
+        machine = read_state(t)
+        touched_settings = touched_state = False
+        for name, value in updates.items():
+            if derived or is_state_key(name):
+                if value is None:
+                    machine.pop(name, None)
+                else:
+                    machine[name] = value
+                touched_state = True
+                continue
+            if name in machine:              # the probe's value yields
+                machine.pop(name)
+                touched_state = True
+            touched_settings = True
+            # True == 1 in Python, so "equals the default" also asks whether
+            # both sides are bools or neither is.
+            same = (name in flat_defaults and flat_defaults[name] == value
+                    and isinstance(value, bool) == isinstance(flat_defaults[name], bool))
+            if same:
+                overrides.pop(name, None)
             else:
-                machine[name] = value
-            touched_state = True
-            continue
-        if name in machine:              # the probe's value yields
-            machine.pop(name)
-            touched_state = True
-        touched_settings = True
-        # True == 1 in Python, so "equals the default" also asks whether
-        # both sides are bools or neither is.
-        same = (name in flat_defaults and flat_defaults[name] == value
-                and isinstance(value, bool) == isinstance(flat_defaults[name], bool))
-        if same:
-            overrides.pop(name, None)
-        else:
-            overrides[name] = value
-    merged = _merge(_merge(nest(flat_defaults), nest(overrides)),
-                    nest(machine))
-    try:
-        build(merged)
-    except ConfigError:
-        raise
-    except Exception as e:
-        raise ConfigError(f"the edited settings would not load: {e}") from e
-    if touched_settings:
-        write_settings(s, overrides)
-    if touched_state:
-        write_state(t, machine)
+                overrides[name] = value
+        merged = _merge(_merge(nest(flat_defaults), nest(overrides)),
+                        nest(machine))
+        try:
+            build(merged)
+        except ConfigError:
+            raise
+        except Exception as e:
+            raise ConfigError(f"the edited settings would not load: {e}") from e
+        if touched_settings:
+            write_settings(s, overrides)
+        if touched_state:
+            write_state(t, machine)

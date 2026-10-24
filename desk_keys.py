@@ -53,26 +53,18 @@ lease the page renews every second, LEASE_S): each ends the listening
 through _end, which resumes exactly once, and only a pause this place
 took (a person who had paused the app himself keeps it paused).
 
-AND ONE TRAP OF WEBVIEW2'S. A bare Alt, a bare F10 and Ctrl+F10 put the
-desk's WinForms form into the system-menu mode (GetGUIThreadInfo: flags
-GUI_INMENUMODE | GUI_SYSTEMMENUMODE, measured 2026-10-24 on the hidden
-desktop): the page still sees the key, but nothing it asks Python is
-answered until the menu mode ends — and the next key a person presses
-goes to the menu, not to the page. One Esc to the form ends it, and is
-eaten by the menu, never seen by the page. So while a key is listened for,
-and for GRACE_S after, a watcher ends that mode the moment it starts:
-Right Alt can be bound as the dictation key here as it can in the Tk desk.
+A bare Alt, a bare F10 and Ctrl+F10 used to put the desk's window into
+the system-menu mode, and this place ended it while it listened; the
+shell keeps the window out of it now, everywhere (webdesk.MenuGuard), so
+Right Alt can be bound as the dictation key here as in the Tk desk.
 """
 from __future__ import annotations
 
 import __future__
 import ast
 import atexit
-import ctypes
-import ctypes.wintypes as wintypes
 import importlib.util
 import logging
-import os
 import re
 import threading
 import time
@@ -152,11 +144,6 @@ SAFE_LEAD = ("Anything not lit is untouched by this app. The keys it cannot "
 SAFE_TAIL = "— are the safe ones."
 MISSING = "Bound to a key this board does not draw: {missing}."
 
-#: The one word under a lit cap, for a binding keycaps.CAPTION has no word
-#: for: its fallback is the label's first words ("open the shelf"), which a
-#: 41 px cap cuts to "open the sh"; the approved picture says "shelf".
-CAPTION_MORE = {"shelf_hotkey": "shelf"}
-
 #: dashboard._paint_rebind, _listening_card and _capture's dialog
 WORDS = {
     "eyebrow": "This key",
@@ -212,11 +199,8 @@ MOD_GROUPS = {"ctrl": 0x11, "shift": 0x10, "alt": 0x12, "win": 0x5B}
 #: How long the page may go without a word while it listens, before the
 #: listening is taken as over and the app resumed (it renews every 1 s).
 LEASE_S = 4.0
-#: How long after the listening the menu-mode watcher keeps watching: a
-#: key bound on its key-down (F10) puts the form into menu mode on its
-#: key-UP, which comes after.
-GRACE_S = 2.0
-WATCH_S = 0.04
+#: How often the watcher looks at the lease while a key is listened for.
+WATCH_S = 0.25
 
 _caps_ns: dict | None = None
 _caps_lock = threading.Lock()
@@ -338,10 +322,7 @@ class Place:
         self._capturing: str | None = None
         self._paused_for_capture = False
         self._lease = 0.0
-        self._watch_until = 0.0
         self._watcher: threading.Thread | None = None
-        #: ends the desk's menu mode; a test hands a fake
-        self._menu_out = menu_out
         self._fields = dict(config_mod.HOTKEY_FIELDS)
         # The window closed mid-listening: the process ends, and the
         # pause it took must not outlive it (dashboard._close does the
@@ -397,9 +378,7 @@ class Place:
             mine = lit.get(cid) or []
             if mine:
                 bare = [b for b in mine if "+" not in (b[3] or "")]
-                state, caption, field = (bare or mine)[0][:3]
-                if field not in k["CAPTION"]:
-                    caption = CAPTION_MORE.get(field, caption)
+                state, caption, _field = (bare or mine)[0][:3]
                 cap["state"] = state
                 if caption:
                     cap["caption"] = caption
@@ -539,11 +518,7 @@ class Place:
         """The listening is over, however it ended: the app gets back the
         pause this place took, once (dashboard._resume_after_capture)."""
         with self._lock:
-            if not resume_only:
-                self._capturing = None
-                self._watch_until = time.monotonic() + GRACE_S
-            elif self._capturing:
-                self._capturing = None
+            self._capturing = None
             if not self._paused_for_capture:
                 return
             self._paused_for_capture = False
@@ -562,14 +537,14 @@ class Place:
             if reply is None:
                 return NOT_RUNNING
             if not reply.get("ok"):
-                return str(reply.get("error") or "that did not work")[:300]
+                return config_mod.plainly(str(reply.get("error") or "that did not work"))[:300]
             self._poll()                  # the board relights from the app's own keys
             return str(reply.get("message") or config_mod.rebound_sentence(field, key))
         try:
             current = config_mod.load_layered()
             config_mod.check_hotkeys(config_mod.with_field(current, field, key))
         except config_mod.ConfigError as e:
-            return str(e)[:300]           # the sentence that refuses the key
+            return config_mod.plainly(str(e))[:300]   # the sentence that refuses the key
         except Exception as e:            # noqa: BLE001
             return f"could not read the settings ({type(e).__name__})"
         try:
@@ -578,7 +553,7 @@ class Place:
             return f"could not save that ({type(e).__name__})"
         return config_mod.rebound_sentence(field, key)
 
-    # -- the watch: the lease, and the desk's menu mode
+    # -- the watch: the lease
 
     def _watch(self) -> None:
         if self._watcher is not None and self._watcher.is_alive():
@@ -595,14 +570,9 @@ class Place:
                     log.info("web desk: the page stopped answering mid key capture "
                              "— resuming")
                     self._end()
-                listening = bool(self._capturing)
-                if not listening and now > self._watch_until:
+                if not self._capturing:
                     self._watcher = None
                     return
-            try:
-                self._menu_out()
-            except Exception:             # noqa: BLE001
-                pass
             time.sleep(WATCH_S)
 
 
@@ -668,75 +638,3 @@ def _broken(text: str, at: str) -> list[str]:
 def _safe_caps() -> list[str]:
     """The caps the app cannot bind at all, generated (keycaps.offered)."""
     return [c for c in _caps()["offered"]() if c]
-
-
-# ------------------------------------------------------- the menu mode
-
-_user32 = None
-
-
-def _u32():
-    """A private user32: argtypes declared on the process-wide windll
-    handle change them for every module (AGENTS.md)."""
-    global _user32
-    if _user32 is None:
-        u = ctypes.WinDLL("user32", use_last_error=True)
-        u.EnumWindows.argtypes = [_ENUM, wintypes.LPARAM]
-        u.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
-                                               ctypes.POINTER(wintypes.DWORD)]
-        u.GetWindowThreadProcessId.restype = wintypes.DWORD
-        u.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(_GUITHREADINFO)]
-        u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
-                                   wintypes.LPARAM]
-        _user32 = u
-    return _user32
-
-
-class _GUITHREADINFO(ctypes.Structure):
-    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
-                ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
-                ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
-                ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
-                ("rcCaret", wintypes.RECT)]
-
-
-_ENUM = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-GUI_INMENUMODE = 0x0004
-WM_KEYDOWN, WM_KEYUP, VK_ESCAPE = 0x0100, 0x0101, 0x1B
-
-
-def menu_out() -> int:
-    """End the menu mode a window of THIS process is in, with one Esc to
-    the window that owns the menu — what a person's own Esc does. Returns
-    how many it ended. Never touches another process's window."""
-    u = _u32()
-    pid = os.getpid()
-    threads: set[int] = set()
-
-    def each(hwnd, _lp):
-        owner = wintypes.DWORD()
-        thread = u.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-        if owner.value == pid:
-            threads.add(thread)
-        return True
-
-    u.EnumWindows(_ENUM(each), 0)
-    ended = 0
-    for thread in threads:
-        info = _GUITHREADINFO()
-        info.cbSize = ctypes.sizeof(info)
-        if not u.GetGUIThreadInfo(thread, ctypes.byref(info)):
-            continue
-        if not (info.flags & GUI_INMENUMODE) or not info.hwndMenuOwner:
-            continue
-        owner = wintypes.DWORD()
-        u.GetWindowThreadProcessId(info.hwndMenuOwner, ctypes.byref(owner))
-        if owner.value != pid:
-            continue
-        u.PostMessageW(info.hwndMenuOwner, WM_KEYDOWN, VK_ESCAPE, 0x00010001)
-        u.PostMessageW(info.hwndMenuOwner, WM_KEYUP, VK_ESCAPE, 0xC0010001)
-        ended += 1
-    if ended:
-        log.info("web desk: the window dropped into the menu mode while a key "
-                 "was listened for — ended it")
-    return ended
