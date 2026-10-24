@@ -9702,6 +9702,39 @@ def test_the_lookup_box_is_capped_at_the_size_it_was_given() -> None:
         box.stop()
 
 
+def test_the_lookup_box_draws_b_plus_on_the_sky() -> None:
+    """The lookup box in B+ (approved 2026-10-24): raw GDI, so the palette
+    is spelled out as COLORREFs — and held here to skin\\palette.py by
+    value, so the box cannot drift from the rest of the app — in Rubik,
+    on the desk's sky: one picture made once and stretched to the box
+    (a resize pays a StretchBlt, never a new picture), with BG the
+    PANE it falls back to when the sky cannot be made."""
+    import inspect
+
+    import popup as popup_mod
+    from skin import palette
+
+    def ref(colour: str) -> int:
+        r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+        return r | (g << 8) | (b << 16)
+
+    for name, value in (("FG", palette.FG), ("DIM", palette.DIM), ("MUTED", palette.MUTED),
+                        ("ACCENT", palette.ACCENT), ("ACCENT_ON", palette.ACCENT_ON),
+                        ("TERM", palette.ACCENT_TEXT), ("SEL", palette.ACCENT_SOFT),
+                        ("DANGER_TEXT", palette.RED), ("BG", palette.PANE)):
+        assert getattr(popup_mod, name) == ref(value), name
+    assert 'font: str = "Rubik"' in inspect.getsource(popup_mod.Popup.__init__)
+    bits = popup_mod._sky_bits()
+    assert bits is not None, "the sky could not be made"
+    data, w, h = bits
+    assert (w, h) == popup_mod._SKY_SIZE and len(data) == w * h * 4
+
+    def at(x: int, y: int) -> tuple:
+        i = (y * w + x) * 4
+        return tuple(data[i:i + 3])
+    assert at(w // 8, h // 12) != at(w // 2, h // 2), "the sky has no light in it"
+
+
 def test_the_box_lands_inside_the_work_area_and_never_on_the_anchor() -> None:
     """The two promises placement makes, swept rather than sampled.
 
@@ -38123,10 +38156,16 @@ def test_the_step_window_says_declined_before_it_starts():
     except Exception as err:                                 # noqa: BLE001
         print(f"    (skipped: no Tk window — {err})")
         return
-    labels = [c for c in w.root.winfo_children()[0].winfo_children()
-              if c.winfo_class() == "Frame"]
-    links = [x.cget("text") for f in labels for x in f.winfo_children() if x.winfo_class() == "Label"]
+    # the pane's link row (a canvas on the sky since B+, 2026-10-24)
+    links = [x.cget("text") for x in w.pane.links.winfo_children()
+             if x.winfo_class() == "Label"]
     assert links == ["NVIDIA CUDA EULA", "cuDNN SLA"], links
+    # the window stands on the sky, and wears the mark rather than Tk's feather
+    assert w.root.winfo_children()[0] is w.sky.back
+    import ctypes
+    hwnd = ctypes.windll.user32.GetParent(int(w.root.winfo_id()))
+    icon = ctypes.WinDLL("user32").SendMessageW(hwnd, 0x007F, 1, 0)   # WM_GETICON, ICON_BIG
+    assert icon, "the step window shows Tk's feather, not the mark"
     w._not_now()
     assert w.outcome == "declined" and calls == []
     tmp = Path(tempfile.mkdtemp(prefix="deskit-packs-"))
@@ -39460,6 +39499,75 @@ def test_the_wizard_leaves_no_tk_object_for_another_thread_to_bury():
     left = tk_bound(collect=False) - before
     assert not left, (f"{len(left)} Tk-bound object(s) of the wizard survived run() — "
                       "the next collection on a decode thread aborts the app")
+
+
+def test_a_tk_window_on_the_sky_wears_its_pixels_and_lets_them_go_on_its_thread():
+    """tklook (the wizard and the step window in B+, approved 2026-10-24):
+    the desk's sky behind a whole Tk window, worn by every widget standing
+    on it. A widget's picture is the sky's own pixels under it, cropped
+    again when the layout moves it; its words stay a Label's words; a face
+    asked for again is the same PhotoImage (a button disabled on every
+    tick makes nothing new); and every picture is let go on the Tk thread
+    as its widget is destroyed — the wizard's sign-in thread was found
+    stuck in ImageTk.PhotoImage.__del__, under `import webbrowser`, while
+    the pictures lived in a widget's reference cycle (AGENTS.md: a Tk
+    object finalised on the wrong thread hangs or aborts)."""
+    import tkinter as tk
+
+    import tklook
+    import ui
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as err:
+        print(f"    (skipped: no Tk window — {err})")
+        return
+    held: list = []
+    try:
+        root.geometry("400x300+40+40")
+        sky = tklook.Sky(root, (400, 300))
+        frame = sky.frame(root)
+        frame.pack(fill="both", expand=True, padx=20, pady=20)
+        label = sky.label(frame, text="Your account", fg=ui.FG, font=(ui.UI, 12))
+        label.pack(anchor="w", pady=(30, 0))
+        button = tklook.Button(frame, "Next", None, bg=ui.BG, primary=True, w=120, sky=sky)
+        button.pack(anchor="e")
+        card = tklook.Card(frame, 300, 60, bg=ui.BG, sky=sky)
+        card.pack()
+        root.update()
+        sky.refresh()
+        root.update()
+
+        def worn(widget):
+            image, _photo = list(widget._tklook_photos.values())[-1]
+            return image
+
+        assert label.cget("text") == "Your account"
+        x, y = sky.where(label)
+        assert worn(label).getpixel((0, 0))[:3] == sky.picture.getpixel((x, y))[:3]
+        label.pack_configure(pady=(70, 0))
+        root.update()
+        sky.refresh()
+        x2, y2 = sky.where(label)
+        assert (x2, y2) != (x, y)
+        assert worn(label).getpixel((0, 0))[:3] == sky.picture.getpixel((x2, y2))[:3], \
+            "a moved label kept the sky of the place it left"
+        bx, by = sky.where(button)
+        assert worn(button).getpixel((0, 0))[:3] == sky.picture.getpixel((bx, by))[:3]
+        made = len(button._tklook_photos)
+        for on in (False, True, False, True, False):
+            button.enable(on)
+        assert len(button._tklook_photos) == made + 1, "a face was made more than once"
+        # a SkyLabel changes its words in place and wears a crop their size
+        label.configure(text="Your account — and a longer line")
+        root.update()
+        assert worn(label).size == (label.winfo_reqwidth(), label.winfo_reqheight())
+        held = [frame, label, button, card]
+        assert all(w._tklook_photos for w in held)
+    finally:
+        root.destroy()
+    assert held and not any(getattr(w, "_tklook_photos", None) for w in held), \
+        "a destroyed widget still holds its pictures for another thread to free"
 
 
 def test_the_wizard_downloads_in_the_background_and_hands_the_rest_to_the_app():
@@ -40848,6 +40956,35 @@ t.join(5)
 assert not t.is_alive(), "the card's thread did not exit on close"
 os._exit(0)
 """)
+
+
+def test_the_ask_card_is_b_plus_glass_with_the_sky_in_it() -> None:
+    """The ask card in B+ (approved 2026-10-24): the desk's desktop glass
+    (look.glass) where the smoked gold window was — dark enough over a
+    white page for its words — the sky's lights inside it for the card
+    only (capture's chrome keeps the plain glass it was approved in), B+'s
+    three voices, the eyebrow in sentence case, and each turn laid out
+    in the direction most of its letters read (an English answer was
+    drawn right to left: "?What does the blue button do")."""
+    import look
+    import visual_qa as vq
+    from PIL import Image
+
+    assert (vq.INK, vq.INK_DIM, vq.INK_FAINT) == (look.INK["ink"], look.INK["dim"],
+                                                 look.INK["muted"])
+    plain, mask, _ = vq.glass_furniture((320, 200), 30)
+    lit, _mask, _ = vq.glass_furniture((320, 200), 30, sky=True)
+    assert mask.getpixel((0, 0)) == 0 and plain.getpixel((0, 0))[3] == 0
+    p, q = plain.getpixel((30, 16)), lit.getpixel((30, 16))
+    assert q[2] - q[1] > p[2] - p[1], "no sky inside the card's glass"
+    plate = vq.glass_plate(Image.new("RGB", (800, 600), (250, 250, 250)),
+                           (100, 100, 420, 300), radius=30)
+    assert plate.getpixel((0, 0))[3] == 0
+    assert sum(plate.getpixel((160, 100))[:3]) < 3 * 110, "the glass is too thin over a white page"
+    assert vq._reads_rtl("מה הכפתור הכחול עושה?")
+    assert not vq._reads_rtl("What does the blue button do?")
+    assert vq._reads_rtl("Whisper הוא מודל תמלול של OpenAI.")
+    assert "ASK THE SCREEN" not in Path(vq.__file__).read_text("utf-8")
 
 
 def test_the_network_place_reads_the_log_and_hides_loopback():
@@ -42362,6 +42499,47 @@ def _iss_scan(text: str, name: str) -> None:
             in_str = True
         elif ch == "{" and code[n + 1] != "#":
             in_comment = True
+
+
+def test_the_installer_wears_the_desks_sky():
+    """The installer in B+ (the owner approved its pictures, 2026-10-24:
+    "leave it so"): Inno's own dark style on the desk's night, the desk's
+    sky behind every page (WizardBackImageFile — Inno 6.7, and the script
+    refuses an older compiler by name rather than failing on a directive),
+    no bevels; the mark and the name on a CLEAR side picture, so the sky
+    runs on behind it without a seam. dev/make_wizard_images.py draws
+    every file the script names, and nothing on any page changed but the
+    look."""
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    for line in ("WizardStyle=modern dark hidebevels", "WizardBackColor=#0b0d19",
+                 "#if Ver < EncodeVer(6, 7, 0)"):
+        assert line in iss, line
+    named = []
+    for key in ("WizardBackImageFile=", "WizardImageFile=", "WizardSmallImageFile="):
+        line = next(ln for ln in iss.splitlines() if ln.startswith(key))
+        named += [Path(x).name for x in line.split("=", 1)[1].split(",")]
+    assert len(named) == 7 + 5 + 7, named
+    out = Path(tempfile.mkdtemp(prefix="deskit-wizard-images-"))
+    try:
+        run = subprocess.run([sys.executable, str(REPO / "dev" / "make_wizard_images.py"),
+                              "--out", str(out), "--version", "9.9.9"],
+                             capture_output=True, text=True, timeout=120,
+                             creationflags=0x08000000)
+        assert run.returncode == 0, run.stderr[-800:]
+        from PIL import Image
+        for name in named:
+            assert (out / name).is_file(), name
+        side = Image.open(out / "side-314.png")
+        assert side.mode == "RGBA" and side.size == (164, 314)
+        assert side.getpixel((2, 2))[3] == 0, "the side picture hides the sky behind it"
+        assert side.getpixel((82, 98))[3] == 255, "the mark is not on the side picture"
+        back = Image.open(out / "back-432.png").convert("RGB")
+        assert back.size == (596, 432)
+        lum = [sum(back.getpixel((x, y))) for x in range(0, 596, 37) for y in range(0, 432, 31)]
+        assert max(lum) - min(lum) > 60, "the sky has no light in it"
+        assert max(lum) < 3 * 120, "the sky is too bright for the white words on it"
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def test_the_installer_downloads_nothing_the_wizard_does_it_on_every_copy():

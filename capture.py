@@ -327,7 +327,7 @@ PALETTE_PAD = 14
 PALETTE_ROW = 30             # the pipette and the four widths
 SPECTRUM_H = 64              # the rainbow: hue across, light to dark down
 PALETTE_GAP = 10             # between the palette and the toolbar
-PALETTE_RADIUS = 18
+PALETTE_RADIUS = 22             # B+: a card of glass
 SIZE_DOTS = (6, 9, 13, 18)   # how the four widths are drawn on a chip
 LOUPE_PX = 11                # the pipette's magnifier: 11x11 real pixels
 LOUPE_ZOOM = 8               # ...each drawn 8 px wide, so 88 px across
@@ -344,13 +344,13 @@ STAGE_TILE = 256             # px, the lit picture's tiles (see _lay_tiles)
 # behind it — the same reason the editor's toolbar can be glass and the
 # clip bar cannot.
 HINT_PAD = 18
-HINT_RADIUS = 20
+HINT_RADIUS = 22                # B+: a card of glass
 CHIP_W, CHIP_H = 134, 72
 CHIP_GAP = 10
 # The two sound switches under the screen chips when a RECORDING is being
 # framed: "Computer sound" and "Microphone". Pills, not tiles — a switch
 # is on or off and needs no picture of itself.
-SWITCH_W, SWITCH_H = 150, 34
+SWITCH_W, SWITCH_H = 172, 34    # B+'s switch, the name, the key letter
 SWITCH_GAP = 10
 SOUND_SWITCHES = (("system", "Computer sound", "s"),
                   ("mic", "Microphone", "m"))
@@ -366,7 +366,7 @@ CROP_BACK = 0.42             # how far the area you already cut away is
 # the shape the owner asked for — and then gets out of the way as a small
 # corner pill that is only a red dot and a clock. Hovering it brings the
 # controls back.
-ANNOUNCE_W, ANNOUNCE_H = 344, 58
+ANNOUNCE_W, ANNOUNCE_H = 396, 58   # room for the stop key in the line
 ANNOUNCE_S = 2.6             # how long "Recording started" stays up
 TIMER_H = 34
 BAR_BTN = 30
@@ -2936,6 +2936,247 @@ class Camera:
 
 # ------------------------------------------------------------------ icons
 
+# ------------------------------------------------------------------ B+
+# Every surface in this file is drawn with B+'s pieces since 2026-10-24
+# (look.py, the desk's look outside the desk): a round control is a disc
+# of frost (look.disc), the chosen one of a set is the desk's bubble
+# (look.bubble), a button with words is a quiet pill (look.quiet), the
+# recording lamp is look.lamp, Stop is a disc of red light (look.mark),
+# the sound switches are look.switch, and the words are Rubik through
+# FreeType at B+'s weights — 400 for words, 460 for labels, 500 for the
+# one strong word; nothing at 700, no letter-spaced capitals. The card
+# stock under the clip bar, the toasts and the camera card is B+'s pane
+# with nothing behind it (look.glass, opaque): those three float over a
+# LIVE screen, so there is no photograph to blur (the module docstring).
+#
+# Pillow pictures only in these caches — AGENTS.md: nothing module-level
+# may hold a Tk object, and none of these is one.
+_BP: dict = {}
+_BP_TEXT: dict = {}
+W_WORDS, W_LABEL, W_STRONG = 400, 460, 500
+_EDGE_RGB = (165, 151, 255)     # the ring round the lit picture: iris (ACCENT)
+_THUMB_WELL = (17, 20, 37)      # B+'s well (.42 night) on the card's face
+_SHADE = (25, 29, 51)           # B+'s glass foot, for a plate over a picture
+
+
+def _look():
+    import look
+    return look
+
+
+def _bp_keep(key, draw):
+    got = _BP.get(key)
+    if got is None:
+        if len(_BP) > 400:
+            _BP.clear()
+        got = _BP[key] = draw()
+    return got
+
+
+def _bp_weight(weight: int) -> int:
+    """The old painters asked GDI for 600 and 700; B+ has 400/460/500."""
+    if weight >= 600:
+        return W_STRONG
+    return max(W_WORDS, min(W_STRONG, int(weight)))
+
+
+def bp_text(words: str, pt: float, colour, weight: int = W_WORDS):
+    """One line, cropped to its ink (look.text: FreeType Rubik for Latin,
+    the checked bidi path for Hebrew). Drawn as text only — a file name
+    or a device name is never interpreted."""
+    if len(_BP_TEXT) > 300:
+        _BP_TEXT.clear()
+    return _look().text(_BP_TEXT, words or " ", pt, tuple(colour)[:3],
+                        _bp_weight(weight))
+
+
+def bp_fit(words: str, room: int, pt: float, colour,
+           weight: int = W_WORDS):
+    """`words` at most `room` px wide, marked with … where it was cut. A
+    file name is cut in its MIDDLE, so its date and its extension both
+    survive; a line of parts ("805 × 525   ·   mic on") loses whole parts
+    from its end; a sentence loses whole words."""
+    img = bp_text(words, pt, colour, weight)
+    if img.width <= room or not words:
+        return img
+    sep = next((s for s in ("   ·   ", "  ·  ", " · ") if s in words),
+               "   ·   ")
+    parts = words.split(sep)
+    if len(parts) > 1:
+        head = sep.join(parts[:-1]) + sep
+        if _bp_named(parts[-1]):
+            name = _bp_middle(parts[-1], room - bp_text(head, pt, colour,
+                                                         weight).width,
+                              pt, colour, weight)
+            if name is not None:
+                return bp_text(head + name, pt, colour, weight)
+        while len(parts) > 1:
+            parts.pop()
+            img = bp_text(sep.join(parts) + "  …", pt, colour, weight)
+            if img.width <= room:
+                return img
+    one = parts[0]
+    if not _bp_named(one):
+        kept = one.split(" ")
+        while len(kept) > 1:
+            kept.pop()
+            img = bp_text(" ".join(kept) + " …", pt, colour, weight)
+            if img.width <= room:
+                return img
+    cut = _bp_middle(one, room, pt, colour, weight)
+    return bp_text(cut if cut is not None else "…", pt, colour, weight)
+
+
+def _bp_named(text: str) -> bool:
+    """A file name: something with an extension at its end."""
+    import re
+    return re.search(r"\.[A-Za-z0-9]{2,4}$", text.strip()) is not None
+
+
+def _bp_middle(name: str, room: int, pt: float, colour, weight: int):
+    """`name` with its middle taken out until it fits `room`, or None
+    when not even a few letters each side would."""
+    if bp_text(name, pt, colour, weight).width <= room:
+        return name
+    keep = len(name) - 1
+    while keep >= 8:
+        head = name[:(keep + 1) // 2].rstrip()
+        tail = name[len(name) - keep // 2:].lstrip()
+        trial = f"{head}…{tail}"
+        if bp_text(trial, pt, colour, weight).width <= room:
+            return trial
+        keep -= 1
+    return None
+
+
+def bp_round(d: int, state: str = "rest"):
+    """A round control `d` px across: "rest" a disc of frost (.07),
+    "hover" a step brighter, "chosen" the desk's bubble."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (d, d), (0, 0, 0, 0))
+        if state == "chosen":
+            _look().bubble(img, (0, 0, d, d))
+        else:
+            _look().disc(img, d / 2, d / 2, d / 2, hover=state == "hover")
+        return img
+    return _bp_keep(("round", d, state), draw)
+
+
+def bp_pill(w: int, h: int, state: str = "rest"):
+    """A pill with words in it: the quiet pill of frost, lifted under the
+    pointer; "chosen" is the bubble."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        if state == "chosen":
+            _look().bubble(img, (0, 0, w, h))
+        else:
+            _look().quiet(img, (0, 0, w, h), hover=state == "hover")
+        return img
+    return _bp_keep(("pill", w, h, state), draw)
+
+
+def bp_tile(w: int, h: int, radius: int, state: str = "rest"):
+    """A tile in a row (a screen on the hint card): a row's own pane of
+    frost and its rim (look.slip), a step brighter under the pointer."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        _look().slip(img, (0, 0, w, h), radius, lit=state == "hover")
+        return img
+    return _bp_keep(("tile", w, h, radius, state), draw)
+
+
+def bp_mark(d: int, colour: str, hover: bool = False):
+    """A disc of coloured light (look.mark) — Stop, in the recording red."""
+    def draw():
+        from PIL import Image
+        pad = 4
+        img = Image.new("RGBA", (d + 2 * pad, d + 2 * pad), (0, 0, 0, 0))
+        _look().mark(img, d / 2 + pad, d / 2 + pad, d / 2, colour)
+        if hover:
+            look = _look()
+            img.alpha_composite(look.flat(img.size, look.c(colour, 34),
+                                          look.circle(img.size, d / 2 + pad,
+                                                      d / 2 + pad, d / 2)))
+        return img.crop((pad, pad, pad + d, pad + d))
+    return _bp_keep(("mark", d, colour, hover), draw)
+
+
+def bp_lamp(d: int, colour: str, lit: bool = True):
+    """The recording lamp, `d` px of room round its bead: look.lamp with
+    its rings; unlit (the blink's off half) a bead at a quarter."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (d, d), (0, 0, 0, 0))
+        _look().lamp(img, d / 2, d / 2, colour, r=4.5, rings=lit,
+                     glow=1.0 if lit else 0.0)
+        if not lit:
+            img.putalpha(img.getchannel("A").point(lambda v: v * 70 // 255))
+        return img
+    return _bp_keep(("lamp", d, colour, lit), draw)
+
+
+def bp_switch(on: bool, s: float = 0.8, hover: bool = False):
+    """B+'s switch (no accent): look.switch on a clear patch."""
+    def draw():
+        from PIL import Image
+        w, h = int(round(40 * s)) + 2, int(round(22 * s)) + 2
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        _look().switch(img, 1, 1, on, s=s, hover=hover)
+        return img
+    return _bp_keep(("switch", on, s, hover), draw)
+
+
+def bp_stock(w: int, h: int, radius: int, ground=None):
+    """Card stock in B+: the pane with nothing behind it — its face lit
+    from above, its own light top-left, the frosted rim — on `ground`
+    (the colour SetWindowRgn cuts away), as an RGBA picture."""
+    def draw():
+        from PIL import Image
+        look = _look()
+        img = Image.new("RGBA", (w, h), (ground or _hex(PANE)) + (255,))
+        mask = look.rounded((w, h), (0, 0, w, h), radius)
+        img.alpha_composite(look.glass(mask, (0, 0, w, h), opaque=True))
+        return img
+    return _bp_keep(("stock", w, h, radius, ground), draw)
+
+
+def _paste(img, layer, x: int, y: int) -> None:
+    """alpha_composite `layer` at (x, y), clipped to `img` — a lamp's light
+    near the card's edge reaches past it, and Pillow refuses a negative
+    destination."""
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(img.width, x + layer.width), min(img.height, y + layer.height)
+    if x1 > x0 and y1 > y0:
+        img.alpha_composite(layer.crop((x0 - x, y0 - y, x1 - x, y1 - y)),
+                            (x0, y0))
+
+
+def bp_row(img, words: str, pt: float, colour, weight: int, x: int,
+           cy: float, room: int | None = None, right: bool = False) -> int:
+    """One line of words into `img`, centred on the row at `cy` by its
+    BASELINE (look.row_line: a descender hangs, it does not lift the
+    word), from `x` — or ending at `x` when `right`. Cut to `room`.
+    Returns its width."""
+    look = _look()
+    w = _bp_weight(weight)
+    line = bp_fit(words, room, pt, colour, w) if room else \
+        bp_text(words, pt, colour, w)
+    if look.has_hebrew(words) or line.width != bp_text(words, pt, colour,
+                                                          w).width:
+        top = cy - line.height / 2
+    else:
+        _im, top = look.row_line(_BP_TEXT, words, pt, tuple(colour)[:3], w,
+                                 cy)
+        line = _im
+    left = x - line.width if right else x
+    img.alpha_composite(line, (max(0, int(round(left))),
+                               max(0, int(round(top)))))
+    return line.width
+
+
 _SHARED_ICONS = ("pencil", "undo", "trash", "close", "copy", "send",
                  "keyboard", "mic", "mic_off", "pin", "speak")
 
@@ -3467,10 +3708,9 @@ class ShotWindow:
         timer numeral ended up against a chip's left curve. Trim first,
         place second, everywhere.
         """
-        glyph = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
-                             single=True, weight=weight)
-        ink = glyph.getbbox()
-        return glyph.crop(ink) if ink else glyph
+        if width < 900:
+            return bp_fit(text, width, pt, colour, weight)
+        return bp_text(text, pt, colour, weight)
 
     def _draw_hint(self, px: int, py: int) -> None:
         """The instructions and the screen chips, as ONE card of glass.
@@ -3585,62 +3825,56 @@ class ShotWindow:
         which one is the wide monitor and which is the laptop. A tile with
         a little display on it, IN THAT DISPLAY'S OWN ASPECT RATIO, says
         it before the label is read — and "All screens" is the only one
-        with two of them, which is the whole thing it means.
+        with two of them, which is the whole thing it means. B+: the tile
+        is a row's own pane of frost (bp_tile), a step brighter under the
+        pointer.
         """
         cx0, cy0, cx1, cy1 = chip["box"]
         x, y = cx0 - origin[0], cy0 - origin[1]
         width, height = cx1 - cx0, cy1 - cy0
         hot = (label == self._chip_hover)
-        fill = (110, 160, 235, 92) if hot else (255, 255, 255, 20)
-        edge = (150, 195, 255, 210) if hot else (255, 255, 255, 46)
-        tile = _vq.rr_layer((width, height), 12, fill, edge)
+        tile = bp_tile(width, height, 14, "hover" if hot else "rest").copy()
         glyph = screen_glyph((46, 31), chip["aspect"], chip["panes"],
                              colour=INK if hot else INK_DIM)
         tile.alpha_composite(glyph, ((width - glyph.width) // 2, 9))
         name = self._text_ink(label, 9.0, INK if hot else INK_DIM,
-                              weight=600)
+                              weight=W_LABEL, width=width - 16)
         tile.alpha_composite(name, ((width - name.width) // 2, height - 28))
-        size = self._text_ink(chip["size"], 7.8,
-                              INK_DIM if hot else INK_FAINT)
+        size = self._text_ink(chip["size"], 7.8, INK_FAINT,
+                              width=width - 16)
         tile.alpha_composite(size, ((width - size.width) // 2, height - 15))
         if chip["primary"]:
             # A dot, not the word "primary": the row is read at a glance
             # and one of these is always the one everything opens on.
-            dot = _vq.rr_layer((5, 5), 2, (150, 195, 255, 220))
-            tile.alpha_composite(dot, (width - 12, 8))
+            look = _look()
+            tile.alpha_composite(look.flat(tile.size, tuple(INK_DIM) + (230,),
+                                           look.circle(tile.size, width - 10,
+                                                       10, 2.5)))
         plate.alpha_composite(tile, (x, y))
 
     def _draw_switch(self, plate, key: str, switch: dict, origin) -> None:
-        """One sound switch: a pill with a lamp at its left end.
+        """One sound switch: a quiet pill holding B+'s switch, its name
+        and its key letter.
 
-        ON is the lit blue the chips use for hover, so a lit switch and a
-        chip under the hand read as the same family of "this one";
-        OFF is the plain glass of an idle chip. The lamp is the state at
-        a glance — the same dot the primary screen's chip carries — and
-        the key letter sits at the right end so the hint line's "S / M"
-        has something to point at.
+        The switch carries no accent (B+): on is the lavender-grey track
+        and the white knob, off the hollow ring — so a lit switch never
+        competes with anything else on the card. The key letter sits at
+        the right end so the hint line's "S / M" has something to point
+        at.
         """
         sx0, sy0, sx1, sy1 = switch["box"]
         x, y = sx0 - origin[0], sy0 - origin[1]
         width, height = sx1 - sx0, sy1 - sy0
         on = bool(self.sound.get(key))
         hot = (key == self._switch_hover)
-        fill = ((110, 160, 235, 118) if on and hot
-                else (110, 160, 235, 92) if on
-                else (255, 255, 255, 34) if hot
-                else (255, 255, 255, 20))
-        edge = (150, 195, 255, 210) if on else (255, 255, 255, 46)
-        tile = _vq.rr_layer((width, height), height // 2, fill, edge)
-        lamp = _vq.rr_layer((8, 8), 4, (150, 195, 255, 235) if on
-                            else (255, 255, 255, 60))
-        tile.alpha_composite(lamp, (14, (height - 8) // 2))
-        name = self._text_ink(switch["label"], 9.0,
-                              INK if on else INK_DIM, weight=600)
-        tile.alpha_composite(name, (30, (height - name.height) // 2))
-        letter = self._text_ink(switch["key"].upper(), 7.8,
-                                INK if on else INK_FAINT)
-        tile.alpha_composite(letter, (width - 14 - letter.width,
-                                      (height - letter.height) // 2))
+        tile = bp_pill(width, height, "hover" if hot else "rest").copy()
+        knob = bp_switch(on, 0.66)
+        tile.alpha_composite(knob, (9, (height - knob.height) // 2))
+        bp_row(tile, switch["label"], 9.0, INK if on else INK_DIM, W_LABEL,
+               9 + knob.width + 7, height / 2,
+               room=width - 9 - knob.width - 7 - 24)
+        bp_row(tile, switch["key"].upper(), 7.8, INK_FAINT, W_LABEL,
+               width - 13, height / 2, right=True)
         plate.alpha_composite(tile, (x, y))
 
     def _switch_under(self, x: int, y: int) -> str | None:
@@ -3853,7 +4087,7 @@ class ShotWindow:
         self.canvas.create_text(right - self._vx - 6, y,
                                 text=selection_readout(box), fill=FG,
                                 anchor="ne",
-                                font=(_vq._pick_face(), 9, "bold"),
+                                font=(_vq._pick_face(), 9),
                                 tags="sel")
 
     def _chose(self, box, path) -> None:
@@ -4642,7 +4876,7 @@ class ShotWindow:
         halo = small.filter(ImageFilter.GaussianBlur(9 / q)).point(
             lambda v: int(v * .45)).resize((lw, lh), Image.BILINEAR,
                                            box=(0, 0, lw / q, lh / q))
-        local.paste((86, 156, 245, 255), (0, 0), halo)
+        local.paste(_EDGE_RGB + (255,), (0, 0), halo)
         if back is not None:
             self._paint_recoverable(local, back, (hx0, hy0))
         self._stage_at = (hx0, hy0)
@@ -4743,7 +4977,7 @@ class ShotWindow:
             ImageDraw.Draw(ring).rounded_rectangle(
                 (ox - 2 - x0, oy - 2 - y0, ex + 1 - x0, ey + 1 - y0), 13,
                 outline=235, width=2)
-            img.paste((86, 156, 245), (x0 - dx, y0 - dy, x1 - dx, y1 - dy),
+            img.paste(_EDGE_RGB, (x0 - dx, y0 - dy, x1 - dx, y1 - dy),
                       ring)
 
     def _crop_hint(self) -> str:
@@ -4803,10 +5037,9 @@ class ShotWindow:
 
     def _words(self, text: str, width: int, pt: float, colour,
                weight: int = 400):
+        """A line in Rubik at B+'s weights, cut to `width` (bp_fit)."""
         return self._sprite(("text", text, width, pt, colour, weight),
-                            lambda: _vq.text_pil(text, width, pt=pt,
-                                                 colour=colour, rtl=False,
-                                                 single=True, weight=weight))
+                            lambda: bp_fit(text, width, pt, colour, weight))
 
     def _paint_bar(self) -> None:
         """The toolbar: one glass plate with everything painted into it.
@@ -4853,6 +5086,10 @@ class ShotWindow:
         self._keep["bar"] = photo
 
     def _draw_bar_content(self, plate) -> None:
+        """B+: every tool a round control (a disc of frost, a step brighter
+        under the pointer, the chosen one the desk's bubble); the three
+        actions quiet pills with their words; no iris anywhere — nothing
+        on this bar is what Enter does, so nothing on it is lit."""
         from PIL import Image
         spots = self._layout["spots"]
         glyphs = dict((name, glyph) for name, glyph, _l in TOOLS)
@@ -4864,23 +5101,18 @@ class ShotWindow:
                 plate.alpha_composite(self._sprite(
                     ("sep", x1 - x0, y1 - y0),
                     lambda: Image.new("RGBA", (max(1, x1 - x0), y1 - y0),
-                                      (255, 255, 255, 40))), (x0, y0))
+                                      (255, 255, 255, 30))), (x0, y0))
                 continue
             selected = (name == self.tool
                         or (name == "ink" and self._palette_open))
             hovered = (name == self._hover)
+            state = ("chosen" if selected and name not in labels
+                     else "hover" if hovered else "rest")
             if name in labels:
-                fill = (86, 156, 245, 190) if hovered else (255, 255, 255, 26)
-                outline = (255, 255, 255, 70) if hovered else (255, 255, 255, 52)
-            elif selected:
-                fill, outline = (86, 156, 245, 175), (255, 255, 255, 90)
-            elif hovered:
-                fill, outline = (255, 255, 255, 46), (255, 255, 255, 70)
+                plate.alpha_composite(bp_pill(x1 - x0, y1 - y0, state),
+                                      (x0, y0))
             else:
-                fill, outline = (255, 255, 255, 20), (255, 255, 255, 40)
-            radius = 11 if name in labels else CHIP // 2
-            plate.alpha_composite(self._rr((x1 - x0, y1 - y0), radius, fill,
-                                           outline), (x0, y0))
+                plate.alpha_composite(bp_round(x1 - x0, state), (x0, y0))
             if name == "ink":
                 # THE CHIP IS THE PEN: its colour, in a dot that grows with
                 # the width of the line, so both are read off the bar
@@ -4895,16 +5127,14 @@ class ShotWindow:
             glyph_name = glyphs.get(name, name)
             colour = INK if (selected or hovered) else INK_DIM
             if name in labels:
-                text = self._words(labels[name], x1 - x0 - 30, 10.5, INK,
-                                   600)
-                mark = self._glyph(glyph_name, 17, INK)
-                plate.alpha_composite(mark, (x0 + 11, y0 + (CHIP - 17) // 2))
-                plate.alpha_composite(text, (x0 + 32,
-                                             y0 + (CHIP - text.height) // 2))
+                mark = self._glyph(glyph_name, 15, INK if hovered else INK_DIM)
+                plate.alpha_composite(mark, (x0 + 12, y0 + (CHIP - 15) // 2))
+                bp_row(plate, labels[name], 9.75, INK, W_LABEL, x0 + 32,
+                       y0 + CHIP / 2, room=x1 - x0 - 38)
                 continue
-            mark = self._glyph(glyph_name, 19, colour)
-            plate.alpha_composite(mark, (x0 + (CHIP - 19) // 2,
-                                         y0 + (CHIP - 19) // 2))
+            mark = self._glyph(glyph_name, 18, colour)
+            plate.alpha_composite(mark, (x0 + (CHIP - 18) // 2,
+                                         y0 + (CHIP - 18) // 2))
 
         line = self._status if time.monotonic() < self._status_until else ""
         if not line:
@@ -4912,7 +5142,7 @@ class ShotWindow:
                     f"{colour_name(self.colour)}, {SIZES[self.size][0]}"
                     f"   ·   Esc closes")
         text = self._words(line, plate.width - 2 * BAR_PAD_X, 9.5, INK_FAINT)
-        plate.alpha_composite(text, (BAR_PAD_X, BAR_H - 26))
+        plate.alpha_composite(text, (BAR_PAD_X + 2, BAR_H - 27))
 
     # -- the palette --
 
@@ -5107,7 +5337,7 @@ class ShotWindow:
                 canvas.create_text(cx + size // 2, cy + size + 14,
                                    text=hexed,
                                    fill="#101014" if light else "#ffffff",
-                                   font=(_vq._pick_face(), 9, "bold"),
+                                   font=(_vq._pick_face(), 9),
                                    tags="loupe"))
             return
         self._keep["loupe"].paste(big)
@@ -5307,25 +5537,17 @@ class ShotWindow:
 
         x0, y0, x1, y1 = spots["pick"]
         lit = hot == "pick"
-        plate.alpha_composite(self._rr(
-            (x1 - x0, y1 - y0), (x1 - x0) // 2,
-            (255, 255, 255, 46) if lit else (255, 255, 255, 20),
-            (255, 255, 255, 70) if lit else (255, 255, 255, 40)), (x0, y0))
+        plate.alpha_composite(bp_round(x1 - x0, "hover" if lit else "rest"),
+                              (x0, y0))
         glyph = self._glyph("pick", 17, INK if lit else INK_DIM)
         plate.alpha_composite(glyph, (x0 + (x1 - x0 - 17) // 2,
                                       y0 + (y1 - y0 - 17) // 2))
 
         for i in range(len(SIZES)):
             x0, y0, x1, y1 = spots[f"size:{i}"]
-            if i == self.size:
-                fill, outline = (86, 156, 245, 175), (255, 255, 255, 90)
-            elif hot == f"size:{i}":
-                fill, outline = (255, 255, 255, 46), (255, 255, 255, 70)
-            else:
-                fill, outline = (255, 255, 255, 20), (255, 255, 255, 40)
-            plate.alpha_composite(self._rr((x1 - x0, y1 - y0),
-                                           (x1 - x0) // 2, fill, outline),
-                                  (x0, y0))
+            state = ("chosen" if i == self.size
+                     else "hover" if hot == f"size:{i}" else "rest")
+            plate.alpha_composite(bp_round(x1 - x0, state), (x0, y0))
             dot = SIZE_DOTS[i]
             plate.alpha_composite(self._rr((dot, dot), dot // 2,
                                            tuple(self.colour) + (255,),
@@ -5337,7 +5559,7 @@ class ShotWindow:
         name = self._sprite(
             ("name", tuple(self.colour)),
             lambda: self._text_ink(colour_name(self.colour), 9.5, INK_DIM,
-                                   weight=600, width=x1 - x0))
+                                   weight=W_LABEL, width=x1 - x0))
         plate.alpha_composite(name, (x1 - name.width,
                                      y0 + (y1 - y0 - name.height) // 2))
 
@@ -5637,10 +5859,14 @@ class ClipBar:
         self._face(width, height, radius)
 
     def _face(self, width: int, height: int, radius: int) -> None:
+        """B+ card stock (bp_stock): the pane with nothing behind it. Kept
+        as a picture too, so each paint lays the live parts onto IT — the
+        face is lit from above, and a button flattened onto one flat
+        colour would wear a rectangle of the wrong shade."""
         from PIL import ImageTk
+        self._face_img = bp_stock(width, height, radius)
         self._keep["face"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(width, height, radius, CARD, PANE, STROKE),
-            master=self.root)
+            self._face_img.convert("RGB"), master=self.root)
         self.canvas.delete("face")
         self.canvas.create_image(0, 0, anchor="nw", image=self._keep["face"],
                                  tags="face")
@@ -5731,75 +5957,81 @@ class ClipBar:
         except Exception:
             return False
 
-    def _dot(self, x: int, y: int, size: int = 12) -> None:
-        """The red dot, blinking while it records and steady while paused.
+    def _dot(self, card, x: int, y: int, size: int = 12) -> None:
+        """The recording lamp (look.lamp, B+'s red with its rings),
+        blinking while it records and steady — in the working amber —
+        while paused, into `card` centred on (x + size/2, y + size/2).
 
         A blink answers "is this still capturing?" from the corner of an
         eye, which is the only question anyone asks an indicator, and it
         answers it without a word to read.
         """
-        from PIL import ImageTk
         recorder = self.recorder
         lit = recorder.paused or (time.monotonic() * 1.6) % 1.0 < 0.62
-        colour = (224, 163, 43) if recorder.paused else (224, 53, 43)
-        dot = _vq.rr_layer((size, size), size // 2,
-                           colour + (255 if lit else 60,))
-        self._keep["dot"] = ImageTk.PhotoImage(dot, master=self.root)
-        self.canvas.create_image(x, y, anchor="nw", image=self._keep["dot"],
+        room = size + 34                 # the lamp's light ends inside it
+        lamp = bp_lamp(room, "warn" if recorder.paused else "rec", lit)
+        _paste(card, lamp, x + size // 2 - room // 2,
+               y + size // 2 - room // 2)
+
+    def _show(self, card) -> None:
+        """One picture for the whole bar, over the face it was drawn on."""
+        from PIL import ImageTk
+        self.canvas.delete("live")
+        self._keep["live"] = ImageTk.PhotoImage(card.convert("RGB"),
+                                                master=self.root)
+        self.canvas.create_image(0, 0, anchor="nw", image=self._keep["live"],
                                  tags="live")
 
-    def _text(self, key: str, text: str, x: int, y: int, *, pt: float,
-              colour, weight: int = 400, width: int = 300) -> None:
-        from PIL import ImageTk
-        image = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
-                             single=True, weight=weight)
-        self._keep[key] = ImageTk.PhotoImage(image, master=self.root)
-        self.canvas.create_image(x, y, anchor="nw", image=self._keep[key],
-                                 tags="live")
+    def _card(self, width: int, height: int):
+        face = getattr(self, "_face_img", None)
+        if face is None or face.size != (width, height):
+            radius = (CLIP_BAR_RADIUS if self.phase() == "announce"
+                      else TIMER_RADIUS)
+            face = bp_stock(width, height, radius)
+        return face.copy()
 
     def _paint_announce(self, width: int, height: int) -> None:
-        self.canvas.delete("live")
-        self._dot(20, height // 2 - 6)
+        card = self._card(width, height)
+        self._dot(card, 18, height // 2 - 6)
         left, top, right, bottom = self.recorder.box
         detail = f"{right - left} × {bottom - top}"
         if self.recorder.system_wanted:
-            detail += "   ·   computer sound"
+            detail += "  ·  computer sound"
         if self.recorder.mic_wanted:
-            detail += "   ·   mic on"
+            detail += "  ·  mic on"
         if self.stop_key:
-            detail += f"   ·   {self.stop_key} to stop"
-        self._text("title", "Recording started", 42, 11, pt=12.0, colour=INK,
-                   weight=600, width=width - 56)
-        self._text("detail", detail, 42, 32, pt=9.5, colour=INK_FAINT,
-                   width=width - 56)
+            detail += f"  ·  {self.stop_key} to stop"
+        bp_row(card, "Recording started", 12.0, INK, W_STRONG, 42,
+               height * 0.36, room=width - 56)
+        bp_row(card, detail, 9.5, INK_FAINT, W_WORDS, 42, height * 0.70,
+               room=width - 56)
+        self._show(card)
 
     def _paint_timer(self, width: int, height: int, spots: dict) -> None:
-        from PIL import Image, ImageTk
-        canvas = self.canvas
-        canvas.delete("live")
+        """The lamp, the clock, and — hovered — the controls: Stop a disc
+        of red light (look.mark), the others round controls of frost, the
+        live microphone the chosen one."""
+        card = self._card(width, height)
         recorder = self.recorder
-        self._dot(15, height // 2 - 6)
-        self._text("time", self._label(), 34, height // 2 - 11, pt=12.5,
-                   colour=INK, weight=600, width=timer_width(self._label()))
+        self._dot(card, 13, height // 2 - 6)
+        bp_row(card, self._label(), 12.5, INK, W_STRONG, 32, height / 2,
+               room=timer_width(self._label()) - 34)
         for name, (x0, y0, x1, y1) in spots.items():
+            d = x1 - x0
             live_mic = (name == "mic" and not recorder.muted)
-            fill = ((224, 53, 43, 210) if name == "stop"
-                    else (86, 156, 245, 170) if live_mic
-                    else (255, 255, 255, 22))
-            plate = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2, fill,
-                                 (255, 255, 255, 46))
             glyph = {"stop": "stop", "pause": "play" if recorder.paused
                      else "pause", "discard": "trash",
                      "mic": "mic" if live_mic else "mic_off"}[name]
-            colour = INK if (name != "mic" or live_mic) else INK_FAINT
-            plate.alpha_composite(icon(glyph, 15, colour=colour, width=2),
-                                  ((x1 - x0 - 15) // 2, (y1 - y0 - 15) // 2))
-            flat = Image.new("RGBA", plate.size, _hex(CARD) + (255,))
-            flat.alpha_composite(plate)
-            self._keep[f"btn{name}"] = ImageTk.PhotoImage(
-                flat.convert("RGB"), master=self.root)
-            canvas.create_image(x0, y0, anchor="nw",
-                                image=self._keep[f"btn{name}"], tags="live")
+            if name == "stop":
+                card.alpha_composite(bp_mark(d, "rec"), (x0, y0))
+                colour = _look().INK["rec"]
+            else:
+                card.alpha_composite(
+                    bp_round(d, "chosen" if live_mic else "rest"), (x0, y0))
+                colour = INK if (name != "mic" or live_mic) else INK_FAINT
+            card.alpha_composite(icon(glyph, 14, colour=colour, width=2),
+                                 (x0 + (d - 14) // 2, y0 + (d - 14) // 2))
+        self._show(card)
 
     def run(self, stop_event: threading.Event) -> None:
         """Pump until the recording stops. Never longer than one tick
@@ -5888,9 +6120,9 @@ class Toast:
         canvas.pack()
         self.canvas = canvas
         self.size = (width, height)
+        self._face_img = bp_stock(width, height, CLIP_BAR_RADIUS)
         self._keep["face"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(width, height, CLIP_BAR_RADIUS, CARD, PANE,
-                             STROKE), master=root)
+            self._face_img.convert("RGB"), master=root)
         canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
         root.update_idletasks()
         round_window(root, CLIP_BAR_RADIUS)
@@ -5922,32 +6154,30 @@ class Toast:
         self.done.set()
 
     def _paint(self) -> None:
-        from PIL import Image, ImageTk
+        """One picture: the name (cut in its middle when it is long, so the
+        date and the extension both stay), what it is, and three round
+        controls of frost."""
+        from PIL import ImageTk
         canvas = self.canvas
         canvas.delete("live")
-        title = _vq.text_pil(self.path.name, 220, pt=11.5, colour=INK,
-                             rtl=False, single=True, weight=600)
-        under = _vq.text_pil(self.subtitle, 220, pt=9.5, colour=INK_FAINT,
-                             rtl=False, single=True)
-        self._keep["title"] = ImageTk.PhotoImage(title, master=self.root)
-        self._keep["under"] = ImageTk.PhotoImage(under, master=self.root)
-        canvas.create_image(16, 13, anchor="nw", image=self._keep["title"],
-                            tags="live")
-        canvas.create_image(16, 36, anchor="nw", image=self._keep["under"],
-                            tags="live")
-        for name, (x0, y0, x1, y1) in self._spots().items():
-            plate = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2,
-                                 (255, 255, 255, 22), (255, 255, 255, 46))
-            plate.alpha_composite(
+        card = self._face_img.copy()
+        spots = self._spots()
+        room = min(x0 for x0, _y0, _x1, _y1 in spots.values()) - 16 - 10
+        height = self.size[1]
+        bp_row(card, self.path.name, 11.5, INK, W_STRONG, 16, height * 0.36,
+               room=room)
+        bp_row(card, self.subtitle, 9.5, INK_FAINT, W_WORDS, 16,
+               height * 0.68, room=room)
+        for name, (x0, y0, x1, y1) in spots.items():
+            card.alpha_composite(bp_round(x1 - x0), (x0, y0))
+            card.alpha_composite(
                 icon({"close": "close", "folder": "folder",
-                      "copy": "copy"}[name], 15, colour=INK, width=2),
-                ((x1 - x0 - 15) // 2, (y1 - y0 - 15) // 2))
-            flat = Image.new("RGBA", plate.size, _hex(CARD) + (255,))
-            flat.alpha_composite(plate)
-            self._keep[name] = ImageTk.PhotoImage(flat.convert("RGB"),
-                                                  master=self.root)
-            canvas.create_image(x0, y0, anchor="nw", image=self._keep[name],
-                                tags="live")
+                      "copy": "copy"}[name], 14, colour=INK_DIM, width=2),
+                (x0 + (x1 - x0 - 14) // 2, y0 + (y1 - y0 - 14) // 2))
+        self._keep["live"] = ImageTk.PhotoImage(card.convert("RGB"),
+                                                master=self.root)
+        canvas.create_image(0, 0, anchor="nw", image=self._keep["live"],
+                            tags="live")
 
     def run(self, ms: int = TOAST_MS) -> None:
         root = self.root
@@ -6071,10 +6301,10 @@ class ShotToast:
         canvas.pack()
         self.canvas = canvas
         self.size = (width, height)
-        self._face_img = _vq._rounded_pil(width, height, CLIP_BAR_RADIUS,
-                                          CARD, PANE, STROKE)
+        self._face_img = bp_stock(width, height, CLIP_BAR_RADIUS)
         self._face_key: tuple | None = None
-        self._keep["face"] = ImageTk.PhotoImage(self._face_img, master=root)
+        self._keep["face"] = ImageTk.PhotoImage(
+            self._face_img.convert("RGB"), master=root)
         canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
         root.update_idletasks()
         no_activate(root)
@@ -6185,7 +6415,7 @@ class ShotToast:
             width, height = TOAST_THUMB
             shrunk = self.image.convert("RGB").copy()
             shrunk.thumbnail((width - 2, height - 2), Image.LANCZOS)
-            tile = Image.new("RGB", (width, height), _hex(PANE))
+            tile = Image.new("RGB", (width, height), _THUMB_WELL)
             tile.paste(shrunk, ((width - shrunk.width) // 2,
                                 (height - shrunk.height) // 2))
             self._keep["thumb_img"] = tile
@@ -6215,20 +6445,29 @@ class ShotToast:
         self._paint_clock()
 
     def _body(self):
-        """The whole card except the clock, as one picture."""
+        """The whole card except the clock, as one picture: the thumbnail
+        on a well with a hairline, "Copied" as the one strong word, what
+        and where in the third voice — the file's name cut in its middle
+        when it does not fit, so its date and extension both stay — and
+        four round controls of frost, a step brighter under the pointer."""
         from PIL import Image
-        card = self._face_img.convert("RGBA")
+        look = _look()
+        card = self._face_img.copy()
+        tw, th = TOAST_THUMB
         card.alpha_composite(self._thumb().convert("RGBA"), (12, 12))
+        frame = look.ring_of(look.rounded((tw, th), (0, 0, tw, th), 0))
+        card.alpha_composite(look.flat((tw, th), look.c("white", 30), frame),
+                             (12, 12))
 
         left, top, right, bottom = self.box
         head = "Copied" if self.copied else "Captured"
         detail = f"{right - left} × {bottom - top}"
         detail += (f"   ·   {self.saved.name}" if self.saved is not None
                    else "   ·   not saved")
-        card.alpha_composite(self._line(head, 11.5, INK, weight=600),
-                             (TOAST_TEXT_X, 14))
-        card.alpha_composite(self._line(detail, 9.0, INK_FAINT),
-                             (TOAST_TEXT_X, 34))
+        room = self.size[0] - TOAST_TEXT_X - 14
+        bp_row(card, head, 11.5, INK, W_STRONG, TOAST_TEXT_X, 23, room=room)
+        bp_row(card, detail, 9.0, INK_FAINT, W_WORDS, TOAST_TEXT_X, 43,
+               room=room)
 
         glyphs = {"edit": "pencil", "save": "save", "copy": "copy",
                   "folder": "folder", "close": "close"}
@@ -6236,14 +6475,12 @@ class ShotToast:
         for name in self._buttons():
             x0, y0, x1, y1 = spots[name]
             hot = (name == self._hover)
-            plate = _vq.rr_layer(
-                (x1 - x0, y1 - y0), (x1 - x0) // 2,
-                (110, 160, 235, 120) if hot else (255, 255, 255, 22),
-                (150, 195, 255, 200) if hot else (255, 255, 255, 46))
-            plate.alpha_composite(
+            card.alpha_composite(bp_round(x1 - x0, "hover" if hot else "rest"),
+                                 (x0, y0))
+            card.alpha_composite(
                 icon(glyphs[name], 14, colour=INK if hot else INK_DIM,
-                     width=2), ((x1 - x0 - 14) // 2, (y1 - y0 - 14) // 2))
-            card.alpha_composite(plate, (x0, y0))
+                     width=2), (x0 + (x1 - x0 - 14) // 2,
+                                y0 + (y1 - y0 - 14) // 2))
         return card.convert("RGB")
 
     def _paint_clock(self) -> None:
@@ -6265,9 +6502,8 @@ class ShotToast:
 
     def _line(self, text: str, pt: float, colour, weight: int = 400):
         """One line of text as an RGBA layer, ready to composite."""
-        return _vq.text_pil(text, self.size[0] - TOAST_TEXT_X - 10, pt=pt,
-                            colour=colour, rtl=False, single=True,
-                            weight=weight)
+        return bp_fit(text, self.size[0] - TOAST_TEXT_X - 10, pt, colour,
+                      weight)
 
     # -- the pump --
 
@@ -6912,10 +7148,12 @@ class CameraWindow:
         root.bind_all("<KeyPress>", self._on_key)
 
     def _face(self) -> None:
+        """B+ card stock (bp_stock); the control strip is laid onto the
+        same picture, so its round controls sit on the face's own light."""
         from PIL import ImageTk
+        self._face_img = bp_stock(self.card_w, self.card_h, CAM_RADIUS)
         self._keep["face"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(self.card_w, self.card_h, CAM_RADIUS, CARD,
-                             PANE, STROKE), master=self.root)
+            self._face_img.convert("RGB"), master=self.root)
         self.canvas.delete("face")
         self.canvas.create_image(0, 0, anchor="nw", image=self._keep["face"],
                                  tags="face")
@@ -7263,17 +7501,16 @@ class CameraWindow:
         """The number, on a disc dark enough to read it over anything."""
         from PIL import Image
         size = 132
-        plate = _vq.rr_layer((size, size), size // 2, (8, 16, 32, 168),
-                             (255, 255, 255, 40))
+        look = _look()
+        plate = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        disc = look.circle((size, size), size / 2, size / 2, size / 2)
+        plate.alpha_composite(look.flat((size, size), _SHADE + (190,), disc))
+        plate.alpha_composite(look.rim(disc, (0, 0, size, size)))
         # Trimmed to the ink before it is centred, for the reason the timer
         # chip is: text_pil hands back a picture of the BOX it was given
         # with the glyphs at one end, and centring that box puts a numeral
         # visibly off to the left of the disc it is supposed to be in.
-        glyph = _vq.text_pil(str(left), size * 2, pt=54, colour=INK,
-                             rtl=False, single=True, weight=700)
-        ink = glyph.getbbox()
-        if ink is not None:
-            glyph = glyph.crop(ink)
+        glyph = bp_text(str(left), 54, INK, W_STRONG)
         plate.alpha_composite(glyph, ((size - glyph.width) // 2,
                                       (size - glyph.height) // 2))
         flat = Image.new("RGBA", plate.size, (0, 0, 0, 0))
@@ -7318,14 +7555,16 @@ class CameraWindow:
         from PIL import Image, ImageTk
         cached = self._keep.get(f"{key}:key")
         if cached != (text, colour, shade):
-            glyph = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
-                                 single=True, weight=weight)
+            glyph = bp_fit(text, width, pt, colour, weight)
             if shade:
-                pad = 7
-                plate = _vq.rr_layer(
-                    (glyph.width + pad * 2, glyph.height + pad), 9,
-                    (8, 16, 32, 150))
-                plate.alpha_composite(glyph, (pad, pad // 2))
+                # a pill of B+'s glass under the words: over a live camera
+                # there is no telling what is behind a caption
+                pad_x, pad_y = 10, 5
+                w, h = glyph.width + pad_x * 2, glyph.height + pad_y * 2
+                look = _look()
+                plate = look.flat((w, h), _SHADE + (178,),
+                                  look.rounded((w, h), (0, 0, w, h), h / 2))
+                plate.alpha_composite(glyph, (pad_x, pad_y))
                 glyph = plate
             flat = Image.new("RGBA", glyph.size, (0, 0, 0, 0))
             flat.alpha_composite(glyph)
@@ -7356,44 +7595,37 @@ class CameraWindow:
                                      tags="strip")
 
     def _strip_image(self, armed: bool):
-        from PIL import Image
-        plate = Image.new("RGBA", (self.card_w, CAM_STRIP_H),
-                          _hex(CARD) + (255,))
+        """The control row in B+: round controls of frost, a step brighter
+        under the pointer, the one that is ON (a mirror, a timer) the
+        desk's bubble — on the face's own picture, not a flat colour."""
+        face = getattr(self, "_face_img", None)
+        if face is not None and face.size == (self.card_w, self.card_h):
+            plate = face.crop((0, self.card_h - CAM_STRIP_H, self.card_w,
+                               self.card_h))
+        else:
+            plate = bp_stock(self.card_w, self.card_h, CAM_RADIUS).crop(
+                (0, self.card_h - CAM_STRIP_H, self.card_w, self.card_h))
         for name, (x0, y0, x1, y1) in self.spots.items():
             if name == "shutter":
                 continue
             lit = ((name == "mirror" and self.camera.mirror)
                    or (name == "timer" and bool(self.timer)))
-            fill = ((86, 156, 245, 170) if lit
-                    else (255, 255, 255, 40) if self._hover == name
-                    else (255, 255, 255, 20))
-            chip = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2, fill,
-                                (255, 255, 255, 46))
-            colour = INK if (lit or self._hover == name) else INK_FAINT
+            state = ("chosen" if lit else "hover" if self._hover == name
+                     else "rest")
+            plate.alpha_composite(bp_round(x1 - x0, state), (x0, y0))
+            colour = INK if (lit or self._hover == name) else INK_DIM
             if name == "timer" and self.timer:
                 # The NUMBER instead of the stopwatch once one is set: a
                 # chip that is merely lit says a timer is on and not which,
-                # and 3 s and 10 s are different plans.
-                #
-                # Laid out in a WIDE box and then trimmed to its ink.
-                # text_pil returns a picture of the box it was given, with
-                # the glyphs at one end of it, so centring on the returned
-                # size put the numeral against the chip's left curve and
-                # clipped it — seen in the first live screenshot, which is
-                # the only place it could have been seen.
-                mark = _vq.text_pil(str(self.timer), 96, pt=12.0,
-                                    colour=colour, rtl=False, single=True,
-                                    weight=700)
-                ink = mark.getbbox()
-                if ink is not None:
-                    mark = mark.crop(ink)
+                # and 3 s and 10 s are different plans. Cropped to its ink
+                # (bp_text) and centred on the chip.
+                mark = bp_text(str(self.timer), 12.0, colour, W_STRONG)
             else:
                 mark = icon({"mirror": "mirror", "timer": "timer",
                              "switch": "switch", "close": "close"}[name],
                             16, colour=colour, width=2)
-            chip.alpha_composite(mark, ((x1 - x0 - mark.width) // 2,
-                                        (y1 - y0 - mark.height) // 2))
-            plate.alpha_composite(chip, (x0, y0))
+            plate.alpha_composite(mark, (x0 + (x1 - x0 - mark.width) // 2,
+                                         y0 + (y1 - y0 - mark.height) // 2))
         plate.alpha_composite(self._shutter_image(armed),
                               self.spots["shutter"][:2])
         return plate.convert("RGB")
@@ -7410,7 +7642,7 @@ class CameraWindow:
                             (238, 245, 255, 225), 2)
         inner = SHUTTER - 14
         if armed:
-            fill = (224, 53, 43, 245)
+            fill = tuple(_look().INK["rec"]) + (245,)
         elif self.frozen is not None:
             fill = (238, 245, 255, 90)
         elif self._hover == "shutter":

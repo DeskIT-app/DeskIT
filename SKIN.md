@@ -214,6 +214,57 @@ the dot reaches full brightness at 1130 — the second note — and the
 second ring leaves then; PlaySound's own start-up puts the sound a few
 tens of ms after the picture, which is the side the ear forgives.
 
+### B+, the second wave — the sky behind the windows (2026-10-24)
+
+The rest of the windows outside the desk, approved from before-and-after
+sheets in two rounds. The first showed the installer with the desk's sky
+behind its pages, and his answer set the direction for the rest: "leave it
+so, but do it in the whole wizard" — then the download window "as in the
+wizard", the lookup box and the ask card "those skies there too". Capture
+and the camera he took as they were.
+
+- **The sky** is `look.sky`: bplus.css `.sky` read into numpy — the ground
+  and four fields of light (indigo top-left .30, blue bottom-right .22, plum
+  .13, teal .10), each a radial fade to the power 1.7 (a blurred cone), and a
+  breath of noise so an 8-bit dark gradient does not band.
+- **The installer** (`packaging\DeskIT.iss`, `dev\make_wizard_images.py`):
+  Inno's own dark style, `WizardBackColor` the night, `WizardBackImageFile`
+  the sky at Inno's seven DPI sizes (new in Inno 6.7 — the script refuses an
+  older compiler by name; the build's runner had 6.7.1), no bevels. The side
+  picture is the mark, the name, a fading rule and the version on a CLEAR
+  PNG: measured on the hidden desktop, a side picture with a sky of its own
+  met the page's sky at a visible edge, a clear one does not. Inno's buttons
+  and its title type stay Windows' — Setup cannot draw ours, nor use a font
+  that is not installed. The page that shows WHILE it installs could not be
+  photographed (Setup does not answer PrintWindow until it has copied).
+- **Tk windows on the sky** (`tklook.py`: the wizard, the download window).
+  A Tk widget is an opaque rectangle, so the sky is one picture under the
+  window and every widget standing on it WEARS its own crop as its
+  background: a container is a canvas whose bottom item is its crop
+  (`SkyFrame`), a line of words is a Label whose image is its crop and whose
+  words are drawn over it (`SkyLabel`, packed without fill — a Label wider
+  than its words shows its flat colour beside them), a button, a card, a
+  track draws its face on its crop. Wearers are re-cropped together, on idle,
+  whenever one of them moves. Cards stay opaque panes; the sky shows round
+  them. B+'s shapes come with it: 22 px panes with the frosted rim, the lit
+  and quiet pills (`primary`'s light fades into the ground inside its own
+  canvas — cut off, it was a line), the switch with no accent, the key cap,
+  the writing well, the chosen row as the desk's bubble.
+- **Every PhotoImage a tklook widget shows is let go on the Tk thread when
+  the widget is destroyed** (`photo`, a `<Destroy>` binding). Kept in the
+  widget's own dict they were a reference cycle, and the wizard's sign-in
+  thread was found hung in `ImageTk.PhotoImage.__del__` under `import
+  webbrowser` — the AGENTS.md Tcl trap through a new door. A face asked for
+  again is the same PhotoImage, so nothing is made per tick.
+- **The lookup box** is raw GDI: the sky is made once (`_SKY_SIZE`) and
+  `StretchBlt`ed (HALFTONE) to the box's size on every paint — a resize pays
+  a blit, never a new picture — and the bar is the same sky darkened through
+  `AlphaBlend`. Rubik, the iris for the looked-up word, the X a disc.
+- **The ask card** keeps its glass over the frozen screen; the face is
+  `look.glass` (B+'s desktop density) and the sky's lights are inside it
+  (`visual_qa.CARD_SKY`) — for the card only: capture's chrome, which shares
+  `glass_plate`, was approved plain.
+
 ### LAMPLIGHT — one lamp on a dark desk (2026-09-07 to 2026-10-23)
 
 What follows is the palette B+ replaced, kept for its reasoning — the

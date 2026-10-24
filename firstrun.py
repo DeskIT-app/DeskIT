@@ -109,6 +109,7 @@ import config as config_mod
 import downloads
 import keyrow
 import paths
+import tklook
 import ui
 
 log = logging.getLogger("app")
@@ -399,6 +400,17 @@ def _lamplight() -> None:
     log.info("wizard: palette applied without the skin pack")
 
 
+def _mark_picture(size: int):
+    """The mark (icon.png, the locked logo) at `size`, its corners clear —
+    so it stands on the sky as it is."""
+    try:
+        from PIL import Image
+        return Image.open(APP_DIR / "icon.png").convert("RGBA").resize(
+            (size, size), Image.LANCZOS)
+    except OSError:
+        return None
+
+
 def _colorref(colour: str) -> int:
     r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
     return r | (g << 8) | (b << 16)
@@ -649,17 +661,43 @@ class Meter(tk.Canvas):
     time you look back, and the whole screen exists to prove one thing.
     """
 
-    def __init__(self, parent, bg: str, width: int = METER_W):
+    def __init__(self, parent, bg: str, width: int = METER_W, sky=None):
         super().__init__(parent, width=width, height=METER_H + 6, bg=bg,
                          highlightthickness=0, bd=0)
         self._peak = 0.0
         self._width = width
-        self._track = self.create_image(
-            0, 3, anchor="nw",
-            image=ui.rounded(width, METER_H, METER_H // 2, ui.EDGE, bg, ui.LINE))
+        self._bg = bg
+        self._shown = None
+        self._track = self.create_image(0, 0, anchor="nw",
+                                        image=tklook.photo(self, self._picture(bg)))
         self._fill = self.create_rectangle(2, 5, 2, 1 + METER_H,
-                                           fill=ui.ACCENT, width=0)
-        self._mark = self.create_rectangle(0, 0, 0, 0, fill=ui.GREEN, width=0)
+                                           fill=ui.COOL, width=0)
+        self._mark = self.create_rectangle(0, 0, 0, 0, fill=ui.FG, width=0)
+        if sky is not None:
+            sky.wear(self)
+
+    def _picture(self, ground):
+        """The whole canvas: its ground (a colour or the sky's crop) with
+        the track, a well, 3 px down."""
+        from PIL import Image
+        h = METER_H + 6
+        if isinstance(ground, Image.Image):
+            img = ground.convert("RGBA").copy()
+            band = img.crop((0, 3, self._width, 3 + METER_H))
+        else:
+            img = Image.new("RGBA", (self._width, h), tuple(
+                int(ground[i:i + 2], 16) for i in (1, 3, 5)) + (255,))
+            band = ground
+        img.alpha_composite(tklook.track(self._width, METER_H, bg=band), (0, 3))
+        return img
+
+    def _wear(self, sky) -> None:
+        key = sky.where(self) + (self._width,)
+        if key == self._shown:
+            return
+        self._shown = key
+        crop = sky.crop(self, self._width, METER_H + 6)
+        self.itemconfig(self._track, image=tklook.photo(self, self._picture(crop)))
 
     def show(self, level: float) -> None:
         level = max(0.0, min(1.0, float(level)))
@@ -670,7 +708,7 @@ class Meter(tk.Canvas):
         shown = level ** 0.5
         self.coords(self._fill, 2, 5, max(2, (self._width - 4) * shown), 1 + METER_H)
         self.itemconfig(self._fill,
-                        fill=ui.GREEN if self._peak >= SPEECH else ui.ACCENT)
+                        fill=ui.GREEN if self._peak >= SPEECH else ui.COOL)
         if level > self._peak:
             self._peak = level
             x = (self._width - 4) * (self._peak ** 0.5)
@@ -684,6 +722,33 @@ class Meter(tk.Canvas):
         self._peak = 0.0
         self.coords(self._mark, 0, 0, 0, 0)
         self.coords(self._fill, 2, 5, 2, 1 + METER_H)
+
+
+class _Stage(tk.Canvas):
+    """The welcome page's canvas on the sky: its bottom item is the sky's
+    crop under it with the mark and a fading rule drawn in; the words are
+    canvas items over it (firstrun.Wizard._welcome_stage)."""
+
+    def __init__(self, parent, width: int, height: int, *, mark, at, rule_y: int):
+        super().__init__(parent, width=width, height=height, bg=ui.BG,
+                         highlightthickness=0, bd=0)
+        self._size = (width, height)
+        self._mark, self._at, self._rule_y = mark, at, rule_y
+        self._bg = self.create_image(0, 0, anchor="nw")
+        self._shown = None
+
+    def _wear(self, sky) -> None:
+        import look
+        key = sky.where(self) + self._size
+        if key == self._shown:
+            return
+        self._shown = key
+        picture = sky.crop(self, *self._size).copy()
+        if self._mark is not None:
+            picture.alpha_composite(self._mark, self._at)
+        mid = self._size[0] / 2
+        look.fade_rule(picture, mid - 22, mid + 22, self._rule_y, a=110)
+        self.itemconfig(self._bg, image=tklook.photo(self, picture))
 
 
 class Listener:
@@ -1084,35 +1149,40 @@ class Wizard:
         except Exception:
             pass                      # cosmetic: never a reason not to run
         _caption(self.root)
+        # B+'s night behind every page (the owner, 2026-10-24: "leave it so,
+        # but do it in the whole wizard" — the installer's sky): one picture
+        # under the window, and everything that stands on it wears its crop
+        # (tklook.Sky). Cards stay opaque panes on it.
+        self.sky = tklook.Sky(self.root, (W, H))
 
         # The foot is packed FIRST, at the bottom: a page that grows (the
         # microphone help) then clips its own tail rather than pushing
         # Back and Next out of the window.
-        self.foot = tk.Frame(self.root, bg=ui.BG)
+        self.foot = self.sky.frame(self.root)
         self.foot.pack(side="bottom", fill="x", padx=PAD, pady=(14, PAD))
-        self.body = tk.Frame(self.root, bg=ui.BG)
+        self.body = self.sky.frame(self.root)
         self.body.pack(fill="both", expand=True, padx=PAD, pady=(PAD, 0))
         # One primary action per page (the owner's word): the way on is
         # gold on the pages where it IS the action, and quiet where the
         # page has a louder one — Sign in, Download, Record. Two buttons
         # with one job, because a ui.Button's faces are built once.
-        self.next_loud = ui.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
-                                   primary=True, w=150)
-        self.next_quiet = ui.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
-                                    w=150)
+        self.next_loud = tklook.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
+                                       primary=True, w=150, sky=self.sky)
+        self.next_quiet = tklook.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
+                                        w=150, sky=self.sky)
         self._loud = True
         self.next_loud.pack(side="right")
-        self.back = ui.Button(self.foot, WORDS["back"], self._back, bg=ui.BG,
-                              quiet=True, w=96)
+        self.back = tklook.Button(self.foot, WORDS["back"], self._back, bg=ui.BG,
+                                  quiet=True, w=96, sky=self.sky)
         self.back.pack(side="right", padx=(0, 10))
         # No Skip on the sentence page any more (his answer, 2026-10-03):
         # Next asks once when nothing was tried, and its question has a
         # "Continue without trying" — two buttons for one job were one
         # too many.
-        self.note = tk.Label(self.foot, text="", bg=ui.BG, fg=ui.DIM,
-                             font=(ui.UI, 9), anchor="w", justify="left",
-                             wraplength=INNER - 270)
-        self.note.pack(side="left", fill="x", expand=True)
+        self.note = self.sky.label(self.foot, text="", fg=ui.DIM,
+                                   font=(ui.UI, 9), anchor="w", justify="left",
+                                   wraplength=INNER - 270)
+        self.note.pack(side="left")
 
         self._show_page()
         self.root.after(60, self._tick)
@@ -1145,10 +1215,12 @@ class Wizard:
         self.meter = None
         self.hint = None
         self.strip = None
+        self.stage = None
         self.say = None
         self.ask_card = None
         self.waiting = None
         self.list_holder = None
+        self.list_card = None
         self.caps = {}
         self.rings = {}
         for child in self.body.winfo_children():
@@ -1158,21 +1230,20 @@ class Wizard:
     def _head(self, title: str, sub: str = "") -> None:
         """Every page's top: the mark and the name, the step count, the
         title and one line under it."""
-        row = tk.Frame(self.body, bg=ui.BG)
+        row = self.sky.frame(self.body)
         row.pack(fill="x")
-        mark = ui.icon_bitmap(APP_DIR / "icon.png", 20, ui.BG)
+        mark = _mark_picture(20)
         if mark is not None:
-            badge = tk.Label(row, image=mark, bg=ui.BG)
-            badge.photo = mark
-            badge.pack(side="left", padx=(0, 8))
-        tk.Label(row, text=WORDS["eyebrow"], bg=ui.BG, fg=ui.DIM,
-                 font=(ui.MEDIUM, 9)).pack(side="left")
+            self.sky.label(row, picture=mark).pack(side="left", padx=(0, 8))
+        self.sky.label(row, text=WORDS["eyebrow"], fg=tklook.MUTED,
+                       font=(ui.MEDIUM, 9)).pack(side="left")
         shown = [name for name in PAGES if not self._hidden(name)]
-        tk.Label(row, text=WORDS["step"].format(n=shown.index(self.name) + 1, total=len(shown)),
-                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)).pack(side="right")
+        self.sky.label(row, text=WORDS["step"].format(n=shown.index(self.name) + 1,
+                                                      total=len(shown)),
+                       fg=tklook.MUTED, font=(ui.UI, 9)).pack(side="right")
         self._strip(row)
-        tk.Label(self.body, text=title, bg=ui.BG, fg=ui.FG,
-                 font=(ui.DISPLAY, 18), anchor="w").pack(fill="x", pady=(16, 2))
+        self.sky.label(self.body, text=title, fg=ui.FG, font=(ui.DISPLAY, 18),
+                       anchor="w").pack(anchor="w", pady=(16, 2))
         if sub:
             self._line(sub, colour=ui.DIM, size=10, pady=(0, 14))
 
@@ -1186,17 +1257,18 @@ class Wizard:
         "More about these downloads", one click away and never in the way."""
         if not self.downloads.order or self.downloads.done:
             return
-        holder = tk.Frame(row, bg=ui.BG)
+        holder = self.sky.frame(row)
         holder.pack(side="left", expand=True)
-        label = tk.Label(holder, text="", bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9),
-                         cursor="hand2")
+        label = self.sky.label(holder, text="", fg=tklook.MUTED, font=(ui.UI, 9),
+                               cursor="hand2")
         label.pack(side="left", padx=(0, 10))
         label.bind("<Button-1>", lambda _e: self._open(DOWNLOADS_URL))
-        bar = tk.Canvas(holder, width=STRIP_W, height=STRIP_H, bg=ui.BG,
-                        highlightthickness=0, bd=0)
+        # B+: a well round at both ends on the sky, and the switch's
+        # lavender-grey for what has come down — the page's one iris thing
+        # is its Next
+        bar = tklook.TrackBar(holder, self.sky, STRIP_W, STRIP_H)
         bar.pack(side="left", pady=(2, 0))
-        bar.create_rectangle(0, 0, STRIP_W, STRIP_H, fill=ui.LINE, outline="")
-        fill = bar.create_rectangle(0, 0, 0, STRIP_H, fill=ui.ACCENT, outline="")
+        fill = bar.create_rectangle(0, 0, 0, STRIP_H, fill=tklook.STRIP_FILL, outline="")
         self.strip = (holder, label, bar, fill)
         self._strip_tick()
 
@@ -1214,7 +1286,7 @@ class Wizard:
         elif q.offline:
             text, colour = WORDS["strip.offline"], ui.AMBER
         else:
-            text, colour = WORDS["strip.running"], ui.FAINT
+            text, colour = WORDS["strip.running"], tklook.MUTED
         if label.cget("text") != text or label.cget("fg") != colour:
             label.configure(text=text, fg=colour)
         bar.coords(fill, 0, 0, int(STRIP_W * q.fraction), STRIP_H)
@@ -1249,7 +1321,15 @@ class Wizard:
               parent=None, size: int = 10, bg: str | None = None,
               width: int | None = None, anchor: str = "w") -> tk.Label:
         """One English line or short paragraph, left-aligned."""
-        label = tk.Label(parent or self.body, text=text, bg=bg or ui.BG,
+        if bg is None:
+            # on the ground, which is the sky: a Label as wide as its words
+            label = self.sky.label(parent or self.body, text=text,
+                                   fg=colour or ui.DIM, font=(ui.UI, size), anchor=anchor,
+                                   justify="left" if anchor == "w" else "center",
+                                   wraplength=width or INNER)
+            label.pack(anchor=anchor, pady=pady)
+            return label
+        label = tk.Label(parent or self.body, text=text, bg=bg,
                          fg=colour or ui.DIM, font=(ui.UI, size), anchor=anchor,
                          justify="left" if anchor == "w" else "center",
                          wraplength=width or INNER)
@@ -1257,7 +1337,13 @@ class Wizard:
         return label
 
     def _link(self, text: str, url: str, parent=None, bg: str | None = None) -> tk.Label:
-        label = tk.Label(parent or self.body, text=text, bg=bg or ui.BG,
+        if bg is None:
+            label = self.sky.label(parent or self.body, text=text, fg=ui.ACCENT_TEXT,
+                                   font=(ui.UI, 9, "underline"), cursor="hand2",
+                                   anchor="w")
+            label.bind("<Button-1>", lambda _e, u=url: self._open(u))
+            return label
+        label = tk.Label(parent or self.body, text=text, bg=bg,
                          fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
                          cursor="hand2", anchor="w")
         label.bind("<Button-1>", lambda _e, u=url: self._open(u))
@@ -1274,7 +1360,9 @@ class Wizard:
     def _card(self, parent=None, pad: int = 18) -> ui.Card:
         """A lifted face to put a page's rows on; `_fit` sizes it to
         them once they are packed."""
-        card = ui.Card(parent or self.body, INNER, 2 * pad + 1, bg=ui.BG, pad=pad)
+        parent = parent or self.body
+        card = tklook.Card(parent, INNER, 2 * pad + 1, bg=ui.BG, pad=pad,
+                           sky=self.sky if isinstance(parent, tklook.SkyFrame) else None)
         card.pad = pad
         return card
 
@@ -1295,7 +1383,7 @@ class Wizard:
         bg = bg or ui.BG
         row = tk.Frame(parent, bg=bg)
         row.pack(fill="x", pady=(0, 0 if last else 8))
-        switch = ui.Switch(row, value, command, bg=bg)
+        switch = tklook.Switch(row, value, command, bg=bg)
         switch.pack(side="left", padx=(0, 14), pady=(2, 0))
         words = tk.Frame(row, bg=bg)
         words.pack(side="left", fill="x", expand=True)
@@ -1329,34 +1417,66 @@ class Wizard:
         rule. The downloads' strip (_strip) has a top row of its own
         here — this page has no head row — and the space it takes comes
         out of the mark's margin, so the page does not move."""
-        top = tk.Frame(self.body, bg=ui.BG)
+        top = self.sky.frame(self.body)
         top.pack(fill="x")
         self._strip(top)
-        head = tk.Frame(self.body, bg=ui.BG)
-        head.pack(fill="x", pady=(22 if self.strip is None else 12, 0))
-        mark = ui.icon_bitmap(APP_DIR / "icon.png", 84, ui.BG)
-        if mark is not None:
-            badge = tk.Label(head, image=mark, bg=ui.BG)
-            badge.photo = mark
-            badge.pack()
-        tk.Label(self.body, text=WORDS["welcome.title"], bg=ui.BG, fg=ui.FG,
-                 font=(ui.DISPLAY, 22)).pack(pady=(18, 10))
-        rule = tk.Canvas(self.body, width=28, height=2, bg=ui.ACCENT,
-                         highlightthickness=0, bd=0)
-        rule.pack(pady=(0, 22))
-        for sentence in WORDS["welcome.lines"]:
-            tk.Label(self.body, text=sentence, bg=ui.BG, fg=ui.FG,
-                     font=(ui.UI, 12)).pack(pady=(0, 8))
-        self._line(WORDS["welcome.defaults"], colour=ui.DIM, size=10,
-                   pady=(14, 22), anchor="center")
-        links = tk.Frame(self.body, bg=ui.BG)
-        links.pack()
-        self._link(WORDS["welcome.link"], GUIDE_PRIVACY_CHECK, parent=links
-                   ).pack(side="left")
-        tk.Label(links, text="·", bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)
-                 ).pack(side="left", padx=10)
-        self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=links
-                   ).pack(side="left")
+        top.update_idletasks()
+        room = (H - PAD - (self.foot.winfo_reqheight() + 14 + PAD)
+                - top.winfo_reqheight() - 4)
+        self.stage = self._welcome_stage(22 if self.strip is None else 12, room)
+        self.stage.pack()
+
+    def _welcome_stage(self, gap: int, room: int = 0) -> tk.Canvas:
+        """The welcome page as ONE canvas on the sky: the installer's first
+        page continued — the mark, the name, a fading rule, three
+        sentences, two quiet links. The words are canvas text, so they sit
+        on the sky's own pixels; the mark and the rule are drawn into the
+        stage's crop of it (_Stage)."""
+        import tkinter.font as tkfont
+
+        fonts = {"title": (ui.DISPLAY, 22), "line": (ui.UI, 12),
+                 "small": (ui.UI, 10), "link": (ui.UI, 9, "underline"),
+                 "dot": (ui.UI, 9)}
+
+        def line_h(font) -> int:
+            return tkfont.Font(root=self.root, font=font).metrics("linespace")
+
+        width, mark = INNER, 84
+        y_mark = gap + 6
+        y_title = y_mark + mark + 18
+        y_rule = y_title + line_h(fonts["title"]) + 10
+        y_lines = y_rule + 2 + 22
+        step = line_h(fonts["line"]) + 8
+        y_small = y_lines + step * len(WORDS["welcome.lines"]) + 14
+        y_links = y_small + line_h(fonts["small"]) + 22
+        height = max(y_links + line_h(fonts["link"]) + 24, room)
+        stage = _Stage(self.body, width, height, mark=_mark_picture(mark),
+                       at=((width - mark) // 2, y_mark), rule_y=y_rule)
+        mid = width / 2
+        stage.create_text(mid, y_title, anchor="n", text=WORDS["welcome.title"],
+                          fill=ui.FG, font=fonts["title"])
+        for i, sentence in enumerate(WORDS["welcome.lines"]):
+            stage.create_text(mid, y_lines + i * step, anchor="n", text=sentence,
+                              fill=ui.FG, font=fonts["line"])
+        stage.create_text(mid, y_small, anchor="n", text=WORDS["welcome.defaults"],
+                          fill=ui.DIM, font=fonts["small"])
+        measure = tkfont.Font(root=self.root, font=fonts["link"]).measure
+        dot_w = tkfont.Font(root=self.root, font=fonts["dot"]).measure("·") + 20
+        left_w, right_w = measure(WORDS["welcome.link"]), measure(WORDS["welcome.privacy"])
+        x = mid - (left_w + dot_w + right_w) / 2
+        for text, url, w_ in ((WORDS["welcome.link"], GUIDE_PRIVACY_CHECK, left_w),
+                              (WORDS["welcome.privacy"], PRIVACY_URL, right_w)):
+            item = stage.create_text(x, y_links, anchor="nw", text=text,
+                                     fill=ui.ACCENT_TEXT, font=fonts["link"])
+            stage.tag_bind(item, "<Button-1>", lambda _e, u=url: self._open(u))
+            stage.tag_bind(item, "<Enter>", lambda _e: stage.configure(cursor="hand2"))
+            stage.tag_bind(item, "<Leave>", lambda _e: stage.configure(cursor=""))
+            if text == WORDS["welcome.link"]:
+                stage.create_text(x + w_ + dot_w / 2, y_links, anchor="n", text="·",
+                                  fill=ui.FAINT, font=fonts["dot"])
+            x += w_ + dot_w
+        self.sky.wear(stage)
+        return stage
 
     # ---------------------------------------------------------------- account
     # The account page is a small stack of its own (the owner, 2026-09-20,
@@ -1403,7 +1523,7 @@ class Wizard:
         if not configured:
             self._line(WORDS["account.none"], colour=ui.DIM, size=10)
             return
-        self.account_holder = tk.Frame(self.body, bg=ui.BG)
+        self.account_holder = self.sky.frame(self.body)
         self.account_holder.pack(fill="x")
         if signed:
             self._account_show("signed", who=signed)
@@ -1505,7 +1625,7 @@ class Wizard:
                        width=INNER - 40, pady=(0, 4))
             self._line(WORDS[line], parent=f, bg=bg, colour=ui.DIM, size=10,
                        width=INNER - 40, pady=(0, 16))
-            self.roads[road] = ui.Button(f, WORDS[button],
+            self.roads[road] = tklook.Button(f, WORDS[button],
                                          lambda r=road: self._account_show(r),
                                          bg=bg, primary=(road == "create"), w=210, h=44)
             self.roads[road].pack(anchor="w")
@@ -1530,7 +1650,7 @@ class Wizard:
             row.pack(fill="x", pady=(0, 4))
             tk.Label(row, text=WORDS["account.name.label"], bg=bg, fg=ui.FG,
                      font=(ui.UI, 10), anchor="w", width=10).pack(side="left")
-            self.name_box = ui.Field(row, self.account_name, w=INNER - 40 - 100, h=34,
+            self.name_box = tklook.Field(row, self.account_name, w=INNER - 40 - 100, h=34,
                                      bg=bg, justify="left", pt=10)
             self.name_box.pack(side="left")
             self._line(WORDS["account.name.help"], parent=f, bg=bg, colour=ui.DIM,
@@ -1547,7 +1667,7 @@ class Wizard:
                    parent=f, bg=bg, colour=ui.DIM, size=9, width=INNER - 40, pady=(0, 18))
         row = tk.Frame(f, bg=bg)
         row.pack(fill="x")
-        self.signin = ui.Button(row, WORDS["account.create.button" if creating
+        self.signin = tklook.Button(row, WORDS["account.create.button" if creating
                                            else "account.button"],
                                 self._sign_in, bg=bg, primary=True, w=210, h=44)
         self.signin.pack(side="left")
@@ -1558,13 +1678,13 @@ class Wizard:
         self.account_line = self._line("", parent=f, bg=bg, colour=ui.DIM,
                                        size=9, width=INNER - 40, pady=(12, 0))
         self._fit(card)
-        other = tk.Label(self.account_holder,
-                         text=WORDS["account.other.have" if creating else "account.other.new"],
-                         bg=ui.BG, fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
-                         cursor="hand2", anchor="w")
+        other = self.sky.label(self.account_holder,
+                               text=WORDS["account.other.have" if creating else "account.other.new"],
+                               fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
+                               cursor="hand2", anchor="w")
         other.bind("<Button-1>", lambda _e, s=("signin" if creating else "create"):
                    self._account_show(s))
-        other.pack(fill="x", pady=(10, 0))
+        other.pack(anchor="w", pady=(10, 0))
         self.other_road = other
         self._foot(False)
         self.next.enable(not self._account_required)
@@ -1619,11 +1739,11 @@ class Wizard:
                                        size=9, width=INNER - 90, pady=(4, 0))
         self.account_card = card
         self._fit(card)
-        other = tk.Label(self.account_holder, text=WORDS["account.not_you"], bg=ui.BG,
-                         fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"), cursor="hand2",
-                         anchor="w")
+        other = self.sky.label(self.account_holder, text=WORDS["account.not_you"],
+                               fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
+                               cursor="hand2", anchor="w")
         other.bind("<Button-1>", lambda _e: self._account_sign_out())
-        other.pack(fill="x", pady=(10, 0))
+        other.pack(anchor="w", pady=(10, 0))
         self.other_road = other
         self._foot(True, WORDS["account.open" if self._returning else "account.continue"])
         self.next.enable(True)
@@ -1764,9 +1884,9 @@ class Wizard:
                    width=INNER - 40, pady=(0, 6))
         row = tk.Frame(f, bg=bg)
         row.pack(fill="x", pady=(0, 4))
-        self.recovery_box = ui.Field(row, w=INNER - 40 - 110, h=34, bg=bg, justify="left", pt=10)
+        self.recovery_box = tklook.Field(row, w=INNER - 40 - 110, h=34, bg=bg, justify="left", pt=10)
         self.recovery_box.pack(side="left")
-        self.recovery_button = ui.Button(row, WORDS["account.link.recovery.button"],
+        self.recovery_button = tklook.Button(row, WORDS["account.link.recovery.button"],
                                          self._link_recover, bg=bg, primary=False, w=96, h=34)
         self.recovery_button.pack(side="left", padx=(10, 0))
         self._line(WORDS["account.link.recovery.help"], parent=f, bg=bg, colour=ui.DIM,
@@ -1966,22 +2086,26 @@ class Wizard:
         # Every device, not the first few: a silent cap here is somebody
         # whose microphone is ninth concluding it is not supported.
         self.list_rows = len(rows)
-        self.list_holder = ui.Scroller(self.body, w=INNER - 10,
-                                       h=self._list_height(4), bg=ui.BG)
+        # the list on a pane (B+: rows in a card), the meter on the sky
+        self.list_card = self._card(pad=10)
+        self.list_card.pack(fill="x")
+        self.list_holder = ui.Scroller(self.list_card.body, w=INNER - 30,
+                                       h=self._list_height(4), bg=ui.CARD)
         self.list_holder.pack(fill="x")
+        self._fit(self.list_card)
         for key, name, _api, _index in order_for(rows, self.device):
             self._device_row(self.list_holder.inner, key, name, key == default_key)
         self.list_holder.bind_wheel(self.list_holder.inner)
-        self.meter_note = tk.Label(self.body, text="", bg=ui.BG, fg=ui.DIM,
-                                   font=(ui.UI, 10), anchor="w")
-        self.meter_note.pack(fill="x", pady=(14, 6))
-        self.meter = Meter(self.body, ui.BG)
+        self.meter_note = self.sky.label(self.body, text="", fg=ui.DIM,
+                                         font=(ui.UI, 10), anchor="w")
+        self.meter_note.pack(anchor="w", pady=(14, 6))
+        self.meter = Meter(self.body, ui.BG, sky=self.sky)
         self.meter.pack(anchor="w")
         # The help, ONCE: one frame the warning is drawn into, emptied
         # before it is drawn again. It used to be appended to the page
         # on every warning, and picking a second device after the first
         # warning put the whole block on screen twice (2026-09-19).
-        self.hint = tk.Frame(self.body, bg=ui.BG)
+        self.hint = self.sky.frame(self.body)
         self.hint.pack(fill="x", pady=(14, 0))
         self._listen()
         if microphone_allowed() is False and not self._warned:
@@ -1991,12 +2115,12 @@ class Wizard:
         # `key` is the identity (what the settings store, see device_key).
         # Ten narrower than the page, because `ui.Scroller` keeps
         # ui.GUTTER px of its canvas clear on the right for the way home.
-        width = INNER - 10 - ui.GUTTER
+        width = INNER - 30 - ui.GUTTER
         row = tk.Canvas(parent, width=width, height=ROW_H, bd=0,
-                        highlightthickness=0, cursor="hand2", bg=ui.BG)
+                        highlightthickness=0, cursor="hand2", bg=ui.CARD)
         row.pack(fill="x", pady=(0, 6))
         face = row.create_image(0, 0, anchor="nw",
-                                image=self._row_face(width, key == self.device))
+                                image=self._row_face(width, key == self.device, row=row))
         row.create_text(18, ROW_H / 2 + 1, text=name, anchor="w",
                         fill=ui.FG, font=(ui.UI, 11))
         if default:
@@ -2008,24 +2132,25 @@ class Wizard:
         self._rows[key] = (row, face, width)
 
     @staticmethod
-    def _row_face(width: int, chosen: bool, hot: bool = False):
-        if chosen:
-            return ui.rounded(width, ROW_H, 10, ui.ACCENT_SOFT, ui.BG, ui.ACCENT_EDGE)
-        if hot:
-            return ui.rounded(width, ROW_H, 10, ui.CARD_HI, ui.BG, ui.LINE_HI)
-        return ui.rounded(width, ROW_H, 10, ui.CARD, ui.BG, ui.LINE)
+    def _row_face(width: int, chosen: bool, hot: bool = False, *, row=None):
+        """B+'s list row (tklook.slip): frost and a rim at rest, a step
+        brighter under the pointer, the chosen one the desk's bubble. The
+        picture is made in the row's own interpreter (`row`, the canvas
+        that shows it)."""
+        state = "chosen" if chosen else ("hot" if hot else "rest")
+        return tklook.photo(row, tklook.slip(width, ROW_H, bg=ui.CARD, state=state))
 
     def _hover(self, key: str, over: bool) -> None:
         row, face, width = self._rows.get(key, (None, None, 0))
         if row is not None:
-            row.itemconfig(face, image=self._row_face(width, key == self.device, over))
+            row.itemconfig(face, image=self._row_face(width, key == self.device, over, row=row))
 
     def _pick(self, key: str) -> None:
         if key == self.device:
             return
         self.device = key
         for other, (row, face, width) in self._rows.items():
-            row.itemconfig(face, image=self._row_face(width, other == key))
+            row.itemconfig(face, image=self._row_face(width, other == key, row=row))
         self.meter.forget()
         self._quiet_since = time.monotonic()
         self._warned = False
@@ -2040,6 +2165,14 @@ class Wizard:
                 text=WORDS["mic.cannot"].format(error=self.listener.error),
                 fg=ui.RED)
 
+    def _refit_list(self) -> None:
+        card = getattr(self, "list_card", None)
+        if card is not None and self.name == "mic":
+            try:
+                self._fit(card)
+            except tk.TclError:
+                pass
+
     def _list_height(self, rows: int) -> int:
         return min(rows, getattr(self, "list_rows", rows)) * (ROW_H + 6) + 4
 
@@ -2050,6 +2183,7 @@ class Wizard:
         holder = getattr(self, "list_holder", None)
         if holder is not None and self.name == "mic":
             holder.resize(self._list_height(4))
+            self._refit_list()
 
     def _warn_silent(self, text: str | None = None) -> None:
         """The trap, named, with the fix one click away.
@@ -2071,11 +2205,12 @@ class Wizard:
         holder = getattr(self, "list_holder", None)
         if holder is not None:
             holder.resize(self._list_height(3))
+            self._refit_list()
         card = self._card(self.hint, pad=16)
         card.pack(fill="x")
         self._line(text or WORDS["mic.help"], parent=card.body, bg=ui.CARD,
                    colour=ui.FG, size=10, width=INNER - 36, pady=(0, 12))
-        ui.Button(card.body, WORDS["mic.open"], open_microphone_settings,
+        tklook.Button(card.body, WORDS["mic.open"], open_microphone_settings,
                   bg=ui.CARD, w=200).pack(anchor="w")
         self._fit(card)
 
@@ -2100,20 +2235,21 @@ class Wizard:
         # record. People do not read the small print (the owner, 1.1.1
         # walkthrough, 2026-09-19): a Record that silently spent five
         # seconds loading read as "transcription is slow".
-        self.say = ui.Button(self.body,
+        self.say = tklook.Button(self.body,
                              WORDS["say.button"] if self._backend is not None
                              else WORDS["say.load"],
-                             self._say_action, bg=ui.BG, primary=True, w=220, h=44)
+                             self._say_action, bg=ui.BG, primary=True, w=220, h=44,
+                             sky=self.sky)
         self.say.pack(anchor="w")
         self._foot(False)
         self.result_card = self._card(pad=18)
         self.result_card.pack(fill="x", pady=(16, 0))
         self.result_label = None
         self._show_sample(self._sample)
-        self.status = tk.Label(self.body, text="", bg=ui.BG, fg=ui.DIM,
+        self.status = self.sky.label(self.body, text="", fg=ui.DIM,
                                font=(ui.UI, 10), anchor="w", justify="left",
                                wraplength=INNER)
-        self.status.pack(fill="x", pady=(10, 0))
+        self.status.pack(anchor="w", pady=(10, 0))
         self.cpu_note = None
         if self._sample:
             self._say_result_line(self._seconds, 0.0)
@@ -2180,7 +2316,8 @@ class Wizard:
             return
         self.result_card.pack_forget()
         self.status.pack_forget()
-        card = ui.Card(self.body, INNER, 120, bg=ui.BG, pad=18, border=ui.ACCENT)
+        card = tklook.Card(self.body, INNER, 120, bg=ui.BG, pad=18, border=ui.ACCENT,
+                           sky=self.sky)
         card.pad = 18
         card.pack(fill="x", pady=(16, 0))
         tk.Label(card.body, text=WORDS["say.ask"], bg=ui.CARD, fg=ui.FG,
@@ -2188,10 +2325,10 @@ class Wizard:
                  wraplength=INNER - 40).pack(fill="x")
         row = tk.Frame(card.body, bg=ui.CARD)
         row.pack(fill="x", pady=(14, 0))
-        self.ask_try = ui.Button(row, WORDS["say.ask.try"], self._ask_close, bg=ui.CARD,
+        self.ask_try = tklook.Button(row, WORDS["say.ask.try"], self._ask_close, bg=ui.CARD,
                                  primary=True, w=120, h=36)
         self.ask_try.pack(side="left", padx=(0, 10))
-        self.ask_go = ui.Button(row, WORDS["say.ask.go"], self._advance, bg=ui.CARD,
+        self.ask_go = tklook.Button(row, WORDS["say.ask.go"], self._advance, bg=ui.CARD,
                                 quiet=True, w=220, h=36)
         self.ask_go.pack(side="left")
         self._fit(card)
@@ -2208,7 +2345,7 @@ class Wizard:
         try:
             card.destroy()
             self.result_card.pack(fill="x", pady=(16, 0), after=self.say)
-            self.status.pack(fill="x", pady=(10, 0), after=self.result_card)
+            self.status.pack(anchor="w", pady=(10, 0), after=self.result_card)
         except tk.TclError:
             pass                              # the page went away under it
 
@@ -2229,7 +2366,7 @@ class Wizard:
             ring = tk.Frame(row, bg=ui.CARD, highlightthickness=2,
                             highlightbackground=ui.CARD, highlightcolor=ui.CARD)
             ring.pack(side="right")
-            cap = ui.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
+            cap = tklook.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
                             lambda f=field: self._rebind(f), bg=ui.CARD, w=180)
             cap.pack()
             self.caps[field] = cap
@@ -2237,10 +2374,12 @@ class Wizard:
         self._fit(card)
 
     def _ring(self, field: str, lit: bool) -> None:
-        ring = self.rings.get(field)
-        if ring is not None:
-            colour = ui.ACCENT if lit else ui.CARD
-            ring.configure(highlightbackground=colour, highlightcolor=colour)
+        """The cap being listened for wears an iris ring — drawn round its
+        own corners (tklook.KeyCap.lit), where a Frame's highlight was a
+        square around a round cap."""
+        cap = self.caps.get(field)
+        if cap is not None and hasattr(cap, "lit"):
+            cap.lit(lit)
 
     def _rebind(self, field: str) -> None:
         """A chip pressed: the wizard listens for the next key. The
@@ -2383,7 +2522,7 @@ class Wizard:
         ring = tk.Frame(row, bg=ui.CARD, highlightthickness=2,
                         highlightbackground=ui.CARD, highlightcolor=ui.CARD)
         ring.pack(side="right")
-        cap = ui.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
+        cap = tklook.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
                         lambda f=field: self._rebind(f), bg=ui.CARD, w=180)
         cap.pack()
         self.caps[field] = cap
@@ -2395,7 +2534,7 @@ class Wizard:
         lighter than the extras page's two-line rows."""
         line = tk.Frame(parent, bg=ui.CARD)
         line.pack(fill="x", pady=(0, gap))
-        switch = ui.Switch(line, value, command, bg=ui.CARD)
+        switch = tklook.Switch(line, value, command, bg=ui.CARD)
         switch.pack(side="left", padx=(0, 12))
         tk.Label(line, text=text, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 10),
                  anchor="w").pack(side="left", fill="x", expand=True)
@@ -2407,7 +2546,7 @@ class Wizard:
         button you can see, not a small Change link)."""
         line = tk.Frame(parent, bg=ui.CARD)
         line.pack(fill="x")
-        browse = ui.Button(line, WORDS["screen.browse"], lambda w=which: self._browse(w),
+        browse = tklook.Button(line, WORDS["screen.browse"], lambda w=which: self._browse(w),
                            bg=ui.CARD, quiet=True, w=104, h=32)
         browse.pack(side="right")
         tk.Label(line, text=WORDS["screen.saved_in"], bg=ui.CARD, fg=ui.FAINT,
@@ -2531,7 +2670,7 @@ class Wizard:
             self.cloud_cards[name] = card
             top = tk.Frame(card.body, bg=ui.CARD)
             top.pack(fill="x")
-            switch = ui.Switch(top, self.clouds[name],
+            switch = tklook.Switch(top, self.clouds[name],
                                lambda _v=None, n=name: self._cloud_flipped(n), bg=ui.CARD)
             switch.pack(side="left", padx=(0, 14), pady=(2, 0))
             self.switches[f"cloud.{name}"] = switch
@@ -2694,9 +2833,9 @@ class Wizard:
                  justify="left", wraplength=INNER - 110).pack(fill="x")
         row = tk.Frame(panel, bg=ui.CARD)
         row.pack(fill="x", pady=(6, 0))
-        ui.Button(row, WORDS["extras.claude.keep"], self._claude_keep,
+        tklook.Button(row, WORDS["extras.claude.keep"], self._claude_keep,
                   bg=ui.CARD, quiet=True, w=100, h=34).pack(side="left", padx=(0, 10))
-        ui.Button(row, WORDS["extras.claude.take"], self._claude_take,
+        tklook.Button(row, WORDS["extras.claude.take"], self._claude_take,
                   bg=ui.CARD, primary=True, w=190, h=34).pack(side="left")
         self._fit(self.extras_card)
 
@@ -2758,7 +2897,7 @@ class Wizard:
         row.pack(fill="x", pady=(0, 16))
         tk.Label(row, text=WORDS["done.hold"], bg=ui.CARD, fg=ui.FG,
                  font=(ui.UI, 11), anchor="w").pack(side="left", fill="x", expand=True)
-        ui.KeyCap(row, _pretty(self.cfg.hotkey), bg=ui.CARD, w=180).pack(side="right")
+        tklook.KeyCap(row, _pretty(self.cfg.hotkey), bg=ui.CARD, w=180).pack(side="right")
         self.switches = {}
         # The sync row first, and only with an account to sync to: on a
         # copy without a server, or one that walked past the account

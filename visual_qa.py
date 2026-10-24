@@ -270,11 +270,11 @@ try:
     EDGE, EDGE_HI, EDGE_DOWN, STROKE = (_ui.EDGE, _ui.EDGE_HI,
                                         _ui.EDGE_DOWN, _ui.STROKE)
 except Exception:                       # ui.py absent: the window still works
-    PANE, CARD, CARD_HI, LINE = "#1c1813", "#24201a", "#2e2921", "#3a342a"
-    FG, DIM, FAINT = "#f1ece2", "#b2a896", "#7e7564"
-    ACCENT, ACCENT_HI, ACCENT_DOWN = "#e3a63c", "#f0b854", "#c68c28"
-    ACCENT_TEXT, AMBER, GREEN = "#f0ba5c", "#e3a63c", "#63c88c"
-    EDGE, EDGE_HI, EDGE_DOWN, STROKE = "#29241d", "#332d24", "#1f1b15", "#3a342a"
+    PANE, CARD, CARD_HI, LINE = "#121527", "#1a1e35", "#242944", "#30365a"
+    FG, DIM, FAINT = "#efedf7", "#c0c3d8", "#70758e"
+    ACCENT, ACCENT_HI, ACCENT_DOWN = "#a597ff", "#b9aeff", "#9486ee"
+    ACCENT_TEXT, AMBER, GREEN = "#c2b9ff", "#ffb84d", "#5fdba6"
+    EDGE, EDGE_HI, EDGE_DOWN, STROKE = "#1f2340", "#2a3050", "#161a2e", "#30365a"
 
 # The selector's own two colours. DIM_FACTOR is a per-channel multiply on
 # a screenshot we took ourselves, not a translucent window: the overlay is
@@ -290,7 +290,7 @@ except Exception:
     skin = None
 
 DIM_FACTOR = 0.38
-SELECT_BG = "#0a0806"     # the app's ground, taken under it
+SELECT_BG = "#06070f"     # the app's ground (B+'s night), taken under it
 
 # WHAT THE SECOND SENTENCE USED TO SAY, AND WHAT IT COST.
 #
@@ -585,6 +585,34 @@ def should_repaint(now: float, last_paint_at: float, so_far: str,
 
 
 # ---------------------------------------------------------------- prompts
+
+def _reads_rtl(text: str) -> bool:
+    """A turn of the conversation reads right to left when most of its
+    letters are Hebrew. An English answer laid out RTL put its question
+    mark at the wrong end ("?What does the blue button do", the photo
+    pass of 2026-10-24); the first strong letter alone misreads a Hebrew
+    sentence that opens with a product name, so it is the majority."""
+    he = sum(1 for ch in text or "" if "\u0590" <= ch <= "\u05ff")
+    latin = sum(1 for ch in text or "" if ch.isascii() and ch.isalpha())
+    return he >= latin and he > 0
+
+
+def _row_skin(size, question: bool):
+    """A turn's pane in B+: the question on the proposal's iris tint with
+    its iris edge (the person's own words), the answer on a slip of frost
+    with a rim - desk.css `.pill` and `.slip`."""
+    import look
+    from PIL import Image
+    w, h = size
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if question:
+        mask = look.rounded((w, h), (0, 0, w, h), 14)
+        img.alpha_composite(look.flat((w, h), look.c("iris_soft", 205), mask))
+        img.alpha_composite(look.flat((w, h), look.c("iris", 120), look.ring_of(mask)))
+    else:
+        look.slip(img, (0, 0, w, h), 14)
+    return img
+
 
 def _he_rtl(_text: str) -> bool:
     """Answers are requested in Hebrew, so the box lays out RTL.
@@ -1391,26 +1419,25 @@ class Speaker:
 # per-pixel Python loops (the specular gradient and the grain) moved into
 # Pillow's C. Do not put them back.
 
-GLASS_BASE = (20, 17, 12)        # the app's own ground under the tint:
-                                 # glass that carries text is a SMOKED
-                                 # window, not a clear one, and without
-                                 # this the text loses to any wallpaper
-GLASS_TINT = (182, 134, 50)      # the app's gold, taken down to the
-                                 # luminance the blue had (Y .272 against
-                                 # .269) so the plate is the same weight
-                                 # over a screenshot as it always was
+# B+ (2026-10-24): the glass is the desk's desktop glass (look.glass) —
+# the frozen screen blurred behind a navy face at .90-.93, its own light
+# pooled top-left, an inner top light and the frosted rim — where it was
+# a smoked gold window. GLASS_BASE / GLASS_TINT are that face's foot and
+# top (skin\palette.GLASS_BOT / GLASS_TOP), kept by name for capture.py.
+GLASS_BASE = (25, 29, 51)
+GLASS_TINT = (35, 41, 72)
 GLASS_RIM = (255, 255, 255)
-# The three inks are the window's FG/DIM/FAINT moved onto this darker,
-# busier ground: same relative luminance as the blue-grey set they
-# replace (.88/.53/.33 against .91/.52/.35), warm hue.
-INK = (246, 241, 231)
-INK_DIM = (203, 192, 172)
-INK_FAINT = (166, 155, 136)
+# The three inks are B+'s three voices (bplus.css --ink, --ink-2, --ink-3),
+# spelled out because this module keeps Pillow — and so look.py — out of
+# its import: words, the second voice, and the third (times, hints).
+INK = (239, 237, 247)
+INK_DIM = (192, 195, 216)
+INK_FAINT = (164, 169, 194)
 MARK = (255, 214, 64)            # the pencil's ink. Left vivid on
-                                 # purpose: the chrome is warm now, so
-                                 # the mark separates from it by being
-                                 # BRIGHTER and more saturated than any
-                                 # gold the app draws (Y .70 v .44), and
+                                 # purpose: the chrome is navy and
+                                 # iris, so a yellow mark separates from
+                                 # it at once — brighter and warmer than
+                                 # anything the app draws, and
                                  # a yellow highlighter is worth more
                                  # than palette purity on someone
                                  # else's picture
@@ -1452,104 +1479,82 @@ def rr_layer(size, radius: int, fill, outline=None, width: int = 1,
     return big.resize((w, h), Image.LANCZOS)
 
 
-def glass_furniture(size, radius: int = 30):
-    """Everything in the glass that depends only on its SIZE.
+# The desk's sky, lit inside the ask card's glass (the owner, 2026-10-24:
+# "maybe put those skies there too"): the fields of bplus.css `.sky` as
+# light in the face — indigo from the top-left, blue at the foot on the
+# right, a breath of plum top-right — so the card is the desk's glass on
+# its night while the screen it asks about still shows through, blurred.
+# (where as shares of the card, radius as a share of its longer side,
+# colour, strength)
+CARD_SKY = (((0.10, 0.02, 0.80), (118, 98, 246), 0.26),
+            ((0.96, 1.00, 0.62), (44, 146, 232), 0.18),
+            ((0.92, 0.06, 0.42), (196, 92, 178), 0.09))
 
-    The sheen, the grain, the specular rim, the hairline edge, the outer
-    glow and the corner mask. None of it changes when the card moves, so
-    it is built once per size and pasted every frame - which is what
-    turns a drag from 16 fps into something you can watch. Returns
-    (overlay RGBA, mask L).
-    """
-    from PIL import Image, ImageDraw, ImageFilter
-    w, h = size
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
-    sheen = Image.new("L", (1, h))
-    sheen.putdata([int(46 * (1 - i / max(1, h - 1)) ** 1.6) for i in range(h)])
-    overlay = Image.alpha_composite(
-        overlay, Image.merge("RGBA", (Image.new("L", (w, h), 255),) * 3
-                             + (sheen.resize((w, h)),)))
-
-    inner = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(inner).rounded_rectangle(
-        (1, 1, w - 2, h - 2), max(1, radius - 1), outline=255, width=2)
-    g = 64
-    small = Image.new("L", (g, g))
-    small.putdata([int(255 * max(0.0, 1 - ((x / g) * .55 + (y / g) * .8)))
-                   for y in range(g) for x in range(g)])
+def glass_furniture(size, radius: int = 30, sky: bool = False):
+    """Everything in the glass that depends only on its SIZE: B+'s face,
+    its light, the inner top light and the frosted rim (look.glass with
+    nothing behind it), the sky's lights when asked for (CARD_SKY), and
+    the corner mask. None of it changes when the card moves, so it is
+    built once per size and composited every frame — which is what turns
+    a drag from 16 fps into something you can watch. Returns (overlay
+    RGBA, mask L, None); the third is where the grain was, kept so the
+    shape of the answer does not change."""
+    import look
     from PIL import ImageChops
-    overlay = Image.alpha_composite(overlay, Image.merge("RGBA", (
-        Image.new("L", (w, h), GLASS_RIM[0]),
-        Image.new("L", (w, h), GLASS_RIM[1]),
-        Image.new("L", (w, h), GLASS_RIM[2]),
-        ImageChops.multiply(inner, small.resize((w, h), Image.BILINEAR)))))
-
-    edge = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(edge).rounded_rectangle((0, 0, w - 1, h - 1), radius,
-                                           outline=255, width=1)
-    overlay = Image.alpha_composite(overlay, Image.merge("RGBA", (
-        Image.new("L", (w, h), 200), Image.new("L", (w, h), 225),
-        Image.new("L", (w, h), 255), edge.point(lambda v: v // 3))))
-
-    glow = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(glow).rounded_rectangle((0, 0, w - 1, h - 1), radius,
-                                           outline=255, width=12)
-    overlay = Image.alpha_composite(overlay, Image.merge("RGBA", (
-        Image.new("L", (w, h), 150), Image.new("L", (w, h), 190),
-        Image.new("L", (w, h), 255),
-        glow.filter(ImageFilter.GaussianBlur(7)).point(lambda v: v // 9))))
-
-    grain = Image.effect_noise((w, h), 8).point(lambda v: 128 + (v - 128) // 3)
-    return overlay, _rounded_mask((w, h), radius), grain
+    w, h = size
+    mask = look.rounded((w, h), (0, 0, w, h), radius)
+    overlay = look.glass(mask, (0, 0, w, h))
+    if sky:
+        long_side = float(max(w, h))
+        for (fx, fy, fr), rgb, strength in CARD_SKY:
+            r = fr * long_side
+            a = int(255 * strength)
+            light = look.radial((w, h), fx * w, fy * h, r, r, [
+                (0.0, rgb + (a,)), (0.45, rgb + (int(a * 0.38),)), (1.0, rgb + (0,))])
+            light.putalpha(ImageChops.multiply(light.getchannel("A"), mask))
+            overlay.alpha_composite(light)
+        overlay.alpha_composite(look.rim(mask, (0, 0, w, h), 0.6))
+    return overlay, mask, None
 
 
 def glass_plate(backdrop, box, *, radius: int = 30, base_a: int = 158,
-                tint_a: int = 84, blur: int = 26, lens: float = 1.06,
+                tint_a: int = 84, blur: int = 26, lens: float = 1.0,
                 prepared=None, furniture=None):
-    """An RGBA liquid-glass panel for `box` of `backdrop`.
+    """An RGBA pane of B+ glass for `box` of `backdrop`.
 
-    The order IS the recipe, and each step earns its place:
-      1. crop what is behind, blur it, and scale it 6% about the centre —
-         the LENSING. Without it the panel reads as frosted plastic laid
-         flat on the wallpaper rather than as something with thickness.
-      2. saturate: glass carries colour more strongly than air does.
-      3. the smoked base, then the blue. Base first, or the blue turns
-         grey over a dark backdrop.
-      4. the furniture: sheen, grain, specular rim, hairline, glow, mask.
+    bplus.css `.glass`: `backdrop-filter: blur(26px) saturate(150%)` under
+    the face. So: crop what is behind and blur it (or crop the backdrop
+    `prepared` — already blurred, once, for a card that is dragged), lift
+    its colour by half, and lay the furniture over it.
 
-    `prepared` is the backdrop ALREADY blurred, and `furniture` is step 4
-    already built for this size. Both are caches the card fills in before
-    a drag, and together they are the difference between 63 ms a frame
-    and something the eye reads as motion. Neither changes the picture.
+    `base_a` is how solid the face is: 158 is the card's default and
+    leaves B+'s .90/.93, a smaller number lets more of the screen through
+    ([visual_qa] window_alpha). `tint_a` and `lens` are the old gold
+    recipe's, accepted and unused (a lens of 1.0 is no lens).
+
+    `prepared` and `furniture` are the two caches; neither changes the
+    picture, and together they are the difference between 63 ms a frame
+    and something the eye reads as motion.
     """
-    from PIL import Image, ImageFilter, ImageEnhance, ImageChops
+    from PIL import Image, ImageFilter, ImageEnhance
     x0, y0, x1, y1 = box
     w, h = x1 - x0, y1 - y0
 
-    pad = int(max(w, h) * (lens - 1) / 2) + (0 if prepared is not None
-                                             else blur)
+    pad = 0 if prepared is not None else blur
     source = prepared if prepared is not None else backdrop
     src = source.crop((x0 - pad, y0 - pad, x1 + pad, y1 + pad))
     if prepared is None:
         src = src.filter(ImageFilter.GaussianBlur(blur))
-    bw, bh = int(src.width * lens), int(src.height * lens)
-    src = src.resize((bw, bh), Image.BILINEAR)
-    cx, cy = bw // 2, bh // 2
-    plate = src.crop((cx - w // 2, cy - h // 2,
-                      cx - w // 2 + w, cy - h // 2 + h)).convert("RGB")
-    plate = ImageEnhance.Color(plate).enhance(1.4).convert("RGBA")
+    plate = src.crop((pad, pad, pad + w, pad + h)).convert("RGB")
+    plate = ImageEnhance.Color(plate).enhance(1.5).convert("RGBA")
 
-    plate = Image.alpha_composite(
-        plate, Image.new("RGBA", (w, h), GLASS_BASE + (base_a,)))
-    plate = Image.alpha_composite(
-        plate, Image.new("RGBA", (w, h), GLASS_TINT + (tint_a,)))
-
-    overlay, mask, grain = (furniture if furniture is not None
-                            else glass_furniture((w, h), radius))
-    plate = Image.composite(
-        ImageChops.add(plate.convert("RGB"), grain.convert("RGB"), 2, -128)
-        .convert("RGBA"), plate, Image.new("L", (w, h), 45))
+    overlay, mask, _ = (furniture if furniture is not None
+                        else glass_furniture((w, h), radius))
+    if base_a < 158:
+        k = max(0.4, base_a / 158.0)
+        overlay = overlay.copy()
+        overlay.putalpha(overlay.getchannel("A").point(lambda v: int(v * k)))
     plate = Image.alpha_composite(plate, overlay)
     plate.putalpha(mask)
     return plate
@@ -2053,6 +2058,24 @@ class _Chip:
         return self
 
 
+def _hint_pill(ground, box, words: str):
+    """A one-line hint as B+ draws it over a dimmed screen: a pill of the
+    desk's glass (look.glass on the dimmed pixels it covers, so its
+    corners are those pixels and not a flat colour) and the words in the
+    second voice. RGB, the size of `box`."""
+    import look
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    back = ground.crop(box).convert("RGBA")
+    mask = look.rounded((w, h), (0, 0, w, h), h / 2)
+    back.alpha_composite(look.glass(mask, (0, 0, w, h)))
+    cache: dict = {}
+    line, base = look.text_line(cache, words, 9.5, INK_DIM, look.W_BODY)
+    back.alpha_composite(line, (int((w - line.width) / 2),
+                                int(round(h / 2 + look.cap_height(9.5) / 2 - base))))
+    return back.convert("RGB")
+
+
 def _select_region(cancel: threading.Event, background
                    ) -> tuple[tuple[int, int, int, int], object] | None:
     """Drag a rectangle over a frozen, dimmed copy of the screen.
@@ -2110,14 +2133,11 @@ def _select_region(cancel: threading.Event, background
     hint_x = (hl + hr) // 2 - hint_w // 2 - vx
     hint_y = ht_ + 56 - vy
     keep["hint"] = ImageTk.PhotoImage(
-        _rounded_pil(hint_w, hint_h, 10, CARD, SELECT_BG, STROKE),
+        _hint_pill(darkened, (hint_x, hint_y, hint_x + hint_w, hint_y + hint_h),
+                   "Drag a box   ·   Shift-drag to lasso   ·   Esc cancels"),
         master=root)
     canvas.create_image(hint_x, hint_y, anchor="nw", image=keep["hint"],
                         tags="hint")
-    canvas.create_text(hint_x + hint_w // 2, hint_y + hint_h // 2,
-                       text="Drag a box   ·   Shift-drag to lasso   ·   "
-                            "Esc cancels",
-                       fill=DIM, font=(face, 9), tags="hint")
 
     def finish(bbox) -> None:
         state["bbox"] = bbox
@@ -2472,7 +2492,7 @@ class _CardSurface:
         if self._plate_key != box:
             size = (box[2] - box[0], box[3] - box[1])
             if self._furniture_key != size:
-                self._furniture = glass_furniture(size, CARD_RADIUS)
+                self._furniture = glass_furniture(size, CARD_RADIUS, sky=True)
                 self._furniture_key = size
             self._plate = glass_plate(self.backdrop, box, radius=CARD_RADIUS,
                                       base_a=self.base_a,
@@ -2545,20 +2565,22 @@ class _CardSurface:
         self.boxes = {}
         out = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
 
+        import look
         pad = CARD_PAD
         y = 20
+        cache: dict = {}
 
-        # ---- header ----
-        out.alpha_composite(
-            text_pil("ASK THE SCREEN", 200, pt=9.5, rtl=False,
-                     colour=(140, 186, 238), single=True, weight=600),
-            (pad, y + 3))
+        # ---- header: the eyebrow in sentence case and the third voice
+        #      (B+ letter-spaces nothing), the picture asked about, and
+        #      the controls, the X a round control at the end of them ----
+        eyebrow = look.text(cache, "Ask the screen", 10, INK_FAINT, look.W_LABEL)
+        out.alpha_composite(eyebrow, (pad, y + 10 - eyebrow.height // 2))
         thumb = state.get("thumb")
         if thumb is not None:
             tw, th = thumb.size
             tx, ty = pad + 128, y - 6
-            out.alpha_composite(rr_layer((tw + 4, th + 4), 7,
-                                         (255, 255, 255, 34)),
+            frame = look.rounded((tw + 4, th + 4), (0, 0, tw + 4, th + 4), 8)
+            out.alpha_composite(look.flat((tw + 4, th + 4), look.c("white", 30), frame),
                                 (tx - 2, ty - 2))
             out.paste(thumb, (tx, ty))
             self.boxes["thumb"] = (tx, ty, tx + tw, ty + th)
@@ -2578,13 +2600,16 @@ class _CardSurface:
                           INK, echo_on))
         ix = pw - pad - 18
         for key, glyph, lit, on in icons:
-            out.alpha_composite(
-                _icon(glyph, 18, lit if on else INK_FAINT), (ix, y + 1))
+            if key == "close":
+                look.disc(out, ix + 9, y + 10, 14)
+                out.alpha_composite(_icon(glyph, 14, INK_DIM), (ix + 2, y + 3))
+            else:
+                out.alpha_composite(
+                    _icon(glyph, 18, lit if on else INK_FAINT), (ix, y + 1))
             self.boxes[key] = (ix - 7, y - 6, ix + 25, y + 26)
             ix -= 30
         y += 32
-        out.alpha_composite(rr_layer((pw - pad * 2, 1), 0,
-                                     (255, 255, 255, 34)), (pad, y))
+        look.fade_rule(out, pad, pw - pad, y)
         y += 20
         self.boxes["strip"] = (0, 0, pw, y)      # the drag handle
 
@@ -2611,29 +2636,30 @@ class _CardSurface:
         #      the three buttons are where the answer would have been.
         ways = state.get("ways_out")
         if ways:
-            body = text_pil(WAYS_OUT_BODY, pw - pad * 2, pt=11.5,
+            body = text_pil(WAYS_OUT_BODY, pw - pad * 2 - 28, pt=11.5,
                             colour=INK, rtl=True)
             rows_h = 3 * 38 + 4
             panel_h = body.height + 14 + rows_h
             py = view_top + view_h - panel_h
-            out.alpha_composite(rr_layer((pw - pad * 2, panel_h + 12), 14,
-                                         (0, 0, 0, 70)), (pad, py - 6))
-            out.alpha_composite(body, (pw - pad - body.width, py))
+            look.slip(out, (pad, py - 8, pw - pad, py + panel_h + 6), 16)
+            out.alpha_composite(body, (pw - pad - 14 - body.width, py))
             by = py + body.height + 14
             cpu = bool(ways.get("cpu"))
             for key, label, live in (
                     ("install", WAYS_OUT["install_cpu" if cpu else "install"], not cpu),
                     ("key", WAYS_OUT["key"], True),
                     ("off", WAYS_OUT["off"], True)):
-                out.alpha_composite(
-                    rr_layer((pw - pad * 2, 34), 11,
-                             (255, 255, 255, 26 if live else 10),
-                             outline=(255, 255, 255, 46 if live else 20)),
-                    (pad, by))
-                out.alpha_composite(
-                    text_pil(label, pw - pad * 2 - 28, pt=11.5, rtl=False,
-                             colour=(206, 224, 248) if live else INK_FAINT,
-                             single=True), (pad + 14, by + 9))
+                box = (pad + 10, by, pw - pad - 10, by + 32)
+                if live:
+                    look.quiet(out, box)
+                else:
+                    bw = box[2] - box[0]
+                    mask = look.rounded((bw, 32), (0, 0, bw, 32), 16)
+                    out.alpha_composite(look.flat((bw, 32), look.c("white", look.ALPHA["disc"]),
+                                                  mask), (box[0], by))
+                look.on_baseline(out, cache, label, 10.5, pad + 26,
+                                 by + 16 + look.cap_height(10.5) / 2,
+                                 INK if live else INK_FAINT, look.W_LABEL)
                 if live:
                     self.boxes[f"way_{key}"] = (pad, by, pw - pad, by + 34)
                 by += 38
@@ -2647,19 +2673,16 @@ class _CardSurface:
                          single=True, rtl=False),
                 (pad, ph - CARD_FOOT_H + 6))
 
-        # ---- the ready-made questions ----
+        # ---- the ready-made questions: quiet pills of frost ----
         cy = ph - 134
         cx = pw - pad
         for i, label in enumerate(QUICK_ASKS):
-            t = text_pil(label, 220, pt=12.5, colour=(206, 224, 248),
-                         single=True)
+            t = text_pil(label, 220, pt=12, colour=INK, single=True)
             bb = t.getbbox()
             t = t.crop(bb) if bb else t
-            cw = t.width + 26
-            out.alpha_composite(rr_layer((cw, 30), 10, (255, 255, 255, 20),
-                                         outline=(255, 255, 255, 40)),
-                                (cx - cw, cy))
-            out.alpha_composite(t, (cx - cw + 13, cy + 7))
+            cw = t.width + 28
+            look.quiet(out, (cx - cw, cy, cx, cy + 30))
+            out.alpha_composite(t, (cx - cw + 14, cy + 15 - t.height // 2))
             self.boxes[f"ask{i}"] = (cx - cw, cy, cx, cy + 30)
             cx -= cw + 8
 
@@ -2675,8 +2698,7 @@ class _CardSurface:
         px = pad
         armed = state.get("drawing")
         if armed:
-            out.alpha_composite(rr_layer((34, 34), 11, (86, 156, 245, 165)),
-                                (px, mid - 17))
+            look.bubble(out, (px, mid - 17, px + 34, mid + 17))
         out.alpha_composite(_icon("pencil", 19, INK if armed else INK_DIM),
                             (px + 8, mid - 10))
         self.boxes["pencil"] = (px, mid - 17, px + 34, mid + 17)
@@ -2687,49 +2709,42 @@ class _CardSurface:
             px += 40
 
         key_x = pw - pad - 38
+        if opened > .5:
+            look.bubble(out, (key_x, mid - 19, key_x + 38, mid + 19))
+        else:
+            look.quiet(out, (key_x, mid - 19, key_x + 38, mid + 19))
         out.alpha_composite(
-            rr_layer((38, 38), 12,
-                     (86, 156, 245, 190) if opened > .5
-                     else (255, 255, 255, 22),
-                     outline=None if opened > .5 else (255, 255, 255, 52)),
-            (key_x, mid - 19))
-        out.alpha_composite(
-            _icon("keyboard", 19, (255, 255, 255) if opened > .5 else INK_DIM),
+            _icon("keyboard", 19, INK if opened > .5 else INK_DIM),
             (key_x + 9, mid - 10))
         self.boxes["keyboard"] = (key_x, mid - 19, key_x + 38, mid + 19)
 
-        # the circle you talk at. It shrinks away as the field opens.
+        # the circle you talk at - a quiet disc with the listening lamp in
+        # it. It shrinks away as the field opens.
         dot_r = int(17 * (1.0 - opened))
         dot_cx, dot_cy = key_x - 22 - 17, mid
         self.dot_centre = (dot_cx, dot_cy) if dot_r > 4 else None
         if dot_r > 4:
-            out.alpha_composite(
-                rr_layer((dot_r * 2, dot_r * 2), dot_r, (255, 255, 255, 20),
-                         outline=(160, 200, 245, 150)),
-                (dot_cx - dot_r, dot_cy - dot_r))
-            inner = max(2, dot_r // 3)
-            out.alpha_composite(
-                rr_layer((inner * 2, inner * 2), inner, (140, 190, 245, 220)),
-                (dot_cx - inner, dot_cy - inner))
+            look.quiet(out, (dot_cx - dot_r, dot_cy - dot_r,
+                             dot_cx + dot_r, dot_cy + dot_r))
+            look.lamp(out, dot_cx, dot_cy, "cool", r=max(2.0, dot_r / 3.4),
+                      rings=False, glow=0.7)
             self.boxes["talk"] = (dot_cx - dot_r, dot_cy - dot_r,
                                   dot_cx + dot_r, dot_cy + dot_r)
 
-        # the field, sweeping open from under the key towards the left
+        # the field - the writing well - sweeping open from under the key
+        # towards the left; and Send, the card's one lit thing
         right = key_x - 12
         full_left = px + 44
         left = int(right - opened * max(40, right - full_left))
         if opened > 0.02:
-            out.alpha_composite(
-                rr_layer((max(8, right - left), 38), 12,
-                         (255, 255, 255, 26), outline=(255, 255, 255, 60)),
-                (left, mid - 19))
+            look.well(out, (left, mid - 19, right, mid + 19),
+                      min(19, max(4, (right - left) / 2)), focus=opened > 0.6)
         if opened > 0.6:
-            out.alpha_composite(rr_layer((34, 34), 11, (86, 156, 245, 232)),
-                                (px, mid - 17))
-            out.alpha_composite(_icon("send", 18, (255, 255, 255)),
+            look.primary(out, (px, mid - 17, px + 34, mid + 17))
+            out.alpha_composite(_icon("send", 18, look.INK["iris_on"]),
                                 (px + 8, mid - 9))
             self.boxes["send"] = (px, mid - 17, px + 34, mid + 17)
-            self.boxes["entry"] = (left + 12, mid - 14, right - 12, mid + 14)
+            self.boxes["entry"] = (left + 14, mid - 14, right - 14, mid + 14)
         else:
             # no field, so the entry is parked right off the card
             self.boxes["entry"] = (-4000, -4000, -3990, -3990)
@@ -2931,8 +2946,8 @@ class AskWindow:
                                         outline=255, width=16)
         hm = hm.filter(ImageFilter.GaussianBlur(9)).point(lambda v: int(v * .45))
         local.alpha_composite(Image.merge("RGBA", (
-            Image.new("L", (lw, lh), 86), Image.new("L", (lw, lh), 156),
-            Image.new("L", (lw, lh), 245), hm)))
+            Image.new("L", (lw, lh), 165), Image.new("L", (lw, lh), 151),
+            Image.new("L", (lw, lh), 255), hm)))
         edge = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
         drawer = ImageDraw.Draw(edge)
         if self.path:
@@ -2940,10 +2955,10 @@ class AskWindow:
                          for x, y in self.path] +
                         [(self.path[0][0] - self._vx - hx0,
                           self.path[0][1] - self._vy - hy0)],
-                        fill=(86, 156, 245, 235), width=2, joint="curve")
+                        fill=(165, 151, 255, 235), width=2, joint="curve")
         else:
             drawer.rounded_rectangle((ox - 2, oy - 2, ex + 1, ey + 1), 13,
-                                     outline=(86, 156, 245, 235), width=2)
+                                     outline=(165, 151, 255, 235), width=2)
         local.alpha_composite(edge)
         frozen.paste(local.convert("RGB"), (hx0, hy0))
 
@@ -3765,15 +3780,9 @@ class AskWindow:
             question = role == "user"
             body = text_pil(text, max(60, width - 32),
                             pt=QUESTION_PT if question else ANSWER_PT,
-                            face=self._face,
-                            colour=INK if question else (231, 240, 255))
+                            face=self._face, colour=INK, rtl=_reads_rtl(text))
             height = body.height + 26
-            if question:
-                skin = rr_layer((width, height), 13, (86, 156, 245, 92),
-                                outline=(255, 255, 255, 52))
-            else:
-                skin = rr_layer((width, height), 13, (255, 255, 255, 24),
-                                outline=(255, 255, 255, 34))
+            skin = _row_skin((width, height), question)
             got = (skin, body, 16)
             self._rendered[key] = got
         return got
