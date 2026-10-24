@@ -26620,12 +26620,14 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     # Cowork's only road in (notify_watch.py), and Claude Code's turns
     # left to the hook that already cards them.
     assert cfg.notify.watch == "cowork"
+    # A finish read off its transcript before the hook knocks (2026-10-24).
+    assert cfg.notify.early is True
     sections = {s.name: s for s in settings_mod.read(here / "defaults.toml")}
     assert "notify" in sections, sorted(sections)
     keys = {s.key for s in sections["notify"].settings}
     assert keys == {"enabled", "cue", "card_seconds", "stack_max",
                     "remind_every_s", "remind_times", "coalesce_s",
-                    "interrupt", "quiet_s", "watch",
+                    "interrupt", "quiet_s", "watch", "early",
                     "summarize", "summary_wait_s", "summary_model",
                     "summary_language",
                     "corner", "anchor", "x", "y",
@@ -27308,6 +27310,242 @@ def test_a_toast_the_watcher_cannot_read_is_not_a_card() -> None:
     hwnd, title = notify_watch.claude_window()
     assert isinstance(hwnd, int) and isinstance(title, str)
     assert (hwnd > 0) == bool(title), (hwnd, title)
+
+
+def _transcript_line(kind: str = "text", *, stop: str = "end_turn",
+                     message: str = "msg_1", session: str = "S1",
+                     text: str = "Done.", cwd: str = r"C:\work\DeskIT",
+                     side: bool = False) -> bytes:
+    """One line of a Claude Code transcript, the shape the desktop app
+    writes (2.1.308): one content block per line, the message's
+    stop_reason on every one of them."""
+    block = {"text": {"type": "text", "text": text},
+             "thinking": {"type": "thinking", "thinking": "hm"},
+             "tool_use": {"type": "tool_use", "id": "toolu_1", "name": "Bash",
+                          "input": {"command": "ls"}}}[kind]
+    return (json.dumps({
+        "parentUuid": "p", "isSidechain": side, "type": "assistant",
+        "message": {"id": message, "type": "message", "role": "assistant",
+                    "content": [block], "stop_reason": stop},
+        "uuid": f"u-{message}-{kind}", "timestamp": "2026-10-24T15:05:33.123Z",
+        "entrypoint": "claude-desktop", "cwd": cwd, "sessionId": session,
+    }, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def test_the_tail_reads_a_finish_off_the_transcript_as_the_hook_would_send_it() -> None:
+    """The owner, 2026-10-24: the card comes "a terribly long delay"
+    after the answer is done. The answer is on disk seconds before the
+    Stop hook starts (notify_tail.py has the measurements), so it is read
+    from there: only a main-chain end_turn with text is a finish, what is
+    sent is the hook's own payload plus `via`, history before the start
+    is skipped, a file born later is read from its first byte, a message
+    written twice is one finish, half a line waits for the rest, and a
+    copy that does not hold Claude Code's door sends nothing."""
+    import notify
+    import notify_hook
+    import notify_tail
+
+    assert notify_tail.VIA == notify.VIA == "transcript"
+    long_text = "סיימתי. " + "word " * 1200 + "\nLeft for you: restart."
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "projects"
+        (root / "C--work-DeskIT" / "S1" / "subagents").mkdir(parents=True)
+        f1 = root / "C--work-DeskIT" / "S1.jsonl"
+        f1.write_bytes(_transcript_line(text="an old answer", message="old"))
+        # A subagent's file is never looked at, end_turn or not.
+        (root / "C--work-DeskIT" / "S1" / "subagents" / "agent-a.jsonl") \
+            .write_bytes(b"")
+        seen: list = []
+        door = {"mine": True}
+        tail = notify_tail.Tail(seen.append, root=root,
+                                connected=lambda: door["mine"],
+                                window=lambda: (4321, "Claude"),
+                                link=lambda s: f"claude://resume?session={s}")
+        assert tail.once() == 0 and seen == [], "history is not news"
+        with f1.open("ab") as f:
+            f.write(_transcript_line("tool_use", stop="tool_use", message="m1"))
+            f.write(json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": "end_turn"}]}}).encode()
+                + b"\n")
+            f.write(_transcript_line("thinking", message="m2"))
+            f.write(_transcript_line(text=long_text, message="m2"))
+            f.write(_transcript_line(text="a subagent's", message="m3",
+                                     side=True))
+        (root / "C--work-DeskIT" / "S1" / "subagents" / "agent-a.jsonl") \
+            .write_bytes(_transcript_line(text="not his", message="m4"))
+        assert tail.once() == 1, seen
+        sent = seen[0]
+        expected = notify_hook.payload_from_hook(
+            {"hook_event_name": "Stop", "session_id": "S1",
+             "cwd": r"C:\work\DeskIT", "last_assistant_message": long_text},
+            window=(4321, "Claude"), link="claude://resume?session=S1")
+        assert sent == dict(expected, via="transcript"), (sent, expected)
+        assert sent["kind"] == "done" and sent["title"] == "Claude finished"
+        assert sent["project"] == "DeskIT" and len(sent["body"]) == 300
+        assert sent["text"] == long_text[:5000] and sent["hwnd"] == 4321
+        # The same message written again is the same finish.
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text=long_text, message="m2"))
+        assert tail.once() == 0 and len(seen) == 1
+        # Half a line is not a line: it is read when the rest lands.
+        line = _transcript_line(text="second answer", message="m5")
+        with f1.open("ab") as f:
+            f.write(line[:40])
+        assert tail.once() == 0
+        with f1.open("ab") as f:
+            f.write(line[40:])
+        assert tail.once() == 1 and seen[-1]["body"] == "second answer"
+        # A session born after the start is read from its first byte —
+        # found by the next rescan, which the test asks for at once.
+        f2 = root / "C--work-MarsT" / "S2.jsonl"
+        f2.parent.mkdir()
+        f2.write_bytes(_transcript_line(text="hello", message="m6",
+                                        session="S2", cwd=r"C:\work\MarsT"))
+        tail.rescan()
+        assert tail.once() == 1 and seen[-1]["session"] == "S2"
+        assert seen[-1]["project"] == "MarsT"
+        # A copy that does not hold the door cards nothing, asked per finish.
+        door["mine"] = False
+        with f2.open("ab") as f:
+            f.write(_transcript_line(text="again", message="m7", session="S2"))
+        assert tail.once() == 0 and len(seen) == 3
+        door["mine"] = True
+        # A file that was asleep at the last rescan keeps its offset, so
+        # what it gains before the next one is read, not skipped.
+        clock = {"now": time.time() + 10_000}
+        sleepy = notify_tail.Tail(seen.append, root=root, active_s=60,
+                                  connected=lambda: True,
+                                  window=lambda: (0, ""), link=lambda s: "",
+                                  clock=lambda: clock["now"])
+        sleepy.rescan()
+        assert f1 not in sleepy._active, "an old file is not polled"
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="woke up", message="m8"))
+        assert sleepy.once() == 0, "not looked at until the next rescan"
+        sleepy.rescan()
+        assert sleepy.once() == 1 and seen[-1]["body"] == "woke up"
+        # The tiers: a file written five minutes ago is still active but
+        # not hot, so it is looked at every WARM_EVERY-th pass; once it
+        # gains bytes it is hot again and looked at every pass.
+        clock["now"] = time.time() + 300
+        tiers = notify_tail.Tail(seen.append, root=root, rescan_s=1e9,
+                                 connected=lambda: True,
+                                 window=lambda: (0, ""), link=lambda s: "",
+                                 clock=lambda: clock["now"])
+        assert tiers.once() == 0 and f1 in tiers._active
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="warm", message="m9"))
+        caught = [tiers.once() for _ in range(notify_tail.WARM_EVERY)]
+        assert caught == [0] * (notify_tail.WARM_EVERY - 1) + [1], caught
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="hot", message="m10"))
+        assert tiers.once() == 1 and seen[-1]["body"] == "hot"
+        # Switched off: nothing is read at all.
+        off = notify_tail.Tail(seen.append, enabled=False, root=root)
+        off.start()
+        assert off.once() == 0 and off._thread is None
+    # The line-level gate on its own: what is not a finish is None.
+    assert notify_tail.finish_of(b"not json end_turn") is None
+    assert notify_tail.finish_of(_transcript_line("thinking")) is None
+    assert notify_tail.finish_of(_transcript_line(text="   ")) is None
+    assert notify_tail.finish_of(_transcript_line(stop="max_tokens")) is None
+    assert notify_tail.finish_of(_transcript_line(side=True)) is None
+    assert notify_tail.finish_of(_transcript_line(session="")) is None
+    assert notify_tail.finish_of(_transcript_line())["text"] == "Done."
+
+
+def test_notify_folds_the_hooks_finish_into_the_one_the_transcript_told() -> None:
+    """One finish, two roads (notify.py, "THE SAME FINISH TOLD TWICE"):
+    whichever arrives first is the card and the one summary; the hook
+    arriving second gives that card its window and link and nothing
+    else; the transcript arriving second is dropped. A different body,
+    another session, or a hook with no transcript copy behind it lands
+    exactly as it always did."""
+    import notify
+
+    sentence = "הענף נדחף, נשאר להפעיל מחדש."
+    early = {"source": "claude-code", "kind": "done",
+             "title": "Claude finished", "session": "S1", "project": "DeskIT",
+             "body": "Done. Left for you: restart.",
+             "text": "Done. Left for you: restart.", "hwnd": 0, "app": "",
+             "link": "", "via": "transcript"}
+    hook = dict(early, hwnd=4321, app="Claude",
+                link="claude://resume?session=6abc45c7-8df5-460d-a90f-cbadbbbd4cb2")
+    hook.pop("via")
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary(sentence, delay=0.05)
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input",
+                                                 summary_wait_s=2.0),
+                            card=card, summary=fake)
+        reply = eng.receive(early)
+        assert reply["held"] is True and reply["summary"] == "pending", reply
+        _awake_until(lambda: card.shown)
+        reply = eng.receive(hook)
+        assert reply["folded"] is True and reply["id"] == 1, reply
+        items = eng.store.items()
+        assert len(items) == 1, items
+        item = items[0]
+        assert item["via"] == "transcript" and item["folded"] is True
+        assert item["hwnd"] == 4321 and item["app"] == "Claude"
+        assert item["link"] == hook["link"] and item["body"] == sentence
+        assert len(fake.asked) == 1 and len(card.shown) == 1, \
+            "never summarised twice, never shown twice"
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "| via transcript" in log_text, log_text
+        assert "FOLDED the hook into #1 | the transcript was 0." in log_text
+        # The next turn of the same session is a new finish: it lands,
+        # and it retires the one before it, the way it always has.
+        reply = eng.receive(dict(early, body="Second.", text="Second."))
+        assert reply.get("folded") is None and reply["id"] == 2, reply
+        _awake_until(lambda: eng.state()["held"] == 0)
+        assert eng.store.items()[0]["seen"] is True, "superseded"
+        # Another session with the very same words is its own finish.
+        reply = eng.receive(dict(hook, session="S9", body="Second.",
+                                 text="Second."))
+        assert reply.get("folded") is None and reply["id"] == 3, reply
+        eng.stop()
+    # The hook first, the transcript second: dropped, one card, one ask.
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary(sentence)
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input"),
+                            card=card, summary=fake)
+        eng.receive(hook)
+        _awake_until(lambda: card.shown)
+        reply = eng.receive(early)
+        assert reply["folded"] is True and reply["id"] == 1, reply
+        assert len(eng.store.items()) == 1 and len(fake.asked) == 1
+        assert "via" not in eng.store.items()[0]
+        assert "TOLD TWICE #1 | the hook was first" in \
+            (Path(d) / "notify.log").read_text("utf-8")
+        # Two hooks with the same words and no transcript behind either:
+        # the door as it was — the second is its own card.
+        reply = eng.receive(hook)
+        assert reply.get("folded") is None and reply["id"] == 2, reply
+        eng.stop()
+
+
+def test_the_tail_is_built_started_and_stopped_with_the_door() -> None:
+    """Wired in main.py beside the toast watcher, fed by the same
+    callable, stopped before the engine; [notify] early is on unless the
+    config says otherwise, and the shipped file says what it does."""
+    import config
+
+    source = (REPO / "main.py").read_text(encoding="utf-8")
+    assert "import notify_tail as notify_tail_mod" in source
+    assert "notify_tail_mod.Tail(" in source
+    assert "self.notify_tail.start()" in source
+    i = source.index("self.notify_tail.stop()")
+    assert i < source.index("self.notify.stop()"), \
+        "the tail feeds the engine, so it stops first"
+    assert config.NotifyConfig.early is True
+    defaults = (REPO / "defaults.toml").read_text(encoding="utf-8")
+    assert "\nearly = true " in defaults
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "config.toml"
+        path.write_text("[notify]\nearly = false\n", "utf-8")
+        assert config.load(path).notify.early is False
 
 
 def test_the_watcher_is_built_started_and_stopped_with_the_door() -> None:
