@@ -19,11 +19,20 @@ engine and the latency — is the tag column's second line here, under
 the tags, level with the seconds: the picture left them out, and they
 are the one place he sees how fast a dictation was (AGENTS rule 5).
 
-READING. history.load(HISTORY_ROWS), again only when history.stamp()
-moves — the Tk desk's poller rule: a stat costs nothing, a parse costs
-tens of milliseconds. The page polls `read` every 800 ms (the Tk
-desk's cadence) with what it is showing (filter, q, shown); an answer
-identical to the last is drawn as nothing (kit.usePlace).
+READING. The whole history (history.load(EVERYTHING)), again only when
+history.stamp() moves — the Tk desk's poller rule: a stat costs nothing,
+a parse costs tens of milliseconds, and the whole of his log (1,610
+events, one file) parsed in 28 ms against the hundred's 37 on
+2026-10-24. All with no search shows the last HISTORY_ROWS, as the Tk
+desk does; a filter or a search looks through ALL of it. His word that
+day: the Translated and Looked up chips said "Nothing matches that"
+while his 7 translations and 19 look-ups sat just past the hundred, and
+the box says "Search everything you have said". The page polls `read`
+every 800 ms (the Tk desk's cadence) with what it is showing (filter,
+q, shown), and the last search's result is kept until the log or the
+search moves (a search through everything is 12 ms, every poll would
+pay it); an answer identical to the last is drawn as nothing
+(kit.usePlace).
 
 HIS WORDS. transcripts.log is his own speech: it goes into the answer
 to the page and nowhere else — never a log line (app.log gets a type
@@ -61,6 +70,11 @@ log = logging.getLogger("app")
 SAID_PAGE = 25
 #: what "the last hundred" means (dashboard.HISTORY_ROWS)
 HISTORY_ROWS = 100
+#: history.load's limit for "all of it": the log and its three rotations
+#: are four files and about four megabytes (history.files)
+EVERYTHING = 10 ** 9
+#: the most rows a page may ask for under a filter or a search
+SHOWN_MOST = 5000
 #: the longest search the page may send; a longer one is cut, not refused
 QUERY_MOST = 200
 #: a row's id, as this module makes them, is never longer than this
@@ -81,6 +95,8 @@ FILTER_KEYS = tuple(kind or "" for _name, kind in history.FILTERS)
 
 #: Words the Tk desk draws, kept in one place so a test can hold them.
 SUB = f"the last {HISTORY_ROWS} of what you said"
+#: under a filter or a search, which look through all of it
+SUB_ALL = "all of what you said"
 PLACEHOLDER = "Search everything you have said…"
 OLDER = "Everything older is still in transcripts.log, untouched."
 OPEN = "Open transcripts.log"
@@ -138,11 +154,12 @@ def _filter_key(value) -> str | None:
 
 
 def _shown(value) -> int:
-    """How many rows the page asks for: SAID_PAGE at least, every row at
-    most, whole numbers only — anything else is the first page."""
+    """How many rows the page asks for: SAID_PAGE at least, SHOWN_MOST at
+    most, whole numbers only — anything else is the first page. What
+    the list holds bounds it again (_answer)."""
     if isinstance(value, bool) or not isinstance(value, int):
         return SAID_PAGE
-    return max(SAID_PAGE, min(HISTORY_ROWS, value))
+    return max(SAID_PAGE, min(SHOWN_MOST, value))
 
 
 class Place:
@@ -152,7 +169,11 @@ class Place:
         self._send = send                 # the window's pipe; Said reads files only
         self._lock = threading.Lock()
         self._stamp = None
+        #: the whole history, newest first; All shows its first HISTORY_ROWS
         self._log: list = []
+        #: (stamp, kind, query) -> what the last filter or search left
+        self._found_key = None
+        self._found: list = []
         #: row id -> its Event, for the log as last read (a copy names one)
         self._by_id: dict = {}
         self._ids: list[str] = []
@@ -170,7 +191,7 @@ class Place:
         if stamp == self._stamp:
             return
         try:
-            events = history.load(HISTORY_ROWS)
+            events = history.load(EVERYTHING)
         except Exception as e:            # noqa: BLE001 — a log being rotated
             log.warning("said: the log could not be read (%s)", type(e).__name__)
             return
@@ -208,7 +229,7 @@ class Place:
         learned rows, out of vocab.json when it does not
         (dashboard._recent_pairs, the same order and the same fallback)."""
         out: list = []
-        for event in self._log:
+        for event in self._log[:HISTORY_ROWS]:
             if event.kind != "learned":
                 continue
             for pair in (event.pairs or []):
@@ -282,14 +303,24 @@ class Place:
             return self._answer(kind, query, limit)
 
     def _answer(self, kind, query: str, limit: int) -> dict:
-        events = self._log
-        found = history.filtered(events, kind, query)
+        everything = bool(kind or query.strip())
+        if everything:
+            key = (self._stamp, kind, query.strip().lower())
+            if key != self._found_key:
+                self._found = history.filtered(self._log, kind, query)
+                self._found_key = key
+            events, found = self._log, self._found
+            cut = None
+        else:
+            events = self._log[:HISTORY_ROWS]
+            found = events
+            # the oldest day of a full window may have been cut by the hundred:
+            # its count would be a guess, so it says none
+            cut = events[-1].when.date() if len(self._log) > HISTORY_ROWS else None
+        limit = min(limit, max(SAID_PAGE, len(found)))
         rows = found[:limit]
-        ident = {id(e): i for i, e in zip(self._ids, events)}
+        ident = {id(e): i for i, e in zip(self._ids, self._log)}
         today = _today()
-        # the oldest day of a full window may have been cut by the hundred:
-        # its count would be a guess, so it says none
-        cut = events[-1].when.date() if len(events) >= HISTORY_ROWS else None
         said: dict = {}
         for event in events:
             if event.kind == "dictation":
@@ -326,7 +357,7 @@ class Place:
         return {
             "ok": True,
             "head": "Said",
-            "sub": SUB,
+            "sub": SUB_ALL if everything else SUB,
             "placeholder": PLACEHOLDER,
             "filters": [{"name": name, "key": key or ""} for name, key in history.FILTERS],
             "filter": kind or "",

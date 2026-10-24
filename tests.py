@@ -43995,8 +43995,9 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
 
 
 def test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback():
-    """deskweb.LAUNCHED is the launch, one line, and it is not flipped:
-    False — the web desk is the checkout's, and only when [desk] web asks;
+    """deskweb.LAUNCHED is the launch, one line, flipped on his "works"
+    (2026-10-24): False — the web desk is the checkout's, and only when
+    [desk] web asks;
     True — every copy's, defaults.toml's `false` no longer decides, a
     person's own `[desk] web = false` (state.json over settings.toml)
     still opens Tk, and wherever the window cannot open (ready() no) the
@@ -44005,9 +44006,9 @@ def test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback():
     import deskweb
 
     src = (REPO / "deskweb.py").read_text("utf-8")
-    assert re.findall(r"^LAUNCHED = (\w+)$", src, re.M) == ["False"], \
-        "the launch is ONE line, and it is the launch session's to flip"
-    assert deskweb.LAUNCHED is False
+    assert re.findall(r"^LAUNCHED = (\w+)$", src, re.M) == ["True"], \
+        "the launch is ONE line, and it is launched"
+    assert deskweb.LAUNCHED is True
     folder = Path(tempfile.mkdtemp(prefix="webdesk-launch-", dir=_SCRATCH_HOME))
     state, settings = folder / "state.json", folder / "settings.toml"
     off = config_mod.load(REPO / "defaults.toml")
@@ -51612,7 +51613,9 @@ def _web_desk_fill(folder: Path) -> tuple[list, list]:
 
 
 def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
-    """[desk] web is off by default and honoured only in the checkout, and
+    """Before the launch (LAUNCHED False — the launch itself is
+    test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback):
+    [desk] web is off by default and honoured only in the checkout, and
     only where the window can open (pages built, WebView2 there); the Tk
     desk asks before it takes its own mutex, `--tk` skips the question,
     and the page calls nothing the Api does not offer and presses
@@ -51629,7 +51632,8 @@ def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
     copy.write_text(text.replace("\nweb = false", "\nweb = true"), "utf-8")
     assert config_mod.load(copy).desk.web is True
     on = dataclasses.replace(base, desk=config_mod.DeskConfig(web=True))
-    with _patched(config_mod, "load_layered", lambda *a, **k: on):
+    with _patched(config_mod, "load_layered", lambda *a, **k: on), \
+            _patched(deskweb, "LAUNCHED", False):
         with _patched(paths, "DEVELOPER", False), _patched(deskweb, "ready", lambda: True):
             assert deskweb.wanted() is False
         with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: False):
@@ -52855,11 +52859,14 @@ def test_web_desk_said_searches_filters_and_shows_more_as_the_tk_desk_does():
     Tk desk; SAID_PAGE rows at a time, Show more saying how many it adds
     and how many older are still here; the oldest day of a full window
     says no count (the hundred may have cut it); and an empty list says
-    which of the Tk desk's three things it is."""
+    which of the Tk desk's three things it is. All is the last hundred;
+    a filter or a search looks through all of it (his word, 2026-10-24:
+    the chips were empty while his translations sat past the hundred)."""
     many = [f"2026-10-24 {8 + i // 60:02d}:{i % 60:02d}:00,000 | OK | 2.0s | local | "
             f"0.3s latency | שורה {i}" for i in range(120)]
     with _said_place(lines=many, remote=None) as (place, _folder, _c, _o):
         first = place.read()
+        assert first["sub"] == "the last 100 of what you said"
         assert sum(len(d["rows"]) for d in first["days"]) == 25
         assert first["more"] == {"words": "Show 25 more", "left": "75 older still here"}
         assert first["days"][0]["facts"] == [], "a day the hundred cut is not counted"
@@ -52877,8 +52884,32 @@ def test_web_desk_said_searches_filters_and_shows_more_as_the_tk_desk_does():
         hit = place.read(q="  שורה 11")
         assert [r["text"] for d in hit["days"] for r in d["rows"]] == \
             ["שורה 119", "שורה 118", "שורה 117", "שורה 116", "שורה 115", "שורה 114",
-             "שורה 113", "שורה 112", "שורה 111", "שורה 110"]
-        assert hit["q"] == "  שורה 11"
+             "שורה 113", "שורה 112", "שורה 111", "שורה 110", "שורה 11"], \
+            "a search reaches past the hundred"
+        assert hit["q"] == "  שורה 11" and hit["sub"] == "all of what you said"
+        assert place.read(q="   ")["sub"] == "the last 100 of what you said", \
+            "a search of spaces is All"
+        spoken = place.read(filter="dictation", shown=100)
+        assert sum(len(d["rows"]) for d in spoken["days"]) == 100
+        assert spoken["more"] == {"words": "Show 20 more", "left": "20 older still here"}
+        whole = place.read(filter="dictation", shown=125)
+        assert whole["more"] is None and whole["shown"] == 120
+        assert whole["days"][-1]["rows"][-1]["text"] == "שורה 0"
+        assert whole["days"][0]["facts"] == ["120 today", "4 minutes of speech"], \
+            "all of it read, so its oldest day is counted whole"
+        assert place.read(filter="dictation", shown=10 ** 9)["shown"] == 120
+    # his case: a translation from four days ago, a hundred dictations after it
+    old = ["2026-10-20 16:01:00,000 | TRANSLATE-IN  | selection | שלום עולם",
+           "2026-10-20 16:01:01,000 | TRANSLATE-OUT | 0.8s | gemini | Hello world"]
+    with _said_place(lines=old + many, remote=None) as (place, _folder, copied, _o):
+        assert all(r["kind"] != "trans" for d in place.read(shown=100)["days"]
+                   for r in d["rows"]), "All is still the last hundred"
+        turned = place.read(filter="translate")
+        rows = [r for d in turned["days"] for r in d["rows"]]
+        assert [(r["kind"], r["text"]) for r in rows] == [("trans", "Hello world")]
+        assert turned["days"][0]["day"] == "20 Oct" and turned["empty"] == ""
+        assert place.act("copy", rows[0]["id"])["copied"] is True
+        assert copied == ["Hello world"], "a row past the hundred copies too"
         missed = place.read(q="zzqx")
         assert missed["days"] == [] and missed["empty"] == "Nothing matches that."
         assert missed["more"] is None
@@ -52912,30 +52943,48 @@ def test_web_desk_said_searches_filters_and_shows_more_as_the_tk_desk_does():
 
 def test_web_desk_said_reads_the_log_again_only_when_it_moves():
     """history.load is asked once per change of history.stamp() — the Tk
-    desk's poller rule, a stat per poll and a parse per change — and a
-    log that cannot be read keeps the rows already read."""
+    desk's poller rule, a stat per poll and a parse per change — the
+    whole history each time; a filter or a search is worked out once per
+    change of the log or of itself, not on every poll; and a log that
+    cannot be read keeps the rows already read."""
+    import desk_said
     import history as history_mod
 
     with _said_place() as (place, folder, _c, _o):
-        loads = []
-        real = history_mod.load
+        loads, sifts = [], []
+        real, real_filtered = history_mod.load, history_mod.filtered
 
         def counted(limit=100):
             loads.append(limit)
             return real(limit)
 
-        with _patched(history_mod, "load", counted):
+        def sifted(events, kind, query=""):
+            sifts.append((kind, query))
+            return real_filtered(events, kind, query)
+
+        everything = desk_said.EVERYTHING
+        with _patched(history_mod, "load", counted), \
+                _patched(history_mod, "filtered", sifted):
             for _ in range(5):
                 place.read()
-            place.read(q="x")
-            place.read(filter="learned", shown=50)
-            assert loads == [100], loads
+            for _ in range(3):
+                place.read(q="x")
+                place.read(filter="learned", shown=50)
+            assert loads == [everything], loads
+            # one remembered answer: the page polls the one view it shows
+            assert sifts == [(None, "x"), ("learned", "")] * 3, sifts
+            sifts.clear()
+            for shown in (25, 50, 75):
+                place.read(filter="learned", shown=shown)
+            assert sifts == [], "the same filter on the same log is not sifted again"
             log = folder / "transcripts.log"
             log.write_text(log.read_text("utf-8")
                            + "2026-10-24 22:00:00,000 | OK | 1.0s | local | 0.2s latency | חדש\n",
                            "utf-8")
             assert place.read()["days"][0]["rows"][0]["text"] == "חדש"
-            assert loads == [100, 100], loads
+            assert loads == [everything, everything], loads
+            place.read(filter="learned", shown=50)
+            assert sifts == [("learned", "")], "a moved log is sifted again"
 
         def broken(limit=100):
             raise OSError("rotating")

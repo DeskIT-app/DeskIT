@@ -2027,14 +2027,15 @@ def ready() -> bool:
 #: this window already — pywebview and its four in requirements.lock,
 #: web\dist built into app\web\dist by release.yml — so this line decides
 #: only whether it opens.
-#:   False (today): the checkout's desk, and only when `[desk] web` asks.
-#:   True: the desk on every copy. `[desk] web = false` written ABOVE
+#:   False: the checkout's desk, and only when `[desk] web` asks.
+#:   True (since 2026-10-24, on his "works"): the desk on every copy.
+#:   `[desk] web = false` written ABOVE
 #:   defaults.toml — settings.toml or state.json — still opens the Tk
 #:   desk; defaults.toml's `false` no longer does. The Tk desk stays the
 #:   fallback wherever this one cannot open — ready() says no (no pages,
 #:   no pywebview, no WebView2 or .NET 4.6.2), or run_window answers 2/3
 #:   and dashboard.main opens Tk in its place.
-LAUNCHED = False
+LAUNCHED = True
 
 
 def _own_choice() -> bool | None:

@@ -159,9 +159,9 @@ EVERY CONNECTION) and mirrored to
 `logs\network.log`. The Offline switch refuses every host but
 `127.0.0.1`.
 
-The desk's web window is the one exception to that screen. When the
-desk opens as a web page (today only in the developer's own copy), it
-is drawn by Microsoft Edge WebView2, a part of Windows with network
+The desk's web window is the one exception to that screen. The desk
+opens as a web page (the older window takes its place on a PC without
+WebView2), and it is drawn by Microsoft Edge WebView2, a part of Windows with network
 code of its own, outside `net.py`. DeskIT loads only its own files into
 it, refuses every other address, switches off the window's own services
 (SmartScreen, Edge's experimentation and update checks, Edge's sign-in
