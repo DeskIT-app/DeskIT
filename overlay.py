@@ -75,15 +75,15 @@ WS_EX_TOPMOST = 0x00000008
 GW_HWNDPREV = 3                  # GetWindow: the window just above
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
-# LAMPLIGHT, spelled out. This module is imported before ui.py has built
+# B+ (2026-10-23), spelled out. This module is imported before ui.py has built
 # anything, so it cannot read the palette — it carries the four names the
 # splash and the word prompt need. skin\palette.py is the source; these are
 # PANE / FG / DIM / ACCENT from it.
-BG = "#1c1813"
-FG = "#f1ece2"
-DIM = "#b2a896"
-ACCENT = "#e3a63c"
-TROUGH = "#3a342a"      # the splash bar's channel — LINE, one step over BG
+BG = "#121527"
+FG = "#efedf7"
+DIM = "#c0c3d8"
+ACCENT = "#a597ff"
+TROUGH = "#30365a"      # the splash bar's channel — LINE, one step over BG
 
 _DONE = object()   # sentinel: close the window
 _HIDE = object()   # sentinel: the window off the screen, the thread kept
@@ -611,20 +611,20 @@ _CHROMA = "#0b0c0d"
 # The five states, as skin\palette.DOT_STATES spells them — kept here as
 # literals for the same reason as the four above: this module runs before
 # ui.py exists, and it is the path with skin\ deleted. Measured against
-# #1A1A1A, the darkest wallpaper the dot has to survive: 9.09 / 5.68 /
-# 7.62 / 10.36 / 3.46, and every pair separates by light or by hue.
+# #1A1A1A, the darkest wallpaper the dot has to survive: 7.97 / 5.84 /
+# 7.89 / 10.12 / 5.65, and every pair separates by light or by hue.
 STATES = {
     # state:      (fill,      ring,      pulses)
-    "ready":      ("#8fc0f0", "#16232f", False),   # cool: running, listening
-    "recording":  ("#ff5b4e", "#3a140f", False),   # red: capturing now
-    "locked":     ("#ff8a7e", "#3a140f", True),    # red, breathing: latched
-    "busy":       ("#f5c043", "#33260a", False),   # the lamp at full
+    "ready":      ("#4db8ff", "#0f2438", False),   # blue: running, listening
+    "recording":  ("#ff5d6e", "#3a1219", False),   # red: capturing now
+    "locked":     ("#ff8d99", "#3a1219", True),    # red, breathing: latched
+    "busy":       ("#ffb84d", "#33260f", False),   # amber: working
     # Neutral grey: loaded and alive, but the keys are inert. Deliberately
     # still VISIBLE — a paused app that showed nothing would be
     # indistinguishable from one that was never started, which is the whole
     # problem the dot exists to solve. It is also the only state with NO
     # HALO on the glass path, so it reads by absence and not by hue alone.
-    "paused":     ("#6f6f6f", "#1e1e1e", False),
+    "paused":     ("#8a93a8", "#1e2130", False),
 }
 
 # Where the dot may sit: a corner of the primary monitor's WORK AREA.
@@ -2474,7 +2474,8 @@ class ProblemCard(WordPrompt):
             # side on 2026-09-04, because growing the field was a change
             # of widget and a change of widget is a change of bidi. Every
             # character is right; only the drawing lies.
-            field = tk.Text(root, bg=pc.hex_of("EDGE"), fg=pc.hex_of("FG"),
+            field = tk.Text(root, bg=pc.hex_of(pc.FIELD_BG),
+                            fg=pc.hex_of("FG"),
                             insertbackground=pc.hex_of("ACCENT"),
                             selectbackground=pc.hex_of("ACCENT_SOFT"),
                             selectforeground=pc.hex_of("FG"),
@@ -3511,6 +3512,9 @@ class ConsentCard(HintCard):
             root.update_idletasks()
             if not st["up"]:
                 _no_activate(root)
+                # B+ has no square corner anywhere (2026-10-23): Windows'
+                # own, the one a frameless Tk window can have
+                _round_corners(root, CARD_LINE)
             st["up"] = True
 
         def put_up(card: dict) -> None:
@@ -4674,22 +4678,22 @@ class NotifyCard(HintCard):
             gc.collect()
 
 
-# The fallback card's palette — LAMPLIGHT, spelled out rather than
+# The fallback card's palette — B+ (2026-10-23), spelled out rather than
 # imported: ui.py builds Tk styles at import and this module is imported
 # before any of that exists. skin\ repaints its own copy and never reads
 # these. A key chip is a KEY CAP and not a button: this card is a legend
 # with fifteen keys on it, and fifteen accent chips would be fifteen
 # primary actions competing for one glance. So the chips take ui.KeyCap's
 # own face and the only lit thing on the card is the state dot.
-CARD_BG = "#24201a"
-CARD_LINE = "#3a342a"
-CARD_FG = "#f1ece2"
-CARD_DIM = "#b2a896"
-CARD_FAINT = "#7e7564"
-CARD_KEY_BG = "#29241d"
-CARD_KEY_EDGE = "#4e4737"
-CARD_KEY_FG = "#f1ece2"
-CARD_DOT = {"recording": "#ff5b4e", "locked": "#ff8a7e"}
+CARD_BG = "#1e233e"      # palette.GLASS_FLAT: the glass with nothing behind
+CARD_LINE = "#30365a"
+CARD_FG = "#efedf7"
+CARD_DIM = "#c0c3d8"
+CARD_FAINT = "#70758e"
+CARD_KEY_BG = "#1b2036"
+CARD_KEY_EDGE = "#3a4068"
+CARD_KEY_FG = "#efedf7"
+CARD_DOT = {"recording": "#ff5d6e", "locked": "#ff8d99"}
 
 _HINT_PAD = 14
 _HINT_ROW = 26

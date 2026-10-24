@@ -34,17 +34,17 @@ from __future__ import annotations
 
 from PIL import Image, ImageDraw
 
+import look
 import review_card as rc
-from review_card import (ACCENT, ACCENT_HI, ACCENT_ON, CARD, EDGE, EDGE_HI,
-                         HTCAPTION, HTCLIENT, HTTRANSPARENT, INK, INK_DIM,
-                         INK_FAINT, LINE, _rr, _text, clamp_scale)
+from review_card import (ACCENT_ON, HTCAPTION, HTCLIENT, HTTRANSPARENT, INK,
+                         INK_MUTED, _text, clamp_scale)
 
 NEXT, SKIP, DONE, DRAG = "next", "skip", "done", "drag"
 LABELS = {NEXT: "Next", SKIP: "Skip", DONE: "Done"}
 SIDES = ("top", "bottom", "left", "right")     # which edge the beak is on
 
 CARD_W = 340
-RADIUS = 18
+RADIUS = 22               # B+'s corner (18 under LAMPLIGHT)
 PAD = 16
 TITLE_PT = 12.5
 BODY_PT = 10.0
@@ -64,7 +64,7 @@ STOPS = (
     {"kind": "dot", "tail": True, "picture": None,
      "title": "This is the dot",
      "body": ("Its colour says what is happening: blue — listening. "
-              "Red — recording. Gold — working on what you said.")},
+              "Red — recording. Amber — working on what you said.")},
     {"kind": "key", "tail": False, "picture": "key",
      "title": "The key",
      "body": ("Hold, talk, let go — and the text is pasted where your "
@@ -128,15 +128,13 @@ def _keycap(cache: dict, name: str, s: float):
     key = ("keycap", name, round(s, 3))
     img = cache.get(key)
     if img is None:
-        label = _text(cache, name or "?", 11.0 * s, colour=INK, weight=600,
-                      rtl=False)
+        label = look.text(cache, name or "?", 11.0 * s, INK, look.W_STRONG)
         h = int(round(KEY_H * s))
         w = max(int(round(64 * s)), label.width + int(round(2 * KEY_PAD * s)))
         lip = max(2, int(round(3 * s)))
         img = Image.new("RGBA", (w, h + lip), (0, 0, 0, 0))
-        img.alpha_composite(_rr((w, h), 8 * s, fill=LINE + (255,)), (0, lip))
-        img.alpha_composite(_rr((w, h), 8 * s, fill=EDGE_HI + (255,),
-                                outline=LINE + (255,), width=1), (0, 0))
+        # the desk's key cap (bplus.css `.cap`), at the size of a picture
+        look.keycap(img, (0, 0, w, h + lip))
         img.alpha_composite(label, (int((w - label.width) / 2),
                                     int((h - label.height) / 2)))
         cache[key] = img
@@ -153,9 +151,11 @@ def layout(card: dict, scale: float = 1.0, cache: dict | None = None) -> dict:
     pad = PAD * s
     inner = int(width - 2 * pad)
     y = pad
-    step = _text(cache, f"{card['index'] + 1} / {card['count']}",
-                 STEP_PT * s, colour=INK_FAINT, weight=600, rtl=False)
-    title = _text(cache, card["title"], TITLE_PT * s, weight=600, rtl=RTL)
+    step = look.text(cache, f"{card['index'] + 1} / {card['count']}",
+                     STEP_PT * s + 0.5, INK_MUTED, look.W_LABEL)
+    title = (look.text(cache, card["title"], TITLE_PT * s, INK, look.W_STRONG)
+             if not RTL else _text(cache, card["title"], TITLE_PT * s,
+                                   weight=600, rtl=RTL))
     items = [("step", step, y), ("title", title, y)]
     y += max(title.height, step.height) + 8 * s
     if card["picture"] == "key":
@@ -269,17 +269,17 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     for name in card["buttons"]:
         bx0, by0, bx1, by1 = boxes[name]
         hot = hover == name
+        # B+: the way on is the one lit button, Skip a pill of frost
         if name in (NEXT, DONE):
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(ACCENT_HI if hot else ACCENT) + (255,))
+            look.primary(img, (bx0, by0, bx1, by1), hover=hot, glow=False)
             colour = ACCENT_ON
         else:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(EDGE_HI if hot else EDGE) + (255,),
-                       outline=LINE + (255,))
+            look.quiet(img, (bx0, by0, bx1, by1), hover=hot)
             colour = INK
-        img.alpha_composite(face, (int(bx0), int(by0)))
-        lab = _text(cache, LABELS[name], 9.5 * s, colour=colour, weight=600, rtl=RTL)
+        lab = (look.text(cache, LABELS[name], 9.5 * s, colour,
+                         look.W_STRONG if name != SKIP else look.W_LABEL)
+               if not RTL else _text(cache, LABELS[name], 9.5 * s,
+                                     colour=colour, weight=600, rtl=RTL))
         img.alpha_composite(lab, (int((bx0 + bx1) / 2 - lab.width / 2),
                                   int((by0 + by1) / 2 - lab.height / 2)))
     return img
@@ -313,31 +313,40 @@ def flat(card: dict, scale: float = 1.0, hover: str | None = None,
                    (cx + w + t - 1, cy + p)]
         else:
             tri = [(cx, cy + p - half), (cx, cy + p + half), (0, cy + p)]
+        # the beak in the face's own colour where it leaves the card — B+'s
+        # glass is lit from above, so a beak off the foot is the foot's
+        top, foot = look.INK["glass_top"], look.INK["glass_bot"]
+        fill = {"top": top, "bottom": foot}.get(
+            beak, tuple((a + b) // 2 for a, b in zip(top, foot)))
         big = Image.new("RGBA", (fw * 4, fh * 4), (0, 0, 0, 0))
         d = ImageDraw.Draw(big)
-        d.polygon([(x * 4, y * 4) for x, y in tri], fill=CARD + (255,),
-                  outline=LINE + (255,), width=4)
+        d.polygon([(x * 4, y * 4) for x, y in tri], fill=fill + (255,))
         img.alpha_composite(big.resize((fw, fh), Image.LANCZOS))
-    # A rounded face on a clear ground, so the corners key out too.
-    face = _rr((w, h), RADIUS * s, fill=CARD + (255,),
-               outline=LINE + (255,), width=1)
+    # B+'s glass with nothing behind it (the window is chroma-keyed and
+    # cannot see through), rounded on a clear ground so the corners key
+    # out too.
+    face = look.glass(look.rounded((w, h), (0, 0, w, h), RADIUS * s),
+                      (0, 0, w, h), opaque=True)
     face.alpha_composite(compose(card, s, hover, cache))
+    img.alpha_composite(face, (cx, cy))
     if beak is not None:
-        # The card's outline runs across the beak's base; the beak's own
-        # fill, laid over it, opens the base so the two read as one shape.
-        t = fw - w if beak in ("left", "right") else fh - h
+        # The face's rim runs across the beak's base; the beak's own fill,
+        # laid over it, opens the base so the two read as one shape.
         half = TAIL_W * s / 2 - 1
         p = clamp_tail(card, s, beak, at if at is not None else 0, cache)
-        d = ImageDraw.Draw(face)
+        d = ImageDraw.Draw(img)
         if beak == "bottom":
-            d.line([(p - half, h - 1), (p + half, h - 1)], fill=CARD + (255,))
+            d.line([(cx + p - half, cy + h - 1), (cx + p + half, cy + h - 1)],
+                   fill=fill + (255,))
         elif beak == "top":
-            d.line([(p - half, 0), (p + half, 0)], fill=CARD + (255,))
+            d.line([(cx + p - half, cy), (cx + p + half, cy)],
+                   fill=fill + (255,))
         elif beak == "right":
-            d.line([(w - 1, p - half), (w - 1, p + half)], fill=CARD + (255,))
+            d.line([(cx + w - 1, cy + p - half), (cx + w - 1, cy + p + half)],
+                   fill=fill + (255,))
         else:
-            d.line([(0, p - half), (0, p + half)], fill=CARD + (255,))
-    img.alpha_composite(face, (cx, cy))
+            d.line([(cx, cy + p - half), (cx, cy + p + half)],
+                   fill=fill + (255,))
     return img.convert("RGB")
 
 

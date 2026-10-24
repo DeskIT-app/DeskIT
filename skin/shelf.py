@@ -88,7 +88,7 @@ def _frost(x: int, y: int, width: int, height: int):
 
 def face(canvas, width: int, height: int, scale: float, backdrop=None,
          x0: int = SHADOW, y0: int = SHADOW, shadow: bool = False,
-         tail=None) -> None:
+         tail=None, cache: dict | None = None) -> None:
     """The glass under the words: frost, face, rim, hairline — on the
     bubble's path.
 
@@ -103,12 +103,10 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None,
     """
     import skia
 
-    from . import bubble
-    from .palette import BG, CARD, LINE, FG, argb
+    from .palette import argb
 
     s = sc.clamp_scale(scale)
     radius = RADIUS * s
-    path = bubble.skia_path(width, height, radius, tail, x0, y0)
 
     if shadow:
         rect = skia.Rect.MakeXYWH(x0, y0, width, height)
@@ -124,40 +122,47 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None,
                     radius + grow, radius + grow),
                 skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
 
-    # The frost, clipped to the bubble with doAntiAlias=True. Without
-    # that flag the clip is a hard 1-bit mask and the blurred desktop would
-    # stair-case out to the corner of the image — a square edge again, made
-    # of the backdrop this time instead of the face.
-    if backdrop is not None:
-        canvas.save()
-        canvas.clipPath(path, doAntiAlias=True)
-        canvas.drawImage(_to_skia(backdrop), 0, 0)
-        canvas.restore()
+    # B+ (2026-10-23): look.glass — the frost under a navy face lit from
+    # above, its light at the top-left, the inner top light and the
+    # frosted rim — cut to the bubble. The path is rasterised by skia
+    # with antialiasing into the mask, so the tail's legs and its tip keep
+    # the smoothness he judged them by at 3-4x (2026-09-21); outside the
+    # curve every pixel stays alpha 0 all the way to UpdateLayeredWindow.
+    key = ("face", int(width), int(height), round(s, 3), int(x0), int(y0),
+           tail, id(backdrop) if backdrop is not None else None)
+    img = cache.get(key) if cache is not None else None
+    if img is None:
+        img = face_image(width, height, scale, backdrop, x0, y0, tail)
+        if cache is not None:
+            cache[key] = img
+    canvas.drawImage(_to_skia(img), 0, 0)
 
-    # The face: a hair lighter at the top the way a surface lit from above
-    # actually is, and translucent (FACE_A of 255) so the frost behind it
-    # still reads as the desktop rather than as a texture.
-    canvas.drawPath(path, skia.Paint(
-        AntiAlias=True, Dither=True,
-        Shader=skia.GradientShader.MakeLinear(
-            points=[(x0, y0), (x0, y0 + height)],
-            colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
-            positions=[0.0, 1.0])))
-    canvas.drawPath(path, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(180, LINE)))
-    # A specular hairline on the top edge only, 60% of the width, fading at
-    # both ends — the cheapest thing that says "glass". It stops well short
-    # of the corners so it never fights the curve.
-    canvas.drawLine(
-        x0 + width * 0.20, y0 + 0.5, x0 + width * 0.80, y0 + 0.5,
-        skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                   StrokeWidth=1.0,
-                   Shader=skia.GradientShader.MakeLinear(
-                       points=[(x0 + width * 0.20, y0),
-                               (x0 + width * 0.80, y0)],
-                       colors=[argb(0, FG), argb(64, FG), argb(0, FG)],
-                       positions=[0.0, 0.5, 1.0])))
+
+def face_image(width: int, height: int, scale: float, backdrop=None,
+               x0: int = SHADOW, y0: int = SHADOW, tail=None):
+    """The panel's glass as a Pillow picture the window's size: B+'s
+    look.glass in the bubble's outline. `backdrop` is the photograph of
+    what is behind the WINDOW (already its size)."""
+    import skia
+
+    import look
+    from . import bubble
+
+    s = sc.clamp_scale(scale)
+    W, H = int(width + 2 * x0), int(height + 2 * y0)
+    path = bubble.skia_path(width, height, RADIUS * s, tail, x0, y0)
+    surface = skia.Surface.MakeRasterN32Premul(W, H)
+    shape = surface.getCanvas()
+    shape.clear(0x00000000)
+    shape.drawPath(path, skia.Paint(AntiAlias=True, Color=0xFFFFFFFF))
+    pixels = surface.makeImageSnapshot().toarray(
+        colorType=skia.kRGBA_8888_ColorType)
+    from PIL import Image
+    mask = Image.fromarray(pixels[..., 3].copy(), "L")
+    frost = backdrop
+    if frost is not None and frost.size != (W, H):
+        frost = frost.resize((W, H))
+    return look.glass(mask, (x0, y0, x0 + width, y0 + height), frost)
 
 
 def run(shelf) -> None:
@@ -292,7 +297,7 @@ def run(shelf) -> None:
         canvas.clear(0x00000000)
         width, height = sc.measure(shown, shelf.scale)
         face(canvas, width, height, shelf.scale, frost, SHADOW, SHADOW,
-             tail=tail_now(width, height))
+             tail=tail_now(width, height), cache=cache)
         canvas.drawImage(_to_skia(picture), SHADOW, SHADOW)
         glass.flush()
         last_paint = time.monotonic()

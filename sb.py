@@ -567,9 +567,9 @@ def _pkce() -> tuple[str, str]:
 # THE PAGE THE BROWSER LANDS ON. It is the last thing the person sees
 # before the app, and until 2026-09-19 it was a bare white page in Hebrew
 # — "you can close this tab" — over which he had to go and find the
-# window himself. It is the app's own surface now: LAMPLIGHT (skin\
-# palette.py — ground #14110C, card #24201A, text #F1ECE2, dim #B2A896,
-# the gold #E3A63C only where the palette allows it, the focus ring), the
+# window himself. It is the app's own surface now: B+ since 2026-10-23,
+# LAMPLIGHT before (skin\palette.py — ground #0B0D19, card #1A1E35, text
+# #EFEDF7, dim #C0C3D8, the iris #A597FF only as the focus ring), the
 # mark inline from icon.png, English (the first-run flow's language, his
 # decision that night), one card, one plain button. Nothing is fetched:
 # no font, no script, no image from anywhere — a page on 127.0.0.1 that
@@ -581,24 +581,24 @@ def _pkce() -> tuple[str, str]:
 _PAGE_CSS = (
     ":root{color-scheme:dark}"
     "html,body{height:100%;margin:0}"
-    "body{background:#14110c radial-gradient(60% 45% at 50% 0%,#292011 0%,#14110c 70%);"
-    "color:#f1ece2;font-family:system-ui,'Segoe UI',Rubik,Arial,sans-serif;"
+    "body{background:#0b0d19 radial-gradient(60% 45% at 50% 0%,#1a1b30 0%,#0b0d19 70%);"
+    "color:#efedf7;font-family:system-ui,'Segoe UI',Rubik,Arial,sans-serif;"
     "display:flex;align-items:center;justify-content:center;box-sizing:border-box;"
     "padding:24px 16px;-webkit-font-smoothing:antialiased}"
-    "main{background:#24201a;border:1px solid #3a342a;border-radius:16px;"
+    "main{background:#1a1e35;border:1px solid #30365a;border-radius:22px;"
     "padding:40px 36px 34px;max-width:420px;width:100%;text-align:center;"
     "box-shadow:0 24px 60px rgba(0,0,0,.45)}"
     ".mark{width:72px;height:72px;display:block;margin:0 auto 22px;border-radius:17px}"
     "h1{font-size:22px;font-weight:600;line-height:1.3;margin:0 0 10px;letter-spacing:-.01em}"
-    "p{color:#b2a896;font-size:15px;line-height:1.55;margin:0 0 26px}"
-    "p.why{color:#f1ece2;background:#1c1813;border:1px solid #3a342a;border-radius:10px;"
+    "p{color:#c0c3d8;font-size:15px;line-height:1.55;margin:0 0 26px}"
+    "p.why{color:#efedf7;background:#121527;border:1px solid #30365a;border-radius:14px;"
     "padding:10px 14px;font-size:14px;word-break:break-word}"
-    "button{font:inherit;font-size:15px;font-weight:600;color:#f1ece2;background:#29241d;"
-    "border:1px solid #4e4737;border-radius:10px;padding:11px 24px;cursor:pointer}"
-    "button:hover{background:#332d24;border-color:#5a5240}"
-    "button:active{background:#1f1b15}"
-    "button:focus-visible{outline:2px solid #e3a63c;outline-offset:2px}"
-    "small{display:block;margin-top:20px;color:#7e7564;font-size:12px}"
+    "button{font:inherit;font-size:15px;font-weight:500;color:#efedf7;background:#242944;"
+    "border:1px solid #454c78;border-radius:999px;padding:11px 26px;cursor:pointer}"
+    "button:hover{background:#2a3050;border-color:#525a88}"
+    "button:active{background:#161a2e}"
+    "button:focus-visible{outline:2px solid #a597ff;outline-offset:2px}"
+    "small{display:block;margin-top:20px;color:#a4a9c2;font-size:12px}"
 )
 _PAGE_JS = (
     "function shut(){window.close();setTimeout(function(){"

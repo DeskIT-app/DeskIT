@@ -29,20 +29,23 @@ from __future__ import annotations
 from PIL import Image
 
 import review_card as rc
-from review_card import (ACCENT, ACCENT_HI, ACCENT_ON, CARD, EDGE, EDGE_HI,
-                         HTCAPTION, HTCLIENT, HTTRANSPARENT, INK, INK_DIM,
-                         INK_FAINT, LINE, SHADOW, _rr, _text, clamp_scale)
+import look
+from review_card import (ACCENT_ON, HTCAPTION, HTCLIENT, HTTRANSPARENT, INK,
+                         INK_DIM, INK_MUTED, SHADOW, _text, clamp_scale)
 
-CARD_W = 460
+CARD_W = 560              # 460 until the table (2026-10-23): a column of
+                          # labels beside the words needs the room
 RADIUS = 20
-PAD = 18
-TITLE_PT = 13.0
+PAD = 22
+TITLE_PT = 14.5
 LABEL_PT = 8.5
+LABEL_W = 132             # the labels' column
 BODY_PT = 10.0
 FOOT_PT = 8.5
-BLOCK_GAP = 10
+BLOCK_GAP = 12
 BTN_H = 32
 BTN_GAP = 8
+BAND_PAD = 14             # above and below the buttons, inside their strip
 
 TURN_ON, NOT_NOW, DRAG = "turn_on", "not_now", "drag"
 BUTTONS = ((TURN_ON, 124), (NOT_NOW, 112))       # name, width at 1.0
@@ -230,24 +233,42 @@ def layout(card: dict, scale: float = 1.0, cache: dict | None = None) -> dict:
     width = int(round(CARD_W * s))
     pad = PAD * s
     inner = int(width - 2 * pad)
-    y = pad
-    title = _text(cache, card["title"], TITLE_PT * s, weight=600, rtl=RTL)
-    items = [("title", title, y)]
-    y += title.height + 8 * s
+    y = pad + 4 * s
+    title = (look.text(cache, card["title"], TITLE_PT * s, INK, look.W_STRONG)
+             if not RTL else _text(cache, card["title"], TITLE_PT * s,
+                                   weight=600, rtl=RTL))
+    items = [("title", title, y, 0)]
+    y += title.height + 14 * s
+    rule_y = y
+    y += 14 * s
+    # A CLASSIC DIALOG (2026-10-23, the owner: "more classic"): the facts
+    # are a two-column table — what is asked on the left, the answer
+    # beside it — rather than a heading over every paragraph. English
+    # reads from the left, so the labels' column is the left one.
+    col = int(LABEL_W * s)
+    body_w = inner - col
     for label, text in card["blocks"]:
-        lab = _text(cache, label, LABEL_PT * s, colour=INK_FAINT, weight=600, rtl=RTL)
-        items.append(("label", lab, y))
-        y += lab.height + 3 * s
-        body = _body(cache, text, BODY_PT * s, inner)
-        items.append(("body", body, y))
-        y += body.height + BLOCK_GAP * s
-    foot = _body(cache, card["footer"], FOOT_PT * s, inner, colour=INK_DIM)
-    items.append(("footer", foot, y))
-    y += foot.height + 12 * s
+        lab = (look.text(cache, label, LABEL_PT * s + 1.0, INK_MUTED,
+                         look.W_LABEL) if not RTL
+               else _text(cache, label, LABEL_PT * s, colour=INK_MUTED,
+                          weight=600, rtl=RTL))
+        body = _body(cache, text, BODY_PT * s, body_w)
+        lx, bx = (0, col) if not RTL else (inner - lab.width, 0)
+        items.append(("label", lab, y + 2 * s, lx))
+        items.append(("body", body, y, bx))
+        y += max(lab.height, body.height) + BLOCK_GAP * s
+    y += 2 * s
+    foot = _body(cache, card["footer"], FOOT_PT * s, inner, colour=INK_MUTED)
+    items.append(("footer", foot, y, 0))
+    y += foot.height + 20 * s
+    # the commands, on their own strip across the foot of the card
+    band_y = y
+    y += BAND_PAD * s
     buttons_y = y
-    y += BTN_H * s + pad
+    y += BTN_H * s + BAND_PAD * s
     return {"scale": s, "width": width, "height": int(round(y)),
-            "items": items, "buttons_y": buttons_y, "pad": pad}
+            "items": items, "buttons_y": buttons_y, "pad": pad,
+            "rule_y": rule_y, "band_y": band_y}
 
 
 def measure(card: dict, scale: float = 1.0,
@@ -301,23 +322,30 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     right = width - lay["pad"]
     left = lay["pad"]
-    for kind, piece, y in lay["items"]:
-        img.alpha_composite(piece, (int(right - piece.width) if RTL else int(left), int(y)))
+    # the command strip: a step darker than the sheet, edge to edge, with
+    # a hairline along its top — the classic dialog's foot
+    band = Image.new("RGBA", (width, height - int(lay["band_y"])),
+                     look.INK["well"] + (70,))
+    img.alpha_composite(band, (0, int(lay["band_y"])))
+    look.fade_rule(img, 0, width, lay["band_y"], a=40)
+    look.fade_rule(img, left, right, lay["rule_y"])
+    for kind, piece, y, x in lay["items"]:
+        if kind in ("title", "footer") and RTL:
+            x = right - left - piece.width
+        img.alpha_composite(piece, (int(left + x), int(y)))
     boxes = regions(card, s, cache)
     for name, _w in BUTTONS:
         bx0, by0, bx1, by1 = (v - SHADOW for v in boxes[name])
         hot = hover == name
+        # B+: the one lit button, and a pill of frost beside it
         if name == TURN_ON:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(ACCENT_HI if hot else ACCENT) + (255,))
+            look.primary(img, (bx0, by0, bx1, by1), hover=hot)
             colour = ACCENT_ON
         else:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(EDGE_HI if hot else EDGE) + (255,),
-                       outline=LINE + (255,))
+            look.quiet(img, (bx0, by0, bx1, by1), hover=hot)
             colour = INK
-        img.alpha_composite(face, (int(bx0), int(by0)))
-        lab = _text(cache, LABELS[name], 9.5 * s, colour=colour, weight=600)
+        lab = look.text(cache, LABELS[name], 9.5 * s, colour,
+                        look.W_STRONG if name == TURN_ON else look.W_LABEL)
         img.alpha_composite(lab, (int((bx0 + bx1) / 2 - lab.width / 2),
                                   int((by0 + by1) / 2 - lab.height / 2)))
     return img
@@ -330,9 +358,10 @@ def flat(card: dict, scale: float = 1.0, hover: str | None = None,
     cache = cache if cache is not None else {}
     width, height = measure(card, scale, cache)
     s = clamp_scale(scale)
-    face = Image.new("RGBA", (width, height), CARD + (255,))
-    face.alpha_composite(_rr((width, height), RADIUS * s, fill=None,
-                             outline=LINE + (255,), width=1))
+    # B+'s glass with nothing behind it — the Tk window cannot see
+    # through — square to its edges: the window's corner is Windows' own
+    face = look.glass(Image.new("L", (width, height), 255),
+                      (0, 0, width, height), opaque=True)
     face.alpha_composite(compose(card, s, hover, cache))
     return face
 

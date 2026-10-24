@@ -65,13 +65,11 @@ import time
 import notify_card as nc
 from PIL import Image
 from .glass import DWM_RADIUS, Glass, primary_screen, virtual_screen
-from .palette import BG, CARD, LINE, FG, argb
 
 _log = logging.getLogger("app")
 
 SHADOW = nc.SHADOW        # the room the window leaves round the card
 RADIUS = nc.RADIUS
-FACE_A = 202              # the face's alpha — skin\hint.py's glass weight
 BLUR = 11
 TICK_S = 0.03             # the loop; a click must feel immediate
 REPAINT_S = 0.1           # the clock: ten frames a second is smooth enough
@@ -142,10 +140,64 @@ def _frost(x: int, y: int, width: int, height: int):
 # has no single instant to freeze.
 
 
+def blur_inset(radius: float) -> int:
+    """How far in from a piece's edge its live-blur window has to start
+    so that Windows' own corner (DWM_RADIUS, the one shape the compositor
+    honours) lies wholly inside this face's rounder one: the 8 px arc's
+    centre may sit at most (radius - 8) from the face's arc centre, which
+    puts the window (radius - 8)(1 - 1/sqrt 2) in from the edge — 4.1 px
+    for B+'s 22 — and one pixel more for the antialiasing. A face whose
+    corner is no rounder than Windows' needs none."""
+    if radius <= DWM_RADIUS:
+        return 0
+    return int((radius - DWM_RADIUS) * (1.0 - 0.5 ** 0.5)) + 2
+
+
+def face_image(width: int, height: int, scale: float, backdrop=None,
+               x0: int = 0, y0: int = 0, radius: float | None = None,
+               backdrop_at: tuple = (0, 0), dense_edge: float = 0.0,
+               cache: dict | None = None):
+    """ONE piece's glass as a Pillow picture its size: look.glass — the
+    frost, B+'s navy face lit from above, its light at the top-left, the
+    inner top light and the frosted rim — cut to a rounded rectangle.
+
+    `backdrop` is the photograph of what is behind the WINDOW, taken with
+    its top-left at `backdrop_at` (window-relative), so this piece is
+    given the part of it that is actually behind the piece. Kept in
+    `cache` on everything it was made from: a hover repaints the column,
+    and the glass under it has not changed."""
+    s = nc.clamp_scale(scale)
+    radius = RADIUS * s if radius is None else float(radius)
+    key = ("face", int(width), int(height), round(radius, 2),
+           id(backdrop) if backdrop is not None else None,
+           tuple(backdrop_at), int(x0), int(y0), round(dense_edge, 2))
+    if cache is not None:
+        got = cache.get(key)
+        if got is not None:
+            return got
+    import look
+    w, h = int(width), int(height)
+    mask = look.rounded((w, h), (0, 0, w, h), radius)
+    frost = None
+    if backdrop is not None:
+        bx, by = backdrop_at
+        frost = backdrop.convert("RGBA").crop((x0 - bx, y0 - by,
+                                               x0 - bx + w, y0 - by + h))
+    img = look.glass(mask, (0, 0, w, h), frost, dense_edge=dense_edge)
+    if cache is not None:
+        cache[key] = img
+    return img
+
+
 def face(canvas, width: int, height: int, scale: float, backdrop=None,
          x0: int = SHADOW, y0: int = SHADOW, radius: float | None = None,
-         backdrop_at: tuple = (0, 0)) -> None:
-    """The glass under the words: frost, face, rim, hairline — no shadow.
+         backdrop_at: tuple = (0, 0), dense_edge: float = 0.0,
+         cache: dict | None = None) -> None:
+    """The glass under the words: frost, face, rim, light — no shadow.
+
+    B+ SINCE 2026-10-23: the picture is face_image's (look.glass), drawn
+    on the skia canvas; what is written below about the corners, the
+    margin and the frost is still how it is placed.
 
     skin\\review.py's recipe at the same offsets and the same alphas, on
     purpose — the review card and the notify card are the same object to
@@ -174,61 +226,13 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None,
     `radius` is the corner's, RADIUS at the scale by default; the
     Clear-all pill passes half its height and is a capsule.
     """
-    import skia
-    s = nc.clamp_scale(scale)
-    rect = skia.Rect.MakeXYWH(x0, y0, width, height)
-    radius = RADIUS * s if radius is None else float(radius)
-    rrect = skia.RRect.MakeRectXY(rect, radius, radius)
-    # NO DROP SHADOW, BY REQUEST (2026-09-04). This used to be six offset
-    # round-rects with geometrically decaying alpha — boot.py's recipe,
-    # drawn outside the face in the SHADOW margin — and the owner asked for
-    # it gone: "I want without, only like the box, the message. Without the
-    # shadow that it's outside the box." So the only thing this window
-    # paints outside the curve now is nothing at all.
-    #
-    # The SHADOW margin itself STAYS, empty. It is transparent, the hit
-    # test already hands it back to the desktop, and it is load-bearing
-    # arithmetic everywhere else: notify_card.measure() sizes the window by
-    # it, regions()/hit_test() are expressed in it, origin() subtracts it so
-    # a dragged card is saved by the CARD's top-left rather than the
-    # window's, and the position in [notify] x/y was written under that
-    # rule. Reclaiming the 26 px would move a card the owner has already
-    # placed, to buy back pixels nobody can see.
-    # The frost, clipped to the rounded face with doAntiAlias=True. Without
-    # that flag the clip is a hard 1-bit mask and the blurred desktop would
-    # stair-case out to the corner of the image — a square edge again, made
-    # of the backdrop this time instead of the face.
-    if backdrop is not None:
-        canvas.save()
-        canvas.clipRRect(rrect, doAntiAlias=True)
-        if not isinstance(backdrop, skia.Image):
-            backdrop = _to_skia(backdrop)
-        canvas.drawImage(backdrop, *backdrop_at)
-        canvas.restore()
-    # The face: a hair lighter at the top the way a surface lit from above
-    # actually is, and translucent (FACE_A of 255) so the frost behind it
-    # still reads as the desktop rather than as a texture.
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Dither=True,
-        Shader=skia.GradientShader.MakeLinear(
-            points=[(x0, y0), (x0, y0 + height)],
-            colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
-            positions=[0.0, 1.0])))
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(180, LINE)))
-    # A specular hairline on the top edge only, 60% of the width, fading at
-    # both ends — the cheapest thing that says "glass". It stops well short
-    # of the corners so it never fights the curve.
-    canvas.drawLine(
-        x0 + width * 0.20, y0 + 0.5, x0 + width * 0.80, y0 + 0.5,
-        skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                   StrokeWidth=1.0,
-                   Shader=skia.GradientShader.MakeLinear(
-                       points=[(x0 + width * 0.20, y0),
-                               (x0 + width * 0.80, y0)],
-                       colors=[argb(0, FG), argb(64, FG), argb(0, FG)],
-                       positions=[0.0, 0.5, 1.0])))
+    # NO DROP SHADOW, BY REQUEST (2026-09-04): "I want without, only like
+    # the box, the message." The SHADOW margin stays, empty and
+    # transparent: notify_card.measure() sizes the window by it, the hit
+    # test is expressed in it and [notify] x/y was written under it.
+    img = face_image(width, height, scale, backdrop, x0, y0, radius,
+                     backdrop_at, dense_edge, cache)
+    canvas.drawImage(_to_skia(img), x0, y0)
 
 
 def run(card) -> None:
@@ -448,21 +452,26 @@ def run(card) -> None:
         # where the window was then, and a column that has since grown or
         # shrunk has moved its top-left
         at = (frost_at[0] - glass.x, frost_at[1] - glass.y)
-        # Over the live blur every corner is the COMPOSITOR'S: the blur
-        # window under each piece is rounded by Windows at DWM_RADIUS and
-        # by nothing else (see Glass.blur_behind), so a face drawn rounder
-        # than that would leave a sliver of blur outside its own curve.
-        corner = DWM_RADIUS if live else None
+        # Over the live blur the faces keep B+'s round corner (2026-10-23).
+        # Windows rounds a blur window at DWM_RADIUS and at nothing else
+        # (Glass.blur_behind), so each one sits blur_inset() px INSIDE its
+        # piece (sync_behind) with its 8 px corner wholly under this curve,
+        # and the face is drawn nearly opaque over the band round its edge
+        # where the desktop behind is not blurred (`dense_edge`). Until
+        # then the face itself was drawn at DWM_RADIUS.
         pill = nc.clear_box(shown, s)
         if pill is not None:
             pw, ph = pill[2] - pill[0], pill[3] - pill[1]
             face(canvas, pw, ph, s, frost, pill[0], pill[1],
-                 radius=corner if live else ph / 2, backdrop_at=at)
+                 radius=ph / 2, backdrop_at=at,
+                 dense_edge=blur_inset(ph / 2) + 1 if live else 0,
+                 cache=cache)
             canvas.drawImage(_to_skia(nc.compose_clear(
                 shown, s, hover == (None, nc.CLEAR), cache)), pill[0], pill[1])
         for index, (x, y, w, h) in enumerate(nc.stack_layout(shown, s)):
-            face(canvas, w, h, s, frost, x, y, radius=corner,
-                 backdrop_at=at)
+            face(canvas, w, h, s, frost, x, y, backdrop_at=at,
+                 dense_edge=blur_inset(RADIUS * s) + 1 if live else 0,
+                 cache=cache)
             # compose(), never flat(): flat() is the Tk fallback's OPAQUE
             # face with the same content on top, and drawing it here would
             # paint a solid CARD rectangle over the rounded glass — the
@@ -540,8 +549,11 @@ def run(card) -> None:
         nonlocal live
         if glass is None or shown is None or not live:
             return False
-        want = [(int(x), int(y), int(w), int(h))
-                for x, y, w, h, _r in nc.stack_shapes(shown, card.scale)]
+        want = []
+        for x, y, w, h, r in nc.stack_shapes(shown, card.scale):
+            d = blur_inset(r)
+            want.append((int(x) + d, int(y) + d, int(w) - 2 * d,
+                         int(h) - 2 * d))
         gx, gy = glass.x, glass.y
         while len(behind) > len(want):
             behind.pop().close()

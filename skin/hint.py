@@ -92,20 +92,22 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .face import disc, plate, rule, shape
+import look
+
+from .face import plate, rule, shape
 from .glass import (Glass, primary_screen, virtual_screen, work_area,
                     cursor, primary_button_down,
                     HTTRANSPARENT, HTCLIENT, HTCAPTION, HTBOTTOMRIGHT)
-from .palette import (BG, LINE, FG, KEY_BG, KEY_EDGE, LINE_HI, DOT_STATES,
-                      ACCENT, ACCENT_ON, ACCENT_TEXT, rgb)
+from .palette import (BG, LINE, FG, DIM, MUTED, FAINT, DOT_STATES, ACCENT,
+                      ACCENT_ON, ACCENT_TEXT, rgb)
 
 _log = logging.getLogger("app")
 
 # Every length below is at scale 1.0 and multiplied by the scale; every
 # text size is in points at 96 dpi, the dpi this process draws at.
-RADIUS = 18
+RADIUS = 22               # B+'s corner (18 under LAMPLIGHT)
 PAD = 16
-HEAD_H = 34               # the head line: title left, − + and × right
+HEAD_H = 34              # the head line: title left, − + and × right
 RULE_GAP = 8              # between a hairline and what is under it
 GROUP_H = 22              # a group's heading and the hairline beside it
 GROUP_GAP = 6             # between the last row of a group and the next
@@ -140,12 +142,15 @@ PT_LABEL = 12.0
 PT_KEY = 10.5
 PT_GROUP = 9.5
 PT_FOOT = 10.5
-W_TEXT, W_STRONG = 400, 600   # Rubik's wght axis: words, and titles/caps
+W_TEXT, W_STRONG = 400, 500   # Rubik's wght axis: words, and titles/caps
+#                               (B+'s --w-body and --w-strong; 600 until
+#                               2026-10-23)
 TEXT_SS = 4               # text is drawn at 4x and reduced (`_text`)
 
-INK = (241, 236, 226)        # FG      13.76:1 on the card
-INK_DIM = (178, 168, 150)    # DIM      6.89:1
-INK_FAINT = (126, 117, 100)  # FAINT    3.56:1 - labels and rules only
+INK = rgb(FG)                # FG      14.15:1 on the card (B+)
+INK_DIM = rgb(DIM)           # DIM      9.40:1
+INK_MUTED = rgb(MUTED)       # MUTED    7.05:1 - group names, the grip
+INK_FAINT = rgb(FAINT)       # FAINT    3.61:1 - labels and rules only
 INK_KEY = rgb(FG)            # A KEY CHIP IS A KEY CAP, NOT A BUTTON.
 #                              Fifteen chips in the accent turned this card
 #                              into fifteen primary actions competing for
@@ -655,33 +660,32 @@ def paint(card: dict, backdrop=None, scale: float = 1.0,
     # the left; × on the right; the whole strip is the handle.
     mid = lay.line_mid
     bead = DOTS.get(card.get("dot"), DOTS["ready"])
-    bx, br = left + 5 * s, 4.5 * s
-    img.alpha_composite(disc(img.size, bx, mid, br * 2.2, bead + (34,)))
-    img.alpha_composite(disc(img.size, bx, mid, br, bead + (255,)))
+    # the state is the desk's lamp: the bead, its rings and its light (B+)
+    look.lamp(img, left + 5 * s, mid, bead, r=4.5 * s, rings=True)
     title = _text(card["title"], PT_TITLE * s, weight=W_STRONG)
-    put(title, left + 16 * s, mid)
-    sub = _text(card["sub"], PT_SUB * s, colour=INK_DIM)
-    put(sub, left + 16 * s + title.width + 10 * s, mid)
+    put(title, left + 18 * s, mid)
+    sub = _text(card["sub"], PT_SUB * s, colour=INK_MUTED)
+    put(sub, left + 18 * s + title.width + 10 * s, mid)
 
-    ink = rgb(FG) + (215,)
+    ink = rgb(DIM) + (255,)
     bx0, by0, bx1, by1 = boxes[CLOSE]
-    _rrect(img, (bx0, by0, bx1, by1), 5 * s, fill=rgb(BG) + (110,),
-           outline=rgb(LINE_HI) + (150,))
-    cx, cy, arm = (bx0 + bx1) / 2, (by0 + by1) / 2, 4.5 * s
+    cx, cy, arm = (bx0 + bx1) / 2, (by0 + by1) / 2, 4.0 * s
+    # the X is the desk's round control
+    look.disc(img, cx, cy, (by1 - by0) / 2 + 2 * s)
     _strokes(img, [(cx - arm, cy - arm, cx + arm, cy + arm),
-                   (cx - arm, cy + arm, cx + arm, cy - arm)], ink, 1.6 * s)
+                   (cx - arm, cy + arm, cx + arm, cy - arm)], ink, 1.5 * s)
 
     # -- the size grip: two short diagonals in the bottom-right corner, the
     # mark every window's corner has carried. Inside the corner's curve:
     # the outer one stops 6 px in from both edges, where the radius has
     # long since turned.
-    gx, gy = x0 + lay.width - 6 * s, y0 + lay.height - 6 * s
-    grip_ink = INK_DIM + (190,)
+    gx, gy = x0 + lay.width - 7 * s, y0 + lay.height - 7 * s
+    grip_ink = INK_MUTED + (190,)
     _strokes(img, [(gx - 9 * s, gy, gx, gy - 9 * s),
                    (gx - 4.5 * s, gy, gx, gy - 4.5 * s)], grip_ink, 1.4 * s)
 
     y = y0 + (PAD + HEAD_H) * s
-    _rule(img, x0 + pad, right, y, line + (150,))
+    look.fade_rule(img, x0 + pad, right, y)
 
     # -- the keys, in their columns: a cap at the column's left edge and
     # its words to the right of it, every cap one width.
@@ -690,21 +694,20 @@ def paint(card: dict, backdrop=None, scale: float = 1.0,
         y = lay.body_top
         for gi, (name, items) in enumerate(column):
             if name:
-                head = _text(name, PT_GROUP * s, colour=INK_FAINT,
-                             weight=W_STRONG)
+                head = _text(name, PT_GROUP * s, colour=INK_MUTED,
+                             weight=460)
                 put(head, edge, y + GROUP_H * s / 2 - 2 * s)
-                _rule(img, edge + head.width + 8 * s, edge + col_w,
-                      y + GROUP_H * s / 2 - 2 * s, line + (90,))
                 y += GROUP_H * s
             for key, label, on in items:
                 top = y + (ROW_H - CHIP_H) / 2 * s
                 cy = top + CHIP_H * s / 2
                 box = (edge, top, edge + cw, top + CHIP_H * s)
-                _rrect(img, box, 7 * s,
-                       fill=(rgb(KEY_BG) + (190,)) if on
-                       else (rgb(BG) + (120,)),
-                       outline=(rgb(KEY_EDGE) + (200,)) if on
-                       else (line + (110,)))
+                if on:
+                    # the desk's key cap (bplus.css `.cap`)
+                    look.keycap(img, box)
+                else:
+                    _rrect(img, box, 7 * s, fill=rgb(BG) + (90,),
+                           outline=line + (130,))
                 if key in ARROWS:
                     _arrow(img, edge + cw / 2, cy, ARROWS[key], s,
                            (INK_KEY if on else INK_FAINT) + (255,))
@@ -720,7 +723,7 @@ def paint(card: dict, backdrop=None, scale: float = 1.0,
                 y += GROUP_GAP * s
 
     fy = lay.foot_y
-    _rule(img, x0 + pad, right, fy - RULE_GAP * s + 4 * s, line + (110,))
+    look.fade_rule(img, x0 + pad, right, fy - RULE_GAP * s + 4 * s)
     # the footer: the box at the left and its words beside it; ticked, it
     # is lit, and the X is what makes it count. The fold button, when the
     # card has one, at the right end.
@@ -734,15 +737,13 @@ def paint(card: dict, backdrop=None, scale: float = 1.0,
                        (l + 0.43 * b, t + 0.71 * b, l + 0.77 * b, t + 0.31 * b)],
                  rgb(ACCENT_ON) + (255,), 1.9 * s)
     else:
-        _rrect(img, tick, 4 * s, fill=rgb(BG) + (120,),
-               outline=rgb(LINE_HI) + (220,))
+        look.quiet(img, tick, radius=5 * s)
     foot = _text(card["footer"], PT_FOOT * s,
                  colour=INK if ticked else INK_DIM)
     put(foot, left + (BOX + 8) * s, cy)
     if lay.toggle:
         tx0, ty0, tx1, ty1 = boxes[MORE]
-        _rrect(img, (tx0, ty0, tx1, ty1), 6 * s, fill=rgb(BG) + (110,),
-               outline=rgb(LINE_HI) + (170,))
+        look.quiet(img, (tx0, ty0, tx1, ty1))
         words = _text(lay.toggle, PT_FOOT * s, colour=rgb(ACCENT_TEXT),
                       weight=W_STRONG)
         put(words, (tx0 + tx1) / 2 - words.width / 2, cy)

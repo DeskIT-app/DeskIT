@@ -70,13 +70,15 @@ from datetime import datetime
 
 from PIL import Image, ImageDraw
 
+import look
+
 # Win32 hit-test answers, spelled out so this module needs no skin import.
 HTTRANSPARENT, HTCLIENT, HTCAPTION = -1, 1, 2
 
 CARD_W = 360
 SHADOW = 26               # room a glass window would leave around the card
 PAD = 16
-RADIUS = 20
+RADIUS = 22               # B+'s corner (20 under LAMPLIGHT)
 BODY_LINES = 4
 SCALE_MIN, SCALE_MAX = 0.6, 1.4
 
@@ -100,13 +102,12 @@ CLEAR_TEXT = "Clear all"
 # on it, and a notification can never carry it (notify ids are numbers).
 PIN_ID = "awake:screens"
 
-# One colour per kind: the bar across the top, the label and the badge.
-# LAMPLIGHT semantics: done is the success green, input is the ACCENT
-# (in this app "your attention is wanted" and "the primary action" are
-# the same sentence, so they are the same colour on purpose), error is
-# the danger red and info is COOL — the one cool point in a warm world.
-KIND_COLOUR = {"done": (99, 200, 140), "input": (227, 166, 60),
-               "error": (241, 134, 122), "info": (143, 192, 240)}
+# One colour per kind: the lamp before the sender's name, and the clock.
+# B+ semantics (2026-10-23): done is the success green, input is AMBER —
+# worth a look, and no longer the accent, which is the action's colour
+# now — error is the danger red and info the listening blue.
+KIND_COLOUR = {"done": (95, 219, 166), "input": (255, 184, 77),
+               "error": (255, 110, 126), "info": (77, 184, 255)}
 FOOTER = "Esc / click to dismiss"
 
 # Row heights at scale 1.0. Chrome rows are fixed so the card's height is
@@ -142,12 +143,14 @@ STACK_MAX = 8             # the ceiling [notify] stack_max is validated
                           # defaults well under it
 
 # skin\palette.py's values, spelled out: this module is reached with the
-# skin folder deleted. Tuples, because Pillow wants them.
-INK = (241, 236, 226)        # FG      13.76:1 on the card
-INK_DIM = (178, 168, 150)    # DIM      6.89:1
-INK_FAINT = (126, 117, 100)  # FAINT    3.56:1 — labels and rules
-LINE = (58, 52, 42)          # LINE
-CARD = (36, 32, 26)          # CARD
+# skin folder deleted. Tuples, because Pillow wants them. B+ since
+# 2026-10-23; the glass, the buttons and the lamp come from look.py.
+INK = (239, 237, 247)        # FG      14.15:1 on the card
+INK_DIM = (192, 195, 216)    # DIM      9.40:1
+INK_MUTED = (164, 169, 194)  # MUTED    7.05:1 — times, the project, footers
+INK_FAINT = (112, 117, 142)  # FAINT    3.61:1 — labels and rules
+LINE = (48, 54, 90)          # LINE
+CARD = (26, 30, 53)          # CARD
 
 ELLIPSIS = "…"
 
@@ -249,7 +252,9 @@ def pinned_card(*, since: float, keep_s: int, key: str = "",
                 "light up and stay lit until the monitors' own timer.")
     footer = (f"{key} brings them back" if key
               else "The desk's Awake screen brings them back")
-    card = card_for({"id": PIN_ID, "kind": "info", "label": "SCREENS OFF",
+    # Sentence case since B+ (2026-10-23), like the sender's name on every
+    # other card in the column ("Claude Code"); SCREENS OFF before.
+    card = card_for({"id": PIN_ID, "kind": "info", "label": "Screens off",
                      "title": "Screens off is on", "body": body},
                     seconds=0)
     card.update({"pinned": True, "button": str(button), "footer": footer,
@@ -289,15 +294,16 @@ def _text(cache: dict, text: str, pt: float, colour=INK, weight: int = 400,
     module-level: the images belong to the card that is up."""
     if rtl is None:
         rtl = _is_rtl(text)
+    if single:
+        # B+ (2026-10-23): a single line is look.text's — Latin by FreeType
+        # at Rubik's real weight, anything with Hebrew through text_pil
+        return look.text(cache, text, pt, colour, weight, rtl, width)
     key = (text, round(pt, 2), colour, weight, rtl, single, width)
     img = cache.get(key)
     if img is not None:
         return img
     img = _painter()(text or " ", max(20, int(width)), pt=pt, colour=colour,
                      weight=weight, rtl=rtl, single=single)
-    if single:
-        box = img.getchannel("A").getbbox()
-        img = img.crop(box) if box else img
     cache[key] = img
     return img
 
@@ -696,51 +702,57 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     right = width - pad
     inner = int(width - 2 * pad)
 
-    # -- the kind's colour bar, between the corner curves
     bar_h = max(2, int(round(BAR_H * s)))
-    bar = _rr((width - 2 * RADIUS * s, bar_h), bar_h / 2,
-              fill=colour + (255,))
-    img.alpha_composite(bar, (int(RADIUS * s), 0))
 
-    # -- head row: the ×, the label, the time, the badge
+    # -- head row: the ×, the sender's lamp and name, the time, the count.
+    # B+ (2026-10-23): no bar of colour across the top any more — the
+    # kind is the LAMP before the sender's name, the desk's own mark for
+    # a state, and the × is the desk's round control.
     y = pad
     box = CROSS * s
+    cx, cy = pad + box / 2, y + box / 2
     if is_pinned(card):
-        glyph = _moon(cache, box, colour)
+        moon = look.glyph("moon", box * 0.62, "dim")
+        img.alpha_composite(moon, (int(cx - moon.width / 2),
+                                   int(cy - moon.height / 2)))
     else:
-        glyph = _cross(cache, box, INK if hover == DISMISS else INK_FAINT)
-    img.alpha_composite(glyph, (int(pad), int(y)))
+        lit = hover == DISMISS
+        look.disc(img, cx, cy, box / 2, hover=lit)
+        cross = look.glyph("x", box * 0.62, "ink" if lit else "dim", 1.5)
+        img.alpha_composite(cross, (int(cx - cross.width / 2),
+                                    int(cy - cross.height / 2)))
     x_right = right
     badge = card.get("badge") or ""
     if badge:
-        b = _text(cache, badge, 8.5 * s, colour=CARD, weight=700, rtl=False)
-        pw = b.width + 12 * s
-        ph = max(18 * s, b.height + 6 * s)
-        pill = _rr((pw, ph), ph / 2, fill=colour + (255,))
-        img.alpha_composite(pill, (int(right - pw), int(y + (box - ph) / 2)))
+        b = _text(cache, badge, 8.5 * s, "ink", look.W_STRONG)
+        ph = 18 * s
+        pw = max(ph, b.width + 14 * s)
+        look.quiet(img, (right - pw, cy - ph / 2, right, cy + ph / 2))
         img.alpha_composite(b, (int(right - pw + (pw - b.width) / 2),
-                                int(y + (box - b.height) / 2)))
+                                int(cy - b.height / 2)))
         x_right = right - pw - 8 * s
+    # The time and the sender share ONE baseline (look.on_baseline): each
+    # centred on its own cropped box, "ago"'s descender lifted the time
+    # 2 px above the name.
+    base = cy + look.cap_height(9.0 * s) / 2
     when = card.get("when") or ""
     if when:
-        w_img = _text(cache, when, 8.5 * s, colour=INK_FAINT)
-        img.alpha_composite(w_img, (int(x_right - w_img.width),
-                                    int(y + (box - w_img.height) / 2)))
-        x_right -= w_img.width + 8 * s
+        x_right -= look.on_baseline(img, cache, when, 8.5 * s, x_right, base,
+                                    INK_MUTED, right=True) + 8 * s
     label = card.get("label") or ""
+    lx = pad + box + 10 * s
+    look.lamp(img, lx + 3.5 * s, cy, colour, r=3.5 * s, rings=True)
     if label:
-        lx = pad + box + 8 * s
-        l_img = _fit_line(_text(cache, label, 9.0 * s, colour=colour,
-                                weight=700), x_right - lx, _is_rtl(label))
-        img.alpha_composite(l_img, (int(lx), int(y + (box - l_img.height)
-                                                 / 2)))
+        lx += 15 * s
+        look.on_baseline(img, cache, label, 9.0 * s, lx, base, INK_DIM,
+                         look.W_LABEL, avail=x_right - lx)
     y += HEAD_H * s + ROW * s
 
     # -- title
     title = card.get("title") or ""
     rtl_t = _is_rtl(title)
-    t_img = _fit_line(_text(cache, title, 12.0 * s, weight=600), inner,
-                      rtl_t)
+    t_img = _fit_line(_text(cache, title, 12.0 * s, "ink",
+                                look.W_STRONG), inner, rtl_t)
     tx = (right - t_img.width) if rtl_t else pad
     img.alpha_composite(t_img, (int(tx), int(y + (TITLE_H * s - t_img.height)
                                              / 2)))
@@ -758,9 +770,10 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     project = card.get("project") or ""
     if project:
         y += ROW * s
-        glyph = _folder(cache, PROJECT_H * s * 0.9, INK_FAINT)
+        glyph = look.glyph("folder", PROJECT_H * s * 0.9, INK_MUTED + (255,),
+                           1.3)
         rtl_p = _is_rtl(project)
-        p_img = _fit_line(_text(cache, project, 8.5 * s, colour=INK_FAINT),
+        p_img = _fit_line(_text(cache, project, 8.5 * s, INK_MUTED),
                           inner - glyph.width - 6 * s, rtl_p)
         gy = int(y + (PROJECT_H * s - glyph.height) / 2)
         ty = int(y + (PROJECT_H * s - p_img.height) / 2)
@@ -776,11 +789,11 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     # -- the clock: a bar that empties towards the left
     if float(card.get("seconds") or 0) > 0:
         y += ROW * s
-        track = _rr((inner, bar_h), bar_h / 2, fill=LINE + (140,))
+        track = _rr((inner, bar_h), bar_h / 2, fill=(255, 255, 255, 20))
         img.alpha_composite(track, (int(pad), int(y)))
         left_w = int(round(inner * max(0.0, min(1.0, float(progress)))))
         if left_w > 0:
-            fill = _rr((left_w, bar_h), bar_h / 2, fill=colour + (255,))
+            fill = _rr((left_w, bar_h), bar_h / 2, fill=colour + (220,))
             img.alpha_composite(fill, (int(right - left_w), int(y)))
         y += BAR_H * s
 
@@ -788,20 +801,20 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     y += ROW * s
     foot = card.get("footer") or FOOTER
     f_avail = inner - ((BUTTON_W + 10) * s if is_pinned(card) else 0)
-    f_img = _fit_line(_text(cache, foot, 8.0 * s, colour=INK_FAINT),
+    f_img = _fit_line(_text(cache, foot, 8.0 * s, INK_MUTED),
                       f_avail, _is_rtl(foot))
     row_h = _footer_h(card) * s
     img.alpha_composite(f_img, (int(pad), int(y + (row_h - f_img.height)
                                               / 2)))
     if is_pinned(card):
+        # The card's one action, so the one lit thing on it: B+'s soft
+        # iris pill (look.primary), its light pooled UNDER it.
         bw, bh = int(BUTTON_W * s), int(BUTTON_H * s)
         lit = hover == BUTTON
-        pill = _rr((bw, bh), bh / 2, fill=(tuple(min(255, c + 28)
-                                                 for c in colour) if lit
-                                           else colour) + (255,))
-        img.alpha_composite(pill, (int(right - bw), int(y)))
-        t = _text(cache, card.get("button") or "", 8.5 * s, colour=CARD,
-                  weight=700)
+        look.primary(img, (right - bw, y, right, y + bh), hover=lit,
+                     glow=False)
+        t = _text(cache, card.get("button") or "", 8.5 * s, "iris_on",
+                      look.W_STRONG)
         img.alpha_composite(t, (int(right - bw + (bw - t.width) / 2),
                                 int(y + (bh - t.height) / 2)))
     y += row_h
@@ -816,8 +829,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     more = int(card.get("more") or 0)
     if more > 0:
         y += 2 * s
-        m_img = _text(cache, f"+{more} earlier", 8.0 * s, colour=INK_FAINT,
-                      rtl=False)
+        m_img = _text(cache, f"+{more} earlier", 8.0 * s, INK_MUTED)
         img.alpha_composite(m_img, (int(pad), int(y + (MORE_H * s
                                                        - m_img.height) / 2)))
     return img
@@ -836,16 +848,22 @@ def compose_clear(cards, scale: float = 1.0, hover: bool = False,
         return None
     w, h = pill[2] - pill[0], pill[3] - pill[1]
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if hover:
+        # the pill lifts under the pointer the way a quiet pill does on
+        # the desk — brighter words alone were invisible at arm's length
+        # (the polish pass, 2026-10-23)
+        img.alpha_composite(look.flat((w, h), look.c("white", 20),
+                                      look.rounded((w, h), (0, 0, w, h),
+                                                   h / 2)))
     ink = INK if hover else INK_DIM
-    glyph = _cross(cache, h * 0.78, ink)
-    x = 5 * s
+    glyph = look.glyph("x", h * 0.62, ink + (255,), 1.5)
+    x = 9 * s
     img.alpha_composite(glyph, (int(x), int((h - glyph.height) / 2)))
-    x += glyph.width
-    words = _text(cache, CLEAR_TEXT, 8.5 * s, colour=ink, weight=600,
-                  rtl=False)
+    x += glyph.width + 4 * s
+    words = _text(cache, CLEAR_TEXT, 8.5 * s, ink, look.W_LABEL)
     img.alpha_composite(words, (int(x), int((h - words.height) / 2)))
-    count = _text(cache, f"{clear_count(cards)}", 8.5 * s, colour=INK_FAINT,
-                  weight=600, rtl=False)
+    count = _text(cache, f"{clear_count(cards)}", 8.5 * s, INK_MUTED,
+                      look.W_LABEL)
     cx = w - 12 * s - count.width
     if cx >= x + words.width + 6 * s:
         img.alpha_composite(count, (int(cx), int((h - count.height) / 2)))
@@ -865,9 +883,16 @@ def flat(card: dict, scale: float = 1.0, progress: float = 1.0,
     key = ("face", width, height, s)
     blank = cache.get(key)
     if blank is None:
-        blank = Image.new("RGBA", (width, height), CARD + (255,))
-        blank.alpha_composite(_rr((width, height), RADIUS * s, fill=None,
-                                  outline=LINE + (255,), width=1))
+        # B+'s glass with nothing behind it — Tk has no per-pixel alpha to
+        # see through — so the same face, rim and light, opaque, on a
+        # rectangle of the same night: the window's own corners are square
+        # (the deal the skin folder is built on) and this says so.
+        mask = look.rounded((width, height), (0, 0, width, height),
+                            RADIUS * s)
+        blank = Image.new("RGBA", (width, height),
+                          look.INK["glass_flat"] + (255,))
+        blank.alpha_composite(look.glass(mask, (0, 0, width, height),
+                                         opaque=True))
         cache[key] = blank
     face = blank.copy()
     face.alpha_composite(compose(card, s, progress, hover, cache))
@@ -897,8 +922,8 @@ def stack_flat(cards, scale: float = 1.0, hover=None,
     pill = clear_box(cards, s)
     if pill is not None:
         pw, ph = pill[2] - pill[0], pill[3] - pill[1]
-        face = _rr((pw, ph), ph / 2, fill=CARD + (255,),
-                   outline=LINE + (255,))
+        face = look.glass(look.rounded((pw, ph), (0, 0, pw, ph), ph / 2),
+                          (0, 0, pw, ph), opaque=True)
         face.alpha_composite(compose_clear(cards, s,
                                            hover == (None, CLEAR), cache))
         img.alpha_composite(face, (pill[0], pill[1]))
