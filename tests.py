@@ -51264,6 +51264,7 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
     saved: list = []
     with _patched(config_mod, "load_layered", lambda *a, **k: base), \
             _patched(config_mod, "save", lambda updates, **k: saved.append(updates)), \
+            _patched(singleton, "is_running", lambda *a, **k: False), \
             _patched(desk_keys, "GRACE_S", 0.05):
         place, asked, _m = _keys_place(None)
         place.act("capture.start", "capture_hotkey")
@@ -51278,11 +51279,24 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
     with _patched(config_mod, "load_layered", lambda *a, **k: base), \
             _patched(config_mod, "save", lambda *a, **k: (_ for _ in ()).throw(
                 OSError("C:\\Users\\secret\\settings.toml is locked"))), \
+            _patched(singleton, "is_running", lambda *a, **k: False), \
             _patched(desk_keys, "GRACE_S", 0.05):
         place, _asked, _m = _keys_place(None)
         place.act("capture.start", "record_hotkey")
         got = place.act("capture.key", {"vk": 0x76, "mods": ["ctrl"]})
         assert got["note"] == "could not save that (OSError)", got
+    # an app that is there and does not answer: nothing to pause, so no
+    # listening — its hook may be live; a starting one that answers is paused
+    with _patched(singleton, "is_running", lambda *a, **k: True):
+        place, asked, _m = _keys_place(None)
+        got = place.act("capture.start", "hotkey")
+        assert got["capture"] is None and got["note"] == desk_keys.PAUSE_FAILED
+        assert verbs(asked) == []
+    with _patched(desk_keys, "GRACE_S", 0.05):
+        place, asked, _m = _keys_place(dict(running, stage="starting"))
+        assert place.act("capture.start", "hotkey")["capture"]
+        place.act("capture.cancel")
+        assert verbs(asked) == ["pause", "resume"]
     # what the page names is checked before the pipe hears of it
     place, asked, _m = _keys_place(running)
     for bad in ("../x", 5, None, "hotkey; quit", "HOTKEY"):

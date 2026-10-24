@@ -32,7 +32,10 @@ THE REBIND IS THE TK DESK'S (_capture, _resume_after_capture, _apply_key).
 While a key is being listened for, the running app is PAUSED, and the
 reply is checked — without it, pressing Right Ctrl to bind it would start
 a recording, and pressing F9 would translate whatever is selected
-underneath. The page does the listening (a key pressed in WebView2 reaches
+underneath. One step stricter than the Tk desk: an app that answers at
+all is paused, a starting one too (its hook is up long before it says
+"running"), and an app that is there but does not answer is not listened
+past — nothing could be paused. The page does the listening (a key pressed in WebView2 reaches
 the page as a keydown with the Windows virtual-key code in keyCode and the
 side in code, measured on the hidden desktop 2026-10-24 for every key on
 the board) and hands the key here; the name is made by
@@ -78,6 +81,7 @@ from pathlib import Path
 import config as config_mod
 import hotkey as hotkey_mod
 import paths
+import singleton
 
 log = logging.getLogger("app")
 
@@ -496,7 +500,14 @@ class Place:
             self._lease = time.monotonic() + LEASE_S
             return ""
         self._poll()
-        if self.running and not bool(self.status.get("paused")):
+        if not self.status and singleton.is_running():
+            # The app is there and did not answer: its hook may well be
+            # live, and listening without the pause would let the key being
+            # chosen fire (the Tk desk paused only an app that answered).
+            return PAUSE_FAILED
+        if self.status and not bool(self.status.get("paused")):
+            # Any app that answers is paused — a starting one too: its hook
+            # is up 0.7 s into a start (--no-model), long before "running".
             reply = self._send("pause", timeout_ms=1500)
             if not (isinstance(reply, dict) and reply.get("ok")):
                 return PAUSE_FAILED
