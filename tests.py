@@ -51485,6 +51485,323 @@ def test_web_desk_corrections_is_wired():
     _web_desk_place_wired("corrections")
 
 
+def _web_corr_words(folder: Path) -> Path:
+    """Four learned pairs in a vocab.json of the test's own: one fixed on
+    every dictation and a term (in the prompt at once), one corrected once,
+    one Hebrew pair corrected once (kept out of the prompt), and a study
+    pass's own guess. Returns the file."""
+    import json
+    path = folder / "vocab.json"
+    path.write_text(json.dumps({"version": 1, "corrections": [
+        {"heard": "סלאש קליר", "meant": "slash clear", "hits": 3,
+         "last": "2026-10-20 10:00:00"},
+        {"heard": "הדב", "meant": "ה-Dev", "hits": 1, "last": "2026-10-22 10:00:00"},
+        {"heard": "יכלת", "meant": "יכולת", "hits": 1, "last": "2026-10-21 10:00:00"},
+        {"heard": "גואס", "meant": "guess", "hits": 0, "auto_hits": 1,
+         "last": "2026-10-19 10:00:00"},
+    ]}, ensure_ascii=False), "utf-8")
+    return path
+
+
+def test_the_web_desk_corrections_says_what_the_tk_desk_says():
+    """desk_corrections.Place.read(): the Tk desk's Corrections place as
+    data. The proposals newest first, each said as what changed (every
+    change in its place — the kit's Segs figure, Home's), with ONE lit Yes
+    — the newest — and [+ Teach a word] stepping down while any waits;
+    every learned pair newest first, with the Tk desk's one line about it
+    (dashboard._word_meta) and "in the prompt" by the app's own ranking;
+    the panel's counts; a search over both sides of a pair with the Tk
+    desk's head line, and its two empty sentences."""
+    import desk_corrections as dc
+
+    with _web_desk(_WEB_STATUS) as (model, folder, asked):
+        with _patched(paths, "VOCAB_FILE", _web_corr_words(folder)):
+            _nids, sids = _web_desk_fill(folder)
+            place = dc.Place(model._send)
+            got = place.read()
+            assert got["ok"] is True
+            assert [p["id"] for p in got["proposals"]] == [sids[1], sids[0]], got["proposals"]
+            assert got["waiting"] == "2, newest first"
+            tones = [[b["tone"] for b in p["buttons"]] for p in got["proposals"]]
+            assert tones == [["primary", "quiet"], ["quiet", "quiet"]], tones
+            assert got["teach_lit"] is False
+            lead = got["proposals"][0]
+            assert lead["count"] == "one word changed" and lead["why"] == "a name"
+            assert lead["rtl"] is True and lead["more"] == ""
+            assert {"t": "chg", "heard": "הרליסס", "meant": "ה-releases"} in lead["segs"]
+            assert [b["do"] for b in lead["buttons"]] == ["accept", "reject"]
+            assert [w["heard"] for w in got["words"]] == ["הדב", "יכלת", "סלאש קליר", "גואס"]
+            by = {w["heard"]: w for w in got["words"]}
+            assert (by["סלאש קליר"]["dot"], by["סלאש קליר"]["said"]) == \
+                ("fix", "Fixed on every dictation")
+            assert by["סלאש קליר"]["rest"].startswith("\u00d73")
+            assert by["סלאש קליר"]["hot"] is True and by["הדב"]["hot"] is True
+            assert by["יכלת"]["hot"] is False, "a Hebrew pair waits for its third correction"
+            assert (by["יכלת"]["dot"], by["יכלת"]["said"]) == ("once", "Corrected once")
+            assert "corrected once \u2014 fixed after the second time" in by["יכלת"]["whole"]
+            assert (by["גואס"]["dot"], by["גואס"]["said"]) == ("guess", "Its own guess")
+            assert got["learned"] == "4 words, newest first" and got["empty"] == ""
+            panel = got["panel"]
+            assert panel["n"] == 4 and panel["said"] == "words it has learned to hear your way"
+            assert [f["n"] for f in panel["facts"]] == [1, 2], panel["facts"]
+            assert [f["said"] for f in panel["facts"]] == ["fixed on every dictation",
+                                                           "in the decoder's prompt"]
+            assert panel["teach"] == ["Ctrl", "F9"], panel["teach"]
+            assert "40 at a time" in panel["how"][0]
+            # a search looks at both sides; the head says how many match
+            found = place.read(q="  dev ")
+            assert [w["heard"] for w in found["words"]] == ["הדב"]
+            assert found["learned"] == "1 of 4 words match \u201cdev\u201d", found["learned"]
+            assert found["query"] == "dev"
+            none = place.read(q="zzz")
+            assert none["words"] == [] and \
+                none["empty"] == "No learned word has \u201czzz\u201d in it.", none["empty"]
+            # nothing waits: the gold goes back to Teach a word
+            for sid in sids:
+                place.act("reject", sid)
+            calm = place.read()
+            assert calm["proposals"] == [] and calm["waiting"] == "" and calm["teach_lit"] is True
+        # nothing learned: the Tk desk's head and its sentence
+        with _patched(paths, "VOCAB_FILE", folder / "none.json"):
+            empty = dc.Place(model._send).read()
+            assert empty["learned"] == "Nothing learned yet." and empty["panel"]["n"] == 0
+            assert empty["empty"].startswith("Say Yes to a second reading, press the teach key")
+
+
+def test_the_web_desk_corrections_reads_without_writing():
+    """Reading the list never touches vocab.json. The Tk desk built a
+    vocab.Vocab for it, and Vocab.load() renames a file it cannot parse —
+    a read that would move his file under the app that owns it. Here a
+    cut file is left where it is, byte for byte, and the last good copy is
+    what the list shows; a read asks the pipe nothing."""
+    import json
+
+    import desk_corrections as dc
+
+    with _web_desk(_WEB_STATUS) as (model, folder, asked):
+        good = _web_corr_words(folder)
+        backup = good.with_name("vocab.json.bak")
+        backup.write_bytes(good.read_bytes())
+        good.write_text('{"version": 1, "corrections": [{"heard": "x"', "utf-8")
+        cut = good.read_bytes()
+        stamp = good.stat().st_mtime_ns
+        with _patched(paths, "VOCAB_FILE", good):
+            asked.clear()
+            got = dc.Place(model._send).read()
+            assert len(got["words"]) == 4, "the last good copy"
+            assert good.read_bytes() == cut and good.stat().st_mtime_ns == stamp
+            assert sorted(p.name for p in folder.glob("vocab.json*")) == \
+                ["vocab.json", "vocab.json.bak"], list(folder.iterdir())
+            assert asked == [], asked
+            assert json.loads(backup.read_text("utf-8"))["corrections"][0]["heard"] == "סלאש קליר"
+
+
+def test_the_web_desk_corrections_doors_go_where_the_tk_desk_sends_them():
+    """A verdict goes into review.json (Store.decide, by "dashboard") and
+    the app is told (review_absorb), as dashboard._review_decide does; a
+    second press on the same row is "already decided". With the app
+    running the three word doors are its `vocab` verb with the Tk desk's
+    arguments and the switch its `option` verb — the file is the app's
+    then; with nothing running they write vocab.json through the same
+    Vocab doors (a hand-typed pair stands at replace_after_hits) and the
+    switch is config.save. The editor's two refusals keep it open and
+    write nothing; every answer carries the place, read after the press."""
+    import json
+
+    import desk_corrections as dc
+    import review as review_mod
+
+    with _web_desk(_WEB_STATUS) as (model, folder, asked):
+        words = _web_corr_words(folder)
+        with _patched(paths, "VOCAB_FILE", words):
+            _nids, sids = _web_desk_fill(folder)
+            place = dc.Place(model._send)
+            got = place.act("accept", sids[1])
+            place.absorb.join(5)
+            assert got["note"] == "accepted \u2014 the app will learn it", got["note"]
+            item = review_mod.Store(paths.REVIEW_FILE).get(sids[1])
+            assert item["status"] == "accepted", item
+            assert ("review_absorb", {}) in asked
+            assert sids[1] not in [p["id"] for p in got["place"]["proposals"]]
+            assert place.act("accept", sids[1])["note"] == "that one was already decided"
+            assert place.act("reject", sids[0])["note"] == "rejected"
+            # running: every door is the app's
+            before = words.read_bytes()
+            asked.clear()
+            for do, arg in (("learn", {"heard": " הדסק  ", "meant": "the desk"}),
+                            ("edit", {"was": "הדב", "heard": "הדבב", "meant": "ה-Dev"}),
+                            ("forget", "יכלת")):
+                answer = place.act(do, arg)
+                assert answer["ok"] and answer["done"] is True and "place" in answer, answer
+            assert place.act("use", False)["ok"]
+            sent = [(c, a) for c, a in asked if c != "status"]
+            assert sent == [
+                ("vocab", {"do": "learn", "heard": "הדסק", "meant": "the desk"}),
+                ("vocab", {"do": "edit", "heard": "הדב", "new_heard": "הדבב", "meant": "ה-Dev"}),
+                ("vocab", {"do": "forget", "heard": "יכלת"}),
+                ("option", {"name": "vocab.enabled", "value": False})], sent
+            assert words.read_bytes() == before, "the desk did not touch the app's file"
+            # the editor's two refusals: open, nothing sent
+            asked.clear()
+            for arg, words_said in (({"heard": "", "meant": "x"}, "both words are needed"),
+                                    ({"heard": "שלום", "meant": "שלום"},
+                                     "the two words are the same")):
+                answer = place.act("learn", arg)
+                assert answer["ok"] and answer["done"] is False and answer["note"] == words_said
+            assert [c for c, _a in asked if c != "status"] == []
+    # nothing running: the file, through Vocab's own doors
+    saved = []
+    with _web_desk(None) as (model, folder, asked), \
+            _patched(config_mod, "save", lambda changes, *a, **k: saved.append(changes)):
+        words = _web_corr_words(folder)
+        with _patched(paths, "VOCAB_FILE", words):
+            place = dc.Place(model._send)
+
+            def pairs():
+                return {c["heard"]: c for c in
+                        json.loads(words.read_text("utf-8"))["corrections"]}
+
+            answer = place.act("learn", {"heard": "הדסק", "meant": "the desk"})
+            assert answer["note"] == "learned \u2014 5 words (the app reads them when it starts)"
+            assert pairs()["הדסק"]["hits"] == 2
+            assert answer["place"]["words"][0]["heard"] == "הדסק", "newest first"
+            place.act("edit", {"was": "יכלת", "heard": "יכלתי", "meant": "יכולתי"})
+            assert "יכלת" not in pairs() and pairs()["יכלתי"]["meant"] == "יכולתי"
+            assert place.act("forget", "הדב")["note"].startswith("forgotten \u2014 4 words")
+            assert "הדב" not in pairs()
+            assert place.act("forget", "הדב")["note"].startswith("not in the list")
+            assert place.act("edit", {"was": "nope", "heard": "a", "meant": "b"})["note"] \
+                .startswith("not in the list")
+            note = place.act("use", False)["note"]
+            assert saved == [{"vocab.enabled": False}], saved
+            assert "next time it starts" in note, note
+            assert [c for c, _a in asked if c != "status"] == [], asked
+
+
+def test_the_web_desk_corrections_trusts_no_argument_from_the_page():
+    """Everything the page sends is checked before it reaches review.json,
+    vocab.json, the config or the pipe: an action not on ACTS is refused in
+    words; a proposal's id that is not an id decides nothing; the switch
+    takes True or False and nothing truthy; a word is a string of words —
+    no list, no extra key, nothing past WORD_MAX, no control character; a
+    read takes a search and nothing else; and a store that fails says its
+    exception's type, never its text (a path)."""
+    import desk_corrections as dc
+    import deskweb
+    import review as review_mod
+
+    with _web_desk(_WEB_STATUS) as (model, folder, asked):
+        words = _web_corr_words(folder)
+        with _patched(paths, "VOCAB_FILE", words):
+            _nids, sids = _web_desk_fill(folder)
+            place = dc.Place(model._send)
+            before_review = paths.REVIEW_FILE.read_bytes()
+            for do in ("delete", "format c:", "x" * 500, "_vocab", "read"):
+                refused = place.act(do, sids[0])
+                assert refused["ok"] is False and "not a Corrections action" in refused["error"]
+                assert len(refused["error"]) < 80
+            for arg in (None, 3, [sids[0]], {"id": sids[0]}, "..\\..\\x", "a b", "",
+                        "x" * 500, True):
+                assert place.act("accept", arg)["note"] == "that one was already decided", arg
+            assert paths.REVIEW_FILE.read_bytes() == before_review
+            for arg in (1, 0, "true", None, [True], {"on": True}):
+                refused = place.act("use", arg)
+                assert refused == {"ok": False, "error": "the switch is on or off"}, arg
+            asked.clear()
+            for arg in (["a", "b"], "a", {"heard": "a", "meant": "b", "more": 1},
+                        {"heard": ["a"], "meant": "b"}, {"heard": 1, "meant": "b"}):
+                refused = place.act("learn", arg)
+                assert refused == {"ok": False, "error": "a word is typed as words"}, arg
+            assert place.act("learn", {"heard": "a" * 201, "meant": "b"}) == \
+                {"ok": False, "error": "that is longer than a word"}
+            for arg in (None, 3, ["יכלת"], "", "x" * 201):
+                assert place.act("forget", arg) == \
+                    {"ok": False, "error": "that word is not in the list"}, arg
+            assert place.act("edit", {"heard": "a", "meant": "b"}) == \
+                {"ok": False, "error": "that word is not in the list"}
+            assert [c for c, _a in asked if c != "status"] == [], asked
+            place.act("learn", {"heard": "ה\x00ד\x07ב\u200b", "meant": "the\tdev\n"})
+            sent = [a for c, a in asked if c == "vocab"]
+            assert sent == [{"do": "learn", "heard": "הדב\u200b", "meant": "the dev"}], sent
+            for args in ({"q": 3}, {"q": ["a"]}, {"q": "a", "path": "C:\\"}, {"x": 1}):
+                refused = place.read(**args)
+                assert refused["ok"] is False, args
+            assert len(place.read(q="x" * 5000)["query"]) == dc.QUERY_MAX
+
+            def boom(self, sid, verdict, by="card", edits=None):
+                raise PermissionError(13, "denied", r"C:\Users\someone\review.json")
+
+            with _patched(review_mod.Store, "decide", boom):
+                note = place.act("accept", sids[0])["note"]
+            assert note == "could not save that (PermissionError)", note
+        assert set(dc.ACTS) == {"accept", "reject", "learn", "edit", "forget", "use"}
+        crashed = deskweb.Api(model).place("corrections", "read", {"q": "a", "boom": 1})
+        assert crashed["ok"] is False and "\\" not in crashed["error"], crashed
+
+
+def test_the_web_desk_corrections_draws_the_drop_where_it_sits():
+    """A proposal that would delete a run draws it at its place in the
+    sentence — the approved picture: the sentence it leaves, then the run
+    on its red pill — with a long lead-in cut so the pill stays in sight,
+    and the rest of its own sentence after a run from the middle."""
+    import desk_corrections as dc
+
+    segs, _ = dc.drop_segments("משפט קודם. תסתכל על המטלה ותגיד לי. תודה רבה", "תודה רבה")
+    assert segs == [{"t": "ctx", "s": "תסתכל על המטלה ותגיד לי."},
+                    {"t": "drop", "s": "תודה רבה"}], segs
+    lead = " ".join(f"מ{i}" for i in range(30))
+    segs, _ = dc.drop_segments(f"{lead} בבקשה", "בבקשה")
+    assert segs[0]["s"].startswith("\u2026 ") and len(segs[0]["s"].split()) == 11, segs
+    segs, _ = dc.drop_segments("אמרתי אה אה שזה טוב. ועוד", "אה אה")
+    assert segs == [{"t": "ctx", "s": "אמרתי"}, {"t": "drop", "s": "אה אה"},
+                    {"t": "ctx", "s": "שזה טוב."}], segs
+    segs, _ = dc.drop_segments("משהו אחר לגמרי", "לא כאן")
+    assert segs[0] == {"t": "drop", "s": "לא כאן"}, segs
+    rows = dc.proposal_rows([{"id": "a", "text": "אמרתי משהו. תודה רבה",
+                              "changes": [{"before": "תודה רבה", "after": "", "kind": "drop",
+                                           "why": "מילים"}, {"before": "x", "after": "y"}]}])
+    assert rows[0]["count"] == "two words to delete" and rows[0]["more"] == "and one more change"
+    assert rows[0]["why_rtl"] is True and rows[0]["segs"][-1] == {"t": "drop", "s": "תודה רבה"}
+
+
+def test_the_web_desk_corrections_page_is_the_tk_place():
+    """The page: every action it presses is one Place.act knows; it draws
+    the change with the kit's Segs (Home's figure); the words a person
+    reads on it are the Tk desk's own (each still in dashboard.py, so the
+    two desks cannot drift apart while both ship); and nothing on it is
+    an HTML sink."""
+    import re
+
+    import desk_corrections as dc
+
+    page = (REPO / "web" / "src" / "places" / "corrections.tsx").read_text("utf-8")
+    module = (REPO / "desk_corrections.py").read_text("utf-8")
+    # the Tk desk's words, its sentences that run over two literals joined
+    tk = re.sub(r'"\s*\n\s*f?"', "", (REPO / "dashboard.py").read_text("utf-8")) \
+        .replace("\\u2014", "\u2014")
+    pressed = set(re.findall(r'act\("(\w+)"', page)) | set(re.findall(r'"(edit|learn)"', page))
+    assert pressed == {"forget", "edit", "learn", "use"}, pressed
+    assert pressed <= set(dc.ACTS)
+    assert 'import { Caps, IC, Segs, placeCall, useDesk, usePlace } from "../kit";' in page
+    assert "<Segs segs={p.segs} rtl={p.rtl} />" in page
+    for banned in ("dangerouslySetInnerHTML", "innerHTML", "eval(", "new Function"):
+        assert banned not in page, banned
+    for words in ("Teach a word", "Use them", "what it hears", "what you mean",
+                  "A word you type here is fixed on every dictation from now on.",
+                  "Cancel", "Save"):
+        assert words in page and words in tk, words
+    for words in ("both words are needed", "the two words are the same",
+                  "words it has learned to hear your way", "in the decoder's prompt",
+                  "fixed on every dictation", "corrected once", "its own guess",
+                  "teaches it a word", "from what it just wrote",
+                  "accepted \u2014 the app will learn it", "that one was already decided",
+                  "dictation stopped \u2014 try again", "the app reads them when it starts",
+                  "Nothing learned yet.", "No learned word has",
+                  "Say Yes to a second reading, press the teach key on a "):
+        assert words in module.replace("\\u2014", "\u2014"), words
+        assert words in tk, words
+
+
 # ======================================== web desk place: Said
 # Owners: the Said session — desk_said.py, web/src/places/said.tsx,
 # web/src/places/said.css. The Said session adds its tests BELOW this

@@ -1,2 +1,169 @@
 /* Corrections — owned by the Corrections session (web/README.md). Every rule here
-   starts with .place-corrections: the CSS of all five places is one sheet. */
+   starts with .place-corrections: the CSS of all five places is one sheet.
+   The first half is the approved picture's own stylesheet
+   (design/2026-09-22/design/rev/lists/corrections.html, its <style>), scoped;
+   the second is what a live window has that a picture does not: a field that
+   takes a caret, a list that scrolls, a press, a hover, a row that leaves. */
+
+/* three shades the picture's B+ sheet had and the desk's does not (they move
+   to bplus.css at the merge), and the picture's own three */
+.place-corrections{--hover-lit:#393c5e;--pair-lit:#3e4062;--focus-lit:#1a1b33;
+  --hover-wash:rgba(255,255,255,.05);--focus-ring:rgba(165,151,255,.55);--focus-wash:rgba(165,151,255,.06)}
+
+/* ---- the head: the title, one quiet line, and the list's tools ---- */
+.place-corrections .about{position:absolute;left:182px;top:29px;font-size:13.5px;line-height:18px;color:var(--ink-2)}
+.place-corrections .toolrow{position:absolute;left:0;top:68px;width:1112px;height:38px;display:flex;align-items:center}
+.place-corrections .toolrow .spacer{flex:1}
+.place-corrections .find{width:300px;height:38px;border-radius:19px;display:flex;align-items:center;gap:10px;padding:0 16px;
+  font-size:13px;color:var(--ink-3);background:var(--glass-track);box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--line-faint)}
+.place-corrections .find .ic{font-size:13px;color:var(--ink-3)}
+.place-corrections .use{display:flex;align-items:center;gap:10px;margin:0 22px 0 24px;font-size:13px;font-weight:var(--w-label);color:var(--ink-2);white-space:nowrap}
+.place-corrections .sw{width:42px;height:24px;border-radius:12px;position:relative;flex:none;background:var(--sw-off);box-shadow:inset 0 0 0 1.5px var(--sw-ring)}
+.place-corrections .sw i{position:absolute;top:5px;left:5px;width:14px;height:14px;border-radius:50%;background:var(--knob-off)}
+.place-corrections .sw.on{background:linear-gradient(180deg, var(--sw-on), var(--sw-on));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 -1px 2px var(--shade-3)}
+.place-corrections .sw.on i{top:3px;left:21px;width:18px;height:18px;background:var(--knob);box-shadow:0 1px 3px var(--shade-1), inset 0 -1px 1px var(--line)}
+.place-corrections .teach{width:146px;justify-content:center}
+.place-corrections .teach .ic{font-size:12px}
+
+/* ---- two columns: the list (it scrolls), the vocabulary panel (it stays) ---- */
+.place-corrections .main{position:absolute;left:0;top:116px;width:836px;height:548px}
+.place-corrections .aside{position:absolute;left:848px;top:126px;width:264px;height:514px}
+.place-corrections .eyeline{height:18px;line-height:18px;padding-left:2px;display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.place-corrections .eyeline .n{font-size:12.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis}
+
+/* the proposals: the pile's own slips, one per proposal, the newest a step brighter */
+.place-corrections .pile{margin-top:8px;display:flex;flex-direction:column;gap:10px}
+.place-corrections .slip{height:80px;display:grid;grid-template-columns:36px 1fr 188px;column-gap:18px;align-items:center;
+  padding:0 20px;border-radius:22px;
+  background:linear-gradient(140deg, var(--frost), transparent 42%), var(--glass-slip)}
+.place-corrections .slip.lead{background:linear-gradient(140deg, var(--frost), transparent 42%), var(--glass-lead)}
+.place-corrections .tx{min-width:0}
+.place-corrections .eb{display:flex;align-items:baseline;gap:10px;font-size:12.5px;line-height:18px;color:var(--ink-3);white-space:nowrap;overflow:hidden}
+.place-corrections .eb b{font-weight:var(--w-strong);font-size:14px;color:var(--ink)}
+.place-corrections .eb .he{font-family:var(--font-he);font-size:12.5px;color:var(--ink-3)}
+.place-corrections .eb .dot{margin:0 -4px;color:var(--ink-3)}
+.place-corrections .s{margin-top:7px;font-size:15px;line-height:24px;text-align:left;color:var(--ink);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.place-corrections .acts{display:grid;grid-template-columns:88px 88px;column-gap:10px;align-items:center;justify-self:end}
+.place-corrections .acts .btn{justify-content:center;padding:0}
+/* a run that would go: its words on the red pill, the cross in front of them */
+.place-corrections .chg > .pill.heard:only-child::before{content:"\E711";font-family:'Segoe Fluent Icons','Segoe MDL2 Assets';
+  font-size:8.5px;color:var(--bad)}
+
+/* the learned list: one frosted card, a row per pair */
+.place-corrections .lhead{margin-top:20px}
+.place-corrections .lcard{margin-top:8px;border-radius:22px;padding:4px 0;
+  background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card)}
+.place-corrections .lr{height:50px;display:grid;grid-template-columns:256px 1fr 128px 70px;column-gap:24px;align-items:center;padding:0 14px 0 22px;position:relative}
+.place-corrections .lr > *{position:relative;z-index:1}
+.place-corrections .lr + .lr::before, .place-corrections .editor.inrow + .lr::before,
+.place-corrections .lr + .editor.inrow::before{content:"";position:absolute;left:22px;right:22px;top:0;height:1px;
+  background:linear-gradient(90deg, var(--line-faint), var(--line) 20%, var(--line) 80%, transparent)}
+.place-corrections .lr::after{content:"";position:absolute;left:8px;right:8px;top:4px;bottom:4px;border-radius:15px;z-index:0;
+  background:var(--hover-wash);box-shadow:inset 0 1px 0 var(--inner-hi), inset 0 0 0 1px var(--line-faint);opacity:0}
+.place-corrections .pc{justify-self:start;max-width:100%;display:inline-flex;align-items:center;gap:9px;height:30px;padding:0 13px;border-radius:15px;
+  font-family:var(--font-he);font-weight:var(--w-he);font-size:14.5px;line-height:1;white-space:nowrap;
+  background:var(--pair-lit);box-shadow:inset 0 1px 0 var(--inner-hi), inset 0 0 0 1px var(--btn-rim)}
+.place-corrections .pc .h{color:var(--bad-ink)}
+.place-corrections .pc .a{font-size:10.5px;color:var(--ink-3);flex:none}
+.place-corrections .pc .m{color:var(--ink)}
+.place-corrections .pc .h, .place-corrections .pc .m{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.place-corrections .st{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-2);white-space:nowrap;min-width:0;overflow:hidden}
+.place-corrections .st .q{color:var(--ink-3);overflow:hidden;text-overflow:ellipsis}
+.place-corrections .d{width:7px;height:7px;border-radius:50%;flex:none}
+.place-corrections .d.fix{background:var(--ok);box-shadow:0 0 0 3px var(--ok-wash), 0 0 7px var(--ok-glow)}
+.place-corrections .d.once{box-shadow:inset 0 0 0 1.5px var(--ink-3)}
+.place-corrections .d.guess{box-shadow:inset 0 0 0 1.5px var(--ink-3);opacity:.55}
+.place-corrections .d.li{background:var(--iris);box-shadow:0 0 0 3px var(--iris-wash), 0 0 7px var(--iris-glow)}
+.place-corrections .ls{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--ink-2);white-space:nowrap}
+.place-corrections .ac{display:flex;justify-content:flex-end;gap:6px}
+.place-corrections .ac i{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--ink-3)}
+
+/* the editor [+ Teach a word] opens, at the top of the list — or the pencil, in
+   the row's place: heard on the right, the arrow, meant on the left */
+.place-corrections .editor{margin-top:8px;height:98px;border-radius:22px;padding:16px 20px 0 22px;
+  background:linear-gradient(140deg, var(--frost), transparent 42%), var(--glass-lead)}
+.place-corrections .editor.inrow{margin:0;border-radius:0;position:relative;padding:16px 20px 0 22px;
+  background:linear-gradient(90deg, var(--hover-wash), transparent 85%)}
+.place-corrections .erow{display:flex;align-items:center;gap:10px}
+.place-corrections .pair-in{display:flex;align-items:center;gap:12px}
+.place-corrections .fld{width:236px;height:38px;border-radius:19px;border:0;outline:0;padding:0 16px;font-size:14.5px;
+  font-family:var(--font-he);font-weight:var(--w-he);color:var(--ink);text-align:left;
+  background:var(--glass-track);box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--line-faint)}
+.place-corrections .fld.hd{color:var(--bad-ink)}
+.place-corrections .fld::placeholder{color:var(--ink-3);font-family:var(--font-ui);font-size:13px;opacity:1}
+.place-corrections .fld:focus{background:linear-gradient(var(--focus-wash), var(--focus-wash)), var(--glass-track);
+  box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1.5px var(--focus-ring), 0 0 16px -4px var(--iris-glow)}
+.place-corrections .pair-in .arrow{font-size:12px;color:var(--ink-3)}
+.place-corrections .erow .spacer{flex:1}
+.place-corrections .erow .btn{width:88px;justify-content:center;padding:0}
+.place-corrections .hint{margin-top:10px;padding-left:2px;font-size:12.5px;color:var(--ink-3)}
+
+/* ---- the vocabulary panel ---- */
+.place-corrections .aside{border-radius:24px;padding:22px 22px 0 24px;
+  background:linear-gradient(160deg, var(--frost), transparent 45%), var(--glass-dock)}
+.place-corrections .big{display:flex;align-items:baseline;gap:10px;margin-top:10px}
+.place-corrections .big .n{font-family:var(--font-display);font-weight:var(--w-num);font-size:44px;letter-spacing:-.02em;line-height:46px}
+.place-corrections .bigw{margin-top:6px;font-size:13.5px;line-height:19px;color:var(--ink-2);max-width:200px}
+.place-corrections .prule{height:1px;margin:15px 0 12px;background:linear-gradient(90deg, transparent, var(--line) 12%, var(--line) 88%, transparent)}
+.place-corrections .fact{display:flex;align-items:center;gap:11px;height:28px;font-size:13px;color:var(--ink-2);white-space:nowrap}
+.place-corrections .fact b{font-weight:var(--w-strong);color:var(--ink);min-width:18px}
+.place-corrections .tk{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink-2)}
+.place-corrections .tk .keys{flex:none}
+.place-corrections .tk .lab{font-size:13.5px;line-height:19px;font-weight:var(--w-label);color:var(--ink)}
+.place-corrections .tline{margin-top:6px;font-size:12.5px;line-height:18px;color:var(--ink-2)}
+.place-corrections .how{margin-top:10px}
+.place-corrections .hw{display:grid;grid-template-columns:20px 1fr;font-size:12.5px;line-height:18px;color:var(--ink-2)}
+.place-corrections .hw + .hw{margin-top:9px}
+.place-corrections .hw .k{font-size:11.5px;color:var(--ink-3);font-variant-numeric:tabular-nums;padding-top:1px}
+
+/* =================== what a live window needs on top of the picture */
+
+/* the list scrolls under a soft edge, top and foot; the panel stays. The
+   rows are 824 wide, as drawn: 836 less the 8 of air and the 4 of the thumb */
+.place-corrections .main{overflow-y:auto;overflow-x:hidden;padding:10px 8px 56px 0;scrollbar-gutter:stable;
+  -webkit-mask-image:linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 56px), transparent);
+          mask-image:linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 56px), transparent)}
+.place-corrections .main::-webkit-scrollbar{width:4px}
+.place-corrections .main::-webkit-scrollbar-track{background:transparent}
+.place-corrections .main::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:2px}
+.place-corrections .main::-webkit-scrollbar-thumb:hover{background:var(--line)}
+
+/* the search field takes a caret */
+.place-corrections .find input{flex:1;min-width:0;height:100%;border:0;outline:0;background:none;padding:0;
+  font-family:var(--font-he);font-size:13.5px;color:var(--ink);text-align:left;user-select:text}
+.place-corrections .find input::placeholder{color:var(--ink-3);font-family:var(--font-ui);font-size:13px;opacity:1}
+.place-corrections .find:focus-within{background:linear-gradient(var(--focus-wash), var(--focus-wash)), var(--glass-track);
+  box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--focus-ring)}
+.place-corrections .find:focus-within .ic{color:var(--ink-2)}
+.place-corrections .fld{user-select:text}
+
+/* the switch slides, and says so under the pointer */
+.place-corrections .use{cursor:pointer}
+.place-corrections .use:hover{color:var(--ink)}
+.place-corrections .sw i{transition:left .16s ease, top .16s ease, width .16s ease, height .16s ease, background .16s ease}
+.place-corrections .use.down .sw{filter:brightness(.92)}
+
+/* a row lights under the pointer, and its two doors become buttons */
+.place-corrections .lr::after{transition:opacity .12s ease}
+.place-corrections .lr:not(.calm):hover::after{opacity:1}
+.place-corrections .lr::before{transition:opacity .12s ease}
+.place-corrections .lr:not(.calm):hover::before,
+.place-corrections .lr:not(.calm):hover + .lr::before{opacity:0}
+.place-corrections .ac i{cursor:pointer;transition:background .12s ease, color .12s ease}
+.place-corrections .lr:not(.calm):hover .ac i{background:var(--glass-disc);box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint);color:var(--ink-2)}
+.place-corrections .lr:not(.calm):hover .ac i.pen{color:var(--ink)}
+.place-corrections .ac i.pen:hover{background:var(--quiet-top);color:var(--ink)}
+.place-corrections .ac i.x:hover{background:var(--bad-wash);color:var(--bad);box-shadow:inset 0 0 0 1px var(--bad-ring)}
+.place-corrections .ac i:active{transform:translateY(1px)}
+
+/* a row out of sight is not laid out or painted: the list is the whole
+   vocabulary (138 rows on his PC), and the switch in paints only what shows */
+.place-corrections .lr{content-visibility:auto;contain-intrinsic-size:auto 50px}
+
+/* a row that was answered leaves at once; the answer redraws the list */
+.place-corrections .slip, .place-corrections .lr{transition:opacity .14s ease, transform .14s ease}
+.place-corrections .slip.leaving, .place-corrections .lr.leaving{opacity:0;transform:translateX(10px);pointer-events:none}
+
+/* words for a list that has none */
+.place-corrections .empty{margin:12px 2px 0;max-width:640px;font-size:13px;line-height:19px;color:var(--ink-3)}
