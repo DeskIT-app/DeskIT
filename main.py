@@ -53,6 +53,7 @@ import injector
 import awake as awake_mod
 import models as models_mod
 import notify as notify_mod
+import notify_tail as notify_tail_mod
 import notify_watch as notify_watch_mod
 import onecopy
 import popup as popup_mod
@@ -748,6 +749,16 @@ class App:
             self._notify_from_outside,
             getattr(ncfg, "watch", "cowork")
             if ncfg is not None and ncfg.enabled else "off")
+        # Claude Code's finish, read off its transcript the moment it is
+        # written (notify_tail.py) — on most turns ~3 s before the Stop
+        # hook knocks with the same finish, which the engine then folds
+        # into the card instead of showing twice. Same road in, and only
+        # while this copy holds Claude Code's door. Off with the door,
+        # or alone with [notify] early = false.
+        self.notify_tail = notify_tail_mod.Tail(
+            self._notify_from_outside,
+            ncfg is not None and ncfg.enabled
+            and bool(getattr(ncfg, "early", True)))
         # The pencil's box: one line, takes the keyboard, on purpose.
         self._word_prompt = overlay_mod.WordPrompt()
         # The report card (problem_card.py, painted; overlay.ProblemCard,
@@ -2308,6 +2319,7 @@ class App:
             self.move_frame.start()
         self.notify.start()
         self.notify_watch.start()
+        self.notify_tail.start()
         # The weekly look at GitHub Releases (updates.py, plan 11.4): ten
         # minutes after this start, then weekly; a newer version is one
         # line on the card and a row on the dashboard, never a download.
@@ -2589,6 +2601,8 @@ class App:
         # the shutdown would arm reminders nobody is left to answer.
         if getattr(self, "notify_watch", None) is not None:
             self.notify_watch.stop()
+        if getattr(self, "notify_tail", None) is not None:
+            self.notify_tail.stop()
         # The reminder thread next, then the card it would have shown.
         if getattr(self, "notify", None) is not None:
             self.notify.stop()
