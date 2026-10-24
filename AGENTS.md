@@ -443,6 +443,21 @@ exactly what classic did.
   is the card (`privacy.grant`, or `_consented(...)` in a test). Warm-ups
   at start-up must swallow `ConsentRequired` like a missing key and open
   nothing; only a key press the person made may open a card.
+- **The web desk's window is the one network door that is not `net.py`,
+  and a browser netlog cannot see all of it.** WebView2's browser
+  process also resolves and connects through WINDOWS' own code: on
+  2026-10-23 a clean netlog and `--host-resolver-rules` hid two TLS
+  connections to substrate.office.com that each of 6 starts after a
+  first one held (Edge's OneAuth sign-in through WAM; encrypted, so not read —
+  msedge.dll's strings put the Windows account's profile and photo
+  there); `msOneAuthWAM` in `webdesk.BASE_ARGS`
+  stops it, measured to 0 sockets over 15 minutes. After a runtime
+  update or any flag change, re-run `dev\web_census.py` (every socket of
+  the window's own process tree, from Windows' table, hidden) — and
+  never count another program's msedgewebview2 as the desk's: six
+  others run on his PC, and explorer.exe holds 40.99.44.x itself. The
+  release CARRIES the web desk (its five packages in the lock, the pages
+  in `app\web\dist`); whether it opens is one line, `deskweb.LAUNCHED`.
 - **`net.py` defines `open()`; inside it, write files with
   `path.open(...)`.** A bare `open(path, "a")` in that module calls the
   request function and fails on "unknown purpose 'a'" — silently, in

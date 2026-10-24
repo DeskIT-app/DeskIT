@@ -83,3 +83,6 @@ packs/                  export-ignore
 android/gradlew                 text eol=lf
 android/gradlew.bat             text eol=crlf
 android/gradle/wrapper/*.jar    binary
+# the one wheel PyPI does not have (dev/proxy_tools_wheel.py): its bytes
+# are the hash in requirements.lock, so no checkout may touch them
+packaging/wheels/*.whl          binary

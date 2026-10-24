@@ -184,8 +184,35 @@ SCRUB_PREFIXES = ("WEBVIEW2_", "PYWEBVIEW_", "PYTHONNET_")
 #: (Chromium's IPv6-route probe: connect() on UDP sends no packet), and
 #: WebView2's "required diagnostic data", which goes through Windows'
 #: own telemetry and not the network service — not measurable here.
+#:
+#: msOneAuthWAM — what the netlog could NOT see (2026-10-23, runtime
+#: 155.0.4283.62, dev\web_census.py: every socket of every process under
+#: the desk, 4x a second). A fresh profile held no socket for 180 s; in
+#: each of the 6 starts AFTER a first one, the BROWSER process opened two
+#: TLS connections to substrate.office.com (40.99.44.x — Windows' own DNS
+#: cache held that name for the address the moment they opened) 2-4 s
+#: after the page loaded and kept them (in two runs a third that closed
+#: at once); one run also showed a plain-HTTP connection to an Akamai
+#: address. Windows' resolver, not Chromium's, so
+#: --host-resolver-rules and the netlog never saw any of it. It is Edge's
+#: own sign-in, OneAuth through Windows' account broker (WAM): the
+#: connections are encrypted and were not read, and msedge.dll's strings
+#: put the Windows account's profile and photo on that host
+#: (edge_auth/account_info_fetcher, /profileb2, /imageb2).
+#: Bisected on a copy of that warm profile, 45 s a run: msOneAuthWAM
+#: alone -> 0 sockets; msImplicitSignin alone 3, msIdentityCore alone 2,
+#: msEdgeOSAccountInfoSubstrate alone 2. With it in the list, a fresh
+#: start and the warm one after it held 0 sockets (numbers in
+#: NETWORK.md). Re-run the census on a new runtime before trusting this.
+#: What else msOneAuthWAM switches off inside Edge is not enumerable from
+#: here; what was measured is that with it off the page still loads and
+#: its bridge answers (Home read its first answer in every census run),
+#: and the window signs in to nothing (every other origin is refused).
+#: It removes an authentication path and loosens
+#: nothing; the browser's real command line (the census's browser_flags)
+#: carries exactly these five switches plus WebView2's own embedding ones.
 BASE_ARGS = (
-    "--disable-features=ElasticOverscroll,msSmartScreenProtection",
+    "--disable-features=ElasticOverscroll,msSmartScreenProtection,msOneAuthWAM",
     "--disable-background-networking",
     "--disable-component-update",
     '--host-resolver-rules="MAP * ~NOTFOUND"',

@@ -1547,6 +1547,10 @@ keep_days = 30                 # how long those lines are kept. Older lines
 # Honoured in the checkout ONLY, and only while it is built (npm run build
 # in web\): the release keeps the Tk desk until all five places are on
 # the web one. Off, missing WebView2 or no pages: the Tk desk, silently.
+# The release already CARRIES the web desk (its packages, app\web\dist);
+# the launch is one line, deskweb.LAUNCHED — after it every copy opens the
+# web desk and this key, set false in a person's own settings, is the way
+# back to Tk. This line here then no longer decides anything.
 web = false
 
 [vocab]

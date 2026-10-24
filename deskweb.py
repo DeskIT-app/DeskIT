@@ -1103,13 +1103,44 @@ def ready() -> bool:
         return False
 
 
+#: THE LAUNCH — the one line the session that ships the web desk flips,
+#: and only once every place is in BUILT (the owner, 2026-09-22: one
+#: launch, never a half-moved window in a release). Every copy carries
+#: this window already — pywebview and its four in requirements.lock,
+#: web\dist built into app\web\dist by release.yml — so this line decides
+#: only whether it opens.
+#:   False (today): the checkout's desk, and only when `[desk] web` asks.
+#:   True: the desk on every copy. `[desk] web = false` written ABOVE
+#:   defaults.toml — settings.toml or state.json — still opens the Tk
+#:   desk; defaults.toml's `false` no longer does. The Tk desk stays the
+#:   fallback wherever this one cannot open — ready() says no (no pages,
+#:   no pywebview, no WebView2 or .NET 4.6.2), or run_window answers 2/3
+#:   and dashboard.main opens Tk in its place.
+LAUNCHED = False
+
+
+def _own_choice() -> bool | None:
+    """`[desk] web` as the layers above defaults.toml say it — state.json
+    over settings.toml, the order config.layered_data merges them — or
+    None when neither says (defaults.toml is the developer's, not a
+    choice). Only a real bool counts."""
+    for read, path in ((config_mod.read_state, paths.STATE_FILE),
+                       (config_mod.read_settings, paths.SETTINGS_FILE)):
+        value = read(path).get("desk.web")
+        if isinstance(value, bool):
+            return value
+    return None
+
+
 def wanted() -> bool:
-    """`[desk] web` asks for this desk — honoured in the checkout only,
-    and only where it can open."""
-    if not paths.DEVELOPER:
-        return False
+    """Whether the desk opens as this page: before LAUNCHED, `[desk] web`
+    in the checkout only; after it, every copy unless settings.toml or
+    state.json says no — and in both, only where the window can open."""
     try:
-        if not config_mod.load_layered().desk.web:
+        if LAUNCHED:
+            if _own_choice() is False:
+                return False
+        elif not paths.DEVELOPER or not config_mod.load_layered().desk.web:
             return False
     except Exception:                     # noqa: BLE001
         return False
