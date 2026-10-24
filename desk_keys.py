@@ -70,6 +70,7 @@ import ast
 import atexit
 import ctypes
 import ctypes.wintypes as wintypes
+import importlib.util
 import logging
 import os
 import re
@@ -85,7 +86,6 @@ import singleton
 
 log = logging.getLogger("app")
 
-APP_DIR = Path(__file__).resolve().parent
 
 # ------------------------------------------------------------- the words
 # Copies of dashboard.py's tables and sentences, held to it by a test.
@@ -234,8 +234,10 @@ def _caps() -> dict:
     with _caps_lock:
         if _caps_ns is not None:
             return _caps_ns
-        path = APP_DIR / "keycaps.py"
         try:
+            # the file `import keycaps` would load, found the way the import
+            # finds it — and not run
+            path = Path(importlib.util.find_spec("keycaps").origin)
             tree = ast.parse(path.read_text("utf-8"), str(path))
             body = [node for node in tree.body
                     if not isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef))
