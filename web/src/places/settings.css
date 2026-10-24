@@ -1,2 +1,261 @@
-/* Settings — owned by the Settings session (web/README.md). Every rule here
-   starts with .place-settings: the CSS of all five places is one sheet. */
+/* Settings — owned by the Settings session (web/README.md). The first half
+   is the approved picture's own stylesheet (design/2026-09-22/design/
+   b-plus/settings.html, its <style>) under .place-settings; the second is
+   what a live page has that a picture does not — a list that scrolls, a
+   menu that opens, a field with a caret, a press, the cards the picture
+   did not draw (in its language), the search and the Network screen.
+   Every rule is under .place-settings (the CSS of all five places is one
+   sheet); the class on <body> is settings-on. */
+
+/* the sky, placed for Settings: indigo behind the title and the section
+   names, blue behind the cards' right half */
+body.settings-on .sky .indigo{left:-260px;top:-20px;width:760px;height:560px;transform:rotate(-12deg)}
+body.settings-on .sky .blue{left:700px;top:180px;width:700px;height:560px}
+body.settings-on .sky .plum{left:-120px;top:560px;width:760px;height:320px;transform:rotate(-6deg)}
+body.settings-on .sky .teal{left:660px;top:-120px;width:620px;height:320px;transform:rotate(-6deg)}
+body.settings-on .sky .r1{left:120px;top:250px;width:1000px;height:64px;transform:rotate(-11deg)}
+body.settings-on .sky .r2{left:300px;top:520px;width:820px;height:44px;transform:rotate(-7deg)}
+
+/* ---- the head: the title, the saved line, the tabs, the magnifier ---- */
+.place-settings .head{position:absolute;left:0;top:0;width:1112px;height:122px}
+.place-settings .saved{position:absolute;right:0;top:30px;font-size:12.5px;color:var(--ink-3);display:flex;align-items:center;gap:8px}
+.place-settings .saved .ic{font-size:12px;color:var(--ok)}
+.place-settings .tabs{position:absolute;left:0;top:70px}
+.place-settings .find{position:absolute;right:0;top:70px;width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  background:var(--glass-track);color:var(--ink-2);font-size:14px;cursor:pointer;transition:color .15s ease, filter .15s ease;
+  box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--line-faint)}
+.place-settings .find:hover{color:var(--ink);filter:brightness(1.2)}
+
+/* the list scrolls under the head; its thumb is the picture's thin one */
+.place-settings .list{position:absolute;left:0;top:122px;width:1112px;bottom:0;overflow-y:auto;overflow-x:hidden;
+  padding:0 14px 24px 0;margin-right:-14px;scrollbar-gutter:stable}
+.place-settings .list::-webkit-scrollbar{width:5px}
+.place-settings .list::-webkit-scrollbar-track{background:transparent}
+.place-settings .list::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:3px}
+
+/* ---- a section: its name on the left, its card on the right ---- */
+.place-settings .sec{display:grid;grid-template-columns:204px 1fr;column-gap:28px;margin-bottom:16px}
+.place-settings .sec .name{display:flex;align-items:center;gap:12px;height:30px;margin-top:18px;font-size:14px;font-weight:var(--w-strong)}
+.place-settings .sec .name .ic{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--ink-2);flex:none;
+  background:var(--glass-disc);box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint)}
+.place-settings .card{border-radius:22px;background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card);min-width:0}
+.place-settings .card.pad{padding:18px 24px 18px}
+.place-settings .r{display:flex;align-items:center;gap:24px;padding:15px 24px;position:relative}
+.place-settings .r + .r::before{content:"";position:absolute;left:24px;right:24px;top:0;height:1px;
+  background:linear-gradient(90deg, var(--line-faint), var(--line) 20%, var(--line) 80%, transparent)}
+.place-settings .r .t{flex:1;min-width:0}
+.place-settings .lab{font-size:14px;font-weight:var(--w-label);line-height:20px;display:flex;align-items:center;gap:10px}
+.place-settings .lab .cap{height:19px;min-width:22px;padding:0 6px;margin:0 3px;font-size:12px;vertical-align:1px}
+.place-settings .help{font-size:12.5px;line-height:18px;color:var(--ink-2);margin-top:3px;text-wrap:pretty}
+.place-settings .help.warn, .place-settings .lab.warn{color:var(--warn)}
+.place-settings .lab.bad{color:var(--bad)}
+.place-settings .lab.faint{color:var(--ink-3)}
+.place-settings .r .ctl, .place-settings .ctl{flex:none;display:flex;align-items:center;gap:8px}
+.place-settings .ctls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.place-settings .ctls.under{margin-top:14px}
+.place-settings .ctls.under:empty{display:none}
+
+/* switch: no accent. On = a soft lavender-grey track, a white knob that sits in it. Off = a hollow ring. */
+.place-settings .sw{width:42px;height:24px;border-radius:12px;position:relative;flex:none;background:var(--sw-off);box-shadow:inset 0 0 0 1.5px var(--sw-ring);
+  cursor:pointer;transition:background .18s ease, box-shadow .18s ease}
+.place-settings .sw i{position:absolute;top:5px;left:5px;width:14px;height:14px;border-radius:50%;background:var(--knob-off);
+  transition:left .18s cubic-bezier(.22,.61,.36,1), top .18s ease, width .18s ease, height .18s ease, background .18s ease}
+.place-settings .sw.on{background:linear-gradient(180deg, var(--sw-on), var(--sw-on));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 -1px 2px var(--shade-3)}
+.place-settings .sw.on i{top:3px;left:21px;width:18px;height:18px;background:var(--knob);box-shadow:0 1px 3px var(--shade-1), inset 0 -1px 1px var(--line)}
+.place-settings .sw:hover{filter:brightness(1.12)}
+.place-settings .sw:focus-visible, .place-settings .menu:focus-visible, .place-settings .find:focus-visible,
+.place-settings .seg .item:focus-visible{outline:none;box-shadow:0 0 0 2px var(--iris-halo), inset 0 0 0 1px var(--iris-edge)}
+.place-settings .sw.busy{opacity:.85}
+
+/* menu, field */
+.place-settings .menu{height:36px;border-radius:18px;display:flex;align-items:center;gap:10px;padding:0 14px 0 16px;font-size:13px;color:var(--ink);cursor:pointer;
+  background:linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim);
+  transition:filter .12s ease}
+.place-settings .menu:hover, .place-settings .menu.open{filter:brightness(1.12)}
+.place-settings .menu .v{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-settings .menu .ic{font-size:10px;color:var(--ink-3);transition:transform .18s ease}
+.place-settings .menu.open .ic:last-child{transform:rotate(180deg)}
+.place-settings .menu .ic.lead{font-size:13px;color:var(--ink-2)}
+.place-settings .field{height:36px;border-radius:18px;display:flex;align-items:center;gap:9px;padding:0 14px;font-size:13px;color:var(--ink-2);width:318px;
+  background:var(--glass-track);box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--line-faint);transition:box-shadow .15s ease}
+.place-settings .field .v{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-settings .field .ic{font-size:13px;color:var(--ink-3)}
+.place-settings .field input{flex:1;min-width:0;height:100%;background:none;border:0;outline:0;color:var(--ink);
+  font-family:var(--font-ui);font-size:13px;caret-color:var(--iris);text-align:left}
+.place-settings .field input::placeholder{color:var(--ink-3)}
+.place-settings .field input.num{font-variant-numeric:tabular-nums}
+.place-settings .field:focus-within{box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--iris-edge), 0 0 0 4px var(--iris-wash)}
+.place-settings .field.folder{width:318px;user-select:text}
+.place-settings .field.wide{width:420px;margin-top:12px}
+.place-settings .lbl{font-size:12.5px;color:var(--ink-3);margin-right:2px}
+
+/* the menu's choices, on a pane of frost under the pill */
+.place-settings .pop{position:fixed;z-index:20;max-height:320px;overflow-y:auto;padding:6px;border-radius:18px;
+  background:linear-gradient(160deg, var(--frost-2), transparent 45%), var(--glass-sheet);
+  box-shadow:inset 0 1px 0 var(--inner-hi), 0 22px 44px -18px var(--sheet-shade), 0 0 0 1px var(--line-faint);
+  animation:place-settings-pop .14s cubic-bezier(.22,.61,.36,1)}
+@keyframes place-settings-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.place-settings .pop::-webkit-scrollbar{width:5px}
+.place-settings .pop::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:3px}
+.place-settings .opt{height:34px;border-radius:12px;display:flex;align-items:center;gap:10px;padding:0 12px;font-size:13px;color:var(--ink-2);cursor:pointer}
+.place-settings .opt .v{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-settings .opt .ic{font-size:11px;color:var(--iris)}
+.place-settings .opt.on{color:var(--ink)}
+.place-settings .opt.lit{background:var(--glass-disc);color:var(--ink)}
+
+/* the dot: a little screen with the real dot in its corner, lit the way the real one is */
+.place-settings .dot{display:flex;gap:26px;padding:22px 24px}
+.place-settings .scr{width:146px;height:94px;flex:none;border-radius:14px;position:relative;overflow:hidden;
+  background:radial-gradient(130px 90px at 22% 12%, var(--scr-glow), transparent 70%), linear-gradient(160deg,var(--scr-top),var(--scr-bot));
+  box-shadow:inset 0 1px 0 var(--inner-hi), inset 0 0 0 1px var(--btn-rim), 0 12px 24px -14px var(--shade-2)}
+.place-settings .scr::before{content:"";position:absolute;left:11px;top:11px;width:60px;height:36px;border-radius:7px;background:var(--frost);box-shadow:inset 0 0 0 1px var(--btn-rim)}
+.place-settings .scr .d{position:absolute;right:10px;bottom:10px;width:10px;height:10px;border-radius:50%;
+  background:radial-gradient(circle at 40% 38%, var(--lamp-core), var(--lamp-listen) 62%);
+  box-shadow:0 0 0 3px var(--listen-ring), 0 0 0 7px var(--listen-ring2), 0 0 16px 3px var(--listen-glow);
+  transition:top .3s ease, bottom .3s ease, right .3s ease}
+.place-settings .scr .d.tr{bottom:auto;top:10px}
+.place-settings .scr .d.free{right:44px;bottom:30px}
+.place-settings .scr .d.off{background:var(--lamp-idle);box-shadow:none}
+.place-settings .dot .t{flex:1;min-width:0}
+.place-settings .dot .hl, .place-settings .version .hl{font-family:var(--font-display);font-size:17px;font-weight:var(--w-strong);letter-spacing:-.01em;line-height:22px}
+.place-settings .hl.faint{color:var(--ink-3)}
+.place-settings .dot .help{margin-top:6px}
+.place-settings .dot .ctls{margin-top:16px;flex-wrap:nowrap}
+.place-settings .dot .mv{margin-left:6px}
+
+.place-settings .status{display:flex;align-items:center;gap:10px;font-size:14px}
+.place-settings .okdot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-wash), 0 0 8px var(--ok-glow);flex:none}
+.place-settings .okdot.idle{background:var(--lamp-idle);box-shadow:none}
+
+/* awake */
+.place-settings .hero{display:flex;align-items:flex-start;gap:18px;padding:22px 24px 20px 26px;position:relative}
+.place-settings .moon{width:44px;height:44px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--ok);
+  background:radial-gradient(circle at 50% 30%, var(--ok-tint), var(--ok-wash) 75%);box-shadow:inset 0 0 0 1px var(--ok-ring), 0 0 24px -6px var(--ok-glow)}
+.place-settings .moon.dark{color:var(--iris-text);background:radial-gradient(circle at 50% 30%, var(--iris-tint), var(--iris-wash) 75%);
+  box-shadow:inset 0 0 0 1px var(--iris-ring), 0 0 24px -8px var(--iris-glow)}
+.place-settings .moon.bad{color:var(--bad);background:radial-gradient(circle at 50% 30%, var(--bad-tint), var(--bad-wash) 75%);
+  box-shadow:inset 0 0 0 1px var(--bad-ring), 0 0 22px -6px var(--bad-glow)}
+.place-settings .moon.idle{color:var(--ink-3);background:var(--glass-disc);box-shadow:inset 0 0 0 1px var(--line-faint)}
+.place-settings .hero .t{flex:1;min-width:0}
+.place-settings .hero .st{font-family:var(--font-display);font-weight:var(--w-display);font-size:24px;letter-spacing:-.018em;line-height:28px}
+.place-settings .hero .mt, .place-settings .version .mt{font-size:12.5px;color:var(--ink-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-settings .hero .help{margin-top:8px;max-width:640px}
+.place-settings .strip{display:flex;align-items:center;gap:10px;padding:12px 24px 14px 88px;position:relative}
+.place-settings .strip::before{content:"";position:absolute;left:24px;right:24px;top:0;height:1px;background:linear-gradient(90deg, transparent, var(--line) 15%, var(--line) 85%, transparent)}
+.place-settings .strip .note{margin-left:auto;font-size:12px;color:var(--ink-3)}
+.place-settings .check{margin:0 12px 12px 12px;border-radius:16px;background:var(--glass-disc);box-shadow:inset 0 1px 0 var(--inner-hi);padding:14px 16px 8px 16px}
+.place-settings .check .ttl{font-size:13px;font-weight:var(--w-strong);margin-bottom:6px}
+.place-settings .check .intro{font-size:12.5px;line-height:18px;color:var(--ink-3);padding:2px 0 8px}
+.place-settings .cr{display:grid;grid-template-columns:14px 150px 1fr;align-items:center;min-height:30px;padding:5px 0;font-size:12.5px;position:relative}
+.place-settings .cr + .cr::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;background:var(--line-faint)}
+.place-settings .cr .dt{width:7px;height:7px;border-radius:50%;background:var(--lamp-idle)}
+.place-settings .cr .dt.ok{background:var(--ok);box-shadow:0 0 6px var(--ok-glow)}
+.place-settings .cr .dt.warn{background:var(--warn);box-shadow:0 0 6px var(--write-glow)}
+.place-settings .cr .dt.bad{background:var(--bad);box-shadow:0 0 6px var(--bad-glow)}
+.place-settings .cr .k{font-weight:var(--w-label)}
+.place-settings .cr .v{color:var(--ink-2);line-height:17px}
+
+/* =================== the cards the picture did not draw, in its language */
+
+/* two words side by side: a name, and what it is now (the speech model) */
+.place-settings .kv{display:grid;grid-template-columns:150px 1fr;column-gap:16px;align-items:baseline;padding:6px 0}
+.place-settings .kv + .kv{border-top:1px solid var(--line-faint)}
+.place-settings .kv .k{font-size:12.5px;color:var(--ink-3)}
+.place-settings .kv .v{font-size:14px;line-height:20px}
+
+/* the account, the lock, every connection */
+.place-settings .lab.big{font-size:14.5px;line-height:21px;display:block}
+.place-settings .code{font-family:var(--font-display);font-size:26px;letter-spacing:.06em;line-height:34px;margin-top:8px;color:var(--ink);user-select:text}
+.place-settings .card.pad .help{margin-top:6px}
+
+/* sounds: every cue with Play beside the thing it is for */
+.place-settings .head-row{display:flex;align-items:center;justify-content:flex-end;margin-bottom:10px}
+.place-settings .cues{display:grid;grid-template-columns:repeat(4, 1fr);gap:6px 12px}
+.place-settings .cue{display:flex;align-items:center;gap:10px;height:30px;cursor:pointer;min-width:0}
+.place-settings .cue .play{width:28px;height:24px;border-radius:12px;flex:none;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--ink-2);
+  background:linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim);
+  transition:filter .12s ease, transform .08s ease}
+.place-settings .cue:hover .play{filter:brightness(1.2);color:var(--ink)}
+.place-settings .cue .play.down{transform:translateY(1px);filter:brightness(.92)}
+.place-settings .cue .w{font-size:12.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-settings .cue:hover .w{color:var(--ink)}
+
+/* the phone's address: the link with its token as dots */
+.place-settings .url{font-size:15px;line-height:22px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-settings .url.none{font-size:13.5px;color:var(--ink-3)}
+
+/* your cloud keys */
+.place-settings .keyrows{padding:8px 24px 14px}
+.place-settings .kr{padding:12px 0 10px;position:relative}
+.place-settings .kr + .kr::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg, var(--line-faint), var(--line) 20%, var(--line) 80%, transparent)}
+.place-settings .khead{display:flex;align-items:baseline;gap:14px;white-space:nowrap;min-width:0}
+.place-settings .kname{font-size:15px;font-weight:var(--w-strong)}
+.place-settings .link{color:var(--iris-text);cursor:pointer;text-decoration:underline;text-decoration-color:var(--iris-ring);text-underline-offset:3px}
+.place-settings .link:hover{color:var(--prop-ink)}
+.place-settings .khead .link{font-size:12.5px}
+.place-settings .kr .why{font-size:12.5px;line-height:18px;color:var(--ink-2);margin-top:3px}
+.place-settings .kline{display:flex;align-items:center;gap:8px;margin-top:10px}
+.place-settings .field.key{width:430px}
+.place-settings .field.key.locked{color:var(--ink-3)}
+.place-settings .field .dots{letter-spacing:.14em;color:var(--ink-2)}
+.place-settings .ksay{font-size:12.5px;margin-top:8px;color:var(--ink-2)}
+.place-settings .ksay.ok{color:var(--ok)}
+.place-settings .ksay.warn{color:var(--warn)}
+.place-settings .ksay.bad{color:var(--bad)}
+.place-settings .ksay.faint{color:var(--ink-3)}
+.place-settings .store{font-size:12px;line-height:17px;color:var(--ink-3);margin-top:8px;text-wrap:pretty}
+
+/* a consent row: what the file says, and the one button */
+.place-settings .consent{font-size:13px;color:var(--ink-3);white-space:nowrap}
+.place-settings .consent.on{color:var(--ink)}
+
+/* DeskIT, About, Files */
+.place-settings .version{display:flex;gap:24px;align-items:flex-start}
+.place-settings .version .t{flex:1;min-width:0}
+.place-settings .version .hl{font-size:22px;line-height:28px;color:var(--iris-text)}
+.place-settings .version .help{margin-top:10px}
+.place-settings .version .side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:none}
+.place-settings .version .note{font-size:12px;color:var(--ink-3);margin-bottom:4px}
+.place-settings .help.link{display:inline-block;margin-top:6px;text-decoration:none}
+.place-settings .help.link:hover{text-decoration:underline}
+.place-settings .papers{margin-top:16px;gap:8px}
+.place-settings .fglyph{font-size:15px;color:var(--ink-3);width:18px;flex:none}
+
+/* a button that cannot do anything now says so, and takes no press */
+.place-settings .btn.dis{pointer-events:none}
+
+/* ---- the search, where the tabs were ---- */
+.place-settings .searchbox{position:absolute;left:0;top:70px;width:1112px;height:38px;border-radius:19px;display:flex;align-items:center;gap:10px;padding:0 6px 0 16px;
+  background:var(--glass-track);box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--iris-edge), 0 0 0 4px var(--iris-wash)}
+.place-settings .searchbox > .ic{font-size:13px;color:var(--ink-3)}
+.place-settings .searchbox input{flex:1;min-width:0;height:100%;background:none;border:0;outline:0;color:var(--ink);font-family:var(--font-ui);font-size:13px;caret-color:var(--iris)}
+.place-settings .searchbox input::placeholder{color:var(--ink-3)}
+.place-settings .searchbox .x{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--ink-2);font-size:10px}
+.place-settings .searchbox .x:hover{background:var(--glass-disc);color:var(--ink)}
+.place-settings .nomatch{margin:18px 0 0 232px;padding:18px 24px;font-size:13px;color:var(--ink-3)}
+
+/* ---- the Network screen ---- */
+.place-settings .net .nsub{position:absolute;left:0;top:62px;font-size:13px;color:var(--ink-2)}
+.place-settings .chips{position:absolute;left:0;top:92px;right:0;display:flex;gap:6px;flex-wrap:nowrap;overflow:hidden}
+.place-settings .chip-h{height:30px;padding:0 14px;border-radius:15px;display:flex;align-items:center;font-size:12.5px;color:var(--ink-2);white-space:nowrap;cursor:pointer;
+  background:var(--glass-track);box-shadow:0 0 0 1px var(--line-faint)}
+.place-settings .chip-h:hover{color:var(--ink)}
+.place-settings .chip-h.on{color:var(--ink);background:linear-gradient(180deg, var(--bubble-top), var(--bubble-mid) 55%, var(--bubble-bot));
+  box-shadow:inset 0 1px 0 var(--bubble-rim-top), inset 0 0 0 1px var(--btn-rim)}
+.place-settings .banner{position:absolute;left:0;top:130px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--warn)}
+.place-settings .table{position:absolute;left:0;top:156px;width:1112px;bottom:58px;display:flex;flex-direction:column;overflow:hidden}
+.place-settings .th, .place-settings .tr{display:grid;grid-template-columns:150px 240px 110px 110px 60px 130px 1fr;column-gap:0;padding:0 18px;align-items:center}
+.place-settings .th{height:36px;flex:none;font-size:11px;font-weight:var(--w-strong);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
+  border-bottom:1px solid var(--line)}
+.place-settings .tb{flex:1;overflow-y:auto;padding:4px 0 8px}
+.place-settings .tb::-webkit-scrollbar{width:5px}
+.place-settings .tb::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:3px}
+.place-settings .tr{height:26px;font-size:12px;color:var(--ink)}
+.place-settings .tr:hover{background:var(--glass-disc)}
+.place-settings .c{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:10px;font-variant-numeric:tabular-nums}
+.place-settings .tr .c.when, .place-settings .tr .c.bytes{color:var(--ink-2)}
+.place-settings .c.odd{color:var(--warn)}
+.place-settings .empty{padding:22px 18px;font-size:13.5px;color:var(--ink-2)}
+.place-settings .net .foot{position:absolute;left:0;bottom:12px;display:flex;align-items:center;gap:8px}
+.place-settings .net .foot .line{font-size:12.5px;color:var(--ink-3);margin-right:8px}
