@@ -122,3 +122,128 @@ body.home-calm .place-home .line .x{font-size:13.5px}
 .place-home .slip.lead.noted{min-height:114px}
 .place-home .nt{margin-top:4px;font-size:12px;line-height:17px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .place-home .held{margin:12px 2px 0;font-size:12px;color:var(--ink-3)}
+
+/* =================== the rows' answers (2026-10-24: nothing on Home goes to the old desk) */
+
+/* "worth a look" (a consent, a key, the lock, the model) as a disc like
+   its three siblings in bplus.css — which has no .mk.warn — mixed from
+   --warn itself, so the one colour stays decided in one place */
+.place-home .mk.warn{color:var(--warn);
+  background:radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--warn) 22%, transparent),
+    color-mix(in srgb, var(--warn) 5%, transparent) 75%);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--warn) 28%, transparent),
+    0 0 22px -6px color-mix(in srgb, var(--warn) 45%, transparent)}
+/* a row that answers here says a code or a sentence that must be read
+   whole (the code the other PC shows, where a key goes): two lines,
+   never cut at the code — notifications and proposals keep one */
+.place-home .slip.noted .s{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.place-home .slip.noted .nt{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.place-home .slip.noted .acts{align-self:center}
+
+/* the recovery key, shown once: the key itself stands out of the sentence, and can be selected */
+.place-home .s .code{display:inline-flex;align-items:center;height:26px;padding:0 10px;margin-right:10px;border-radius:8px;
+  font-family:'Cascadia Mono','Consolas',monospace;font-size:14px;letter-spacing:.04em;color:var(--ink);
+  background:var(--well);box-shadow:inset 0 0 0 1px var(--line);user-select:text;cursor:text}
+/* the recovery key typed into the waiting row */
+.place-home .rk .field{margin-top:8px;width:100%;max-width:420px;height:32px;padding:0 12px;border:none;outline:none;border-radius:10px;
+  font-family:'Cascadia Mono','Consolas',monospace;font-size:13.5px;letter-spacing:.04em;color:var(--ink);caret-color:var(--iris);
+  background:var(--well);box-shadow:inset 0 1px 3px var(--shade-1), inset 0 0 0 1px var(--line);user-select:text}
+.place-home .rk .field:focus{box-shadow:inset 0 1px 3px var(--shade-1), inset 0 0 0 1px var(--iris-edge)}
+.place-home .rk .field::placeholder{color:var(--ink-3);opacity:.6}
+
+/* =================== Report a problem (rev/home report.png, report-sent.png) */
+
+.place-home .head .report{position:absolute;right:0;top:22px;font-size:12.5px}
+.place-home .head .report .ic{font-size:12px;color:var(--ink-3)}
+.place-home .head .report:hover{color:var(--ink)}
+/* calm Home hides the head's words, never the way to report */
+body.home-calm .place-home .head .report{display:inline-flex}
+
+/* a sheet of glass over the dimmed desk — the bar included. No place, no tab, no tracking. */
+.place-home .scrim{position:fixed;inset:0;z-index:5;background:var(--scrim);backdrop-filter:blur(3px) saturate(85%);
+  animation:home-fade .14s ease}
+.place-home .sheet{position:fixed;z-index:6;border-radius:28px;
+  background:linear-gradient(150deg, var(--frost-2), transparent 46%), var(--glass-sheet);
+  box-shadow:inset 0 1px 0 var(--inner-hi), 0 50px 90px -40px var(--sheet-shade), 0 14px 30px -18px var(--shade-2);
+  animation:home-rise .16s cubic-bezier(.22,.61,.36,1)}
+.place-home .sheet.write{left:270px;top:150px;width:620px;padding:26px 30px 26px}
+.place-home .sheet.write.tall{top:84px}
+.place-home .sh-eb{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:var(--w-label);color:var(--ink-3);height:18px}
+.place-home .sh-eb .ic{font-size:12px}
+.place-home .ask{margin-top:8px;font-family:var(--font-display);font-weight:var(--w-display);font-size:26px;letter-spacing:var(--display-track);line-height:34px}
+.place-home .ask.small{font-size:21px;line-height:28px}
+.place-home .well{margin-top:16px;min-height:104px;border-radius:20px;padding:14px 18px 9px;background:var(--well);
+  box-shadow:inset 0 1px 3px var(--shade-1), inset 0 0 0 1px var(--line), 0 1px 0 var(--inner-hi)}
+.place-home .well .typed{display:block;width:100%;height:81px;padding:0;margin:0;border:none;outline:none;resize:none;background:none;
+  font-family:var(--font-ui);font-size:17px;line-height:27px;color:var(--ink);text-align:left;caret-color:var(--iris);
+  user-select:text;cursor:text;overflow-y:auto}
+.place-home .well .typed.he{font-family:var(--font-he);font-weight:var(--w-he)}
+.place-home .hint{margin-top:10px;display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-3);padding-left:4px}
+.place-home .hint .cap{font-size:10.5px;height:19px}
+.place-home .att{margin-top:22px;display:grid;grid-template-columns:42px 1fr;column-gap:14px;align-items:start;cursor:pointer}
+.place-home .att .sw{margin-top:1px}
+.place-home .att-t{font-size:14px;line-height:22px;font-weight:var(--w-label);color:var(--ink)}
+.place-home .att-n{margin-top:2px;font-size:12.5px;line-height:18px;color:var(--ink-2);white-space:nowrap}
+.place-home .att-n.alone{margin-top:22px;padding-left:4px}
+.place-home .sh-acts{margin-top:26px;display:flex;justify-content:flex-end;gap:10px}
+.place-home .sh-acts .btn{width:104px;justify-content:center;padding:0}
+.place-home .sh-acts .btn.primary .ic{font-size:12px}
+.place-home .sh-acts .btn.more{width:auto;margin-right:auto;padding:0 2px;font-size:12.5px}
+.place-home .sh-acts .btn.more .ic{font-size:12px;color:var(--ink-3)}
+.place-home .sh-acts .btn.wide{width:auto;padding:0 18px}
+
+/* the switch (B+'s .sw, which the Settings place draws too) */
+.place-home .sw{width:42px;height:24px;border-radius:12px;position:relative;flex:none;display:block;background:var(--sw-off);
+  box-shadow:inset 0 0 0 1.5px var(--sw-ring);transition:background .14s ease}
+.place-home .sw i{position:absolute;top:5px;left:5px;width:14px;height:14px;border-radius:50%;background:var(--knob-off);
+  transition:left .14s ease, top .14s ease, width .14s ease, height .14s ease}
+.place-home .sw.on{background:linear-gradient(180deg, var(--sw-on), var(--sw-on));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 -1px 2px var(--shade-3)}
+.place-home .sw.on i{top:3px;left:21px;width:18px;height:18px;background:var(--knob);box-shadow:0 1px 3px var(--shade-1), inset 0 -1px 1px var(--line)}
+
+/* the answer */
+.place-home .sheet.done{left:325px;top:282px;width:510px;padding:26px 28px 24px}
+.place-home .done-row{display:grid;grid-template-columns:44px 1fr;column-gap:16px;align-items:center}
+.place-home .done-row .mk{width:44px;height:44px;font-size:17px}
+.place-home .done-t{font-family:var(--font-display);font-weight:var(--w-display);font-size:21px;letter-spacing:var(--display-track);line-height:28px}
+.place-home .done .sh-acts{margin-top:24px}
+.place-home .turning{animation:home-turn 1.1s linear infinite}
+
+/* asking once for the copy that travels: the gate's own card words, then the pieces */
+.place-home .said{margin-top:8px;font-size:13.5px;color:var(--ink-2)}
+.place-home .terms{margin-top:14px;display:flex;flex-direction:column;gap:7px}
+.place-home .term{display:grid;grid-template-columns:120px 1fr;column-gap:14px;font-size:12.5px;line-height:18px}
+.place-home .term .k{color:var(--ink-3)}
+.place-home .term .v{color:var(--ink-2)}
+
+/* what leaves: one plain line a piece, the picture small */
+.place-home .pieces{margin-top:18px;display:flex;gap:16px;align-items:flex-start}
+.place-home .pieces .thumb{display:block;max-width:150px;max-height:96px;border-radius:10px;box-shadow:0 0 0 1px var(--line)}
+.place-home .plist{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0}
+.place-home .piece{display:flex;gap:12px;align-items:baseline;font-size:13px;line-height:19px}
+.place-home .piece .w{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-home .piece .z{margin-left:auto;font-size:12px;color:var(--ink-3);white-space:nowrap}
+.place-home .rowhead{margin-top:16px;padding-left:2px}
+.place-home .row-json{margin:6px 0 0;max-height:150px;overflow:auto;padding:12px 14px;border-radius:14px;background:var(--well);
+  box-shadow:inset 0 1px 3px var(--shade-1), inset 0 0 0 1px var(--line);
+  font-family:'Cascadia Mono','Consolas','Courier New',monospace;font-size:11.5px;line-height:16px;color:var(--ink-2);
+  white-space:pre-wrap;overflow-wrap:anywhere;unicode-bidi:plaintext;user-select:text;cursor:text;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+
+@keyframes home-fade{from{opacity:0}to{opacity:1}}
+@keyframes home-rise{from{opacity:0;transform:translateY(8px) scale(.99)}to{opacity:1;transform:none}}
+@keyframes home-turn{to{transform:rotate(360deg)}}
+
+/* =================== the sign-in landing (dashboard._screen_landing) */
+
+.place-home .landing{position:absolute;left:236px;top:72px;width:640px;padding:36px 36px 30px;border-radius:28px;
+  background:linear-gradient(150deg, var(--frost-2), transparent 46%), var(--glass-card)}
+.place-home .lmark{display:flex;align-items:center;gap:16px}
+.place-home .lmark svg{display:block;border-radius:14px}
+.place-home .lname{font-family:var(--font-display);font-weight:var(--w-display);font-size:30px;letter-spacing:var(--display-track);line-height:38px}
+.place-home .lsent{margin-top:22px;font-size:16px;line-height:25px;color:var(--ink)}
+.place-home .lonce{margin-top:12px;font-size:13.5px;line-height:20px;color:var(--ink-2)}
+.place-home .lgo{margin-top:22px;height:38px;padding:0 22px;border-radius:19px}
+.place-home .lline{margin-top:12px;min-height:20px;font-size:13px;line-height:20px;color:var(--ink-2)}
+.place-home .lline.warn{color:var(--warn)}
+.place-home .lline.ok{color:var(--ok)}
+.place-home .lstored{margin-top:14px;font-size:12px;line-height:18px;color:var(--ink-3)}

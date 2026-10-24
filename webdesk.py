@@ -42,13 +42,17 @@ every decision the preflight named is taken here, in code:
   path) and sends a failing call's traceback back to the page.
   DeskEdgeChrome reads every web message itself: {deskit: 1, id, fn,
   args} from our origin for a name in CALLS is answered with
-  PostWebMessageAsJson; a pywebview-shaped message is passed on only
-  for a name in CALLS; the rest is dropped. The Api object stays flat —
-  three methods, nothing else public. (pywebview's own window.pywebview
-  .api still comes up under the page's strict CSP: its `new Function`
-  runs inside ExecuteScriptAsync, which the CSP does not govern —
-  measured: an inline <script> is refused, eval from ExecuteScript is
-  not.)
+  PostWebMessageAsJson, a failure as its exception's TYPE; everything
+  else — a pywebview-shaped message included — is dropped. The Api
+  object stays flat — three methods, nothing else public — and is not
+  handed to pywebview at all: its own road (window.pywebview.api,
+  util.js_bridge_call) answered a call that raised with the message and
+  the whole traceback (the foundation's review, 2026-10-23), and no page
+  of ours ever took it. (pywebview's window.pywebview still comes up
+  under the page's strict CSP — its `new Function` runs inside
+  ExecuteScriptAsync, which the CSP does not govern; measured: an inline
+  <script> is refused, eval from ExecuteScript is not — with an empty
+  api and nothing behind it.)
 * NOTHING LEAVES, NOTHING SOUNDS, NOTHING PERSISTS. IsMuted, every
   permission request denied, autofill and password saving off, downloads
   cancelled, new windows dropped, pywebview's ALLOW_FILE_URLS (which adds
@@ -129,7 +133,8 @@ HOST = "deskit.example"
 ORIGIN = f"https://{HOST}"
 START = f"{ORIGIN}/index.html"
 
-#: What the page may call, over either road. Nothing else is dispatched.
+#: What the page may call, over our own channel (pywebview's road is
+#: closed, see DeskEdgeChrome.on_script_notify). Nothing else is dispatched.
 #: An Api object may carry its own allowlist as a CALLS attribute — the
 #: master app (dev\master\api.py) has six names of its own and none of
 #: these — and then that list is the one the dispatcher checks. A page
@@ -647,9 +652,9 @@ def _install(desks: dict):
             if isinstance(message, dict) and message.get("deskit") == 1:
                 self._answer(message)
                 return
-            if (isinstance(message, list) and len(message) == 3
-                    and message[0] in _calls(self._opts.api)):
-                return super().on_script_notify(sender, args)
+            # pywebview's own road is closed: it answers a call that
+            # raised with the message and the traceback (util.
+            # js_bridge_call), and nothing of ours speaks it
             name = message[0] if isinstance(message, list) and message else type(message).__name__
             self._desk.dropped.append(f"pywebview message {str(name)[:60]}")
 
@@ -712,7 +717,9 @@ def run(*, dist=None, route: str = "", width: int = 1180, height: int = 760,
     _install(desks)
     desk.stamp("winforms_imported")
     api = api if api is not None else Api()
-    window = webview.create_window(title, html=BLANK, js_api=api, width=width,
+    # js_api=None: the Api is answered on our own channel only (Options
+    # .api); pywebview is handed nothing it could dispatch to
+    window = webview.create_window(title, html=BLANK, js_api=None, width=width,
                                    height=height, x=x, y=y, resizable=resizable,
                                    hidden=hidden, background_color=BACKGROUND,
                                    text_select=False)
