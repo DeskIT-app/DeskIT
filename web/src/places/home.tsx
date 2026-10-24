@@ -269,8 +269,9 @@ function ReportSheet({ view, holdKey }: { view: ReportView; holdKey: string }) {
     act({ act: verb }).finally(() => setClosing(false));
   }, [act]);
   const send = useCallback(() => {
+    if (pressed.startsWith("report.send:")) return;        // one Send, one report
     act({ act: "report.send", arg: { text, attach } });
-  }, [act, text, attach]);
+  }, [act, text, attach, pressed]);
   const preview = useCallback(() => {
     act({ act: "report.preview", arg: { text, attach } }).then((r) => {
       if (r && !r.note) setDetails(true);
