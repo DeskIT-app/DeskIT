@@ -17,7 +17,11 @@ so, with one button that opens the Tk desk at that place (`dashboard.py
 stand side by side while the move is under way. `[desk] web` in
 defaults.toml opens this instead of the Tk desk, in the checkout only
 (dashboard.main); the release keeps Tk until all five are here — never a
-half-moved window in a release (the owner, 2026-09-22).
+half-moved window in a release (the owner, 2026-09-22). Each of the four
+has a module of its own (`PLACES_MOD`: desk_corrections.py, desk_said.py,
+desk_keys.py, desk_settings.py) and a page of its own (web/src/places/),
+reached through `Api.place` — so five sessions can build the five places
+at once without editing one file (web/README.md says who owns what).
 
 THE MODEL IS PYTHON, THE PICTURE IS THE PAGE. `Model.home()` answers one
 question — everything Home shows, as plain data — read from the same
@@ -82,7 +86,15 @@ WEBDESK_SHOW = paths.kernel_name(r"Local\DeskIT.webdesk.show")
 APP_ID = paths.APP_ID if paths.PACKAGED else paths.APP_ID + ".Dashboard"
 
 #: What the page may call (webdesk's dispatcher checks this list).
-CALLS = ("home", "act", "ping")
+CALLS = ("home", "act", "place", "ping")
+
+#: The places drawn by modules of their own, each built by a session of its
+#: own in parallel (web/README.md): the page's place call reaches them by
+#: these names. Home is drawn by the Model below.
+PLACES_MOD = {"corrections": "desk_corrections", "said": "desk_said",
+              "keys": "desk_keys", "settings": "desk_settings"}
+#: What a place call may do: read the place, or press one of its buttons.
+PLACE_OPS = ("read", "act")
 
 #: activity -> (the lamp, the word) — dashboard.LOOKS, said as the four
 #: lamps B+ draws (bplus.css .lamp.listen / rec / write / idle).
@@ -855,26 +867,45 @@ class Model:
             return str(reply.get("error") or "that did not work")
         return str(reply.get("message") or done)
 
+    @staticmethod
+    def _notify_id(arg) -> int | None:
+        """A notification's id as the page sent it: a whole number, or
+        nothing. The app reads an id that will not survive int() as NO id,
+        and no id means every card (main.py's `notify` verb) — so a
+        malformed one from the page would turn "this one" into "all of
+        them", and must never reach the pipe."""
+        if isinstance(arg, bool):
+            return None
+        if isinstance(arg, int):
+            return arg
+        if isinstance(arg, str) and arg.strip().isdigit() and len(arg) < 20:
+            return int(arg)
+        return None
+
     def _do(self, do: str, arg) -> str:
+        if do in ("notify.dismiss", "notify.open"):
+            ident = self._notify_id(arg)
+            if ident is None:
+                return "that message is not here"
         if do == "notify.dismiss":
             if not self.running:
                 try:
                     import notify as notify_mod
-                    notify_mod.Store(paths.NOTIFY_FILE).mark_seen([arg])
+                    notify_mod.Store(paths.NOTIFY_FILE).mark_seen([ident])
                 except Exception as e:    # noqa: BLE001
-                    return f"could not mark that seen: {e}"
+                    return f"could not mark that seen ({type(e).__name__})"
                 return ""
             # the row goes with the press, not with the app's answer
-            self._gone.add(arg)
-            reply = self._ask("notify", do="dismiss", id=arg)
+            self._gone.add(ident)
+            reply = self._ask("notify", do="dismiss", id=ident)
             if reply is None or not reply.get("ok"):
-                self._gone.discard(arg)
+                self._gone.discard(ident)
                 return self._said(reply, "")
             return ""
         if do == "notify.open":
             if not self.running:
                 return "nothing is running — start it to reach what sent that"
-            return self._said(self._ask("notify", do="open", id=arg), "")
+            return self._said(self._ask("notify", do="open", id=ident), "")
         if do == "notify.dismiss_all":
             try:
                 import notify as notify_mod
@@ -888,7 +919,7 @@ class Model:
                     import notify as notify_mod
                     notify_mod.Store(paths.NOTIFY_FILE).mark_seen()
                 except Exception as e:    # noqa: BLE001
-                    return f"could not mark them seen: {e}"
+                    return f"could not mark them seen ({type(e).__name__})"
                 return "all marked seen"
             reply = self._ask("notify", do="dismiss")
             if reply is None or not reply.get("ok"):
@@ -901,7 +932,7 @@ class Model:
                 item = review_mod.Store(paths.REVIEW_FILE).decide(str(arg), verdict,
                                                                   by="dashboard")
             except Exception as e:        # noqa: BLE001
-                return f"could not save that: {e}"
+                return f"could not save that ({type(e).__name__})"
             if item is None:
                 return "that one was already decided"
             self._send("review_absorb", timeout_ms=1500)
@@ -918,11 +949,25 @@ class Model:
             return self._said(reply, "screens off — they stay off until you tap again"
                               if dark else "screens on")
         if do == "consent.on":
+            # The kind comes from the page: only a gate this desk is asking
+            # about again (its words changed, not waved away) may be granted
+            # here — the Tk desk binds it from its own row. privacy.grant
+            # takes any known kind, and a gate opens only through its card.
             try:
                 import privacy
-                privacy.grant(str(arg))
+                privacy.configure(config_mod.load_layered())
+                waiting = [k for k in privacy.stale() if k not in self._consent_later]
             except Exception as e:        # noqa: BLE001
-                log.warning("could not record the consent for %s: %s", arg, e)
+                log.warning("could not read the consents: %s", type(e).__name__)
+                return "could not record that"
+            kind = arg if isinstance(arg, str) else ""
+            if kind not in waiting:
+                return "that consent is not waiting for an answer"
+            try:
+                privacy.grant(kind)
+            except Exception as e:        # noqa: BLE001
+                log.warning("could not record the consent for %s: %s", kind,
+                            type(e).__name__)
                 return "could not record that"
             return "turned on"
         if do == "consent.later":
@@ -982,19 +1027,59 @@ def open_old_desk(place: str = "Home") -> bool:
 
 
 class Api:
-    """What the page may ask — flat, the three names in CALLS and nothing
+    """What the page may ask — flat, the four names in CALLS and nothing
     else public (webdesk's dispatcher getattr's the name it is given)."""
 
     CALLS = CALLS
 
     def __init__(self, model: Model | None = None) -> None:
         self._model = model or Model()
+        #: one Place per window and per place, built on its first call
+        self._places: dict = {}
+        self._places_lock = threading.Lock()
 
     def home(self):
         return self._model.home()
 
     def act(self, do: str, arg=None):
         return self._model.act(do, arg)
+
+    def place(self, name: str, op: str = "read", args=None):
+        """One call to a place's module (PLACES_MOD): "read" is
+        Place.read(**args), "act" is Place.act(do, arg) with args {do,
+        arg}. Anything else is refused in words, and a place that raises
+        answers {ok: False, error: <the exception's type>} — never a
+        traceback to the page, and never more than the type in app.log."""
+        name, op = str(name or ""), str(op or "")
+        if name not in PLACES_MOD:
+            return {"ok": False, "error": f"{name[:40]!r} is not a desk place"}
+        if op not in PLACE_OPS:
+            return {"ok": False, "error": f"{op[:40]!r} is not a place call"}
+        args = {} if args is None else args
+        if not isinstance(args, dict):
+            return {"ok": False, "error": "a place call's args are a dict"}
+        if op == "act" and (not isinstance(args.get("do"), str) or set(args) - {"do", "arg"}):
+            return {"ok": False, "error": "a place's act takes do and arg"}
+        try:
+            place = self._place(name)
+            if op == "read":
+                return place.read(**args)
+            return place.act(args["do"], args.get("arg"))
+        except Exception as e:            # noqa: BLE001 — the page gets words, not a traceback
+            log.warning("web desk: %s %s failed: %s", name, op, type(e).__name__)
+            return {"ok": False, "error": type(e).__name__}
+
+    def _place(self, name: str):
+        """The place's module, imported on its first call, and its one
+        Place for this window — handed the Model's pipe function, so a
+        test's or a probe's stubbed pipe is the place's pipe too."""
+        import importlib
+        with self._places_lock:
+            place = self._places.get(name)
+            if place is None:
+                module = importlib.import_module(PLACES_MOD[name])
+                place = self._places[name] = module.Place(self._model._send)
+            return place
 
     def ping(self):
         return {"ok": True}
@@ -1083,9 +1168,15 @@ def _watch_show(desk_handle: dict, stop: threading.Event) -> None:
 
 
 def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
-               hidden: bool = False) -> int:
+               hidden: bool = False, storage=None, watch_show: bool = False) -> int:
     """Open the desk and block until it closes (webdesk.run's codes: 0 ran,
-    2 no WebView2, 3 no pages)."""
+    2 no WebView2, 3 no pages). `storage`: the browser's folder, when not
+    paths.WEBVIEW_DIR — which the owner's own desk holds while it is open,
+    and a second browser on it fails with 0x800700AA. `watch_show`: come
+    to the front when a second launch pokes WEBDESK_SHOW — only for the
+    window that holds the mutex (main): the event is auto-reset and its
+    name is the checkout's in a worktree too, so a shot or a probe that
+    waited on it could swallow the poke meant for his own desk."""
     import webdesk
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
@@ -1093,8 +1184,9 @@ def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
         pass
     handle: dict = {}
     stop = threading.Event()
-    threading.Thread(target=_watch_show, args=(handle, stop), daemon=True,
-                     name="webdesk-show").start()
+    if watch_show:
+        threading.Thread(target=_watch_show, args=(handle, stop), daemon=True,
+                         name="webdesk-show").start()
 
     def ready_then(desk):
         handle["desk"] = desk
@@ -1111,12 +1203,14 @@ def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
                 return
             time.sleep(0.05)
 
-    threading.Thread(target=grab, daemon=True, name="webdesk-grab").start()
+    if watch_show:
+        threading.Thread(target=grab, daemon=True, name="webdesk-grab").start()
     try:
         return webdesk.run(route=route, title=f"DeskIT {paths.DEV_TAG}".strip(),
                            api=api or Api(), width=CLIENT_W + 16, height=CLIENT_H + 39,
                            icon=paths.ICON_ICO if paths.ICON_ICO.is_file() else None,
                            on_form=_on_form, resizable=False, hidden=hidden,
+                           storage=storage,
                            on_ready=ready_then if on_ready is not None else None)
     finally:
         stop.set()
@@ -1141,7 +1235,7 @@ def _shot(path: str, place: str):
         note: dict = {}
         try:
             if place and place != "Home":
-                desk.js(f"window.location.hash = '#/{place.lower()}'")
+                desk.js("window.location.hash = " + json.dumps("#/" + place.lower()))
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
                 if desk.js("document.body.dataset.read === '1'") is True:
@@ -1167,17 +1261,33 @@ def main(argv=None) -> int:
     parser.add_argument("--shot", help="photograph the page into this PNG, hidden, and close")
     parser.add_argument("--place", default="Home", help="open on this place")
     ns = parser.parse_args(argv)
+    route = "" if ns.place == "Home" else ns.place.lower()
+    if ns.shot:
+        # A photograph is not the desk: no mutex — a worktree's name is the
+        # checkout's, so with his desk open the shot would only raise HIS
+        # window — and a browser folder of its own, which his desk holds.
+        import shutil
+        import tempfile
+        storage = tempfile.mkdtemp(prefix="DeskIT-shot-")
+        try:
+            return run_window(route=route, on_ready=_shot(ns.shot, ns.place),
+                              storage=storage)
+        finally:
+            # the browser's processes let go of the folder a moment after
+            # the window has closed
+            for _ in range(50):
+                shutil.rmtree(storage, ignore_errors=True)
+                if not Path(storage).exists():
+                    break
+                time.sleep(0.1)
     try:
         lock = singleton.InstanceLock(WEBDESK_MUTEX)
     except singleton.AlreadyRunning:
         singleton.signal(WEBDESK_SHOW)
         return 0
     try:
-        route = "" if ns.place == "Home" else ns.place.lower()
-        if ns.shot:
-            return run_window(route=route, on_ready=_shot(ns.shot, ns.place))
         bring_up_the_keys()
-        code = run_window(route=route)
+        code = run_window(route=route, watch_show=True)
         if code == 0:
             # THE X CLOSES EVERYTHING — his rule of 2026-09-19, and the Tk
             # desk's (_close): the window a person opened, closed, is
