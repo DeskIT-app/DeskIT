@@ -34,7 +34,7 @@ type Said = {
 type Acted = { ok: boolean; note: string; copied?: boolean };
 
 const PAGE = 25;          // desk_said.SAID_PAGE
-const ROWS = 100;         // desk_said.HISTORY_ROWS: Show more stops there
+const ROWS = 5000;        // desk_said.SHOWN_MOST: All stops at the hundred by itself
 const POLL_MS = 800;      // the Tk desk's cadence
 const COPIED_MS = 1600;   // how long a row says it was copied
 
