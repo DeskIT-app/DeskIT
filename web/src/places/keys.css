@@ -1,2 +1,204 @@
 /* Keys — owned by the Keys session (web/README.md). Every rule here
-   starts with .place-keys: the CSS of all five places is one sheet. */
+   starts with .place-keys (or body.keys-…): the CSS of all five places
+   is one sheet. The numbers are the approved picture's
+   (design/2026-09-22/design/places/keys: keys.css and keys.src.txt). */
+
+.place-keys{
+  /* the caps' own light, as the picture's keys.css has it */
+  --heb:#b7bbd2;
+  --capglass-top:rgba(255,255,255,.075);
+  --capglass-bot:rgba(255,255,255,.035);
+  --cap-lip:rgba(0,0,0,.30);
+  --cap-edge:rgba(255,255,255,.07);
+  --cap-top:rgba(255,255,255,.13);
+  --tap-top:rgba(170,155,255,.30);
+  --tap-bot:rgba(150,135,255,.20);
+  --soft-top:rgba(150,135,255,.13);
+  --soft-bot:rgba(150,135,255,.07);
+  --soft-edge:rgba(165,151,255,.32);
+  --lift-sheen:rgba(255,255,255,.18);
+  --sel-ring:rgba(255,255,255,.50);
+  --sel-halo:rgba(165,151,255,.22);
+  --sel-halo2:rgba(165,151,255,.08);
+  --chip-tap-lit:#393966;
+  --chip-held-lit:#4c4986;
+}
+
+/* the sky, placed for Keys: indigo under the board's left half, blue under
+   the panel, plum along the floor */
+body.keys-place .sky .indigo{left:-240px;top:40px;width:820px;height:520px;transform:rotate(-12deg)}
+body.keys-place .sky .blue{left:720px;top:330px;width:680px;height:520px}
+body.keys-place .sky .plum{left:-80px;top:560px;width:820px;height:320px;transform:rotate(-5deg)}
+body.keys-place .sky .teal{left:640px;top:-120px;width:640px;height:320px;transform:rotate(-6deg)}
+body.keys-place .sky .r1{left:80px;top:250px;width:1040px;height:70px;transform:rotate(-9deg)}
+body.keys-place .sky .r2{left:360px;top:520px;width:800px;height:44px;transform:rotate(-6deg)}
+
+/* ---------------------------------------------------------------- the head */
+.place-keys .head{position:absolute;left:0;top:0;width:1112px;height:92px}
+.place-keys .title{position:absolute;left:-1px;top:12px;font-size:28px;line-height:36px}
+.place-keys .sub{position:absolute;left:0;top:52px;width:300px;font-size:13px;line-height:19px;color:var(--ink-2);text-wrap:pretty}
+.place-keys .legend{position:absolute;right:0;top:20px;display:flex;gap:22px}
+.place-keys .lgi{display:flex;gap:10px;align-items:flex-start}
+.place-keys .lgi .sw{position:relative;width:26px;height:26px;border-radius:7px;flex:none;margin-top:1px}
+.place-keys .lgi .sw.pair{display:flex;gap:3px;width:auto;height:26px}
+.place-keys .lgi .sw.pair .k{position:relative;width:17px;height:26px;border-radius:6px;margin:0}
+.place-keys .lgi .t{display:flex;flex-direction:column;gap:3px}
+.place-keys .lgi b{font-size:12.5px;font-weight:var(--w-strong);line-height:16px;color:var(--ink)}
+.place-keys .lgi .t > span{font-size:11.5px;line-height:15px;color:var(--ink-3)}
+
+/* --------------------------------------------- the board: one slab of glass */
+.place-keys .slab{position:absolute;left:0;top:98px;width:1112px;height:322px;border-radius:26px;
+  background:linear-gradient(160deg, var(--frost), transparent 42%), var(--glass-card)}
+.place-keys .slab .kb{position:absolute;left:41px;top:16px}
+
+.place-keys .k{position:absolute;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-direction:column;
+  color:var(--ink-2);font-weight:var(--w-label);line-height:1;
+  background:linear-gradient(180deg, var(--capglass-top), var(--capglass-bot));
+  box-shadow:inset 0 1px 0 var(--cap-top), inset 0 -2px 0 var(--cap-lip), inset 0 0 0 1px var(--cap-edge),
+             0 3px 6px -3px var(--shade-2)}
+.place-keys .k .lg{display:flex;align-items:baseline;justify-content:center;gap:5px;white-space:nowrap}
+.place-keys .k .la{font-size:13.5px}
+.place-keys .k.word .la{font-size:11px;letter-spacing:.01em}
+.place-keys .k.fn .la{font-size:11.5px}
+.place-keys .k .hb{font-family:var(--font-he);font-weight:var(--w-he);font-size:12px;color:var(--heb)}
+.place-keys .k .ar{font-size:12px}
+.place-keys .k .cp{display:none;margin-top:5px;max-width:100%;padding:0 2px;font-size:9px;font-weight:var(--w-strong);letter-spacing:-.005em;
+  white-space:nowrap;overflow:hidden;color:var(--prop-ink)}
+.place-keys .k.lit .cp{display:block}
+.place-keys .k.lit .lg{margin-top:1px}
+
+/* tapped and chord: the key fully lit - iris-tinted glass, an iris edge, a pool of light under it */
+.place-keys .k.tap{color:var(--ink);
+  background:linear-gradient(180deg, var(--tap-top), var(--tap-bot));
+  box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 -2px 0 var(--iris-foot), inset 0 0 0 1px var(--iris-edge),
+             0 8px 16px -9px var(--iris-glow)}
+.place-keys .k.tap .hb{color:var(--prop-ink)}
+/* held: the brightest - the lit fill of the one lit button, lit from above */
+.place-keys .k.hold{color:var(--iris-ink);
+  background:linear-gradient(180deg, var(--iris-hi), var(--iris) 55%, var(--iris-lo));
+  box-shadow:inset 0 1px 0 var(--spec), inset 0 -2px 0 var(--iris-foot), 0 0 0 1px var(--iris-halo),
+             0 10px 22px -10px var(--iris-glow)}
+.place-keys .k.hold .cp{color:var(--iris-ink)}
+.place-keys .k.hold .hb{color:var(--iris-ink)}
+/* a chord's modifier: lit softly, no caption */
+.place-keys .k.soft{color:var(--ink-2);
+  background:linear-gradient(180deg, var(--soft-top), var(--soft-bot));
+  box-shadow:inset 0 1px 0 var(--cap-top), inset 0 -2px 0 var(--cap-lip), inset 0 0 0 1px var(--soft-edge)}
+/* only sometimes: an unlit cap with a broken iris edge */
+.place-keys .k.some{outline:1.5px dashed var(--iris-edge);outline-offset:-2px}
+.place-keys .k.some .cp{color:var(--iris-text)}
+/* a second binding on the same cap (F8: translate bare, look up with Ctrl) */
+.place-keys .k .two{position:absolute;right:-5px;top:-5px;width:15px;height:15px;z-index:3;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:9px;font-weight:var(--w-strong);color:var(--iris-ink);background:var(--iris-hi);box-shadow:0 0 0 2px var(--ground), 0 0 8px var(--iris-glow)}
+
+/* a cap that can be picked: hover lights it a touch, a press sinks it */
+.place-keys .k.can{cursor:pointer;transition:filter .12s ease, transform .08s ease}
+.place-keys .k.can:hover{filter:brightness(1.18)}
+.place-keys .k.can:active{transform:translateY(1px);filter:brightness(.94)}
+/* the selected cap: lifted, ringed, its own sheen - the board's one bubble */
+.place-keys .k.sel{transform:translateY(-2px);z-index:2}
+.place-keys .k.sel.can:active{transform:translateY(-1px)}
+.place-keys .k.sel::after{content:"";position:absolute;inset:-5px;border-radius:13px;pointer-events:none;
+  box-shadow:0 0 0 1.5px var(--sel-ring), 0 0 0 6px var(--sel-halo), 0 16px 30px -10px var(--iris-glow)}
+.place-keys .k.sel::before{content:"";position:absolute;left:1px;right:1px;top:1px;height:46%;border-radius:8px 8px 50% 50% / 8px 8px 5px 5px;
+  background:linear-gradient(180deg, var(--lift-sheen), transparent);pointer-events:none}
+/* listening for the new key: its cap breathes */
+.place-keys .k.wait{transform:translateY(-2px);z-index:2}
+.place-keys .k.wait::after{content:"";position:absolute;inset:-5px;border-radius:13px;pointer-events:none;
+  box-shadow:0 0 0 1.5px var(--iris-hi), 0 0 0 7px var(--sel-halo), 0 0 0 13px var(--sel-halo2), 0 16px 30px -10px var(--iris-glow);
+  animation:keys-breathe 1.8s ease-in-out infinite}
+@keyframes keys-breathe{0%,100%{opacity:1}50%{opacity:.55}}
+
+/* --------------------------------------- the band: every key (left), this key (right) */
+.place-keys .band{position:absolute;left:0;top:432px;width:1112px;height:196px}
+.place-keys .list{position:absolute;left:2px;top:0;width:760px;display:grid;grid-template-columns:232px 186px 1fr;column-gap:26px}
+.place-keys .grp .eyebrow{height:18px;line-height:18px;margin-bottom:3px}
+.place-keys .grp + .grp{margin-top:8px}
+.place-keys .row{position:relative;height:23.5px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.place-keys .row .n{font-size:13px;font-weight:var(--w-body);color:var(--ink);white-space:nowrap}
+.place-keys .row .n i{font-style:normal;color:var(--ink-3);font-size:12px;margin-left:8px}
+.place-keys .row .n i::before{content:"·";margin-right:8px}
+.place-keys .row.two{height:42px;align-items:flex-start;padding-top:2px}
+.place-keys .row.two .n{display:flex;flex-direction:column;gap:2px}
+.place-keys .row.two .n i{margin-left:0}
+.place-keys .row.two .n i::before{content:none}
+.place-keys .row .keys .cap{height:20px;min-width:20px;padding:0 6px;font-size:11px}
+.place-keys .row .keys .cap .ic{font-size:10px}
+/* a row is the way to change its key: a soft frost under it on hover */
+.place-keys .row.can{cursor:pointer}
+.place-keys .row::before{content:"";position:absolute;left:-8px;right:-6px;top:0;bottom:0;border-radius:9px;
+  background:rgba(255,255,255,.045);opacity:0;transition:opacity .12s ease;pointer-events:none}
+.place-keys .row.two::before{bottom:6px}
+.place-keys .row.can:hover::before{opacity:1}
+.place-keys .row.can:active::before{background:rgba(255,255,255,.07)}
+.place-keys .row.on::before{opacity:1;background:var(--iris-wash);box-shadow:inset 0 0 0 1px var(--iris-ring)}
+
+/* the list's keycaps, lit the way the board is */
+.place-keys .cap.tapc{background:var(--chip-tap-lit);color:var(--prop-ink);box-shadow:inset 0 -2px 0 var(--iris-foot), inset 0 1px 0 var(--btn-hi), 0 0 0 1px var(--iris-ring)}
+.place-keys .cap.holdc{background:var(--chip-held-lit);color:var(--ink);box-shadow:inset 0 -2px 0 var(--iris-foot), inset 0 1px 0 var(--btn-hi), 0 0 0 1px var(--iris-edge)}
+.place-keys .cap.softc{box-shadow:inset 0 -2px 0 var(--shade-1), inset 0 1px 0 var(--btn-hi), 0 0 0 1px var(--iris-ring)}
+.place-keys .cap.offc{color:var(--ink-3);background:transparent;box-shadow:0 0 0 1px var(--line)}
+.place-keys .keys{gap:3px}
+
+/* ---------------------------------------------------------------- the panel */
+.place-keys .panel{position:absolute;right:0;top:0;width:318px;height:196px;border-radius:24px;padding:18px 22px 20px;overflow:hidden;
+  background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-lead)}
+.place-keys .panel .eyebrow{display:flex;align-items:center;gap:8px;height:18px}
+.place-keys .panel .eyebrow .ic{font-size:12px}
+.place-keys .pk{display:flex;align-items:center;gap:16px;margin-top:16px}
+.place-keys .pk .k{position:relative;flex:none;height:48px;width:104px;border-radius:11px}
+.place-keys .pk .k .la{font-size:13px}
+.place-keys .pk .nm{min-width:0}
+.place-keys .pk .n{font-family:var(--font-display);font-size:20px;font-weight:var(--w-strong);letter-spacing:-.01em;line-height:24px}
+.place-keys .pk .m{font-size:12.5px;color:var(--ink-3);margin-top:3px;white-space:nowrap}
+.place-keys .pk .m i{font-style:normal;margin:0 7px}
+.place-keys .panel .go{position:absolute;left:22px;bottom:20px}
+
+/* a cap with more to say: the smaller row (the listening picture's), a
+   button of its own on the right */
+.place-keys .pk.small{margin-top:12px;gap:12px}
+.place-keys .pk.small .k{height:40px;width:88px}
+.place-keys .pk.small .k .la{font-size:12px}
+.place-keys .pk.small .n{font-size:16px;line-height:20px}
+.place-keys .pk.small .m{margin-top:2px}
+.place-keys .pk .chg{margin-left:auto;flex:none;height:30px;padding:0 12px;font-size:12.5px}
+/* two bindings with long names on one cap is more than the picture's 196 px:
+   the panel's words scroll inside the glass rather than being cut */
+.place-keys .panel.many{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--thumb) transparent}
+.place-keys .many .pk.small{margin-top:10px}
+.place-keys .many .pk.small .k{height:36px}
+.place-keys .many .pk.small + .says, .place-keys .many > div + div{margin-top:0}
+
+/* words in the panel: nothing picked, a free cap, a note */
+.place-keys .panel .says{margin-top:12px;font-size:13px;line-height:19px;color:var(--ink-2);text-wrap:pretty}
+.place-keys .panel .says.sm{margin-top:8px;font-size:11.5px;line-height:15px;color:var(--ink-3)}
+.place-keys .panel.none .says{margin-top:16px;font-size:14px;line-height:21px}
+.place-keys .panel .nm.big{margin-top:14px;font-family:var(--font-display);font-size:20px;font-weight:var(--w-strong);letter-spacing:-.01em;line-height:24px}
+.place-keys .panel.free .says{margin-top:6px;font-size:12.5px;line-height:18px}
+.place-keys .panel.free .says.sm{font-size:11.5px;line-height:15px}
+
+/* listening: the panel's own copy of what the key dialog is saying */
+.place-keys .hear{margin-top:12px;border-radius:16px;padding:12px 16px 12px;
+  background:radial-gradient(120% 140% at 0% 0%, var(--iris-tint), var(--iris-wash) 70%);box-shadow:inset 0 0 0 1px var(--iris-ring), 0 0 26px -10px var(--iris-glow)}
+.place-keys .hear .l1{display:flex;align-items:baseline;gap:8px}
+.place-keys .hear b{display:block;font-size:15px;font-weight:var(--w-strong);color:var(--iris-text);line-height:20px;text-wrap:balance}
+.place-keys .hear .esc{margin-left:auto;font-size:11.5px;color:var(--ink-3);white-space:nowrap}
+.place-keys .hear .l2{display:block;font-size:12.5px;color:var(--ink-2);margin-top:2px}
+.place-keys .hear .caret{display:inline-block;width:1.5px;height:13px;background:var(--iris-text);vertical-align:-2px;margin-left:3px;
+  animation:keys-caret 1.06s steps(1) infinite}
+@keyframes keys-caret{50%{opacity:0}}
+.place-keys .wait .pk.small{margin-top:14px}
+.place-keys .panel .off{position:absolute;right:16px;top:12px;height:26px;padding:0 11px;font-size:12px}
+
+/* ------------------------------------------------- the one faint line at the foot */
+.place-keys .foot{position:absolute;left:0;top:640px;width:1112px;height:20px;display:flex;align-items:center;
+  font-size:12px;color:var(--ink-3);white-space:nowrap}
+.place-keys .foot .words{display:flex;align-items:center;gap:6px}
+.place-keys .foot .cap{height:18px;min-width:18px;padding:0 5px;font-size:11px;color:var(--ink-2)}
+.place-keys .foot .gap{width:4px}
+/* a binding on a key the board does not draw says so first, and the line
+   grows upward instead of off the window (dashboard._screen_keys) */
+.place-keys .foot.more{top:auto;bottom:2px;height:auto;white-space:normal;line-height:22px}
+.place-keys .foot.more .words{display:block}
+.place-keys .foot.more .cap{margin:0 2px}
+.place-keys .foot.more .gap{display:inline-block}

@@ -50946,6 +50946,406 @@ def test_web_desk_keys_is_wired():
     _web_desk_place_wired("keys")
 
 
+def test_web_desk_keys_reads_keycaps_without_importing_it():
+    """desk_keys reads keycaps.py's tables and pure functions without the
+    module's imports — `import keycaps` brings ui.py, and with it Tk,
+    Pillow and skia: 183-201 ms and +14 MB private memory on the first
+    visit to Keys, measured 2026-10-24 — and what it reads IS the module:
+    the same rows and names, every binding lit the same way, the same cap
+    for every key code, and the board laid out by keycaps.draw's own
+    arithmetic (at its 34 px cap the rectangles are draw's to the pixel;
+    the web board is the picture's 46 px cap with draw's gaps at 34)."""
+    import desk_keys
+    import keycaps
+
+    probe = ("import sys, desk_keys; desk_keys._caps(); "
+             "desk_keys.Place(lambda *a, **k: None).read(); "
+             "print(sorted(m for m in sys.modules if m.split('.')[0] in "
+             "('keycaps', 'tkinter', '_tkinter', 'PIL', 'skia', 'ui', 'dashboard')))")
+    out = subprocess.run([sys.executable, "-c", probe], cwd=str(REPO),
+                         capture_output=True, text=True, timeout=120,
+                         creationflags=0x08000000)
+    assert out.returncode == 0 and out.stdout.strip() == "[]", \
+        (out.stdout, out.stderr[-600:])
+    ns = desk_keys._caps()
+    assert ns is not vars(keycaps)            # read, not imported
+    for name in ("ROWS", "TALL", "HEBREW", "UNITS", "GRID_ROWS", "KEYPAD_NUMLOCK",
+                 "KEYPAD", "CAP_NAMES", "CAPTION", "HOLD", "WHILE_HELD"):
+        assert ns[name] == getattr(keycaps, name), name
+    assert ns["offered"]() == keycaps.offered()
+    assert ns["vk_caps"]() == keycaps.vk_caps()
+    for vk in range(1, 255):
+        assert ns["cap_for_vk"](vk) == keycaps.cap_for_vk(vk), vk
+    for row in keycaps.ROWS:
+        for cap_id, _label, _units in row:
+            if cap_id:
+                assert ns["name_for"](cap_id) == keycaps.name_for(cap_id), cap_id
+    base = config_mod.load(REPO / "defaults.toml")
+    sets = [{f: getattr(base, f) for f, _l in config_mod.HOTKEY_FIELDS},
+            {"hotkey": "right alt", "translate_hotkey": "f8", "lookup_hotkey": "ctrl+f8",
+             "capture_hotkey": "win+shift+s", "latch_hotkey": "enter",
+             "pause_hotkey": "numpad 5", "report_hotkey": "nonsense+q",
+             "shelf_hotkey": "f13"}]
+    for keys in sets:
+        assert ns["bindings"](keys) == keycaps.bindings(keys), keys
+        for raw in keys.values():
+            assert ns["caps_for"](raw) == keycaps.caps_for(raw), raw
+    # keycaps.draw's arithmetic, to the pixel, at its own cap
+    _image, rects = keycaps.draw(34, lit={})
+    gap = rects["2"][0] - rects["1"][2]
+    row_gap = rects["`"][1] - rects["esc"][1] - 34
+    laid = desk_keys.board(34, gap=gap, row_gap=row_gap, pad=8)
+    mine = {c["id"]: (round(c["x"]), round(c["y"]), round(c["x"] + c["w"]),
+                      round(c["y"] + c["h"])) for c in laid["caps"]}
+    assert mine == rects
+    # ...and the web board: the picture's cap, those gaps, the picture's size
+    assert (desk_keys.GAP, desk_keys.ROW_GAP) == (gap, row_gap) == (5, 19)
+    web = desk_keys.board()
+    assert (desk_keys.UNIT, web["w"], web["h"]) == (46, 1030, 290)
+    assert len(web["caps"]) == 104
+
+
+def test_web_desk_keys_says_what_the_tk_place_says():
+    """Same words: desk_keys' tables are dashboard.py's (KEY_GROUPS,
+    KEY_NOTES, KEY_LEGEND, NESTED_HOTKEYS), every sentence the panel, the
+    listening and the refusals say is written in dashboard.py or main.py,
+    split_label / pretty_key / cap_title answer as the Tk desk's do, and
+    the foot is the Tk sentence as the approved picture says it — its own
+    words, the middle clause out, the caps keycaps.offered names."""
+    import dashboard
+    import desk_keys
+    import keycaps
+
+    assert desk_keys.KEY_GROUPS == dashboard.KEY_GROUPS
+    assert desk_keys.KEY_NOTES == dashboard.KEY_NOTES
+    assert desk_keys.NESTED_HOTKEYS == dashboard.NESTED_HOTKEYS
+    assert tuple(desk_keys.KEY_LEGEND) == tuple(dashboard.KEY_LEGEND)
+    assert sorted(g for col in desk_keys.COLUMNS for g in col) \
+        == sorted(name for name, _f in dashboard.KEY_GROUPS)
+    flat = re.sub(r'"\s*\n\s*f?"', "", (REPO / "dashboard.py").read_text("utf-8"))
+    for name, words in desk_keys.WORDS.items():
+        if name == "eyebrow":
+            assert "   ".join(" ".join(w.upper()) for w in words.split()) in flat
+            continue
+        if name in ("chord", "bare", "tap"):
+            assert f"'{words}'" in flat, name
+            continue
+        assert words in flat, (name, words)
+    for words in (desk_keys.LISTENING.replace("{what}", "{what.lower()}"),
+                  desk_keys.PAUSE_FAILED, desk_keys.MISSING.replace(".", "")):
+        assert words in flat, words
+    assert desk_keys.HOTKEY_ON in (REPO / "main.py").read_text("utf-8")
+    tk_sub = desk_keys.SUB[:1].lower() + desk_keys.SUB[1:].rstrip(".")
+    assert f'self._title("Keys", "{tk_sub}")' in flat, tk_sub
+    safe = ("Anything not lit is untouched by this app. The keys it cannot take at all "
+            "— the punctuation caps, ` - = [ ] \\\\ ; ' , . / — have no code Windows can "
+            "bind, which is why they are the safe ones.")
+    assert f'safe = ("{safe}")' in flat, safe
+    tk = safe.replace("\\\\", "\\")
+    assert tk.startswith(desk_keys.SAFE_LEAD.rsplit(" ", 1)[0])
+    assert tk.endswith(desk_keys.SAFE_TAIL.split(" ", 1)[1])
+    assert desk_keys._safe_caps() == "` - = [ ] \\ ; ' , . /".split() == keycaps.offered()
+    for field, label in config_mod.HOTKEY_FIELDS:
+        assert desk_keys.split_label(label) == dashboard.split_label(label)
+    for raw in ("right ctrl", "ctrl+alt+m", ""):
+        assert desk_keys.pretty_key(raw) == dashboard.pretty_key(raw)
+    for row in keycaps.ROWS:
+        for cap_id, _label, _units in row:
+            if cap_id:
+                assert desk_keys.cap_title(cap_id) == dashboard.cap_title(cap_id), cap_id
+
+
+def test_web_desk_keys_draws_every_binding_lit():
+    """read() is the place as the Tk desk draws it: the running app's keys
+    (the files' when nothing runs), every cap of keycaps' board with the
+    state and caption keycaps.bindings gives it, the bindings on each cap
+    (F8 carries two), every key field once in the picture's three columns,
+    a binding the board cannot draw named in the foot, the phone link
+    never — and it reads nothing but itself."""
+    import desk_keys
+    import keycaps
+
+    base = config_mod.load(REPO / "defaults.toml")
+    keys = {f: getattr(base, f) for f, _l in config_mod.HOTKEY_FIELDS}
+    keys.update(english_hotkey="", report_hotkey="f13", translate_hotkey="f8",
+                lookup_hotkey="ctrl+f8", capture_hotkey="win+shift+s")
+    with _web_desk(dict(_WEB_STATUS, keys=keys)) as (model, _folder, asked):
+        place = desk_keys.Place(model._send)
+        got = place.read()
+        assert place.read(sel="f8")["ok"] is False
+    assert got["ok"] and got["running"] and got["capture"] is None
+    assert "phone" not in json.dumps(got) and "secret" not in json.dumps(got)
+    assert [c for c, _a in asked] == ["status"]
+    lit, unmapped = keycaps.bindings({f: keys[f] for f, _l in config_mod.HOTKEY_FIELDS})
+    caps = {c["id"]: c for c in got["board"]["caps"]}
+    assert len(caps) == 104
+    for cap_id, cap in caps.items():
+        on = lit.get(cap_id) or []
+        bare = [b for b in on if "+" not in (b[3] or "")]
+        want = (bare or on or [(None,)])[0][0]
+        assert cap.get("state") == want, (cap_id, cap)
+    assert caps["rctrl"]["state"] == "hold" and caps["rctrl"]["caption"] == "dictate"
+    assert caps["f8"]["on"] == ["translate_hotkey", "lookup_hotkey"]
+    assert caps["s"]["state"] == "chord" and caps["lwin"]["state"] == "soft"
+    assert caps["esc"]["state"] == "sometimes" and "on" not in caps["esc"]
+    assert caps["d"]["caption"] == "shelf"          # keycaps.CAPTION has none for it
+    assert caps["num5"]["numlock"] and caps["q"]["heb"] == "/"
+    assert caps["num5"]["title"] == "NUMPAD 5"
+    rows = [f for col in got["columns"] for group in col for f in group["rows"]]
+    assert sorted(rows) == sorted(f for f, _l in config_mod.HOTKEY_FIELDS)
+    assert len(rows) == len(set(rows))
+    assert got["foot"]["missing"] == "Bound to a key this board does not draw: " \
+                                     "report_hotkey = 'f13'."
+    fields = got["fields"]
+    assert fields["english_hotkey"]["caps"] == [{"t": "off", "k": "off"}]
+    assert [(c["t"], c["k"]) for c in fields["capture_hotkey"]["caps"]] \
+        == [("Win", "soft"), ("Shift", "soft"), ("S", "tap")]
+    assert [(c["t"], c["k"]) for c in fields["hotkey"]["caps"]] == [("Right Ctrl", "hold")]
+    assert fields["pause_hotkey"]["note"] == "a pause, not a stop"
+    assert fields["hotkey"]["may_off"] is False and fields["latch_hotkey"]["may_off"]
+    assert fields["lookup_hotkey"]["kind"] == "chord" and fields["translate_hotkey"]["kind"] == "bare key"
+    assert got["start"] == "rctrl"
+    assert got["codes"]["ControlRight"] == "rctrl" and got["codes"]["NumpadEnter"] == "numenter"
+    assert got["vks"]["13"] == "enter" and got["vks"][str(0x52)] == "r"
+    # nothing running: the files' own keys
+    own = config_mod.with_field(base, "translate_hotkey", "f7")
+    with _web_desk(None) as (model, _folder, _asked), \
+            _patched(config_mod, "load_layered", lambda *a, **k: own):
+        idle = desk_keys.Place(model._send).read()
+    assert idle["running"] is False and idle["fields"]["translate_hotkey"]["raw"] == "f7"
+
+
+def test_web_desk_keys_names_a_key_the_tk_dialogs_way():
+    """What the page heard -> what config.toml would hold, through the Tk
+    dialog's own hotkey.binding_name_from_event: the side of a modifier
+    from the event's code, the modifiers as groups, and nothing the page
+    sends trusted — a bad shape, an unknown modifier, a code outside a
+    byte, Win alone and a key with no name are all None."""
+    import desk_keys
+
+    for arg, want in (({"vk": 0x11, "side": "right", "mods": []}, "right ctrl"),
+                      ({"vk": 0x11, "side": "left", "mods": []}, "left ctrl"),
+                      ({"vk": 0x12, "side": "right", "mods": []}, "right alt"),
+                      ({"vk": 0x10, "side": "right", "mods": []}, "right shift"),
+                      ({"vk": 0x77, "side": "", "mods": ["ctrl"]}, "ctrl+f8"),
+                      ({"vk": 0x4D, "side": "", "mods": ["alt", "ctrl"]}, "ctrl+alt+m"),
+                      ({"vk": 0x53, "side": "", "mods": ["shift", "win"]}, "win+shift+s"),
+                      ({"vk": 0x65, "side": "", "mods": []}, "numpad 5"),
+                      ({"vk": 0x2D, "mods": []}, "insert"),
+                      ({"vk": 0x25}, "left"),
+                      ({"vk": 0x79, "side": "", "mods": ["ctrl"]}, "ctrl+f10")):
+        assert desk_keys.key_name(arg) == want, (arg, desk_keys.key_name(arg))
+    # the Tk dialog's function, given the same key, says the same
+    assert hotkey_mod.binding_name_from_event("Control_R", 0x11, probe=lambda vk: 0xA3,
+                                              mods=frozenset()) == "right ctrl"
+    for bad in ({"vk": 0x5B, "side": "left", "mods": []}, {"vk": 0xBC, "mods": []},
+                {"vk": "17"}, {"vk": True}, {"vk": 300}, {"vk": 0}, {"vk": -1},
+                {"vk": 0x11, "side": "up"}, {"vk": 0x77, "mods": ["hyper"]},
+                {"vk": 0x77, "mods": "ctrl"}, {"vk": 0x77, "mods": ["ctrl"] * 5},
+                {"vk": 0x77, "extra": 1}, None, [], "right ctrl", 0x11):
+        assert desk_keys.key_name(bad) is None, bad
+
+
+def _keys_place(status, answers=None):
+    """A desk_keys.Place over a pipe that answers `status` with `status`
+    (None: nothing running) and every other verb from `answers` (a reply
+    or a function of the verb's args; ok otherwise), recording each; its
+    menu-mode watcher counts instead of looking. Returns (place, asked,
+    menu calls)."""
+    import desk_keys
+    asked: list = []
+    menus: list = []
+
+    def send(command, timeout_ms=2000, **args):
+        asked.append((command, args))
+        if command == "status":
+            return dict(status) if status is not None else None
+        answer = (answers or {}).get(command, {"ok": True})
+        return answer(**args) if callable(answer) else answer
+
+    place = desk_keys.Place(send)
+    place._menu_out = lambda: menus.append(1) or 0
+    return place, asked, menus
+
+
+def test_web_desk_keys_listens_paused_and_always_resumes():
+    """The Tk desk's rebind, as the web desk does it: listening PAUSES the
+    running app and checks the reply (a pause that failed listens for
+    nothing); a key, Cancel, Esc, a page that stopped renewing its lease
+    and the window closing (the exit hook) each give the pause back —
+    once, and only a pause this place took; the resume comes before the
+    rebind; a key the app cannot use keeps it listening; the dictation
+    key cannot be turned off; the app's refusal is its own sentence; with
+    nothing running the files are checked by config.check_hotkeys before
+    config.save writes the key where it lives; and nothing the page names
+    reaches the pipe unchecked."""
+    import weakref
+
+    import desk_keys
+
+    def verbs(asked):
+        return [c for c, _a in asked if c != "status"]
+
+    running = dict(_WEB_STATUS, keys={"hotkey": "right ctrl", "translate_hotkey": "f8"})
+    with _patched(desk_keys, "GRACE_S", 0.05), _patched(desk_keys, "WATCH_S", 0.01):
+        # a key: paused, then resumed BEFORE the rebind, and the cap it landed on
+        place, asked, menus = _keys_place(running, {"rebind": lambda field, key: {
+            "ok": True, "message": f'"Dictate (hold)" is now {key}'}})
+        got = place.act("capture.start", "hotkey")
+        assert got["capture"] == {"field": "hotkey", "listening": "listening for dictate",
+                                  "may_off": False} and verbs(asked) == ["pause"], got
+        assert "phone" not in json.dumps(got)
+        got = place.act("capture.key", {"vk": 0x12, "side": "right", "mods": []})
+        assert verbs(asked) == ["pause", "resume", "rebind"], asked
+        assert [a for c, a in asked if c == "rebind"] == [{"field": "hotkey", "key": "right alt"}]
+        assert got["capture"] is None and got["chosen"] == "ralt"
+        assert got["note"] == '"Dictate (hold)" is now right alt'
+        assert _until(lambda: place._watcher is None, 3)
+        assert menus, "the menu-mode watcher ran while it listened"
+        # a key nobody can bind: still listening, still paused
+        place, asked, _m = _keys_place(running)
+        place.act("capture.start", "translate_hotkey")
+        got = place.act("capture.key", {"vk": 0xBC, "side": "", "mods": []})
+        assert got["refused"] == desk_keys.WORDS["unusable"] and got["capture"]
+        assert verbs(asked) == ["pause"]
+        place.act("capture.cancel")
+        place.act("capture.cancel")                  # twice: one resume
+        assert verbs(asked) == ["pause", "resume"]
+        assert place.act("capture.key", {"vk": 0x77})["capture"] is None
+        assert verbs(asked) == ["pause", "resume"]   # not listening: nothing sent
+        # a pause that failed listens for nothing, and resumes nothing
+        for refused in ({"ok": False, "error": "locked"}, None):
+            place, asked, _m = _keys_place(running, {"pause": refused})
+            got = place.act("capture.start", "hotkey")
+            assert got["capture"] is None and got["note"] == desk_keys.PAUSE_FAILED
+            place.act("capture.cancel")
+            assert verbs(asked) == ["pause"], asked
+        # paused already: his pause is his, and stays
+        place, asked, _m = _keys_place(dict(running, paused=True))
+        place.act("capture.start", "hotkey")
+        place.act("capture.cancel")
+        assert verbs(asked) == []
+        # Turn this key off: never the dictation key; any other, after the resume
+        place, asked, _m = _keys_place(running)
+        place.act("capture.start", "hotkey")
+        got = place.act("capture.off")
+        assert got["note"] == desk_keys.HOTKEY_ON and got["capture"], got
+        place.act("capture.start", "translate_hotkey")    # moves; the pause stands
+        place.act("capture.off")
+        assert verbs(asked) == ["pause", "resume", "rebind"], asked
+        assert [a for a in asked if a[0] != "status"][-1]             == ("rebind", {"field": "translate_hotkey", "key": ""})
+        # the app's own refusal is the sentence shown
+        place, asked, _m = _keys_place(running, {"rebind": {
+            "ok": False, "error": "lookup_hotkey must differ from translate_hotkey"}})
+        place.act("capture.start", "translate_hotkey")
+        got = place.act("capture.key", {"vk": 0x77, "side": "", "mods": ["ctrl"]})
+        assert got["note"] == "lookup_hotkey must differ from translate_hotkey"
+        assert verbs(asked) == ["pause", "resume", "rebind"]
+        # the window closed mid-listening: the exit hook resumes, once
+        place, asked, _m = _keys_place(running)
+        place.act("capture.start", "hotkey")
+        desk_keys._at_exit(weakref.ref(place))
+        desk_keys._at_exit(weakref.ref(place))
+        assert verbs(asked) == ["pause", "resume"]
+    # a page gone quiet: the lease runs out and the app is resumed
+    with _patched(desk_keys, "LEASE_S", 0.3), _patched(desk_keys, "WATCH_S", 0.01), \
+            _patched(desk_keys, "GRACE_S", 0.05):
+        place, asked, _m = _keys_place(running)
+        place.act("capture.start", "hotkey")
+        for _ in range(6):                         # renewed: it keeps listening
+            time.sleep(0.1)
+            place.act("capture.alive")
+        assert place._capturing == "hotkey" and verbs(asked) == ["pause"]
+        assert _until(lambda: place._capturing is None, 3)
+        assert verbs(asked) == ["pause", "resume"]
+        assert _until(lambda: place._watcher is None, 3)
+    # nothing running: no pause; the files checked, then saved where the key lives
+    base = config_mod.load(REPO / "defaults.toml")
+    saved: list = []
+    with _patched(config_mod, "load_layered", lambda *a, **k: base), \
+            _patched(config_mod, "save", lambda updates, **k: saved.append(updates)), \
+            _patched(desk_keys, "GRACE_S", 0.05):
+        place, asked, _m = _keys_place(None)
+        place.act("capture.start", "capture_hotkey")
+        got = place.act("capture.key", {"vk": 0x77, "side": "", "mods": ["ctrl", "shift"]})
+        assert saved == [{"capture.capture_hotkey": "ctrl+shift+f8"}], saved
+        assert got["note"] == config_mod.rebound_sentence("capture_hotkey", "ctrl+shift+f8")
+        clash = base.translate_hotkey
+        place.act("capture.start", "capture_hotkey")
+        got = place.act("capture.key", {"vk": hotkey_mod.vk_for(clash), "mods": []})
+        assert len(saved) == 1 and "one key cannot mean two things" in got["note"], got
+        assert verbs(asked) == []
+    with _patched(config_mod, "load_layered", lambda *a, **k: base), \
+            _patched(config_mod, "save", lambda *a, **k: (_ for _ in ()).throw(
+                OSError("C:\\Users\\secret\\settings.toml is locked"))), \
+            _patched(desk_keys, "GRACE_S", 0.05):
+        place, _asked, _m = _keys_place(None)
+        place.act("capture.start", "record_hotkey")
+        got = place.act("capture.key", {"vk": 0x76, "mods": ["ctrl"]})
+        assert got["note"] == "could not save that (OSError)", got
+    # what the page names is checked before the pipe hears of it
+    place, asked, _m = _keys_place(running)
+    for bad in ("../x", 5, None, "hotkey; quit", "HOTKEY"):
+        got = place.act("capture.start", bad)
+        assert got["capture"] is None and got["note"] == "that is not a key this place changes"
+    refused = place.act("quit")
+    assert refused["ok"] is False and "not a Keys action" in refused["error"]
+    assert verbs(asked) == []
+
+
+def test_web_desk_keys_ends_the_menu_mode_of_its_own_window_only():
+    """A bare Alt, a bare F10 and Ctrl+F10 drop the desk's WinForms form
+    into the system-menu mode (measured on the hidden desktop: the page
+    sees the key, and no call is answered until the mode ends). menu_out
+    ends it with one Esc to the window owning the menu — and only for a
+    window of THIS process, through a private user32 (AGENTS: argtypes on
+    ctypes.windll change them for every module). Nothing here is in
+    menu mode, so it ends nothing."""
+    import desk_keys
+
+    assert desk_keys.menu_out() == 0
+    src = (REPO / "desk_keys.py").read_text("utf-8")
+    assert "ctypes.windll" not in src and 'ctypes.WinDLL("user32"' in src
+    body = src[src.index("def menu_out("):]
+    assert body.index("os.getpid()") < body.index("GUI_INMENUMODE") \
+        < body.index("owner.value != pid") < body.index("PostMessageW")
+
+
+def test_web_desk_keys_page_listens_the_tk_dialogs_way():
+    """The page's half of the rebind (web/src/places/keys.tsx): it asks
+    only for what desk_keys.Place.act does; it hears keys on the window in
+    the capture phase and keeps them from the page while it listens; Esc
+    cancels; a modifier waits for its release with its side from the
+    event's code; the key goes as keyCode, the virtual-key code the hook
+    and the Tk dialog read; it renews its lease well inside LEASE_S, and
+    cancels when the place is left or the window hidden; and it draws
+    every word as text, never as markup."""
+    import desk_keys
+
+    page = (REPO / "web" / "src" / "places" / "keys.tsx").read_text("utf-8")
+    asks = set(re.findall(r'(?:do: |act\(|a\()"(capture\.\w+)"', page))
+    assert asks == {"capture.start", "capture.alive", "capture.key", "capture.cancel",
+                    "capture.off"}, asks
+    handled = (REPO / "desk_keys.py").read_text("utf-8")
+    handled = handled[handled.index("    def act(self"):handled.index("    def _start(self")]
+    for name in asks:
+        assert f'"{name}"' in handled, name
+    assert 'window.addEventListener("keydown", down, true)' in page
+    assert 'window.addEventListener("keyup", up, true)' in page
+    assert "e.preventDefault();" in page and 'e.key === "Escape"' in page
+    for code in ("ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft",
+                 "AltRight", "MetaLeft", "MetaRight"):
+        assert f"{code}: [" in page, code
+    assert "vk: e.keyCode" in page and "vk: p.vk" in page
+    alive = int(re.search(r"const ALIVE_MS = (\d+);", page).group(1))
+    assert alive * 3 <= desk_keys.LEASE_S * 1000, alive
+    assert 'document.addEventListener("visibilitychange", onVis)' in page
+    assert 'do: "capture.cancel", arg: null' in page
+    for sink in ("dangerouslySetInnerHTML", "innerHTML", "outerHTML", "insertAdjacentHTML",
+                 "eval(", "new Function"):
+        assert sink not in page, sink
+
+
 # ======================================== web desk place: Settings
 # Owners: the Settings session — desk_settings.py,
 # web/src/places/settings.tsx, web/src/places/settings.css. The Settings
