@@ -67,7 +67,7 @@ export function Card({ s, press, pressed, go }: Props) {
         <div className="card glass">
           <div className="r">
             <div className="t">
-              <div className={`lab${s.tone ? ` ${s.tone}` : ""}`}>
+              <div className={`lab${s.ready ? " dotted" : ""}${s.tone ? ` ${s.tone}` : ""}`}>
                 {s.ready ? <span className="okdot" /> : null}{s.line}
               </div>
               {s.small ? <div className="help">{s.small}</div> : null}

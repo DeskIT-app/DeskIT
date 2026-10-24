@@ -1099,11 +1099,26 @@ class Place:
         do = str(do)
         if do not in ACTS:
             return {"ok": False, "error": f"{do[:40]!r} is not a Settings action"}
+        chosen = None
+        if do == "browse":
+            # Windows' dialog waits for the person, for as long as he
+            # likes: it is opened OUTSIDE the lock, or every poll of the
+            # page would wait behind it
+            try:
+                chosen = self._browse_for(arg)
+            except Refused as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:                           # noqa: BLE001
+                log.warning("web desk: settings browse failed: %s", type(e).__name__)
+                chosen = ""
         with self._lock:
             if not self.status:
                 self._poll()
             try:
-                note = getattr(self, "_do_" + do.replace(".", "_"))(arg)
+                if do == "browse":
+                    note = self._browsed(arg, chosen or "")
+                else:
+                    note = getattr(self, "_do_" + do.replace(".", "_"))(arg)
             except Refused as e:
                 return {"ok": False, "error": str(e)}
             except Exception as e:                           # noqa: BLE001 — words, not a traceback
@@ -1228,24 +1243,34 @@ class Place:
             return ""
         return self._apply(setting, value)
 
-    def _do_browse(self, arg) -> str:
+    def _browse_for(self, arg) -> str:
         """[Browse…]: Windows' own folder dialog, opened where the setting
-        points now; the choice goes to the file the road a typed path took
-        in the Tk desk. The page names only WHICH of the two folders."""
+        points now (dashboard._browse_folder). The page names only WHICH
+        of the two folders; the path is the dialog's, never the page's."""
         if arg not in FOLDER_SETTINGS:
             raise Refused("that is not a folder setting")
-        setting = self._setting(arg)
+        with self._lock:
+            setting = self._setting(arg)
         try:
             start = paths.resolve_folder(str(setting.value or "captures"))
         except Exception:                                    # noqa: BLE001
             start = paths.DATA_DIR
-        chosen = self._pick_folder(settings_mod.label_for(setting.path), Path(start))
+        return self._pick_folder(settings_mod.label_for(setting.path), Path(start))
+
+    def _browsed(self, arg, chosen: str) -> str:
+        """The dialog's answer goes to the file the road a typed path took
+        in the Tk desk (dashboard._entry_done)."""
         if not chosen:
             return ""
+        setting = self._setting(arg)
         chosen = str(Path(chosen))
         if chosen == _shown_for(setting.path, setting.value):
             return ""
         return self._apply(setting, chosen)
+
+    def _do_browse(self, arg) -> str:
+        """Never reached: act() opens the dialog itself, outside the lock."""
+        raise Refused("that is not a folder setting")
 
     def _pick_folder(self, title: str, start: Path) -> str:
         """The folder dialog of the window this page is in (pywebview's,

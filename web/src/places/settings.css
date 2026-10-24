@@ -27,8 +27,9 @@ body.settings-on .sky .r2{left:300px;top:520px;width:820px;height:44px;transform
 .place-settings .find:hover{color:var(--ink);filter:brightness(1.2)}
 
 /* the list scrolls under the head; its thumb is the picture's thin one */
-.place-settings .list{position:absolute;left:0;top:122px;width:1112px;bottom:0;overflow-y:auto;overflow-x:hidden;
-  padding:0 14px 24px 0;margin-right:-14px;scrollbar-gutter:stable}
+/* 1112 of cards, 14 of air and the 5 px thumb beside them, at the window's edge */
+.place-settings .list{position:absolute;left:0;top:122px;width:1131px;bottom:0;overflow-y:auto;overflow-x:hidden;
+  padding:0 14px 24px 0;scrollbar-gutter:stable}
 .place-settings .list::-webkit-scrollbar{width:5px}
 .place-settings .list::-webkit-scrollbar-track{background:transparent}
 .place-settings .list::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:3px}
@@ -44,7 +45,8 @@ body.settings-on .sky .r2{left:300px;top:520px;width:820px;height:44px;transform
 .place-settings .r + .r::before{content:"";position:absolute;left:24px;right:24px;top:0;height:1px;
   background:linear-gradient(90deg, var(--line-faint), var(--line) 20%, var(--line) 80%, transparent)}
 .place-settings .r .t{flex:1;min-width:0}
-.place-settings .lab{font-size:14px;font-weight:var(--w-label);line-height:20px;display:flex;align-items:center;gap:10px}
+.place-settings .lab{font-size:14px;font-weight:var(--w-label);line-height:20px}
+.place-settings .lab.dotted{display:flex;align-items:center;gap:10px}
 .place-settings .lab .cap{height:19px;min-width:22px;padding:0 6px;margin:0 3px;font-size:12px;vertical-align:1px}
 .place-settings .help{font-size:12.5px;line-height:18px;color:var(--ink-2);margin-top:3px;text-wrap:pretty}
 .place-settings .help.warn, .place-settings .lab.warn{color:var(--warn)}

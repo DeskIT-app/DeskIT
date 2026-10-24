@@ -51154,6 +51154,27 @@ def test_web_desk_settings_writes_where_the_tk_desk_writes():
         assert 'capture.capture_hotkey = "ctrl+f11"' in s.read_text("utf-8")
         assert "start dictation first" in place.act("dot.move", None)["note"]
         assert "start dictation first" in place.act("account.do", "google")["note"]
+        # Browse…: the dialog's folder, never the page's, and a poll is
+        # answered while the dialog is up (it is opened outside the lock)
+        picked = Path(tempfile.mkdtemp(dir=_SCRATCH_HOME))
+        up = threading.Event()
+        go = threading.Event()
+
+        def dialog(title, start):
+            up.set()
+            assert go.wait(10)
+            return str(picked)
+
+        with _patched(place, "_pick_folder", dialog):
+            answer: dict = {}
+            worker = threading.Thread(target=lambda: answer.update(place.act("browse", "capture.clip_folder")))
+            worker.start()
+            assert up.wait(10)
+            polled = time.monotonic()
+            assert place.read()["ok"] and time.monotonic() - polled < 2, "a poll waited behind the dialog"
+            go.set()
+            worker.join(10)
+        assert answer["ok"] and str(picked).replace("\\", "\\\\") in s.read_text("utf-8"),             (answer, s.read_text("utf-8"))
         drawn = {r["path"]: r for sec in place.read()["pages"]["general"]
                  if sec["kind"] == "rows" for r in sec["rows"]}
         assert drawn["hint.enabled"]["value"] is False, "the page is answered with the file as it is"
