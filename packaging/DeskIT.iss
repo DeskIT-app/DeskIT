@@ -73,14 +73,23 @@ SetupIconFile={#Stage}\app\icon.ico
 UninstallDisplayIcon={app}\app\icon.ico
 UninstallDisplayName=DeskIT
 AppVerName=DeskIT {#Version}
-WizardStyle=modern
-; The wizard's own pictures, drawn at build time by dev\make_wizard_images.py
-; from icon.png (never committed); Inno picks the size that fits the DPI.
+; B+, the app's look (2026-10-24): Inno's own dark style on the desk's
+; night, the desk's sky behind every page (WizardBackImageFile, new in
+; Inno 6.7 — the build's runner has 6.7.1), no bevels. The pictures are
+; drawn at build time by dev\make_wizard_images.py (never committed); Inno
+; picks the size that fits the DPI. The side picture is the mark and the
+; name on a clear PNG, so the sky runs on behind it without a seam.
 ; The Welcome page carries the three privacy sentences and, with the
 ; Ready page gone, its button is already Install: Welcome > Installing
 ; > Finished, two clicks.
-WizardImageFile=packaging\wizard\side-314.bmp,packaging\wizard\side-386.bmp,packaging\wizard\side-459.bmp,packaging\wizard\side-556.bmp,packaging\wizard\side-604.bmp
-WizardSmallImageFile=packaging\wizard\small-55.bmp,packaging\wizard\small-64.bmp,packaging\wizard\small-83.bmp,packaging\wizard\small-92.bmp,packaging\wizard\small-110.bmp,packaging\wizard\small-119.bmp,packaging\wizard\small-138.bmp
+#if Ver < EncodeVer(6, 7, 0)
+  #error The look needs Inno Setup 6.7 or newer (WizardBackImageFile)
+#endif
+WizardStyle=modern dark hidebevels
+WizardBackColor=#0b0d19
+WizardBackImageFile=packaging\wizard\back-432.png,packaging\wizard\back-576.png,packaging\wizard\back-720.png,packaging\wizard\back-864.png,packaging\wizard\back-922.png,packaging\wizard\back-1066.png,packaging\wizard\back-1148.png
+WizardImageFile=packaging\wizard\side-314.png,packaging\wizard\side-386.png,packaging\wizard\side-459.png,packaging\wizard\side-556.png,packaging\wizard\side-604.png
+WizardSmallImageFile=packaging\wizard\small-55.png,packaging\wizard\small-64.png,packaging\wizard\small-83.png,packaging\wizard\small-92.png,packaging\wizard\small-110.png,packaging\wizard\small-119.png,packaging\wizard\small-138.png
 DisableWelcomePage=no
 DisableReadyPage=yes
 
