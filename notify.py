@@ -563,6 +563,13 @@ class Store:
 # are candidates, whichever exist are read, and a watcher that finds
 # neither says so in notify.log rather than nothing for ever.
 #
+# AND THEN IT MOVED AGAIN (2026-10-21), to a real folder both sides see:
+# %LOCALAPPDATA%\Claude-Data\claude_<hash>\claude-code-sessions. That
+# log line said "found NO session store" 154 times before anybody read
+# it. The list of places now lives in ONE function,
+# notify_hook.session_roots(), which the hook's link and this watcher
+# both read — notify_hook.py, "THE STORE MOVED", has the measurements.
+#
 # TWO WAYS HE CAN BE "IN" THE SESSION, and the card comes down on either:
 #   A · ENTERED — the session's focus stamp is LATER than the card's own
 #       `at`. He clicked into it after it spoke. A tap inside the session
@@ -590,8 +597,6 @@ class Store:
 # which live in the cloud and have no local file — Cowork cards can never
 # dismiss themselves this way, the same limit that stops them being opened.
 
-SESSIONS_UNDER = Path("Claude") / "claude-code-sessions"
-PACKAGES = Path(os.environ.get("LOCALAPPDATA", "")) / "Packages"
 CLAUDE_EXE = "claude.exe"      # the desktop app's process, for a card that
                                # names no window; matched on the basename
 ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
@@ -599,35 +604,26 @@ ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
 ARRIVAL_SCAN_MAX = 60          # session files read per root per pass; the
                                # store grows for ever and the newest are the
                                # ones a live card can belong to
+# What each of those files said, kept against its (mtime, size): a file
+# that has not changed since the last pass is not parsed again. Measured
+# 2026-10-24 on the moved store: the 60 newest are 30 MB — one is up to
+# 1 MB, nearly all of it `remoteMcpServersConfig` — and parsing them
+# every ARRIVAL_POLL_S was 0.29 s warm and 1.5 s cold, a pass that
+# would have cost 15% of a core for as long as a card was up. Between
+# two passes only the sessions at work write their files.
+_FOCUS_SEEN: dict[str, tuple] = {}
 
 
 def session_roots() -> list[Path]:
-    """Every folder the app's session store might be in, that exists.
-
-    `%APPDATA%\\Claude\\…` for a process inside the app's container (a
-    hook, a Claude Code session), and every
-    `%LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude\\…`
-    for one outside it — this app. The package folder is globbed because
-    its suffix is the publisher hash, and a reinstall under another
-    identity would move it. Never raises; [] when nothing is there.
-    """
-    found: list[Path] = []
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        found.append(Path(appdata) / SESSIONS_UNDER)
+    """Every folder the app's session store might be in, that exists —
+    notify_hook.session_roots(), the one list (see the block above).
+    Never raises; [] when nothing is there."""
     try:
-        for pkg in sorted(PACKAGES.glob("Claude_*")):
-            found.append(pkg / "LocalCache" / "Roaming" / SESSIONS_UNDER)
-    except OSError:
-        pass
-    out: list[Path] = []
-    for root in found:
-        try:
-            if root.is_dir():
-                out.append(root)
-        except OSError:
-            continue
-    return out
+        import notify_hook
+
+        return notify_hook.session_roots()
+    except Exception:                     # noqa: BLE001 — a cut-down copy
+        return []
 
 
 def focus_times(roots=None) -> dict[str, float]:
@@ -653,34 +649,53 @@ def focus_times(roots=None) -> dict[str, float]:
     elif isinstance(roots, (str, Path)):
         roots = [Path(roots)]
     out: dict[str, float] = {}
+    seen: dict[str, tuple] = {}
     for base in roots:
         try:
-            files = sorted(Path(base).glob("*/*/local_*.json"),
-                           key=lambda p: p.stat().st_mtime, reverse=True)
+            stats = [(p, p.stat()) for p in Path(base).glob("*/*/local_*.json")]
         except OSError:
             continue
-        for path in files[:ARRIVAL_SCAN_MAX]:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue                  # mid-write, or not ours to read
-            if not isinstance(data, dict):
-                continue
-            try:
-                when = float(data.get("lastFocusedAt") or 0)
-            except (TypeError, ValueError):
-                continue
-            if when <= 0:
-                continue
-            names = [data.get("cliSessionId"), data.get("sessionId")]
-            prior = data.get("priorCliSessionIds")
-            if isinstance(prior, list):
-                names.extend(prior)
+        stats.sort(key=lambda ps: ps[1].st_mtime, reverse=True)
+        for path, st in stats[:ARRIVAL_SCAN_MAX]:
+            mark = (st.st_mtime_ns, st.st_size)
+            hit = _FOCUS_SEEN.get(str(path))
+            if hit is not None and hit[0] == mark:
+                when, names = hit[1], hit[2]
+            else:
+                when, names = _focus_of(path)
+                if when is None:
+                    continue              # mid-write: asked again next pass
+            seen[str(path)] = (mark, when, names)
             for name in names:
                 key = str(name or "")
                 if key and when > out.get(key, 0.0):
                     out[key] = when
+    _FOCUS_SEEN.clear()
+    _FOCUS_SEEN.update(seen)
     return out
+
+
+def _focus_of(path: Path) -> tuple:
+    """(lastFocusedAt, the session's names) out of one store file —
+    (0.0, []) for a file that answers nothing, (None, []) for one that
+    could not be read whole, which is not remembered."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, []                   # mid-write, or not ours to read
+    if not isinstance(data, dict):
+        return 0.0, []
+    try:
+        when = float(data.get("lastFocusedAt") or 0)
+    except (TypeError, ValueError):
+        return 0.0, []
+    if when <= 0:
+        return 0.0, []
+    names = [data.get("cliSessionId"), data.get("sessionId")]
+    prior = data.get("priorCliSessionIds")
+    if isinstance(prior, list):
+        names.extend(prior)
+    return when, names
 
 
 _RESUME = re.compile(r"^claude://resume\?session=([0-9a-fA-F-]{36})$")
@@ -1622,7 +1637,9 @@ class Engine:
                               + " ; ".join(str(r) for r in roots))
                 else:
                     self._log("WATCHING for his arrival but found NO "
-                              "session store — looked under %APPDATA% and "
+                              "session store — looked under "
+                              "%LOCALAPPDATA%\\Claude-Data\\claude_*, "
+                              "%APPDATA%\\Claude and "
                               "%LOCALAPPDATA%\\Packages\\Claude_*")
                     log.warning("notify: no Claude session store found — "
                                 "cards will not dismiss on arrival")
