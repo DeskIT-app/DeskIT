@@ -162,11 +162,15 @@ export function usePlace<T>(name: string, args: Record<string, unknown> = {},
 // ---------------------------------------------------------------- pieces
 
 export function Caps({ caps }: { caps: string[] }) {
+  // every cap and every "+" a child of .keys itself, so its gap falls on
+  // both sides of the "+" — wrapped in a span each, the "+" sat 3 px after
+  // one cap and touching the next (the foundation's pixel review)
   return (
     <span className="keys">
-      {caps.map((c, i) => (
-        <span key={`${c}${i}`}>{i ? <span className="plus">+</span> : null}<span className="cap">{c}</span></span>
-      ))}
+      {caps.flatMap((c, i) => [
+        ...(i ? [<span key={`+${i}`} className="plus">+</span>] : []),
+        <span key={`${c}${i}`} className="cap">{c}</span>,
+      ])}
     </span>
   );
 }

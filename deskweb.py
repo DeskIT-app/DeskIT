@@ -124,6 +124,35 @@ _CONTEXT_WORDS = 14
 _BETWEEN_WORDS = 8
 CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".mp4")
 
+#: The report sheet (Home's Report a problem). Where the report was made
+#: from: Home is the only door on this desk. A Send waits this long for
+#: the app's worker to carry the copy up before it says "on its way".
+REPORT_WHERE = "Home"
+REPORT_SEND_WAIT_S = 12.0
+#: What the screenshot is shown as on the preview (problems.THUMB_MAX).
+REPORT_THUMB_PX = 220
+#: The plain words for each piece of the copy that travels — the Tk
+#: Preview's file names (problems._FILE_NAMES) said as what they are.
+REPORT_PIECES = {"shot.jpg": "Your screen from a moment ago",
+                 "dictation.wav": "What you said — the sound",
+                 "sidecar.json": "What you said — the words"}
+#: The landing's words: dashboard.Dashboard.LANDING_SENTENCE / _STORED.
+LANDING_SENTENCE = ("Hebrew dictation for Windows that stays on your PC. Hold a key, "
+                    "speak, let go — the Hebrew lands at the cursor, in any window.")
+LANDING_STORED = ("What is stored: an account id and the e-mail of the Google account "
+                  "you choose; this PC's name, the app's version and Windows'. The server "
+                  "is DeskIT's own (Supabase, Frankfurt). Only your voice never leaves this "
+                  "PC: your learned words and settings are kept in your account, and so are "
+                  "what you said and your cloud keys, locked with a key only your own PCs "
+                  "hold. Settings > Privacy > Withdraw turns this off.")
+LANDING_WAITING = "Waiting for Google's sign-in page in your browser…"
+#: A recovery key as a person types it: Crockford letters and digits in
+#: six groups, with or without the dashes and spaces between them.
+_RECOVERY_SHAPE = re.compile(r"[0-9A-Za-z][0-9A-Za-z\- ]{14,62}[0-9A-Za-z]")
+#: Where a release's notes may open (dashboard._open_url).
+_URL_PREFIXES = ("https://github.com/", "https://deskit-app.github.io/",
+                 "https://huggingface.co/")
+
 
 # ------------------------------------------------------------- the words
 
@@ -286,6 +315,55 @@ def _without_phone(reply):
     return reply
 
 
+def copy_text(text: str, secret: bool = False) -> bool:
+    """Put text on the clipboard from this window's process (the Tk desk's
+    clipboard_append). A secret — the recovery key — is marked for
+    Windows to keep out of the clipboard history and the cloud clipboard
+    (the three formats Microsoft documents for password managers), which
+    the Tk desk never did."""
+    try:
+        import win32clipboard
+        import win32con
+    except Exception:                     # noqa: BLE001
+        return False
+    for _ in range(10):
+        try:
+            win32clipboard.OpenClipboard()
+            break
+        except Exception:                 # noqa: BLE001 — another program has it
+            time.sleep(0.03)
+    else:
+        return False
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, str(text))
+        if secret:
+            for name, value in (("ExcludeClipboardContentFromMonitorProcessing", b"\0"),
+                                ("CanIncludeInClipboardHistory", b"\0\0\0\0"),
+                                ("CanUploadToCloudClipboard", b"\0\0\0\0")):
+                win32clipboard.SetClipboardData(
+                    win32clipboard.RegisterClipboardFormat(name), value)
+        return True
+    except Exception:                     # noqa: BLE001
+        return False
+    finally:
+        try:
+            win32clipboard.CloseClipboard()
+        except Exception:                 # noqa: BLE001
+            pass
+
+
+def _words_of(e: Exception) -> str:
+    """What a failure may say on the page: the words of an error this app
+    writes for the person (sb.AccountError, updates.UpdateError), the
+    type of anything else — never a path or a traceback."""
+    for module, name in (("sb", "AccountError"), ("updates", "UpdateError")):
+        cls = getattr(sys.modules.get(module), name, None)
+        if cls is not None and isinstance(e, cls):
+            return str(e)[:200]
+    return type(e).__name__
+
+
 # ------------------------------------------------------------- the model
 
 
@@ -315,6 +393,23 @@ class Model:
         #: "3 min ago" words move with) changes: the proposals were 5.6 ms
         #: of a 13 ms poll, read and tokenised again every 800 ms
         self._kept: dict[str, tuple] = {}
+        #: the report sheet while it is up (report.open .. report.close):
+        #: the screen as it was a moment before, in memory only
+        self._report: dict | None = None
+        #: the account lock's answers on Home: the recovery key just made
+        #: (memory only, never logged, until Done), the field for typing
+        #: one, and "Sign out of every PC?" asked on the changed-lock row
+        self._lock_fresh = ""
+        self._lock_typing = False
+        self._lock_asking = False
+        #: Download and install, under way: the words the row says
+        self._update_line = ""
+        #: the landing's own sign-in, with nothing running: its line
+        self._landing_line: tuple[str, str] = ("", "")
+        self._signing = False
+        #: sb.py's word on the session when the app does not answer, and
+        #: when it was asked (a DPAPI read; not every 800 ms)
+        self._signed_out_seen = (0.0, False)
 
     def _cached(self, name: str, path: Path, build) -> list[dict]:
         try:
@@ -498,7 +593,7 @@ class Model:
             stale = [k for k in privacy.stale() if k not in self._consent_later]
         except Exception:                 # noqa: BLE001
             return []
-        rows, now = [], time.time()
+        rows, now = [], self._stamp()
         for kind in stale:
             words = cc.TEXTS.get(kind) or {}
             blocks = dict(words.get("blocks") or ())
@@ -544,50 +639,144 @@ class Model:
             "rtl": False,
             "note": (f"Pressed at {time.strftime('%H:%M', time.localtime(when))}; your text "
                      "was left as it was. A key takes a minute, with no credit card."),
-            "buttons": [{"label": "Add a key", "tone": "primary", "act": "old", "arg": "Settings"},
+            # Add a key is a way in, not a press: Settings > Privacy in
+            # this window (dashboard._needs_key_go), where YOUR CLOUD KEYS is
+            "buttons": [{"label": "Add a key", "tone": "primary", "act": "",
+                         "go": "settings/privacy"},
                         {"label": "Not now", "tone": "quiet", "act": "keys.later", "arg": when}],
         }]
 
-    def _update_rows(self) -> list[dict]:
+    def _update_release(self):
+        """(updates.status(), the release it offers) — or (None, None)
+        when there is nothing to offer: no newer version, the Store
+        channel, the check off, offline (dashboard._waiting_update)."""
         try:
             import updates
             s = updates.status()
         except Exception:                 # noqa: BLE001
-            return []
+            return None, None
         rel = s.get("available")
         if rel is None or s.get("mode") in ("store", "off", "offline"):
+            return None, None
+        return s, rel
+
+    @staticmethod
+    def _too_old_for(release) -> bool:
+        """11.10: this copy's files are too old for the release
+        (dashboard._too_old_for)."""
+        try:
+            import migrations
+            return bool(migrations.too_old_for(release.min_config_version))
+        except Exception:                 # noqa: BLE001
+            return False
+
+    def _update_rows(self) -> list[dict]:
+        """dashboard._waiting_update, with its buttons: Download and
+        install (never in the checkout, which pulls), or the winget
+        one-liner on that channel, or — for the one release this copy
+        cannot go straight to — its notes."""
+        s, rel = self._update_release()
+        if rel is None:
             return []
+        row = {"id": "update", "kind": "update", "at": self._stamp(), "tone": "q",
+               "glyph": "up", "title": "A newer version", "meta": "", "rtl": False}
+        if self._too_old_for(rel):
+            row.update(tone="warn",
+                       text=f"DeskIT {rel.version} is available, but this copy's settings are "
+                            f"too old to go straight to it — install the intermediate version "
+                            f"the release notes name first.",
+                       note="Your data folder is untouched either way.",
+                       buttons=[{"label": "Release notes", "tone": "primary",
+                                 "act": "update.notes"}])
+            return [row]
         when = f", {rel.published[:10]}" if rel.published else ""
-        return [{
-            "id": "update", "kind": "update", "at": time.time(), "tone": "q", "glyph": "up",
-            "title": "A newer version", "meta": "",
-            "text": f"DeskIT {rel.version} is available ({rel.size / 1_048_576:.0f} MB{when}) "
-                    f"— you have {s.get('running', '')}.",
-            "rtl": False,
-            "note": "The old desk downloads it, checked against its SHA-256; "
-                    "your data folder is untouched.",
-            "buttons": [] if paths.DEVELOPER else
-                       [{"label": "Open the old desk", "tone": "quiet", "act": "old",
-                         "arg": "Home"}],
-        }]
+        buttons: list[dict] = []
+        if self._update_line:
+            pass                          # under way: the line says how far
+        elif s.get("winget_command"):
+            buttons.append({"label": "Copy the winget command", "tone": "primary",
+                            "act": "update.winget"})
+        elif not paths.DEVELOPER:
+            buttons.append({"label": "Download and install", "tone": "primary",
+                            "act": "update.install"})
+        row.update(text=f"DeskIT {rel.version} is available ({rel.size / 1_048_576:.0f} MB"
+                        f"{when}) — you have {s.get('running', '')}.",
+                   note=self._update_line or self._update_failed
+                        or "Downloaded from GitHub and checked against its SHA-256 before the "
+                           "installer runs; your data folder is untouched.",
+                   buttons=buttons)
+        return [row]
 
     def _hardware_rows(self) -> list[dict]:
-        rows, now = [], time.time()
+        """dashboard._waiting_hardware, with its buttons: each step runs
+        in a process of its own (launch.run_step — `main.py
+        --download-model` or `--install-pack gpu`), as the Tk desk's do."""
+        rows, now = [], self._stamp()
         dl = self.status.get("downloads") if self.running else None
+        downloading = False
         if dl and dl.get("state") in ("running", "waiting"):
+            parts = dl.get("parts") or {}
+            downloading = "model" in parts
             pct = int(round(float(dl.get("fraction") or 0) * 100))
             rows.append({
                 "id": "downloads", "kind": "hardware", "at": now, "tone": "q", "glyph": "chip",
                 "title": "This computer", "meta": "",
                 "text": (f"Downloading app parts — {pct}%" if not dl.get("offline")
                          else "Downloading app parts — waiting for the connection"),
-                "rtl": False, "note": "Once, in the background — nothing to press.",
+                "rtl": False,
+                "note": ("Once, in the background. Dictation starts the moment the "
+                         "Hebrew model lands." if parts.get("model") not in (None, "done")
+                         else "Once, in the background — nothing to press."),
                 "buttons": []})
         try:
             import hardware as hardware_mod
             changed = str(hardware_mod.recorded().get("tier_changed") or "")
         except Exception:                 # noqa: BLE001
             changed = ""
+        if not paths.PORTABLE:
+            try:
+                import models as models_mod
+                model_name = config_mod.load_layered().local.model
+                model = models_mod.state(model_name)
+            except Exception:             # noqa: BLE001
+                models_mod, model_name, model = None, "", "unknown"
+            try:
+                import packs as packs_mod
+                pack = packs_mod.standing("gpu")
+            except Exception:             # noqa: BLE001
+                pack = "unknown"
+            if model in ("absent", "incomplete", "stale") and not downloading:
+                size = ""
+                try:
+                    e = models_mod.entry(model_name)
+                    size = f" ({models_mod.human(e.bytes)})" if e else ""
+                except Exception:         # noqa: BLE001
+                    pass
+                said = {"absent": f"The Hebrew model is not on this PC yet{size} — "
+                                  "dictation waits for it.",
+                        "incomplete": "The Hebrew model's download did not finish — "
+                                      "it continues from where it stopped.",
+                        "stale": "The Hebrew model on this PC is from an older "
+                                 "release — download the new one."}[model]
+                rows.append({
+                    "id": "model", "kind": "hardware", "at": now, "tone": "warn",
+                    "glyph": "chip", "title": "This computer", "meta": "", "text": said,
+                    "rtl": False,
+                    "note": "Downloaded once, from huggingface.co, into the app's folder.",
+                    "buttons": [{"label": "Download" if model == "absent" else "Continue",
+                                 "tone": "primary", "act": "hardware.model"}]})
+            if pack.startswith("failed:"):
+                rows.append({
+                    "id": "pack", "kind": "hardware", "at": now, "tone": "bad",
+                    "glyph": "chip", "title": "This computer", "meta": "",
+                    "text": f"Your NVIDIA card was found but GPU speed could not start "
+                            f"({pack[7:]}).",
+                    "rtl": False, "note": "Dictation works on the processor meanwhile.",
+                    "buttons": [{"label": "Retry", "tone": "quiet", "act": "hardware.retry"},
+                                {"label": "Reinstall", "tone": "quiet",
+                                 "act": "hardware.reinstall"},
+                                {"label": "Remove the pack", "tone": "quiet",
+                                 "act": "hardware.remove"}]})
         if changed:
             rows.append({
                 "id": "tier", "kind": "hardware", "at": now, "tone": "q", "glyph": "chip",
@@ -596,67 +785,164 @@ class Model:
                 "rtl": False,
                 "note": "The speed settings for this tier were applied; yours were left alone.",
                 "buttons": [{"label": "OK", "tone": "quiet", "act": "hardware.seen"}]})
-        if not paths.PORTABLE:
-            # The model and the GPU pack: their buttons start a step in a
-            # process of its own, which the Tk desk does — sent there.
-            try:
-                import models as models_mod
-                import packs as packs_mod
-                model = models_mod.state(config_mod.load_layered().local.model)
-                pack = packs_mod.standing("gpu")
-            except Exception:             # noqa: BLE001
-                model, pack = "unknown", "unknown"
-            if (model in ("absent", "incomplete", "stale")
-                    and not (dl and "model" in (dl.get("parts") or {}))):
-                rows.append({
-                    "id": "model", "kind": "hardware", "at": now, "tone": "warn",
-                    "glyph": "chip", "title": "This computer", "meta": "",
-                    "text": "The Hebrew model is not ready on this PC — dictation waits for it.",
-                    "rtl": False, "note": "",
-                    "buttons": [{"label": "Open the old desk", "tone": "quiet",
-                                 "act": "old", "arg": "Home"}]})
-            if pack.startswith("failed:"):
-                rows.append({
-                    "id": "pack", "kind": "hardware", "at": now, "tone": "bad",
-                    "glyph": "chip", "title": "This computer", "meta": "",
-                    "text": f"Your NVIDIA card was found but GPU speed could not start "
-                            f"({pack[7:]}).",
-                    "rtl": False, "note": "Dictation works on the processor meanwhile.",
-                    "buttons": [{"label": "Open the old desk", "tone": "quiet",
-                                 "act": "old", "arg": "Home"}]})
         return rows
 
-    def _lock_rows(self) -> list[dict]:
-        """The account's lock asks something (another PC, a changed lock,
-        a recovery key to make). Its answers — codes, a recovery key typed
-        in — live in the Tk desk for now; the row says what and sends
-        him there."""
+    def _lock_info(self) -> dict:
+        """The account's lock as the app reports it, or {} when nothing
+        is running or nobody is signed in (dashboard._waiting_lock)."""
         if not self.running:
-            return []
+            return {}
         account = self.status.get("account") or {}
-        lock = dict(account.get("lock") or {})
-        if not lock or not account.get("signed_in"):
+        if not account.get("signed_in"):
+            return {}
+        return dict(account.get("lock") or {})
+
+    def _lock_rows(self) -> list[dict]:
+        """dashboard._waiting_lock and _lock_changed_rows, with their
+        answers on the rows (the owner, 2026-09-21: "not outside DeskIT —
+        inside, on Home"): another PC asking to join, with its code and
+        Approve / Not now; this PC waiting for its other PC, with the
+        code — and the recovery key typed into the row; a fresh recovery
+        key, shown once, until Done; the changed lock's It wasn't me / It
+        was me; and while the account has none, Make a recovery key."""
+        lock = self._lock_info()
+        if not lock:
+            self._lock_typing = self._lock_asking = False
             return []
-        text = ""
-        if lock.get("state") == "changed":
-            text = "The lock of your account changed — not on this PC. Was it you?"
-        elif lock.get("pending"):
-            names = ", ".join(str(a.get("name") or "Another PC") for a in lock["pending"])
-            text = f"{names} asks to join your account."
-        elif lock.get("state") == "waiting":
-            text = f"Waiting for your other PC to approve this one — Home there must " \
-                   f"show {lock.get('code') or '…'}."
-        elif lock.get("state") == "have" and lock.get("recovery") is False:
-            text = "Make a recovery key — so a new PC of yours can open your account."
-        if not text:
+        now = self._stamp()
+        rows: list[dict] = []
+
+        def row(ident: str, at: float, tone: str, text: str, note: str,
+                buttons: list[dict], title: str = "Your account", **extra) -> dict:
+            return {"id": ident, "kind": "lock", "at": at, "tone": tone, "glyph": "key",
+                    "title": title, "meta": "", "text": text, "rtl": False, "note": note,
+                    "buttons": buttons, **extra}
+
+        if self._lock_fresh:
+            rows.append(row(
+                "lock:fresh", now + 2, "warn", "keep it somewhere safe, it is shown once",
+                "With it, a PC with no other PC of yours at hand can open your account. "
+                "Making a new one replaces it.",
+                [{"label": "Copy", "tone": "primary", "act": "lock.copy"},
+                 {"label": "Done", "tone": "quiet", "act": "lock.done"}],
+                title="Your recovery key", code=self._lock_fresh))
+        rows += self._lock_changed_rows(lock, now, row)
+        for ask in lock.get("pending") or []:
+            ident = str(ask.get("id") or "")
+            name = str(ask.get("name") or "Another PC")
+            if ask.get("twins"):
+                # two open requests from one PC: one of them is somebody
+                # else's copy (the audit's A74) — nothing to approve
+                rows.append(row(
+                    f"lock:ask:{ident}", now + 1, "bad",
+                    f"Two requests say they are {name} — neither can be approved",
+                    f"One of them is not your PC. On {name}, sign out and sign in again to "
+                    "ask afresh. Nobody of yours asking right now? Settings > Account > "
+                    "Sign out of every PC — it ends every session of your account, "
+                    "anyone else's too.",
+                    [{"label": "Not now", "tone": "quiet", "act": "lock.decline",
+                      "arg": ident}]))
+                continue
+            rows.append(row(
+                f"lock:ask:{ident}", now + 1, "warn",
+                f"{name} asks to join your account — its screen must show "
+                f"{ask.get('code') or '?'}",
+                "Approve only if the code is exactly that. It then gets your account's key: "
+                "your cloud keys and what you said open there too, and the key crosses "
+                "sealed — the server cannot read it.",
+                [{"label": "Approve", "tone": "primary", "act": "lock.approve", "arg": ident},
+                 {"label": "Not now", "tone": "quiet", "act": "lock.decline", "arg": ident}]))
+        if lock.get("state") == "waiting":
+            note = ("Open the desk on your other PC and press Approve. Until then this PC has "
+                    "your words and settings; what you said and your cloud keys stay locked. "
+                    "No other PC at hand? Type the recovery key DeskIT made for you.")
+            if lock.get("error"):
+                note = f"{lock['error']}  ·  {note}"
+            if self._lock_typing:
+                rows.append(row(
+                    "lock:waiting", now, "warn",
+                    f"Waiting for your other PC to approve this one — Home there must show "
+                    f"{lock.get('code') or '…'}",
+                    "Your recovery key — 24 letters and digits in six groups:",
+                    [{"label": "Open", "tone": "primary", "act": "lock.recover"},
+                     {"label": "Cancel", "tone": "quiet", "act": "lock.cancel"}],
+                    field="recovery"))
+            else:
+                rows.append(row(
+                    "lock:waiting", now, "warn",
+                    f"Waiting for your other PC to approve this one — Home there must show "
+                    f"{lock.get('code') or '…'}", note,
+                    [{"label": "Type the recovery key", "tone": "quiet", "act": "lock.type"}]))
+        else:
+            self._lock_typing = False
+            if lock.get("state") == "have" and lock.get("recovery") is False \
+                    and not self._lock_fresh:
+                rows.append(row(
+                    "lock:recovery", 0.0, "q",
+                    "Make a recovery key — so a new PC of yours can open your account when "
+                    "this one is gone",
+                    "DeskIT makes it (24 characters) and shows it once; you keep it. What you "
+                    "said and your cloud keys are locked with a key only your PCs hold — "
+                    "without another PC or the recovery key, a new PC cannot open them.",
+                    [{"label": "Make a recovery key", "tone": "primary",
+                      "act": "lock.recovery_new"}]))
+        return rows
+
+    def _lock_changed_rows(self, lock: dict, now: float, row) -> list[dict]:
+        """dashboard._lock_changed_rows: the account's lock changed
+        somewhere else. [It was me] asks to join the new lock; [It wasn't
+        me] keeps everything and then offers the way out — Put my lock
+        back, and Sign out of every PC, asked here in the row (the Tk
+        desk asks it on Settings > Account) and never pressed for him."""
+        if lock.get("state") != "changed":
+            self._lock_asking = False
             return []
-        return [{"id": "lock", "kind": "lock", "at": time.time() + 1, "tone": "warn",
-                 "glyph": "lock", "title": "Your account", "meta": "", "text": text,
-                 "rtl": False, "note": "",
-                 "buttons": [{"label": "Open the old desk", "tone": "quiet",
-                              "act": "old", "arg": "Home"}]}]
+        ch = lock.get("changed") or {}
+        if not ch.get("refused"):
+            self._lock_asking = False
+            return [row(
+                "lock:changed", now + 3, "bad",
+                "The lock of your account changed — not on this PC. Was it you?",
+                "Until you answer, what you said and your cloud keys stop syncing, both ways; "
+                "this PC keeps its key. It was you: this PC asks to join the new lock — "
+                "approve it from your other PC or type the recovery key. It wasn't: nothing "
+                "here changes.",
+                [{"label": "It wasn't me", "tone": "primary", "act": "lock.answer", "arg": "no"},
+                 {"label": "It was me", "tone": "quiet", "act": "lock.answer", "arg": "yes"}])]
+        if self._lock_asking:
+            return [row(
+                "lock:changed", now + 3, "bad",
+                "Sign out of every PC? Each one, this one too, stops dictating until you "
+                "sign in on it again.",
+                "It ends every session of your account, anyone else's too. Sign in again "
+                "here, then put your lock back.",
+                [{"label": "Sign out of every PC", "tone": "primary",
+                  "act": "lock.signout_all"},
+                 {"label": "Stay signed in", "tone": "quiet", "act": "lock.signout_keep"}])]
+        buttons = [{"label": "Sign out of every PC", "tone": "quiet", "act": "lock.signout_ask"}]
+        if ch.get("mine"):                # a key here to put back
+            buttons.insert(0, {"label": "Put my lock back", "tone": "primary",
+                               "act": "lock.restore"})
+        return [row(
+            "lock:changed", now + 3, "bad",
+            "Not you — this PC kept its key. What you said and your keys stay paused",
+            "Sign out of every PC ends every session of your account, anyone else's too. "
+            "Sign in again here, then put your lock back — syncing starts again under this "
+            "PC's key.", buttons)]
+
+    def _stamp(self) -> float:
+        """The one "now" of this read of the pile. Rows that are about
+        the present (a consent, the lock, the update, this computer) are
+        stamped with it, so two of them tie the same way on every poll —
+        each stamping its own time.time() swapped the update row and the
+        model row between reads whenever the clock did or did not move
+        between them (probed 2026-10-24)."""
+        return self._now or time.time()
+
+    _now = 0.0
 
     def pile(self) -> list[dict]:
+        self._now = time.time()
         items: list[dict] = []
         for part in (self._consent_rows, self._lock_rows, self._update_rows,
                      self._needs_key_rows, self._hardware_rows, self._notify_rows,
@@ -807,6 +1093,545 @@ class Model:
                 "sent them goes quiet. They will arrive here, not on your screen."
                 if held else "")
 
+    # -- the report sheet (dashboard._report, _file_report, _report_preview)
+
+    @staticmethod
+    def _problems_cfg():
+        try:
+            cfg = config_mod.load_layered()
+        except Exception:                 # noqa: BLE001
+            return None, None
+        return cfg, getattr(cfg, "problems", None)
+
+    @staticmethod
+    def _last_dictation() -> tuple[dict | None, float]:
+        """The recording a report is probably about — the newest wav in
+        recent\\ (dashboard._last_dictation: the status pipe carries only
+        when-and-how-long, so the evidence comes off the disk) — and when
+        it was made."""
+        try:
+            wavs = [(p.stat().st_mtime, p) for p in paths.RECENT_DIR.glob("*.wav")]
+        except OSError:
+            return None, 0.0
+        if not wavs:
+            return None, 0.0
+        when, newest = max(wavs)
+        return {"wav": str(newest)}, when
+
+    def _report_open(self) -> str:
+        """Report a problem: THE SCREEN FIRST, before there is a sheet to
+        photograph (dashboard._report, main._problem_ask) — the press
+        lands here before the page draws the sheet, so the picture is
+        the desk and whatever is around it as they were. Grabbed now,
+        encoded to JPEG on a thread of its own (350 ms of LANCZOS at
+        4480x1440, which the sheet need not wait for); kept in this
+        process's memory and written nowhere unless the report is sent."""
+        cfg, pcfg = self._problems_cfg()
+        if pcfg is not None and not getattr(pcfg, "enabled", True):
+            return "[problems] enabled is false — nothing is being reported or written"
+        image = None
+        if getattr(pcfg, "shot", True):
+            try:
+                from PIL import ImageGrab
+                image = ImageGrab.grab(all_screens=True).convert("RGB")
+            except Exception as e:        # noqa: BLE001 — a report with no picture is a report
+                log.debug("could not photograph the screen for a report: %s", type(e).__name__)
+        last, made = self._last_dictation()
+        report = {"stage": "write", "image": image, "jpeg": None, "last": last,
+                  "made": made, "item": "", "since": 0.0, "done": None, "preview": None,
+                  "max_side": int(getattr(pcfg, "max_side_px", 0) or 1344)}
+        if image is not None:
+            def encode() -> None:
+                try:
+                    import visual_qa as visual_qa_mod
+                    report["jpeg"] = visual_qa_mod.encode_jpeg(image, report["max_side"])
+                except Exception as e:    # noqa: BLE001
+                    log.debug("could not encode the report's picture: %s", type(e).__name__)
+            report["encoder"] = threading.Thread(target=encode, daemon=True,
+                                                 name="report-shot")
+            report["encoder"].start()
+        self._report = report
+        return ""
+
+    def _report_jpeg(self) -> bytes | None:
+        report = self._report or {}
+        encoder = report.get("encoder")
+        if encoder is not None:
+            encoder.join(5)
+        return report.get("jpeg")
+
+    def _report_when(self) -> str:
+        made = (self._report or {}).get("made") or 0.0
+        if not made:
+            return ""
+        same_day = time.strftime("%Y-%m-%d", time.localtime(made)) == time.strftime("%Y-%m-%d")
+        return time.strftime("%H:%M" if same_day else "%d %b, %H:%M",
+                             time.localtime(made)).lstrip("0")
+
+    def _report_attach(self, attach: bool) -> dict:
+        """The single switch as problems.ATTACH's four toggles: the
+        recording, its words and the picture go together or not at all;
+        the settings snapshot (model names and switches, never a key —
+        problems.env's whitelist) always, as attach_defaults has it."""
+        report = self._report or {}
+        return {"shot": bool(attach and report.get("image") is not None),
+                "recording": bool(attach and report.get("last")),
+                "transcript": bool(attach and report.get("last")),
+                "settings": True}
+
+    def _report_view(self) -> dict | None:
+        """What the page draws of the sheet — words and flags, never the
+        picture's bytes (its thumbnail rides only with a preview)."""
+        report = self._report
+        if report is None:
+            return None
+        if report["stage"] == "sending":
+            self._report_settle()
+        has_shot = report.get("image") is not None
+        has_said = bool(report.get("last"))
+        when = self._report_when()
+        if has_said and has_shot:
+            label = "Attach my last dictation and a picture of the screen"
+            on = (f"Sends what you said at {when} (words and sound) and your screen from "
+                  "a moment ago.")
+        elif has_said:
+            label, on = "Attach my last dictation", \
+                f"Sends what you said at {when} (words and sound)."
+        elif has_shot:
+            label, on = "Attach a picture of the screen", "Sends your screen from a moment ago."
+        else:
+            label = on = ""
+        import problems
+        view = {"stage": report["stage"], "attach": label, "on": on,
+                "off": "Sends only what you typed, with this copy's version and settings.",
+                "limit": int(problems.TEXT_MAX), "done": report.get("done"),
+                "preview": report.get("preview")}
+        if report["stage"] == "consent":
+            import consent_card as cc
+            card = cc.card_for("report_upload")
+            blocks = dict(cc.TEXTS["report_upload"].get("blocks") or ())
+            view["consent"] = {
+                "title": card.get("title") or cc.TEXTS["report_upload"]["title"],
+                "lines": [{"k": k, "v": str(blocks[k])}
+                          for k in (cc.WHAT, cc.WHOM, cc.ACCOUNT, cc.OFF) if blocks.get(k)]}
+        return view
+
+    def _report_item(self, text: str, attach: bool) -> dict:
+        """The report as it would be stored, for a preview made before
+        anything is filed (problems.sizes_before_filing's own idea)."""
+        import problems
+        cfg, _pcfg = self._problems_cfg()
+        report = self._report or {}
+        last = report.get("last") if attach else None
+        item = {"kind": "wrong" if attach else "other", "where": REPORT_WHERE,
+                "text": str(text), "shot": "", "dictation": {}, "env": {}}
+        try:
+            item["dictation"] = problems.dictation(last, paths.DATA_DIR)
+            item["env"] = problems.env(cfg)
+        except Exception:                 # noqa: BLE001
+            pass
+        return item
+
+    def _report_preview(self, text: str, attach: bool) -> dict:
+        """dashboard._report_preview, before filing: each piece that
+        would leave with its size, and the exact row (problems.payload,
+        through the redactor), so what is shown is what the outbox would
+        carry. Read-only: the sheet's own text and switch are what
+        change it."""
+        import problems
+        import problem_card
+        toggles = self._report_attach(attach)
+        row, files = problems.payload(self._report_item(text, attach), toggles,
+                                      app_dir=paths.DATA_DIR)
+        jpeg = self._report_jpeg() if toggles["shot"] else None
+        pieces = []
+        if jpeg:
+            files = [{"name": "shot.jpg", "bytes": len(jpeg)}] + files
+            row["attachments"] = ["shot.jpg"] + list(row.get("attachments") or [])
+        text_row = problems.preview_text(row)
+        pieces.append({"what": "What you typed, with this copy's version and settings",
+                       "size": problem_card.size_word(len(text_row.encode("utf-8")))})
+        for f in files:
+            pieces.append({"what": REPORT_PIECES.get(str(f.get("name")), str(f.get("name"))),
+                           "size": problem_card.size_word(int(f.get("bytes") or 0))})
+        thumb = ""
+        image = (self._report or {}).get("image")
+        if toggles["shot"] and image is not None:
+            try:
+                import base64
+                import io
+                small = image.copy()
+                small.thumbnail((REPORT_THUMB_PX, REPORT_THUMB_PX))
+                buf = io.BytesIO()
+                small.save(buf, "PNG")
+                thumb = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+            except Exception:             # noqa: BLE001 — a thumbnail is a bonus
+                thumb = ""
+        return {"pieces": pieces, "row": text_row, "thumb": thumb}
+
+    def _report_send(self, arg) -> str:
+        """[Send]: the report is FILED here first, always, exactly as the
+        Tk desk files it (problems.record — the context, the pinned wav
+        and picture, the settings), and then the copy that travels: into
+        the outbox at once when the report_upload gate is open, or — when
+        it is shut — the sheet asks, with the gate's own card words and
+        the pieces that would leave (never a card beside the dot: his
+        rule, no floating cards for questions)."""
+        import problems
+        report = self._report
+        if report is None or report["stage"] != "write":
+            return "the report box is not open"
+        if not isinstance(arg, dict) or set(arg) - {"text", "attach"}:
+            return "that report could not be read"
+        text, attach = arg.get("text"), arg.get("attach")
+        if not isinstance(text, str) or not isinstance(attach, bool) \
+                or len(text) > 4 * problems.TEXT_MAX:
+            return "that report could not be read"
+        toggles = self._report_attach(attach)
+        cfg, _pcfg = self._problems_cfg()
+        jpeg = self._report_jpeg() if toggles["shot"] else None
+        allowed = self._upload_allowed()
+        preview = None
+        if not allowed:
+            # the card's own words say "only what the report's preview
+            # showed": the pieces go on the question, made while the
+            # picture is still in hand
+            try:
+                preview = self._report_preview(text, attach)
+            except Exception as e:        # noqa: BLE001
+                log.warning("web desk: report preview failed: %s", type(e).__name__)
+        try:
+            item = problems.record(paths.DATA_DIR,
+                                   {"where": REPORT_WHERE, "kind": "wrong" if attach else "other",
+                                    "text": text},
+                                   cfg=cfg, last=report.get("last") if attach else None,
+                                   jpeg=jpeg)
+        except ValueError:
+            return "nothing was typed — say what is wrong and send it again"
+        except Exception as e:            # noqa: BLE001
+            log.warning("web desk: could not file a report: %s", type(e).__name__)
+            return f"could not file that ({type(e).__name__})"
+        # filed: the picture's bytes are on disk now, or were not asked for
+        report.update(image=None, jpeg=None, preview=preview, item=str(item.get("id", "")),
+                      toggles=toggles)
+        if allowed:
+            return self._report_queue()
+        store = problems.Store(paths.DATA_DIR / problems.STORE_NAME)
+        problems.mark_preview(store, report["item"], toggles)
+        report["stage"] = "consent"
+        return ""
+
+    @staticmethod
+    def _upload_allowed() -> bool:
+        try:
+            import privacy
+            privacy.configure(config_mod.load_layered())
+            return bool(privacy.allowed("report_upload"))
+        except Exception:                 # noqa: BLE001
+            return False
+
+    def _report_queue(self) -> str:
+        """The copy that travels into problems\\outbox\\ (problems.queue)
+        and the app's worker told to carry it up now (account nudge)."""
+        import problems
+        report = self._report
+        store = problems.Store(paths.DATA_DIR / problems.STORE_NAME)
+        item = store.get(report["item"])
+        if not item or problems.queue(store, item, report.get("toggles") or {},
+                                      app_dir=paths.DATA_DIR) is None:
+            report.update(stage="done", done={
+                "tone": "bad", "text": "Could not queue the report — it stays on this PC."})
+            return ""
+        report.update(stage="sending", since=time.monotonic(), preview=None,
+                      done={"tone": "q", "text": "Sending…"})
+        if self.running:
+            self._send("account", timeout_ms=1500, do="nudge")
+        return ""
+
+    def _report_settle(self) -> None:
+        """While the copy is on its way: read the outbox's verdict back
+        (problems.sync_outbox — the app's worker removes a payload it
+        sent, writes .failed beside one the server refused) and say it
+        the moment it is known, or that it waits for the connection."""
+        import problems
+        report = self._report
+        try:
+            store = problems.Store(paths.DATA_DIR / problems.STORE_NAME)
+            problems.sync_outbox(store, app_dir=paths.DATA_DIR)
+            state = str((store.get(report["item"]) or {}).get("sent") or "")
+        except Exception:                 # noqa: BLE001
+            state = ""
+        if state == problems.SENT:
+            done = {"tone": "ok", "text": "Thanks — it reached the developer."}
+        elif state == problems.FAILED:
+            done = {"tone": "bad", "text": "It could not be sent — it stays on this PC."}
+        elif time.monotonic() - report["since"] > REPORT_SEND_WAIT_S or not self.running:
+            done = {"tone": "ok", "text": "Thanks — it goes to the developer as soon as "
+                                          "DeskIT is online."}
+        else:
+            return
+        report.update(stage="done", done=done)
+
+    def _report_do(self, do: str, arg) -> str:
+        report = self._report
+        if do == "report.open":
+            return self._report_open()
+        if do in ("report.cancel", "report.close"):
+            # Cancel drops the picture unseen; Close is after the answer
+            self._report = None
+            return ""
+        if report is None:
+            return "the report box is not open"
+        if do == "report.preview":
+            if report["stage"] not in ("write", "consent") or not isinstance(arg, dict) \
+                    or set(arg) - {"text", "attach"} \
+                    or not isinstance(arg.get("text", ""), str) \
+                    or len(arg.get("text", "")) > 2400 \
+                    or not isinstance(arg.get("attach", False), bool):
+                return "that preview could not be made"
+            if report["stage"] == "consent":
+                return ""                 # the consent step shows its own pieces
+            try:
+                report["preview"] = self._report_preview(arg.get("text", ""),
+                                                         arg.get("attach", False))
+            except Exception as e:        # noqa: BLE001
+                log.warning("web desk: report preview failed: %s", type(e).__name__)
+                return f"could not build the preview ({type(e).__name__})"
+            return ""
+        if do == "report.send":
+            return self._report_send(arg)
+        if do in ("report.consent", "report.keep"):
+            if report["stage"] != "consent":
+                return "nothing is waiting for that answer"
+            import problems
+            if do == "report.keep":
+                store = problems.Store(paths.DATA_DIR / problems.STORE_NAME)
+                problems.keep_local(store, report["item"])
+                report.update(stage="done", preview=None, done={
+                    "tone": "ok", "text": "Kept on this PC — nothing was sent."})
+                return ""
+            # [Turn on] under the card's own words: the gate this sheet
+            # asked about and no other, at the words it showed
+            try:
+                import consent_card as cc
+                import privacy
+                privacy.grant("report_upload", cc.card_for("report_upload")["text_version"])
+            except Exception as e:        # noqa: BLE001
+                log.warning("could not record the consent for report_upload: %s",
+                            type(e).__name__)
+                return "could not record that"
+            return self._report_queue()
+        return f"{do!r} is not a desk action"
+
+    # -- the account lock's answers (dashboard._lock_do and its neighbours)
+
+    @staticmethod
+    def _offered(rows) -> set:
+        """The acts the buttons of these rows carry right now."""
+        return {b.get("act") for r in rows() for b in r.get("buttons", ())}
+
+    def _lock_do(self, do: str, arg) -> str:
+        lock = self._lock_info()
+        if not self.running or not lock:
+            return "start dictation first — the lock lives in the running app"
+        # the page names the button; it answers only while its row offers
+        # it (Put my lock back, Sign out of every PC, a recovery key...)
+        if do not in ("lock.approve", "lock.decline") and do not in self._offered(self._lock_rows):
+            return "that is not on Home right now"
+        if do == "lock.copy":
+            return ("copied — paste it somewhere safe, then press Done"
+                    if copy_text(self._lock_fresh, secret=True)
+                    else "could not reach the clipboard — write it down")
+        if do == "lock.done":
+            self._lock_fresh = ""
+            return ""
+        if do in ("lock.type", "lock.cancel"):
+            self._lock_typing = do == "lock.type"
+            return ""
+        if do in ("lock.signout_ask", "lock.signout_keep"):
+            self._lock_asking = do == "lock.signout_ask"
+            return ""
+        if do in ("lock.approve", "lock.decline"):
+            # the page names the request: only one the app reported, by id
+            asks = {str(a.get("id")): a for a in (lock.get("pending") or []) if a.get("id")}
+            ident = arg if isinstance(arg, str) else ""
+            if ident not in asks or (do == "lock.approve" and asks[ident].get("twins")):
+                return "that request is not here any more"
+            verb = do.split(".", 1)[1]
+            return self._said(self._ask("account", do=verb, kind=ident),
+                              "approving" if verb == "approve" else "declined")
+        if do == "lock.recover":
+            # the typed key goes to the app over the pipe and nowhere
+            # else: never a note, never a log line, never kept here
+            typed = " ".join(arg.split()) if isinstance(arg, str) else ""
+            if not typed:
+                return "type the recovery key first"
+            if lock.get("state") != "waiting" or not _RECOVERY_SHAPE.fullmatch(typed):
+                del typed
+                return "that is not a recovery key — 24 letters and digits in six groups"
+            self._lock_typing = False
+            reply = self._ask("account", do="recover", kind=typed)
+            del typed
+            return self._said(reply, "opened")
+        if do == "lock.answer":
+            if arg not in ("yes", "no") or lock.get("state") != "changed":
+                return "that question is not waiting"
+            return self._said(self._ask("account", do="lock_answer", kind=arg),
+                              "asked" if arg == "yes" else "kept")
+        if do == "lock.restore":
+            return self._said(self._ask("account", do="lock_restore"), "put back")
+        if do == "lock.signout_all":
+            if not self._lock_asking:
+                return "that question is not waiting"
+            self._lock_asking = False
+            return self._said(self._ask("account", do="signout_all"),
+                              "signing out of every PC")
+        if do == "lock.recovery_new":
+            # the one answer that carries a secret: shown once, kept in
+            # this window's memory until Done
+            reply = self._ask("account", do="recovery_new")
+            if not reply or not reply.get("ok") or not reply.get("recovery"):
+                return self._said(reply, "that did not work")
+            self._lock_fresh = str(reply["recovery"])
+            return "your recovery key is shown once — copy it somewhere safe"
+        return f"{do!r} is not a desk action"
+
+    # -- the sign-in landing (dashboard._landing, _screen_landing)
+
+    def _signed_out(self) -> bool:
+        """With the app silent: is there no account on this PC? sb.py's
+        own word (dashboard._locked_now) — the session blob is this
+        user's — asked at most every three seconds."""
+        at, said = self._signed_out_seen
+        if time.monotonic() - at < 3.0:
+            return said
+        try:
+            import sb
+            said = bool(sb.REQUIRED and sb.configured() and not sb.signed_in())
+        except Exception:                 # noqa: BLE001
+            said = False
+        self._signed_out_seen = (time.monotonic(), said)
+        return said
+
+    def _landing(self) -> dict:
+        """The line under Sign in with Google: the app's account status
+        (the browser wait, the last error) when it runs — the window's
+        own sign-in's when it does not (dashboard._paint_landing)."""
+        line, tone = self._landing_line
+        info = self.status.get("account") if self.status else None
+        if info is not None:
+            if info.get("busy") == "waiting for the browser":
+                line, tone = LANDING_WAITING, "q"
+            elif info.get("last_error"):
+                said = str(info["last_error"])
+                try:
+                    import sb
+                    gone = (sb.GONE_ELSEWHERE, sb.GONE_WORDS)
+                except Exception:         # noqa: BLE001
+                    gone = ()
+                line = said[:200] if said in gone else f"Not signed in: {said}"[:200]
+                tone = "warn"
+        return {"title": f"DeskIT {paths.DEV_TAG}".strip(), "sentence": LANDING_SENTENCE,
+                "stored": LANDING_STORED, "line": line, "tone": tone}
+
+    def _landing_sign_in(self) -> str:
+        """[Sign in with Google] (dashboard._landing_sign_in): through
+        the running app when there is one — it holds the session and
+        unlocks itself; in this window's process when there is none, the
+        wizard's own way (the consent rows, then the browser and the
+        loopback listener). Either way the next poll sees the session."""
+        locked = bool(self.status.get("locked")) if self.status else self._signed_out()
+        if not locked:
+            return "this PC is signed in already"
+        if self.status:
+            self._busy_until = time.monotonic() + 1
+            return self._said(self._ask("account", do="google"), "opening the browser")
+        if self._signing:
+            return ""
+        self._signing = True
+        self._landing_line = (LANDING_WAITING, "q")
+
+        def work() -> None:
+            try:
+                import privacy
+                import sb
+                privacy.sign_in_grants()      # the account, and the sync it promises
+                who = sb.sign_in_google()
+                with self._lock:
+                    self._landing_line = (f"Signed in as {who.get('email')}"
+                                          if who and who.get("email") else "Signed in", "ok")
+            except Exception as e:            # noqa: BLE001
+                with self._lock:
+                    self._landing_line = (f"Not signed in: {_words_of(e)}"[:200], "warn")
+            finally:
+                with self._lock:
+                    self._signing = False
+                    self._signed_out_seen = (0.0, False)
+        threading.Thread(target=work, daemon=True, name="landing-signin").start()
+        return ""
+
+    # -- the update's own buttons (dashboard._update_install and friends)
+
+    def _update_do(self, do: str) -> str:
+        s, rel = self._update_release()
+        if rel is None:
+            return "there is no newer version to get"
+        if do not in self._offered(self._update_rows):
+            if self._update_line:
+                return ""                 # under way: the row says how far
+            return "this copy does not install releases" if do == "update.install" \
+                else "that is not on Home right now"
+        if do == "update.notes":
+            url = str(getattr(rel, "notes_url", "") or "")
+            if not url.startswith(_URL_PREFIXES):
+                return "the release notes are not on a page this desk opens"
+            import webbrowser
+            webbrowser.open(url)
+            return ""
+        if do == "update.winget":
+            command = str(s.get("winget_command") or "")
+            if not command:
+                return "this copy did not come from winget"
+            return f"copied: {command}" if copy_text(command) else "could not reach the clipboard"
+        if do == "update.install":
+            if paths.DEVELOPER or s.get("winget_command") or self._too_old_for(rel):
+                return "this copy does not install releases"
+            if self._update_line:
+                return ""
+            self._update_line = f"downloading DeskIT {rel.version}…"
+            self._update_failed = ""
+
+            def work() -> None:
+                import updates
+
+                def progress(done: int, total: int) -> None:
+                    pct = int(done * 100 / total) if total else 0
+                    with self._lock:
+                        self._update_line = f"downloading DeskIT {rel.version}… {pct}%"
+                try:
+                    path = updates.download(rel, on_progress=progress)
+                    with self._lock:
+                        self._update_line = "Installing… DeskIT will close and reopen"
+                    updates.install(path, rel, quit_app=singleton.request_quit)
+                except Exception as e:    # noqa: BLE001
+                    with self._lock:
+                        self._update_line = ""
+                        self._update_failed = _words_of(e)
+                    log.warning("web desk: the update did not install: %s", type(e).__name__)
+                    return
+                # the installer closes every window anyway (Restart Manager)
+                time.sleep(1.5)
+                close = self.close_window
+                if close is not None:
+                    close()
+            threading.Thread(target=work, daemon=True, name="update-install").start()
+            return f"downloading DeskIT {rel.version}…"
+        return f"{do!r} is not a desk action"
+
+    #: set by run_window: closes this desk's window (after an install)
+    close_window = None
+    _update_failed = ""
+
     def home(self) -> dict:
         with self._lock:
             self._poll()
@@ -816,9 +1641,15 @@ class Model:
         items = self.pile()
         head, sub = self._head(items)
         keys = self._keys()
+        # the app's word when it answers; sb.py's own when it does not
+        locked = bool(self.status.get("locked")) if self.status else self._signed_out()
+        _cfg, pcfg = self._problems_cfg()
         return {
             "ok": True,
-            "locked": bool(self.status.get("locked")),
+            "locked": locked,
+            "landing": self._landing() if locked else None,
+            "report": self._report_view(),
+            "report_on": bool(getattr(pcfg, "enabled", True)),
             "bar": self._bar(),
             "head": head, "sub": sub,
             "pile": items[:PILE_CAP],
@@ -979,6 +1810,10 @@ class Model:
             except (TypeError, ValueError):
                 pass
             return ""
+        if do.startswith("hardware.") and do not in self._offered(self._hardware_rows):
+            # the page names the button; it works only while its row is
+            # up — Remove the pack deletes 1.4 GB of a pack that runs
+            return "that is not on Home right now"
         if do == "hardware.seen":
             try:
                 import hardware as hardware_mod
@@ -986,6 +1821,37 @@ class Model:
             except Exception:             # noqa: BLE001
                 pass
             return ""
+        if do in ("hardware.model", "hardware.reinstall"):
+            # a step in a process of its own — this window cannot host
+            # the step's Tk root (dashboard._hardware_step)
+            flag, name = (("--download-model", None) if do == "hardware.model"
+                          else ("--install-pack", "gpu"))
+            return ("the download window is opening…" if launch.run_step(flag, name)
+                    else "could not start the download window")
+        if do in ("hardware.retry", "hardware.remove"):
+            try:
+                import packs as packs_mod
+                if do == "hardware.retry":
+                    packs_mod.clear_failure("gpu")
+                    return "GPU speed will be tried again at the next start"
+                packs_mod.remove("gpu")
+                # turned off by hand: the background downloads never fetch it again
+                packs_mod.decline("gpu")
+            except Exception as e:        # noqa: BLE001
+                return f"could not do that ({type(e).__name__})"
+            return "faster dictation is off — Settings > Dictation offers it again"
+        if do in ("report.open", "report.cancel", "report.close", "report.preview",
+                  "report.send", "report.consent", "report.keep"):
+            return self._report_do(do, arg)
+        if do in ("lock.copy", "lock.done", "lock.type", "lock.cancel", "lock.approve",
+                  "lock.decline", "lock.recover", "lock.answer", "lock.restore",
+                  "lock.signout_ask", "lock.signout_keep", "lock.signout_all",
+                  "lock.recovery_new"):
+            return self._lock_do(do, arg)
+        if do in ("update.notes", "update.winget", "update.install"):
+            return self._update_do(do)
+        if do == "landing.signin":
+            return self._landing_sign_in()
         if do == "open.capture":
             took = self._last_capture()
             if took is None or not launch.open_path(took[0].parent):
@@ -1172,9 +2038,72 @@ def _client_size(form) -> None:
         pass
 
 
+def _set_taskbar_relaunch(hwnd: int) -> bool:
+    """What pinning this window should MEAN (dashboard._set_taskbar_relaunch,
+    the same four properties on the form's own hwnd): the process is
+    pythonw.exe, so without them a pin comes up with Python's icon, says
+    "Python" and opens a bare interpreter. The relaunch command is the
+    desk's own launcher (launch.dashboard_command), which opens this
+    window when [desk] web asks for it and the Tk desk otherwise. Set
+    before the window is shown: the shell reads them when the pin is
+    made. Not inside the Store package, whose tile is the package's."""
+    if paths.PACKAGED or not hwnd:
+        return False
+    try:
+        from ctypes import POINTER, wintypes
+
+        from comtypes import COMMETHOD, GUID, HRESULT, IUnknown
+
+        class PROPERTYKEY(ctypes.Structure):
+            _fields_ = [("fmtid", GUID), ("pid", wintypes.DWORD)]
+
+        class PROPVARIANT(ctypes.Structure):
+            # only the VT_LPWSTR shape of the union — all this ever holds
+            _fields_ = [("vt", wintypes.USHORT), ("r1", wintypes.USHORT),
+                        ("r2", wintypes.USHORT), ("r3", wintypes.USHORT),
+                        ("pwszVal", wintypes.LPWSTR), ("pad", ctypes.c_void_p)]
+
+        class IPropertyStore(IUnknown):
+            _iid_ = GUID("{886d8eeb-8cf2-4446-8d02-cdba1dbdcf99}")
+            _methods_ = [
+                COMMETHOD([], HRESULT, "GetCount", (["out"], POINTER(wintypes.DWORD), "count")),
+                COMMETHOD([], HRESULT, "GetAt", (["in"], wintypes.DWORD, "index"),
+                          (["out"], POINTER(PROPERTYKEY), "key")),
+                COMMETHOD([], HRESULT, "GetValue", (["in"], POINTER(PROPERTYKEY), "key"),
+                          (["out"], POINTER(PROPVARIANT), "value")),
+                COMMETHOD([], HRESULT, "SetValue", (["in"], POINTER(PROPERTYKEY), "key"),
+                          (["in"], POINTER(PROPVARIANT), "value")),
+                COMMETHOD([], HRESULT, "Commit"),
+            ]
+
+        store = POINTER(IPropertyStore)()
+        if ctypes.windll.shell32.SHGetPropertyStoreForWindow(
+                ctypes.c_void_p(hwnd), ctypes.byref(IPropertyStore._iid_),
+                ctypes.byref(store)) != 0:
+            return False
+        fmtid = GUID("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}")
+        command = " ".join(f'"{part}"' for part in launch.dashboard_command())
+        for pid, text in ((5, APP_ID),                              # ...ID
+                          (2, command),                             # ...RelaunchCommand
+                          (4, "DeskIT"),                            # ...RelaunchDisplayName
+                          (3, f"{paths.ICON_ICO},0")):              # ...RelaunchIcon
+            value = PROPVARIANT()
+            value.vt, value.pwszVal = 31, text                      # VT_LPWSTR
+            store.SetValue(PROPERTYKEY(fmtid, pid), value)
+        store.Commit()
+        return True
+    except Exception as e:                # noqa: BLE001
+        log.debug("relaunch properties not set: %s", type(e).__name__)
+        return False
+
+
 def _on_form(form) -> None:
     _dark_caption(form)
     _client_size(form)
+    try:
+        _set_taskbar_relaunch(int(form.Handle.ToInt64()))
+    except Exception:                     # noqa: BLE001
+        pass
 
 
 def _watch_show(desk_handle: dict, stop: threading.Event) -> None:
@@ -1236,9 +2165,19 @@ def run_window(*, api: Api | None = None, route: str = "", on_ready=None,
 
     if watch_show:
         threading.Thread(target=grab, daemon=True, name="webdesk-grab").start()
+    api = api or Api()
+
+    def close_window() -> None:
+        desk = getattr(webdesk.run, "last", None)
+        if desk is not None:
+            try:
+                desk.close()
+            except Exception:             # noqa: BLE001
+                pass
+    api._model.close_window = close_window
     try:
         return webdesk.run(route=route, title=f"DeskIT {paths.DEV_TAG}".strip(),
-                           api=api or Api(), width=CLIENT_W + 16, height=CLIENT_H + 39,
+                           api=api, width=CLIENT_W + 16, height=CLIENT_H + 39,
                            icon=paths.ICON_ICO if paths.ICON_ICO.is_file() else None,
                            on_form=_on_form, resizable=False, hidden=hidden,
                            storage=storage,

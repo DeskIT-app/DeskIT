@@ -51472,6 +51472,398 @@ def test_the_web_desk_keeps_the_change_in_sight():
         assert row["meta"].startswith("one word to delete"), row["meta"]
 
 
+@contextlib.contextmanager
+def _web_report(status=_WEB_STATUS, allowed=False):
+    """A web desk Model whose report sheet files into a scratch DATA_DIR,
+    with a recording in a scratch recent\\ and a 64x48 'screen' in place
+    of ImageGrab. Yields (model, data dir, asked, granted)."""
+    import wave
+
+    import deskweb
+    from PIL import Image, ImageGrab
+
+    import privacy
+    data = Path(tempfile.mkdtemp(prefix="webreport-", dir=_SCRATCH_HOME))
+    recent = data / "recent"
+    recent.mkdir()
+    with wave.open(str(recent / "20261024-101500.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\0\0" * 1600)
+    (recent / "20261024-101500.json").write_text(json.dumps(
+        {"raw": "אמרתי משהו", "text": "אמרתי משהו."}, ensure_ascii=False), "utf-8")
+    granted: list = []
+    gate = {"open": allowed}
+    with _web_desk(status) as (model, _folder, asked), \
+            _patched(paths, "DATA_DIR", data), _patched(paths, "RECENT_DIR", recent), \
+            _patched(ImageGrab, "grab", lambda *a, **k: Image.new("RGB", (64, 48), (40, 60, 90))), \
+            _patched(privacy, "grant", lambda kind, *a, **k: granted.append((kind, a)) or {}):
+        model.gate = gate
+        model._upload_allowed = lambda: gate["open"]        # this Model only
+        assert isinstance(deskweb.Model.__dict__["_upload_allowed"], staticmethod)
+        yield model, data, asked, granted
+
+
+def test_the_web_desk_home_reports_a_problem_as_the_tk_desk_files_it():
+    """Report a problem on the web Home (dashboard._report): the screen is
+    grabbed at the press, before the sheet exists; Send FILES the report
+    here through problems.record exactly as the Tk desk does — the
+    context, the pinned recording and picture when the switch says so,
+    nothing of either when it does not; then the copy that travels: into
+    the outbox at once with the report_upload gate open, or — shut — the
+    sheet asks with the gate's own card words and the pieces that would
+    leave (never the pipe's `consent`, which puts a card beside the dot),
+    and only [Turn on] grants it, only for report_upload. The worker
+    carrying it up reads back as "it reached the developer". Every
+    argument from the page is checked before anything is filed."""
+    import problems
+
+    with _web_report() as (model, data, asked, granted):
+        store = problems.Store(data / problems.STORE_NAME)
+        assert model.home()["report"] is None and model.home()["report_on"] is True
+        for early in ("report.send", "report.consent", "report.keep", "report.preview"):
+            assert model.act(early, {"text": "x", "attach": True})["note"] \
+                == "the report box is not open", early
+        got = model.act("report.open")
+        view = got["home"]["report"]
+        assert got["note"] == "" and view["stage"] == "write", got
+        assert view["attach"] == "Attach my last dictation and a picture of the screen", view
+        assert view["on"].startswith("Sends what you said at ") and "screen" in view["on"], view
+        assert view["limit"] == problems.TEXT_MAX
+        assert not any(isinstance(v, (bytes, bytearray)) for v in view.values())
+        for bad in (None, "text", ["x"], {"text": 3, "attach": True}, {"text": "x", "attach": "yes"},
+                    {"text": "x", "attach": True, "where": "C:\\"}, {"text": "x" * 5000, "attach": False}):
+            note = model.act("report.send", bad)["note"]
+            assert note == "that report could not be read", (bad, note)
+        assert store.items() == []
+        assert model.act("report.send", {"text": "   ", "attach": True})["note"].startswith(
+            "nothing was typed"), "an empty line files nothing"
+        # the preview: what would leave, before anything is filed
+        got = model.act("report.preview", {"text": "הכפתור לא עובד", "attach": True})
+        prev = got["home"]["report"]["preview"]
+        whats = [p["what"] for p in prev["pieces"]]
+        assert whats[0] == "What you typed, with this copy's version and settings" \
+            and "Your screen from a moment ago" in whats \
+            and "What you said — the sound" in whats, whats
+        assert '"text": "הכפתור לא עובד"' in prev["row"] and prev["thumb"].startswith(
+            "data:image/png;base64,"), prev["row"]
+        assert store.items() == []
+        # Send, the gate shut: filed here, then asked on the sheet
+        got = model.act("report.send", {"text": "הכפתור לא עובד", "attach": True})
+        view = got["home"]["report"]
+        assert view["stage"] == "consent", view
+        assert view["consent"]["title"] == "Send problem reports?", view["consent"]
+        assert any("preview" in line["v"] for line in view["consent"]["lines"]), view["consent"]
+        assert view["preview"]["pieces"], view
+        items = store.items()
+        assert len(items) == 1, items
+        item = items[0]
+        assert (item["kind"], item["where"], item["sent"]) == ("wrong", "Home", problems.PREVIEW), item
+        assert item.get("shot") and (data / item["shot"]).is_file(), item
+        assert str(item["dictation"].get("wav", "")).startswith("problems"), item["dictation"]
+        assert not [c for c, _a in asked if c == "consent"], asked
+        assert not list(problems.outbox_dir(data).glob("*.json"))
+        assert model._report["image"] is None and model._report["jpeg"] is None
+        # [Turn on]: report_upload and nothing else, then the outbox and the nudge
+        got = model.act("report.consent")
+        assert granted and granted[0][0] == "report_upload", granted
+        assert got["home"]["report"]["stage"] == "sending", got["home"]["report"]
+        assert ("account", {"do": "nudge"}) in asked, asked
+        payloads = list(problems.outbox_dir(data).glob("*.json"))
+        assert len(payloads) == 1
+        body = json.loads(payloads[0].read_text("utf-8"))
+        assert {a["name"] for a in body["attachments"]} == {"shot.jpg", "dictation.wav",
+                                                           "sidecar.json"}, body["attachments"]
+        payloads[0].unlink()                     # the app's worker carried it up
+        done = model.home()["report"]
+        assert done["stage"] == "done" and done["done"]["text"] == \
+            "Thanks — it reached the developer.", done
+        assert model.act("report.consent")["note"] == "nothing is waiting for that answer"
+        assert len(granted) == 1
+        model.act("report.close")
+        assert model.home()["report"] is None
+
+        # the switch off: nothing of the recording or the screen, here or there
+        model.gate["open"] = True
+        asked.clear()
+        model.act("report.open")
+        got = model.act("report.send", {"text": "an idea", "attach": False})
+        assert got["home"]["report"]["stage"] == "sending", got["home"]["report"]
+        item = store.get(model._report["item"])
+        assert (item["kind"], item.get("shot", ""), item["dictation"]) == ("other", "", {}), item
+        body = json.loads(next(problems.outbox_dir(data).glob("*.json")).read_text("utf-8"))
+        assert body["attachments"] == [] and "dictation_raw" not in body, body
+        model.act("report.close")
+
+        # Keep on this PC: filed, never queued
+        model.gate["open"] = False
+        model.act("report.open")
+        model.act("report.send", {"text": "keep it", "attach": False})
+        got = model.act("report.keep")
+        assert got["home"]["report"]["done"]["text"] == "Kept on this PC — nothing was sent."
+        assert store.get(model._report["item"])["sent"] == "", store.items()
+        # Cancel drops the picture unseen and files nothing
+        before = len(store.items())
+        model.act("report.open")
+        assert model.act("report.cancel")["home"]["report"] is None
+        assert len(store.items()) == before
+    # [problems] enabled = false: no button and no sheet
+    off = dataclasses.replace(config_mod.load(REPO / "defaults.toml"))
+    off = dataclasses.replace(off, problems=dataclasses.replace(off.problems, enabled=False))
+    with _web_report() as (model, _data, _asked, _granted), \
+            _patched(config_mod, "load_layered", lambda *a, **k: off):
+        assert model.home()["report_on"] is False
+        assert "enabled is false" in model.act("report.open")["note"]
+        assert model.home()["report"] is None
+
+
+def test_the_web_desk_home_answers_the_lock_on_its_rows():
+    """The account lock's rows answer on Home (dashboard._waiting_lock,
+    _lock_changed_rows, _lock_do): Approve and Not now only for a
+    request the app reported, by its id; the recovery key typed into
+    the waiting row goes down the pipe and nowhere else — not into a
+    note, not into Home's answer, not into the log; a new recovery key
+    is shown once, copied as a secret, gone at Done; It wasn't me / It
+    was me answer only "yes" or "no"; Sign out of every PC is asked in
+    the row before it is sent. No row sends him to the old desk."""
+    import io
+    import logging
+
+    import deskweb
+
+    key = "7K2M-QX9D-4HRT-WB8P-3NZE-6VFA"
+
+    def status(lock):
+        return dict(_WEB_STATUS, account={"signed_in": True, "configured": True, "lock": lock})
+
+    def acts(home):
+        return [(b.get("act"), b.get("arg")) for r in home["pile"] for b in r["buttons"]]
+
+    with _web_desk(status({"state": "have", "recovery": False, "pending": [
+            {"id": "p1", "name": "Laptop", "code": "K7PM-3QXD"}]})) as (model, _f, asked):
+        home = model.home()
+        assert ("lock.approve", "p1") in acts(home) and ("lock.recovery_new", None) in acts(home)
+        assert "old" not in [a for a, _ in acts(home)], acts(home)
+        for bad in ("p2", None, ["p1"], {"id": "p1"}, "p1; drop"):
+            assert model.act("lock.approve", bad)["note"] == "that request is not here any more", bad
+        assert not [c for c, _a in asked if c == "account"]
+        model.act("lock.approve", "p1")
+        assert ("account", {"do": "approve", "kind": "p1"}) in asked, asked
+    with _web_desk(status({"state": "have", "pending": [
+            {"id": "p1", "name": "Laptop", "twins": True}]})) as (model, _f, asked):
+        assert ("lock.approve", "p1") not in acts(model.home())
+        assert model.act("lock.approve", "p1")["note"] == "that request is not here any more"
+    # a new recovery key: shown once, copied as a secret, gone at Done
+    copied = []
+    with _web_desk(status({"state": "have", "recovery": False})) as (model, _f, asked), \
+            _patched(deskweb, "copy_text", lambda text, secret=False: copied.append(secret) or True):
+        real = model._send
+
+        def send(command, timeout_ms=2000, **args):
+            if command == "account" and args.get("do") == "recovery_new":
+                asked.append((command, args))
+                return {"ok": True, "recovery": key}
+            return real(command, timeout_ms, **args)
+        model._send = send
+        model.act("lock.recovery_new")
+        row = model.home()["pile"][0]
+        assert row["id"] == "lock:fresh" and row["code"] == key, row
+        assert model.act("lock.copy")["note"].startswith("copied") and copied == [True]
+        model.act("lock.done")
+        assert key not in json.dumps(model.home(), ensure_ascii=False)
+    # the waiting PC: the key typed in goes down the pipe, and nowhere else
+    seen = io.StringIO()
+    handler = logging.StreamHandler(seen)
+    logging.getLogger("app").addHandler(handler)
+    try:
+        with _web_desk(status({"state": "waiting", "code": "K7PM-3QXD"})) as (model, _f, asked):
+            assert model.home()["pile"][0]["buttons"][0]["act"] == "lock.type"
+            model.act("lock.type")
+            row = model.home()["pile"][0]
+            assert row.get("field") == "recovery" and \
+                [b["act"] for b in row["buttons"]] == ["lock.recover", "lock.cancel"], row
+            asked.clear()
+            for bad in ("", "x", "ab" * 40, ["a"], 7, "<script>", "../../etc"):
+                note = model.act("lock.recover", bad)["note"]
+                assert "recovery key" in note, (bad, note)
+            assert not [c for c, _a in asked if c == "account"], asked
+            got = model.act("lock.recover", f"  {key} ")
+            assert ("account", {"do": "recover", "kind": key}) in asked, asked
+            assert key not in json.dumps(got, ensure_ascii=False)
+            assert model.home()["pile"][0].get("field") is None
+    finally:
+        logging.getLogger("app").removeHandler(handler)
+    assert key not in seen.getvalue()
+    # the changed lock: yes or no, and Sign out of every PC asked first
+    with _web_desk(status({"state": "changed", "changed": {"server": "a", "mine": "b"}})) \
+            as (model, _f, asked):
+        assert [a for a, _ in acts(model.home())][:2] == ["lock.answer", "lock.answer"]
+        assert model.act("lock.answer", "maybe")["note"] == "that question is not waiting"
+        model.act("lock.answer", "no")
+        assert ("account", {"do": "lock_answer", "kind": "no"}) in asked
+    with _web_desk(status({"state": "changed", "changed": {"server": "a", "mine": "b",
+                                                            "refused": True}})) as (model, _f, asked):
+        assert [a for a, _ in acts(model.home())][:2] == ["lock.restore", "lock.signout_ask"]
+        # a button works only while its row offers it
+        for unoffered in ("lock.signout_all", "lock.recovery_new", "lock.copy", "lock.recover",
+                          "lock.answer"):
+            assert model.act(unoffered, "no")["note"] == "that is not on Home right now", unoffered
+        assert not [c for c, _a in asked if c == "account"], asked
+        model.act("lock.signout_ask")
+        assert model.home()["pile"][0]["text"].startswith("Sign out of every PC?")
+        model.act("lock.signout_all")
+        assert ("account", {"do": "signout_all"}) in asked, asked
+    with _web_desk(None) as (model, _f, asked):
+        assert model.act("lock.approve", "p1")["note"].startswith("start dictation first")
+
+
+def test_the_web_desk_home_rows_carry_their_own_buttons():
+    """The model, the GPU pack, the update and a missing key answer on
+    their rows (dashboard._waiting_hardware, _waiting_update,
+    _waiting_keys): Download / Continue run `main.py --download-model`
+    in a process of its own, Retry / Reinstall / Remove the pack do what
+    the Tk desk's do, Download and install appears outside the checkout
+    only, the winget command is copied, the notes open only on a page
+    of the allowlist, and Add a key goes to Settings > Privacy in this
+    window. No button on these rows opens the old desk."""
+    import deskweb
+    import models as models_mod
+    import packs as packs_mod
+    import updates as updates_mod
+    import webbrowser
+
+    class Rel:
+        version, size, published = "9.9.9", 59 * 1_048_576, "2026-10-20T10:00:00Z"
+        notes_url, min_config_version = "https://github.com/x/releases/tag/v9.9.9", 1
+
+    did, opened, copied = [], [], []
+    status = dict(_WEB_STATUS, needs_key={"translate": time.time() - 60})
+    with _web_desk(status) as (model, _f, _asked), \
+            _patched(paths, "PORTABLE", False), _patched(paths, "DEVELOPER", False), \
+            _patched(models_mod, "state", lambda *a, **k: "absent"), \
+            _patched(packs_mod, "standing", lambda name: "failed:cuDNN did not load"), \
+            _patched(packs_mod, "clear_failure", lambda name: did.append(("clear", name))), \
+            _patched(packs_mod, "remove", lambda name: did.append(("remove", name)) or True), \
+            _patched(packs_mod, "decline", lambda name: did.append(("decline", name))), \
+            _patched(deskweb.launch, "run_step", lambda flag, name=None: did.append((flag, name)) or True), \
+            _patched(updates_mod, "status", lambda: {"available": Rel(), "mode": "auto",
+                                                     "running": "1.0.6", "winget_command": ""}), \
+            _patched(webbrowser, "open", lambda url, *a, **k: opened.append(url) or True), \
+            _patched(deskweb, "copy_text", lambda text, secret=False: copied.append(text) or True):
+        model.home()
+        rows = {r["id"]: r for r in model.pile()}
+        buttons = {r: [(b["label"], b.get("act"), b.get("go")) for b in row["buttons"]]
+                   for r, row in rows.items()}
+        assert buttons["model"] == [("Download", "hardware.model", None)], buttons
+        assert [b[1] for b in buttons["pack"]] == ["hardware.retry", "hardware.reinstall",
+                                                   "hardware.remove"], buttons
+        assert buttons["update"] == [("Download and install", "update.install", None)], buttons
+        assert ("Add a key", "", "settings/privacy") in buttons["keys"], buttons
+        assert all(act != "old" for row in buttons.values() for _l, act, _g in row), buttons
+        model.act("hardware.model")
+        model.act("hardware.reinstall")
+        model.act("hardware.retry")
+        model.act("hardware.remove")
+        assert did == [("--download-model", None), ("--install-pack", "gpu"), ("clear", "gpu"),
+                       ("remove", "gpu"), ("decline", "gpu")], did
+        with _patched(updates_mod, "status", lambda: {"available": Rel(), "mode": "winget",
+                                                      "running": "1.0.6",
+                                                      "winget_command": "winget upgrade x"}):
+            assert model._update_rows()[0]["buttons"][0]["act"] == "update.winget"
+            assert model.act("update.install")["note"] == "this copy does not install releases"
+            model.act("update.winget")
+            assert copied == ["winget upgrade x"]
+        model._too_old_for = lambda rel: True          # this Model only
+        assert model._update_rows()[0]["buttons"][0]["act"] == "update.notes"
+        model.act("update.notes")
+        Rel.notes_url = "https://evil.example/x"
+        assert "not on a page" in model.act("update.notes")["note"]
+        assert opened == ["https://github.com/x/releases/tag/v9.9.9"], opened
+    with _web_desk(_WEB_STATUS) as (model, _f, _asked), _patched(paths, "DEVELOPER", True), \
+            _patched(paths, "PORTABLE", True), \
+            _patched(packs_mod, "remove", lambda name: did.append(("REMOVED", name)) or True), \
+            _patched(deskweb.launch, "run_step", lambda flag, name=None: did.append(("RAN", flag))), \
+            _patched(updates_mod, "status", lambda: {"available": Rel(), "mode": "auto",
+                                                     "running": "1.0.6", "winget_command": ""}):
+        Rel.notes_url = "https://github.com/x"
+        assert model._update_rows()[0]["buttons"] == []          # the checkout pulls
+        assert model.act("update.install")["note"] == "this copy does not install releases"
+        # no pack row, no model row (a portable copy): the page cannot press them
+        for unoffered in ("hardware.remove", "hardware.reinstall", "hardware.model",
+                          "hardware.retry", "update.notes"):
+            assert model.act(unoffered)["note"] == "that is not on Home right now", unoffered
+        assert not [d for d in did if d[0] in ("REMOVED", "RAN")], did
+
+
+def test_the_web_desk_landing_signs_in_through_the_app_or_here():
+    """The sign-in landing (dashboard._landing): with the app running its
+    word decides (status locked) and Sign in with Google goes down the
+    pipe; with nothing running, sb.py's own session decides and the
+    sign-in runs in this window's process — the consent rows first, as
+    the Tk desk does. A failure says sb's own words or the exception's
+    type, never a path."""
+    import deskweb
+    import privacy
+    import sb
+
+    locked = dict(_WEB_STATUS, locked=True,
+                  account={"signed_in": False, "busy": "waiting for the browser"})
+    with _web_desk(locked) as (model, _f, asked):
+        home = model.home()
+        assert home["locked"] is True and home["landing"]["line"] == deskweb.LANDING_WAITING
+        assert "Hebrew dictation for Windows" in home["landing"]["sentence"]
+        model.act("landing.signin")
+        assert ("account", {"do": "google"}) in asked, asked
+    with _web_desk(_WEB_STATUS) as (model, _f, _asked):
+        assert model.home()["locked"] is False and model.home()["landing"] is None
+    grants: list = []
+    for outcome, words in ((lambda: {"email": "a@b.c"}, "Signed in as a@b.c"),
+                           (lambda: (_ for _ in ()).throw(OSError(r"C:\Users\x\secret")),
+                            "Not signed in: OSError"),
+                           (lambda: (_ for _ in ()).throw(sb.AccountError("the browser did not "
+                                                                          "come back in time")),
+                            "Not signed in: the browser did not come back in time")):
+        with _web_desk(None) as (model, _f, asked), _patched(sb, "REQUIRED", True), \
+                _patched(sb, "configured", lambda: True), _patched(sb, "signed_in", lambda: False), \
+                _patched(sb, "sign_in_google", lambda *a, **k: outcome()), \
+                _patched(privacy, "sign_in_grants", lambda: grants.append(1) or []):
+            assert model.home()["locked"] is True
+            model.act("landing.signin")
+            assert _until(lambda: not model._signing, 5)
+            assert model.home()["landing"]["line"] == words, model.home()["landing"]
+            assert not [c for c, _a in asked if c != "status"], asked
+    assert len(grants) == 3
+
+
+def test_the_web_desk_shell_answers_only_on_its_own_channel():
+    """pywebview's own road (window.pywebview.api) answered a call that
+    raised with its message and the whole traceback (util.js_bridge_call):
+    the shell hands pywebview no api at all and drops every pywebview-
+    shaped message, so the page has one road — ours, which answers a
+    failure with the exception's type. The taskbar pin's relaunch
+    properties are set on the form, outside the Store package."""
+    import deskweb
+
+    src = (REPO / "webdesk.py").read_text("utf-8")
+    notify_ = src[src.index("        def on_script_notify("):src.index("        def _answer(")]
+    assert "super().on_script_notify" not in notify_, notify_
+    assert "js_api=None" in src and "js_api=api" not in src
+    answer = src[src.index("        def _answer("):src.index("    edgechromium.EdgeChrome = DeskEdgeChrome")]
+    assert '"error": type(e).__name__' in answer
+    form = (REPO / "deskweb.py").read_text("utf-8")
+    form = form[form.index("def _on_form("):form.index("def _watch_show(")]
+    assert "_set_taskbar_relaunch(" in form
+    assert deskweb._set_taskbar_relaunch(0) is False
+    with _patched(paths, "PACKAGED", True):
+        assert deskweb._set_taskbar_relaunch(123) is False
+    # the kit's keycaps: every cap and every "+" a child of .keys itself,
+    # so its gap falls on both sides of the "+"
+    kit = (REPO / "web" / "src" / "kit.tsx").read_text("utf-8")
+    caps = kit[kit.index("export function Caps("):kit.index("export function Segs(")]
+    assert '<span key={`${c}${i}`}>{i ?' not in caps and "flatMap" in caps, caps
+
+
 # ======================================== web desk place: Corrections
 # Owners: the Corrections session — desk_corrections.py,
 # web/src/places/corrections.tsx, web/src/places/corrections.css. The
