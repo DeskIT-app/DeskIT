@@ -1641,7 +1641,7 @@ def test_the_windows_bridge_answers_only_the_names_the_api_lists():
     flat: no dotted path, no attribute that is not one of those calls.
     The page cannot widen the list — `api` comes from the process that
     opened the window."""
-    from dev.master import webdesk as _mwebdesk
+    import webdesk as _mwebdesk                     # the product's shell, no copy
     from dev.master.api import Api as _MApi
     with tempfile.TemporaryDirectory() as tmp:
         root = _master_root(Path(tmp) / "checkout")
