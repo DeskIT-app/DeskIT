@@ -390,7 +390,10 @@ function ReportSheet({ view, holdKey }: { view: ReportView; holdKey: string }) {
                     maxLength={view.limit} spellCheck={false}
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+                      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        send();
+                      }
                     }} />
         </div>
         <div className="hint">

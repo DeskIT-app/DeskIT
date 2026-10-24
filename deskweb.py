@@ -1425,11 +1425,20 @@ class Model:
 
     # -- the account lock's answers (dashboard._lock_do and its neighbours)
 
+    @staticmethod
+    def _offered(rows) -> set:
+        """The acts the buttons of these rows carry right now."""
+        return {b.get("act") for r in rows() for b in r.get("buttons", ())}
+
     def _lock_do(self, do: str, arg) -> str:
         lock = self._lock_info()
+        if not self.running or not lock:
+            return "start dictation first — the lock lives in the running app"
+        # the page names the button; it answers only while its row offers
+        # it (Put my lock back, Sign out of every PC, a recovery key...)
+        if do not in ("lock.approve", "lock.decline") and do not in self._offered(self._lock_rows):
+            return "that is not on Home right now"
         if do == "lock.copy":
-            if not self._lock_fresh:
-                return "there is no recovery key to copy"
             return ("copied — paste it somewhere safe, then press Done"
                     if copy_text(self._lock_fresh, secret=True)
                     else "could not reach the clipboard — write it down")
@@ -1437,13 +1446,11 @@ class Model:
             self._lock_fresh = ""
             return ""
         if do in ("lock.type", "lock.cancel"):
-            self._lock_typing = do == "lock.type" and lock.get("state") == "waiting"
+            self._lock_typing = do == "lock.type"
             return ""
         if do in ("lock.signout_ask", "lock.signout_keep"):
             self._lock_asking = do == "lock.signout_ask"
             return ""
-        if not self.running or not lock:
-            return "start dictation first — the lock lives in the running app"
         if do in ("lock.approve", "lock.decline"):
             # the page names the request: only one the app reported, by id
             asks = {str(a.get("id")): a for a in (lock.get("pending") or []) if a.get("id")}
@@ -1533,6 +1540,9 @@ class Model:
         unlocks itself; in this window's process when there is none, the
         wizard's own way (the consent rows, then the browser and the
         loopback listener). Either way the next poll sees the session."""
+        locked = bool(self.status.get("locked")) if self.status else self._signed_out()
+        if not locked:
+            return "this PC is signed in already"
         if self.status:
             self._busy_until = time.monotonic() + 1
             return self._said(self._ask("account", do="google"), "opening the browser")
@@ -1566,6 +1576,11 @@ class Model:
         s, rel = self._update_release()
         if rel is None:
             return "there is no newer version to get"
+        if do not in self._offered(self._update_rows):
+            if self._update_line:
+                return ""                 # under way: the row says how far
+            return "this copy does not install releases" if do == "update.install" \
+                else "that is not on Home right now"
         if do == "update.notes":
             url = str(getattr(rel, "notes_url", "") or "")
             if not url.startswith(_URL_PREFIXES):
@@ -1795,6 +1810,10 @@ class Model:
             except (TypeError, ValueError):
                 pass
             return ""
+        if do.startswith("hardware.") and do not in self._offered(self._hardware_rows):
+            # the page names the button; it works only while its row is
+            # up — Remove the pack deletes 1.4 GB of a pack that runs
+            return "that is not on Home right now"
         if do == "hardware.seen":
             try:
                 import hardware as hardware_mod

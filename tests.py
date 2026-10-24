@@ -51140,7 +51140,11 @@ def test_the_web_desk_home_answers_the_lock_on_its_rows():
     with _web_desk(status({"state": "changed", "changed": {"server": "a", "mine": "b",
                                                             "refused": True}})) as (model, _f, asked):
         assert [a for a, _ in acts(model.home())][:2] == ["lock.restore", "lock.signout_ask"]
-        assert model.act("lock.signout_all")["note"] == "that question is not waiting"
+        # a button works only while its row offers it
+        for unoffered in ("lock.signout_all", "lock.recovery_new", "lock.copy", "lock.recover",
+                          "lock.answer"):
+            assert model.act(unoffered, "no")["note"] == "that is not on Home right now", unoffered
+        assert not [c for c, _a in asked if c == "account"], asked
         model.act("lock.signout_ask")
         assert model.home()["pile"][0]["text"].startswith("Sign out of every PC?")
         model.act("lock.signout_all")
@@ -51212,11 +51216,19 @@ def test_the_web_desk_home_rows_carry_their_own_buttons():
         assert "not on a page" in model.act("update.notes")["note"]
         assert opened == ["https://github.com/x/releases/tag/v9.9.9"], opened
     with _web_desk(_WEB_STATUS) as (model, _f, _asked), _patched(paths, "DEVELOPER", True), \
+            _patched(paths, "PORTABLE", True), \
+            _patched(packs_mod, "remove", lambda name: did.append(("REMOVED", name)) or True), \
+            _patched(deskweb.launch, "run_step", lambda flag, name=None: did.append(("RAN", flag))), \
             _patched(updates_mod, "status", lambda: {"available": Rel(), "mode": "auto",
                                                      "running": "1.0.6", "winget_command": ""}):
         Rel.notes_url = "https://github.com/x"
         assert model._update_rows()[0]["buttons"] == []          # the checkout pulls
         assert model.act("update.install")["note"] == "this copy does not install releases"
+        # no pack row, no model row (a portable copy): the page cannot press them
+        for unoffered in ("hardware.remove", "hardware.reinstall", "hardware.model",
+                          "hardware.retry", "update.notes"):
+            assert model.act(unoffered)["note"] == "that is not on Home right now", unoffered
+        assert not [d for d in did if d[0] in ("REMOVED", "RAN")], did
 
 
 def test_the_web_desk_landing_signs_in_through_the_app_or_here():
