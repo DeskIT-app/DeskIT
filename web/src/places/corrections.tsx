@@ -9,7 +9,7 @@
 // foot said. Every word comes from desk_corrections.Place.read; a press
 // is Place.act, answered with the place again and drawn at once.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { Caps, IC, Segs, placeCall, useDesk, usePlace } from "../kit";
+import { Caps, IC, Segs, Switch, placeCall, useDesk, usePlace } from "../kit";
 import type { Seg } from "../types";
 import "./corrections.css";
 
@@ -211,7 +211,7 @@ export default function CorrectionsPlace({ sub }: { sub: string }) {
         <div className="spacer" />
         <div className={`use${pressed === "use" ? " down" : ""}`} role="switch" aria-checked={on}
              onClick={toggleUse}>
-          <span className={`sw${on ? " on" : ""}`}><i /></span>Use them
+          <Switch on={on} />Use them
         </div>
         <div className={`btn teach${lit ? " primary" : ""}`} onClick={teach}>
           <i className="ic">{IC.add}</i>Teach a word

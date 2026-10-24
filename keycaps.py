@@ -164,7 +164,7 @@ CAPTION = {
     "capture_hotkey": "shot", "record_hotkey": "record",
     "camera_hotkey": "camera", "pause_hotkey": "pause",
     "screens_hotkey": "screens", "report_hotkey": "report",
-    "dismiss_hotkey": "dismiss",
+    "dismiss_hotkey": "dismiss", "shelf_hotkey": "shelf",
 }
 
 HOLD = {"hotkey", "english_hotkey"}   # held down the whole time they work

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -145,8 +146,8 @@ ISSUES_URL = "https://github.com/DeskIT-app/DeskIT/issues/new/choose"
 MODEL_CARD_URL = "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2"
 #: dashboard._open_url's allowlist: nothing else is opened in a browser.
 URL_PREFIXES = ("https://github.com/", "https://deskit-app.github.io/",
-                "https://huggingface.co/", "https://console.groq.com",
-                "https://aistudio.google.com")
+                "https://huggingface.co/", "https://console.groq.com/",
+                "https://aistudio.google.com/")
 
 #: Every button the page may press (the dispatch below is the rest).
 ACTS = frozenset({
@@ -219,6 +220,19 @@ def human_time(seconds: float) -> str:
     if seconds < 3600:
         return f"{seconds // 60}m"
     return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
+
+
+def plain(text: str) -> str:
+    """A refusal in the screen's words: a key check_hotkeys refused
+    (config.plainly), and every line of the file it names by its dotted
+    path said as the label its row shows (settings.saved_sentence's rule:
+    the developer's name for a line is not a message for the person)."""
+    text = config_mod.plainly(text)
+    for path in sorted(settings_mod.WORDS, key=len, reverse=True):
+        if path in text:
+            text = re.sub(rf"(?<![\w.]){re.escape(path)}(?![\w.])",
+                          lambda _m, p=path: f'"{settings_mod.label_for(p)}"', text)
+    return text
 
 
 class Refused(ValueError):
@@ -1137,11 +1151,19 @@ class Place:
         if reply is None:
             return "dictation is not running"
         if not reply.get("ok"):
-            return str(reply.get("error") or "that did not work")
+            return plain(str(reply.get("error") or "that did not work"))
         return str(reply.get("message") or fallback)
 
     @staticmethod
-    def _copy(text: str) -> None:
+    def _copy(text: str, secret: bool = False) -> None:
+        """A secret (the recovery key, the phone link with its token) is
+        kept out of Windows' clipboard history and the cloud clipboard,
+        as Home's copy of the same key is (deskweb.copy_text)."""
+        if secret:
+            import deskweb
+            if not deskweb.copy_text(text, secret=True):
+                raise OSError("the clipboard did not take it")
+            return
         import injector
         injector.set_text(text)
 
@@ -1214,7 +1236,7 @@ class Place:
             reply = self._ask("option", name=setting.path, value=value)
             if reply is not None:
                 if not reply.get("ok"):
-                    return str(reply.get("error") or "that did not work")
+                    return plain(str(reply.get("error") or "that did not work"))
                 self._sections_kept = None
                 return str(reply.get("message")
                            or settings_mod.saved_sentence(setting.path, value))
@@ -1226,7 +1248,7 @@ class Place:
             config_mod.save({setting.path: value})
         except Exception as e:                               # noqa: BLE001
             return (f"could not save that ({type(e).__name__})"
-                    if not isinstance(e, config_mod.ConfigError) else str(e))
+                    if not isinstance(e, config_mod.ConfigError) else plain(str(e)))
         if setting.path == "setup.autostart":
             import autostart
             autostart.apply(bool(value))
@@ -1381,6 +1403,10 @@ class Place:
         rel = updates.status()["available"]
         if rel is None or paths.DEVELOPER or self._update_busy or self._too_old_for(rel):
             return ""
+        # the page names the button; it works only while the card offers
+        # it — never on a winget or Store copy, nor with the check off
+        if "update.install" not in {b["do"] for b in self._update_buttons()}:
+            return "that is not on the card right now"
         self._update_busy = True
         self._update_line = f"downloading DeskIT {rel.version}…"
 
@@ -1520,7 +1546,7 @@ class Place:
             config_mod.check_hotkeys(config_mod.with_field(current, field, key))
             config_mod.save({"capture.capture_hotkey": key})
         except Exception as e:                               # noqa: BLE001
-            return str(e) if isinstance(e, config_mod.ConfigError) \
+            return plain(str(e)) if isinstance(e, config_mod.ConfigError) \
                 else f"could not save that ({type(e).__name__})"
         self._sections_kept = None
         return config_mod.rebound_sentence(field, key)
@@ -1593,8 +1619,12 @@ class Place:
         url = str((self.status or {}).get("phone") or "")
         if not url:
             return "no phone link — [server] enabled = false, or it is not running"
-        self._copy(url)
-        del url
+        try:
+            self._copy(url, secret=True)
+        except Exception:                                    # noqa: BLE001
+            return "could not reach the clipboard"
+        finally:
+            del url
         return "phone link copied to the clipboard"
 
     # -- the account
@@ -1689,7 +1719,7 @@ class Place:
         if not self._lock_fresh:
             return ""
         try:
-            self._copy(self._lock_fresh)
+            self._copy(self._lock_fresh, secret=True)
         except Exception:                                    # noqa: BLE001
             return "could not reach the clipboard — write it down"
         return "copied — paste it somewhere safe, then press Done"

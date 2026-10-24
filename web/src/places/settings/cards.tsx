@@ -3,9 +3,10 @@
 // each drawn from what desk_settings answers.
 import { useEffect, useRef } from "react";
 import { Menu, RowView, Sw, keyOf } from "./controls";
-import { GLYPHS, type Btn, type KeyRow, type Press, type Section } from "./model";
+import { IC } from "../../kit";
+import type { Btn, KeyRow, Press, Section } from "./model";
 
-const ic = (name: string) => GLYPHS[name] ?? "";
+const ic = (name: string) => IC[name] ?? "";
 
 type Go = (sub: string) => void;
 type Props = { s: Section; press: Press; pressed: string; go: Go };

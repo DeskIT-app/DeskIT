@@ -13,8 +13,8 @@
 // every way out, this page's own included (Esc, Cancel, leaving the
 // place, the window hidden) and the ones it cannot say (a lease the page
 // renews every second).
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { IC, placeCall, useDesk, usePlace } from "../kit";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Caps, IC, placeCall, useDesk, usePlace } from "../kit";
 import "./keys.css";
 
 type Lit = "hold" | "tap" | "held-too" | "chord" | "soft" | "sometimes";
@@ -48,8 +48,8 @@ type Keys = {
   note?: string; chosen?: string | null; refused?: string;
 };
 
-/** The four arrow caps, as the picture draws them (Segoe Fluent). */
-const ARROW: Record<string, string> = { up: "", down: "", left: "", right: "" };
+/** The four arrow caps, drawn as the kit's arrows (the picture's). */
+const ARROWS = new Set(["up", "down", "left", "right"]);
 /** A modifier key, by the event's code: its group, and its side. */
 const MOD: Record<string, [string, string]> = {
   ControlLeft: ["ctrl", "left"], ControlRight: ["ctrl", "right"],
@@ -289,15 +289,15 @@ export default function KeysPlace({ sub }: { sub: string }) {
 
 function Swatch({ state }: { state: string | null }) {
   if (state === "chord") {
-    return <i className="sw pair"><i className="sw k soft" /><i className="sw k tap" /></i>;
+    return <i className="swatch pair"><i className="swatch k soft" /><i className="swatch k tap" /></i>;
   }
-  return <i className={`sw k ${litClass(state)}`} />;
+  return <i className={`swatch k ${litClass(state)}`} />;
 }
 
 function Cap({ cap, selected, waiting, pick }: {
   cap: BoardCap; selected: boolean; waiting: boolean; pick?: () => void;
 }) {
-  const arrow = ARROW[cap.id];
+  const arrow = ARROWS.has(cap.id) ? IC[cap.id] : undefined;
   const kind = /^f\d+$/.test(cap.id) ? " fn" : cap.label.length > 1 && !arrow ? " word" : "";
   const lit = litClass(cap.state);
   const two = cap.on && cap.on.length > 1 ? cap.on.length : 0;
@@ -320,24 +320,7 @@ function Cap({ cap, selected, waiting, pick }: {
 // -------------------------------------------------------------- the list
 
 function RowCaps({ caps }: { caps: RowCap[] }) {
-  return (
-    // every cap and every "+" a child of the row's own flex, so the gap
-    // falls on both sides of a "+" (kit's Caps wraps a "+" with its cap,
-    // and the gap then lands on one side only)
-    <span className="keys">
-      {caps.map((c, i) => {
-        const glyph = c.name ? ARROW[c.name] : undefined;
-        return (
-          <Fragment key={i}>
-            {i ? <span className="plus">+</span> : null}
-            <span className={`cap ${c.k}c${glyph ? " gl" : ""}`}>
-              {glyph ? <i className="ic">{glyph}</i> : c.t}
-            </span>
-          </Fragment>
-        );
-      })}
-    </span>
-  );
+  return <Caps caps={caps.map((c) => ({ t: c.t, cls: `${c.k}c`, arrow: c.name && ARROWS.has(c.name) ? c.name : undefined }))} />;
 }
 
 function Row({ f, on, press }: { f: Field; on: boolean; press?: () => void }) {

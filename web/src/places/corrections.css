@@ -11,17 +11,13 @@
   --hover-wash:rgba(255,255,255,.05);--focus-ring:rgba(165,151,255,.55);--focus-wash:rgba(165,151,255,.06)}
 
 /* ---- the head: the title, one quiet line, and the list's tools ---- */
-.place-corrections .about{position:absolute;left:182px;top:29px;font-size:13.5px;line-height:18px;color:var(--ink-2)}
+.place-corrections .about{position:absolute;left:170px;top:29px;font-size:13.5px;line-height:18px;color:var(--ink-2)}
 .place-corrections .toolrow{position:absolute;left:0;top:68px;width:1112px;height:38px;display:flex;align-items:center}
 .place-corrections .toolrow .spacer{flex:1}
 .place-corrections .find{width:300px;height:38px;border-radius:19px;display:flex;align-items:center;gap:10px;padding:0 16px;
   font-size:13px;color:var(--ink-3);background:var(--glass-track);box-shadow:inset 0 1px 3px var(--shade-1), 0 0 0 1px var(--line-faint)}
 .place-corrections .find .ic{font-size:13px;color:var(--ink-3)}
 .place-corrections .use{display:flex;align-items:center;gap:10px;margin:0 22px 0 24px;font-size:13px;font-weight:var(--w-label);color:var(--ink-2);white-space:nowrap}
-.place-corrections .sw{width:42px;height:24px;border-radius:12px;position:relative;flex:none;background:var(--sw-off);box-shadow:inset 0 0 0 1.5px var(--sw-ring)}
-.place-corrections .sw i{position:absolute;top:5px;left:5px;width:14px;height:14px;border-radius:50%;background:var(--knob-off)}
-.place-corrections .sw.on{background:linear-gradient(180deg, var(--sw-on), var(--sw-on));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 -1px 2px var(--shade-3)}
-.place-corrections .sw.on i{top:3px;left:21px;width:18px;height:18px;background:var(--knob);box-shadow:0 1px 3px var(--shade-1), inset 0 -1px 1px var(--line)}
 .place-corrections .teach{width:146px;justify-content:center}
 .place-corrections .teach .ic{font-size:12px}
 
@@ -46,9 +42,6 @@
   overflow:hidden;text-overflow:ellipsis}
 .place-corrections .acts{display:grid;grid-template-columns:88px 88px;column-gap:10px;align-items:center;justify-self:end}
 .place-corrections .acts .btn{justify-content:center;padding:0}
-/* a run that would go: its words on the red pill, the cross in front of them */
-.place-corrections .chg > .pill.heard:only-child::before{content:"\E711";font-family:'Segoe Fluent Icons','Segoe MDL2 Assets';
-  font-size:8.5px;color:var(--bad)}
 
 /* the learned list: one frosted card, a row per pair */
 .place-corrections .lhead{margin-top:20px}
@@ -138,10 +131,9 @@
 .place-corrections .find:focus-within .ic{color:var(--ink-2)}
 .place-corrections .fld{user-select:text}
 
-/* the switch slides, and says so under the pointer */
+/* the switch (the kit's) says so under the pointer */
 .place-corrections .use{cursor:pointer}
 .place-corrections .use:hover{color:var(--ink)}
-.place-corrections .sw i{transition:left .16s ease, top .16s ease, width .16s ease, height .16s ease, background .16s ease}
 .place-corrections .use.down .sw{filter:brightness(.92)}
 
 /* a row lights under the pointer, and its two doors become buttons */

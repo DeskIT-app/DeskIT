@@ -1,17 +1,17 @@
-// The desk's frame — SHARED, and frozen while the places are built in
-// parallel (web/README.md): the bar with its sliding bubble, the router
-// (#/place or #/place/sub), the toast, and Home's poll, which feeds the
-// bar's state and Home itself. Each place is a file of its own under
-// places/; every word comes from Python — the page only draws.
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+// The desk's frame: the bar with its sliding bubble, the router (#/place
+// or #/place/sub), the toast, the lock's banner over every place but
+// Home, and Home's poll, which feeds the bar's state and Home itself.
+// Each place is a file of its own under places/; every word comes from
+// Python — the page only draws.
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { call, inDesk } from "./bridge";
-import { Away, DeskContext, HomeContext, IC, type Desk } from "./kit";
+import { DeskContext, HomeContext, IC, Seg, type Desk } from "./kit";
 import CorrectionsPlace from "./places/corrections";
 import HomePlace, { Landing } from "./places/home";
 import KeysPlace from "./places/keys";
 import SaidPlace from "./places/said";
 import SettingsPlace from "./places/settings";
-import type { Acted, Bar, Home } from "./types";
+import type { Acted, Banner, Bar, Button, Home } from "./types";
 
 const PLACES = ["Home", "Corrections", "Said", "Keys", "Settings"] as const;
 type Place = (typeof PLACES)[number];
@@ -58,23 +58,35 @@ export default function App() {
   const [route, setRoute] = useState<Route>(hashRoute);
   const [home, setHome] = useState<Home | null>(null);
   const [pressed, setPressed] = useState("");
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState({ text: "", up: false });
   const [error, setError] = useState("");
   const acting = useRef(0);
+  const flying = useRef(false);            // a poll on its way: the next one waits
   const noteTimer = useRef<number>(0);
   const where = useRef(route);
   where.current = route;
   // the last answer as text: a poll that brings nothing new draws nothing
   const lastRead = useRef("");
 
+  // The toast keeps its words while it fades: the text goes with the
+  // next note, never before the pill has gone (an empty pill with only
+  // its icon showed for the length of the fade).
   const say = useCallback((text: string) => {
     window.clearTimeout(noteTimer.current);
-    setNote(text);
-    if (text) noteTimer.current = window.setTimeout(() => setNote(""), NOTE_MS);
+    if (!text) {
+      setNote((n) => ({ ...n, up: false }));
+      return;
+    }
+    setNote({ text, up: true });
+    noteTimer.current = window.setTimeout(() => setNote((n) => ({ ...n, up: false })), NOTE_MS);
   }, []);
+  const toastLive = error || (note.up ? note.text : "");
+  const toastText = useRef("");
+  if (toastLive) toastText.current = toastLive;
 
   const read = useCallback(() => {
-    if (acting.current) return;              // a press is answering with Home itself
+    if (acting.current || flying.current) return;   // a press answers with Home itself
+    flying.current = true;
     call<Home>("home", {}, 4000)
       .then((h) => {
         if (acting.current) return;
@@ -85,7 +97,8 @@ export default function App() {
         setHome(h);
         setError("");
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => setError(e.message))
+      .finally(() => { flying.current = false; });
   }, []);
 
   useEffect(() => {
@@ -160,12 +173,14 @@ export default function App() {
         <div className="grain" />
         <TopBar place={route.place} go={go} bar={home?.bar} locked={!!home?.locked} pressed={pressed} act={act} />
         <div className="page">
-          {!inDesk() ? <Away place={route.place} text="This page only works inside the desk's window." plain />
+          {!inDesk() ? <div className="outside glass">This page only works inside the desk's window.</div>
             : home?.locked ? <Landing />
             : <PlaceView place={route.place} sub={route.sub} />}
+          {home?.banner && !home.locked && route.place !== "Home"
+            ? <LockBanner banner={home.banner} pressed={pressed} act={act} go={go} /> : null}
         </div>
-        <div className={`toast glass${note || error ? " up" : ""}`}>
-          <i className="ic">{IC.info}</i>{note || error}
+        <div className={`toast glass${toastLive ? " up" : ""}`}>
+          <i className="ic">{IC.info}</i>{toastText.current}
         </div>
       </HomeContext.Provider>
     </DeskContext.Provider>
@@ -187,48 +202,18 @@ function Mark({ dev }: { dev: string }) {
   );
 }
 
+const BAR_ITEMS = PLACES.map((p) => ({ key: p, name: p }));
+
 function TopBar({ place, go, bar, locked, pressed, act }: {
   place: Place; go: (place: string) => void; bar?: Bar; locked: boolean; pressed: string;
   act: (b: { act: string; arg?: unknown }) => void;
 }) {
-  const track = useRef<HTMLDivElement>(null);
-  const bubble = useRef<HTMLSpanElement>(null);
-  const [ready, setReady] = useState(false);
-
-  useLayoutEffect(() => {
-    const on = track.current?.querySelector<HTMLElement>(".item.on");
-    if (on && bubble.current) {
-      bubble.current.style.left = `${on.offsetLeft}px`;
-      bubble.current.style.width = `${on.offsetWidth}px`;
-    }
-  }, [place, locked]);
-
-  // the first placement does not slide in from nowhere: the transition
-  // is switched on only once the bubble is where it belongs
-  useEffect(() => {
-    document.fonts.ready.then(() => {
-      const on = track.current?.querySelector<HTMLElement>(".item.on");
-      if (on && bubble.current) {
-        bubble.current.style.left = `${on.offsetLeft}px`;
-        bubble.current.style.width = `${on.offsetWidth}px`;
-      }
-      requestAnimationFrame(() => setReady(true));
-    });
-  }, []);
-
   const run = bar?.run ?? "Start";
   const runIcon = run === "Pause" ? IC.pause : IC.play;
   return (
     <div className="bar">
       <Mark dev={bar?.dev ?? ""} />
-      {locked ? null : (
-        <div className={`seg places${ready ? " sliding" : ""}`} ref={track}>
-          <span className="bubble" ref={bubble} />
-          {PLACES.map((p) => (
-            <div key={p} className={`item${p === place ? " on" : ""}`} onClick={() => go(p)}>{p}</div>
-          ))}
-        </div>
-      )}
+      {locked ? null : <Seg className="places" items={BAR_ITEMS} on={place} pick={go} />}
       <div className="spacer" />
       <div className={`chip${bar && bar.lamp !== "listen" ? (bar.lamp === "rec" ? " rec" : " idle") : ""}`}>
         <span className={`lamp ${bar?.lamp ?? "idle"}`} />
@@ -246,6 +231,32 @@ function TopBar({ place, go, bar, locked, pressed, act }: {
       <div className={`btn run${pressed === "run:" ? " down" : ""}`} onClick={() => act({ act: "run" })}>
         <i className="ic">{runIcon}</i>{run}
       </div>
+    </div>
+  );
+}
+
+// --------------------------------------------------------- the lock's line
+
+/** dashboard._lock_banner: while the account's lock needs him, one line
+ *  over every place but Home (which carries the same as a row) — another
+ *  PC asking, with Approve / Not now; this PC waiting, with its code; the
+ *  rest with the way to Home. Gone the moment nothing waits. */
+function LockBanner({ banner, pressed, act, go }: {
+  banner: Banner; pressed: string; act: (b: { act: string; arg?: unknown }) => void;
+  go: (place: string) => void;
+}) {
+  const press = (b: Button) => (b.go ? go(b.go) : act(b));
+  return (
+    <div className="lockline glass">
+      <div className="mk warn"><i className="ic">{IC.key}</i></div>
+      <div className="lt">{banner.text}</div>
+      {banner.buttons.map((b) => (
+        <div key={`${b.label}${b.act}`} onClick={() => press(b)}
+             className={`btn${b.tone === "primary" ? " primary" : ""}`
+                        + `${pressed === `${b.act}:${String(b.arg ?? "")}` ? " down" : ""}`}>
+          {b.label}
+        </div>
+      ))}
     </div>
   );
 }

@@ -9,44 +9,11 @@
 // desk's (deskweb.py carries them); the look is design/2026-09-22/rev/home.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { call } from "../bridge";
-import { Caps, IC, Segs, useDesk, useHome } from "../kit";
-import type { Acted, Button, DayLine, Door, Home, PileRow } from "../types";
+import { Caps, IC, Segs, Switch, useDesk, useHome } from "../kit";
+import type { Acted, Button, DayLine, Door, PileRow as Row, Preview, ReportView } from "../types";
 import "./home.css";
 
-// ------------------------------------------------- what Home adds to types.ts
-// (types.ts is shared and frozen while the places are built; these move
-// there at the merge)
-
-/** A button that is a way in rather than a press: "settings/privacy". */
-type HomeButton = Button & { go?: string };
-type Row = Omit<PileRow, "buttons"> & {
-  buttons: HomeButton[];
-  /** the recovery key, shown once (lock:fresh) */
-  code?: string;
-  /** a field in the row: "recovery" on the waiting row */
-  field?: string;
-};
-type Piece = { what: string; size: string };
-type Preview = { pieces: Piece[]; row: string; thumb: string };
-type ReportView = {
-  stage: "write" | "consent" | "sending" | "done";
-  attach: string;
-  on: string;
-  off: string;
-  limit: number;
-  done: { tone: "ok" | "bad" | "q"; text: string } | null;
-  preview: Preview | null;
-  consent?: { title: string; lines: { k: string; v: string }[] };
-};
-type LandingView = { title: string; sentence: string; stored: string; line: string; tone: string };
-type HomeMore = Omit<Home, "pile"> & {
-  pile: Row[];
-  report: ReportView | null;
-  report_on: boolean;
-  landing: LandingView | null;
-};
-
-type Press = (b: HomeButton, rowId?: string) => void;
+type Press = (b: Button, rowId?: string) => void;
 
 const HEBREW = /[֐-׿]/;
 // a row the press answers leaves at once; the answer redraws the pile
@@ -55,9 +22,7 @@ const LEAVES = /^(notify\.dismiss|review\.|consent\.|keys\.later|hardware\.(seen
 export default function HomePlace({ sub }: { sub: string }) {
   void sub;                                  // Home has no parts
   const { act, go } = useDesk();
-  const read = useHome();
-  const home = read.home as HomeMore | null;
-  const { pressed } = read;
+  const { home, pressed } = useHome();
   const [leaving, setLeaving] = useState<Set<string>>(new Set());
 
   // One press: the row it belongs to leaves at once, the button shows it
@@ -201,7 +166,7 @@ function Slip({ row, lead, leaving, pressed, act }: {
   );
 }
 
-function SlipButton({ b, row, pressed, act }: { b: HomeButton; row: Row; pressed: string; act: Press }) {
+function SlipButton({ b, row, pressed, act }: { b: Button; row: Row; pressed: string; act: Press }) {
   const down = pressed === `${b.act}:${String(b.arg ?? "")}` ? " down" : "";
   if (b.tone === "close") {
     return <div className={`x${down}`} title="Dismiss" onClick={() => act(b, row.id)}><i className="ic">{IC.close}</i></div>;
@@ -258,7 +223,13 @@ function ReportSheet({ view, holdKey }: { view: ReportView; holdKey: string }) {
   const { act } = useDesk();
   const { pressed } = useHome();
   const [text, setText] = useState("");
-  const [attach, setAttach] = useState(false);
+  // ON when the sheet opens, as the approved picture has it (the owner,
+  // 2026-10-24): the report filed on this PC carries the last dictation and
+  // the picture; nothing of it leaves without the report_upload card, which
+  // asks with every piece and its size in front of him. With nothing to
+  // attach there is no switch, and nothing is sent as attached.
+  const [attachOn, setAttach] = useState(true);
+  const attach = attachOn && !!view.attach;
   const [details, setDetails] = useState(false);
   const [closing, setClosing] = useState(false);
   const field = useRef<HTMLTextAreaElement>(null);
@@ -401,8 +372,8 @@ function ReportSheet({ view, holdKey }: { view: ReportView; holdKey: string }) {
           {holdKey !== "off" ? <>Type it, or hold<Caps caps={[holdKey]} />and say it.</> : "Type it."}
         </div>
         {view.attach ? (
-          <div className="att" onClick={() => setAttach((v) => !v)}>
-            <span className={`sw${attach ? " on" : ""}`}><i /></span>
+          <div className="att" onClick={() => setAttach(!attach)}>
+            <Switch on={attach} />
             <div>
               <div className="att-t">{view.attach}</div>
               <div className="att-n">{attach ? view.on : view.off}</div>
@@ -445,8 +416,7 @@ function Pieces({ preview }: { preview: Preview }) {
 export function Landing() {
   const { act } = useDesk();
   const read = useHome();
-  const home = read.home as HomeMore | null;
-  const land = home?.landing;
+  const land = read.home?.landing;
   const pressed = read.pressed === "landing.signin:";
   return (
     <div className="place-home">

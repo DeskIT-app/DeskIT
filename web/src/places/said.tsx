@@ -10,16 +10,8 @@
 // and the last answer — so a revisit draws at once, and the read that
 // follows changes only what moved.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Caps, IC, placeCall, useDesk, usePlace } from "../kit";
+import { Caps, Change, IC, Seg, placeCall, useDesk, usePlace } from "../kit";
 import "./said.css";
-
-// The glyphs the kit does not have yet (history.KINDS' icons, ui.ICON's
-// code points) — they move to kit.tsx's IC at the merge.
-const GLYPH: Record<string, string> = {
-  mic: "", translate: "", punctuate: "", search: "",
-  learned: "", error: "", discarded: "",
-  phone: "", laptop: "", dic: "",
-};
 
 type Tag = { t: string; g?: "pip" | "phone" | "laptop" };
 type Pair = { heard: string; meant: string; rtl: boolean };
@@ -155,45 +147,11 @@ export default function SaidPlace({ sub }: { sub: string }) {
 // ---------------------------------------------------------------- the chips
 
 /** history.FILTERS as the B+ track, its one bubble travelling to the
- *  filter that is on (the bar's own figure, app.tsx's TopBar). */
+ *  filter that is on (the kit's Seg, the bar's own figure). */
 function Chips({ filters, on, pick }: {
   filters: { name: string; key: string }[]; on: string; pick: (key: string) => void;
 }) {
-  const track = useRef<HTMLDivElement>(null);
-  const bubble = useRef<HTMLSpanElement>(null);
-  const [sliding, setSliding] = useState(false);
-
-  const place = useCallback(() => {
-    const lit = track.current?.querySelector<HTMLElement>(".item.on");
-    if (lit && bubble.current) {
-      bubble.current.style.left = `${lit.offsetLeft}px`;
-      bubble.current.style.width = `${lit.offsetWidth}px`;
-    }
-  }, []);
-
-  useLayoutEffect(place, [on, filters, place]);
-  // the first placement does not slide in from nowhere
-  useEffect(() => {
-    let live = true;
-    document.fonts.ready.then(() => {
-      if (!live) return;
-      place();
-      requestAnimationFrame(() => live && setSliding(true));
-    });
-    return () => { live = false; };
-  }, [place]);
-
-  return (
-    <div className="chips">
-      <div className={`seg${sliding ? " sliding" : ""}`} ref={track}>
-        <span className="bubble" ref={bubble} />
-        {filters.map((f) => (
-          <div key={f.key || "all"} className={`item${f.key === on ? " on" : ""}`}
-               onClick={() => pick(f.key)}>{f.name}</div>
-        ))}
-      </div>
-    </div>
-  );
+  return <div className="chips"><Seg items={filters} on={on} pick={pick} /></div>;
 }
 
 // ----------------------------------------------------------------- the list
@@ -301,7 +259,7 @@ function List({ box, said, copied, copy, more, moreDown }: {
           {said?.more ? (
             <div className="more">
               <div className={`btn${moreDown ? " down" : ""}`} onClick={more}>
-                <i className="ic">{IC.down}</i>{said.more.words}
+                <i className="ic">{IC.chevron}</i>{said.more.words}
               </div>
               <span className="left num">{said.more.left}</span>
             </div>
@@ -346,13 +304,13 @@ function RowView({ row, copied, copy }: { row: Row; copied: boolean; copy: (row:
         <b className="num">{row.when}</b>
         {row.secs ? <span className="num">{row.secs}</span> : null}
       </div>
-      <div className={`kd ${row.kind}`}><i className="ic">{GLYPH[row.glyph] ?? IC.mic}</i></div>
+      <div className={`kd ${row.kind}`}><i className="ic">{IC[row.glyph] ?? IC.mic}</i></div>
       <div className={`tags${two ? " two" : ""}`}>
         <div className="marks" ref={marks}>
           {row.tags.map((t, i) => (
             <span key={`${t.t}${i}`} className="tag">
               {t.g === "pip" ? <span className="pip" />
-                : t.g ? <i className="ic">{GLYPH[t.g]}</i> : null}
+                : t.g ? <i className="ic">{IC[t.g]}</i> : null}
               <span className="tx">{t.t}</span>
             </span>
           ))}
@@ -370,7 +328,7 @@ function RowView({ row, copied, copy }: { row: Row; copied: boolean; copy: (row:
       </div>
       {row.pairs.length ? (
         <div className="pairs" dir={row.pairs.some((p) => p.rtl) ? "rtl" : "ltr"}>
-          {row.pairs.map((p, i) => <PairView key={i} p={p} />)}
+          {row.pairs.map((p, i) => <Change key={i} heard={p.heard} meant={p.meant} rtl={p.rtl} />)}
         </div>
       ) : (
         <div className={`sayw${cut ? " cut" : ""}`}>
@@ -382,33 +340,20 @@ function RowView({ row, copied, copy }: { row: Row; copied: boolean; copy: (row:
   );
 }
 
-/** One correction: the heard word on its red-edged pill, an arrow the way
- *  the words read, the meant word on the iris pill with its tick — the
- *  kit's Segs figure, with room for a long pair to be cut at its end. */
-function PairView({ p }: { p: Pair }) {
-  return (
-    <span className="chg" dir={p.rtl ? "rtl" : "ltr"}>
-      <span className="pill heard"><span className="w" dir="auto">{p.heard}</span></span>
-      <i className="ic arrow">{p.rtl ? IC.left : IC.right}</i>
-      <span className="pill prop"><i className="ic">{IC.tick}</i><span className="w" dir="auto">{p.meant}</span></span>
-    </span>
-  );
-}
-
 // ------------------------------------------------------------ the vocabulary
 
 function VocabPanel({ v }: { v: Vocab }) {
   return (
     <div className="voc">
       <div className="eyebrow">{v.eyebrow}</div>
-      <i className="ic dic">{GLYPH.dic}</i>
+      <i className="ic dic">{IC.dic}</i>
       <div className="top"><span className="n num">{v.count}</span><span className="w">{v.w}</span></div>
       <div className="w2">{v.w2}</div>
       <div className="teach"><Caps caps={v.teach} />{v.teach_words}</div>
       <div className="fade-rule rule" />
       <div className="eyebrow">{v.lately}</div>
       {v.pairs.length ? (
-        <div className="lately">{v.pairs.map((p, i) => <PairView key={i} p={p} />)}</div>
+        <div className="lately">{v.pairs.map((p, i) => <Change key={i} heard={p.heard} meant={p.meant} rtl={p.rtl} />)}</div>
       ) : (
         <div className="nothing">{v.nothing}</div>
       )}

@@ -11,17 +11,16 @@ switches a screen in 3.5-16 ms and slides its bar's bubble in 0.26 s of
 CSS. So the desk moves onto that foundation, place by place, in the
 order decided on 2026-09-22: Home, Corrections, Said, Keys, Settings.
 
-WHAT IS HERE. Home only (`BUILT`). The other four are on the bar and say
-so, with one button that opens the Tk desk at that place (`dashboard.py
---tk --place X`): the web desk takes a mutex of its own, so the two can
-stand side by side while the move is under way. `[desk] web` in
-defaults.toml opens this instead of the Tk desk, in the checkout only
-(dashboard.main); the release keeps Tk until all five are here — never a
-half-moved window in a release (the owner, 2026-09-22). Each of the four
-has a module of its own (`PLACES_MOD`: desk_corrections.py, desk_said.py,
-desk_keys.py, desk_settings.py) and a page of its own (web/src/places/),
-reached through `Api.place` — so five sessions can build the five places
-at once without editing one file (web/README.md says who owns what).
+WHAT IS HERE. All five places (2026-10-24): Home is the Model below;
+each of the other four has a module of its own (`PLACES_MOD`:
+desk_corrections.py, desk_said.py, desk_keys.py, desk_settings.py) and a
+page of its own (web/src/places/), reached through `Api.place` — five
+sessions built them at once without editing one file, and one pass made
+them one desk (web/README.md). `[desk] web` opens this instead of the Tk
+desk, in the checkout only (dashboard.main), until the launch
+(`LAUNCHED`); the Tk desk stays the fallback wherever this window cannot
+open, and `dashboard.py --tk` opens it on purpose (a mutex of its own, so
+the two can stand side by side).
 
 THE MODEL IS PYTHON, THE PICTURE IS THE PAGE. `Model.home()` answers one
 question — everything Home shows, as plain data — read from the same
@@ -44,6 +43,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import re
 import sys
 import threading
@@ -68,18 +68,17 @@ import version  # noqa: E402
 
 log = logging.getLogger("app")
 
-#: The bar's places, in the Tk desk's order (dashboard.NAV).
+#: The bar's places, in the Tk desk's order (dashboard.NAV) — every one
+#: drawn here.
 PLACES = ("Home", "Corrections", "Said", "Keys", "Settings")
-#: The places this desk draws itself. The rest open the Tk desk.
-BUILT = ("Home",)
 #: The most Home holds (dashboard.PILE_CAP).
 PILE_CAP = 3
 #: The page is drawn for this client area (the Tk desk's W, H).
 CLIENT_W, CLIENT_H = 1160, 720
 
-#: A mutex of its own and not the Tk desk's: "open it in the old desk"
-#: starts dashboard.py --tk beside this window, and with one name that
-#: launch would only poke this window to the front and exit.
+#: A mutex of its own and not the Tk desk's: `dashboard.py --tk` opens the
+#: Tk desk beside this window, and with one name that launch would only
+#: poke this window to the front and exit.
 WEBDESK_MUTEX = paths.kernel_name(r"Local\DeskIT.webdesk")
 WEBDESK_SHOW = paths.kernel_name(r"Local\DeskIT.webdesk.show")
 #: The Tk desk's taskbar identity: the two desks are one app's window.
@@ -324,8 +323,17 @@ def copy_text(text: str, secret: bool = False) -> bool:
     try:
         import win32clipboard
         import win32con
+
+        import injector
     except Exception:                     # noqa: BLE001
         return False
+    # the desk process's own clipboard queue (AGENTS: injector._board_lock)
+    # — Said's copy and this one are two threads of the same window
+    with injector.board_held():
+        return _copy_into(win32clipboard, win32con, text, secret)
+
+
+def _copy_into(win32clipboard, win32con, text: str, secret: bool) -> bool:
     for _ in range(10):
         try:
             win32clipboard.OpenClipboard()
@@ -388,6 +396,8 @@ class Model:
         #: consents he said Not now to, and the last key-less press he
         #: waved away — this window's memory, as in the Tk desk
         self._consent_later: set = set()
+        #: the last `review_absorb` sent (a test joins it)
+        self.absorb: threading.Thread | None = None
         self._needs_key_later = 0.0
         #: a store's rows, kept until its file (or the minute, which the
         #: "3 min ago" words move with) changes: the proposals were 5.6 ms
@@ -585,6 +595,16 @@ class Model:
                 return piece
         return summary.first_sentence(text)
 
+    @staticmethod
+    def _consents_asking() -> list[str]:
+        """The gates whose words changed since he said yes (privacy.stale)."""
+        try:
+            import privacy
+            privacy.configure(config_mod.load_layered())
+            return list(privacy.stale())
+        except Exception:                 # noqa: BLE001
+            return []
+
     def _consent_rows(self) -> list[dict]:
         try:
             import consent_card as cc
@@ -679,7 +699,7 @@ class Model:
         if rel is None:
             return []
         row = {"id": "update", "kind": "update", "at": self._stamp(), "tone": "q",
-               "glyph": "up", "title": "A newer version", "meta": "", "rtl": False}
+               "glyph": "download", "title": "A newer version", "meta": "", "rtl": False}
         if self._too_old_for(rel):
             row.update(tone="warn",
                        text=f"DeskIT {rel.version} is available, but this copy's settings are "
@@ -929,6 +949,39 @@ class Model:
             "Sign out of every PC ends every session of your account, anyone else's too. "
             "Sign in again here, then put your lock back — syncing starts again under this "
             "PC's key.", buttons)]
+
+    def _banner(self) -> dict | None:
+        """dashboard._lock_banner: one line over every place but Home
+        while the lock needs the person (the owner, 2026-09-21: "something
+        on every screen, up top") — another PC asking, with Approve / Not
+        now; two requests from one name, or a lock changed elsewhere,
+        with the way to Home; this PC waiting, with its code. Home
+        carries the same as a row, so the frame does not draw it there."""
+        lock = self._lock_info()
+        if not lock:
+            return None
+        pending = lock.get("pending") or []
+        home = {"label": "Home", "tone": "quiet", "act": "", "go": "home"}
+        if lock.get("state") == "changed" and not (lock.get("changed") or {}).get("refused"):
+            return {"text": "The lock of your account changed — not on this PC. "
+                            "Answer on Home.", "buttons": [home]}
+        if pending and pending[0].get("twins"):
+            name = pending[0].get("name") or "another PC"
+            return {"text": f"Two requests say they are {name} — neither can be approved. "
+                            f"See Home.", "buttons": [home]}
+        if pending:
+            ask = pending[0]
+            ident = str(ask.get("id") or "")
+            return {"text": f"{ask.get('name') or 'Another PC'} asks to join your account — "
+                            f"its screen must show {ask.get('code') or '?'}",
+                    "buttons": [{"label": "Approve", "tone": "primary", "act": "lock.approve",
+                                 "arg": ident},
+                                {"label": "Not now", "tone": "quiet", "act": "lock.decline",
+                                 "arg": ident}]}
+        if lock.get("state") == "waiting":
+            return {"text": f"Waiting for your other PC to approve this one — Home there "
+                            f"must show {lock.get('code') or '…'}", "buttons": []}
+        return None
 
     def _stamp(self) -> float:
         """The one "now" of this read of the pile. Rows that are about
@@ -1650,6 +1703,7 @@ class Model:
             "landing": self._landing() if locked else None,
             "report": self._report_view(),
             "report_on": bool(getattr(pcfg, "enabled", True)),
+            "banner": None if locked else self._banner(),
             "bar": self._bar(),
             "head": head, "sub": sub,
             "pile": items[:PILE_CAP],
@@ -1660,7 +1714,7 @@ class Model:
             "doors": self._doors(items),
             "rest": self._rest(),
             "strip": self._strip(),
-            "places": list(PLACES), "built": list(BUILT),
+            "places": list(PLACES),
         }
 
     # -- doing
@@ -1766,7 +1820,13 @@ class Model:
                 return f"could not save that ({type(e).__name__})"
             if item is None:
                 return "that one was already decided"
-            self._send("review_absorb", timeout_ms=1500)
+            # off this thread, as Corrections and the Tk desk's _ask: the
+            # row is already gone from the answer, and a busy app must not
+            # hold the window's lock (the 800 ms poll waits on it)
+            self.absorb = threading.Thread(
+                target=lambda: self._send("review_absorb", timeout_ms=1500),
+                daemon=True, name="home-absorb")
+            self.absorb.start()
             return "accepted — the app will learn it" if verdict == "accepted" else "rejected"
         if do == "run":
             return self._run()
@@ -1802,13 +1862,17 @@ class Model:
                 return "could not record that"
             return "turned on"
         if do == "consent.later":
-            self._consent_later.add(str(arg))
+            # only a gate that is asking: the page cannot grow this set
+            if isinstance(arg, str) and arg in self._consents_asking():
+                self._consent_later.add(arg)
             return ""
         if do == "keys.later":
             try:
-                self._needs_key_later = float(arg)
+                later = float(arg)
             except (TypeError, ValueError):
-                pass
+                return ""
+            if math.isfinite(later):
+                self._needs_key_later = later
             return ""
         if do.startswith("hardware.") and do not in self._offered(self._hardware_rows):
             # the page names the button; it works only while its row is
@@ -1857,9 +1921,6 @@ class Model:
             if took is None or not launch.open_path(took[0].parent):
                 return "could not open the folder"
             return ""
-        if do == "old":
-            return "the old desk is opening…" if open_old_desk(str(arg or "Home")) \
-                else "could not open the old desk"
         return f"{do!r} is not a desk action"
 
     def _run(self) -> str:
@@ -1878,15 +1939,6 @@ class Model:
             return self._said(self._ask("load"), "loading the model — about 25 seconds")
         reply = self._ask("toggle")
         return self._said(reply, "paused" if (reply or {}).get("paused") else "listening again")
-
-
-def open_old_desk(place: str = "Home") -> bool:
-    """The Tk desk, beside this one, at a place this desk does not draw
-    yet. Its own mutex: if it is already open it comes to the front."""
-    args = [str(APP_DIR / "dashboard.py"), "--tk"]
-    if place in PLACES and place != "Home":
-        args += ["--place", place]
-    return launch.spawn(args)
 
 
 # --------------------------------------------------------------- the Api
@@ -1970,8 +2022,8 @@ def ready() -> bool:
 
 
 #: THE LAUNCH — the one line the session that ships the web desk flips,
-#: and only once every place is in BUILT (the owner, 2026-09-22: one
-#: launch, never a half-moved window in a release). Every copy carries
+#: now that every place is here (the owner, 2026-09-22: one launch,
+#: never a half-moved window in a release). Every copy carries
 #: this window already — pywebview and its four in requirements.lock,
 #: web\dist built into app\web\dist by release.yml — so this line decides
 #: only whether it opens.
@@ -2218,7 +2270,7 @@ def _shot(path: str, place: str):
             note["capture"] = desk.capture(path)
         except Exception as e:            # noqa: BLE001
             note["error"] = f"{type(e).__name__}: {e}"
-        note.update(errors=desk.errors, dropped=desk.dropped, blocked=desk.blocked)
+        note.update(errors=desk.errors, dropped=list(desk.dropped), blocked=list(desk.blocked))
         print(json.dumps(note, ensure_ascii=False, default=str)[:2000])
     return on_ready
 

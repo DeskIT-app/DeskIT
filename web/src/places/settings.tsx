@@ -9,10 +9,10 @@
 // press is placeCall("settings", "act", {do, arg}) and is answered with
 // the place again, drawn the moment it lands.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { placeCall, useDesk, usePlace } from "../kit";
+import { IC, Seg, placeCall, useDesk, usePlace } from "../kit";
 import { Card } from "./settings/cards";
 import { RowView } from "./settings/controls";
-import { GLYPHS, type Acted, type Answer, type Found, type Press, type Section } from "./settings/model";
+import type { Acted, Answer, Found, Press, Section } from "./settings/model";
 import { NetworkScreen } from "./settings/network";
 import "./settings.css";
 
@@ -94,7 +94,7 @@ export default function SettingsPlace({ sub }: { sub: string }) {
     <div className="place-settings">
       <div className="head">
         <div className="title">Settings</div>
-        <div className="saved"><i className="ic">{GLYPHS.tick}</i>{answer?.saved ?? ""}</div>
+        <div className="saved"><i className="ic">{IC.tick}</i>{answer?.saved ?? ""}</div>
         {searching ? (
           <Search close={() => setSearching(false)} />
         ) : (
@@ -104,7 +104,7 @@ export default function SettingsPlace({ sub }: { sub: string }) {
           <div className="find" role="button" aria-label="Search the settings" tabIndex={0}
                onClick={() => setSearching(true)}
                onKeyDown={(e) => { if (e.key === "Enter") setSearching(true); }}>
-            <i className="ic">{GLYPHS.search}</i>
+            <i className="ic">{IC.search}</i>
           </div>
         )}
       </div>
@@ -122,41 +122,18 @@ export default function SettingsPlace({ sub }: { sub: string }) {
 function Sec({ s, press, pressed, go }: { s: Section; press: Press; pressed: string; go: (sub: string) => void }) {
   return (
     <div className={`sec k-${s.kind}`} data-id={s.id}>
-      <div className="name"><i className="ic">{GLYPHS[s.glyph] ?? GLYPHS.settings}</i>{s.title}</div>
+      <div className="name"><i className="ic">{IC[s.glyph] ?? IC.settings}</i>{s.title}</div>
       <Card s={s} press={press} pressed={pressed} go={go} />
     </div>
   );
 }
 
 /** The eight tabs on a track of their own, with ONE bubble that slides to
- *  the lit tab — the bar's way (app.tsx), never a jump. */
+ *  the lit tab — the bar's way (the kit's Seg), never a jump. */
 function Tabs({ tabs, on, pick }: { tabs: { name: string; slug: string }[]; on: string; pick: (s: string) => void }) {
-  const track = useRef<HTMLDivElement>(null);
-  const bubble = useRef<HTMLSpanElement>(null);
-  const [sliding, setSliding] = useState(false);
-  useLayoutEffect(() => {
-    const lit = track.current?.querySelector<HTMLElement>(".item.on");
-    if (lit && bubble.current) {
-      bubble.current.style.left = `${lit.offsetLeft}px`;
-      bubble.current.style.width = `${lit.offsetWidth}px`;
-    }
-  }, [on, tabs.length]);
-  useEffect(() => {
-    if (!tabs.length || sliding) return;
-    document.fonts.ready.then(() => requestAnimationFrame(() => setSliding(true)));
-  }, [tabs.length, sliding]);
   return (
     <div className="tabs">
-      <div className={`seg${sliding ? " sliding" : ""}`} ref={track} role="tablist">
-        <span className="bubble" ref={bubble} />
-        {tabs.map((t) => (
-          <div key={t.slug} role="tab" aria-selected={t.slug === on} tabIndex={0}
-               className={`item${t.slug === on ? " on" : ""}`} onClick={() => pick(t.slug)}
-               onKeyDown={(e) => { if (e.key === "Enter") pick(t.slug); }}>
-            {t.name}
-          </div>
-        ))}
-      </div>
+      <Seg tabs items={tabs.map((t) => ({ key: t.slug, name: t.name }))} on={on} pick={pick} />
     </div>
   );
 }
@@ -185,13 +162,13 @@ function Search({ close }: { close: () => void }) {
   };
   return (
     <div className="searchbox">
-      <i className="ic">{GLYPHS.search}</i>
+      <i className="ic">{IC.search}</i>
       <input ref={field} value={text} spellCheck={false} autoComplete="off" dir="auto"
              aria-label="Search the settings" maxLength={120}
              placeholder="a word from a setting's name, its sentence or the file's own comment — Esc brings the tabs back"
              onChange={(e) => setText(e.target.value)}
              onKeyDown={(e) => { if (e.key === "Escape") done(); }} />
-      <span className="x" role="button" aria-label="Back to the tabs" onClick={done}><i className="ic">{GLYPHS.close}</i></span>
+      <span className="x" role="button" aria-label="Back to the tabs" onClick={done}><i className="ic">{IC.close}</i></span>
     </div>
   );
 }
@@ -212,7 +189,7 @@ function Found({ press, pressed, go }: { press: Press; pressed: string; go: (sub
     <>
       {data.found.map((s) => (
         <div key={s.id} className="sec k-rows">
-          <div className="name"><i className="ic">{GLYPHS.search}</i>{s.title}</div>
+          <div className="name"><i className="ic">{IC.search}</i>{s.title}</div>
           {s.kind === "rows" ? (
             <div className="card glass">
               {s.rows.map((r) => <RowView key={r.path} row={r} press={press} pressed={pressed} />)}

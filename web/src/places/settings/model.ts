@@ -98,18 +98,3 @@ export type Acted = { ok: boolean; note: string; place: Answer };
 
 /** One press of a button of this place: what it asks, and what to say. */
 export type Press = (b: { do: string; arg?: unknown }, key?: string) => Promise<void>;
-
-// Segoe Fluent glyphs the Settings place draws beyond the kit's (kit.tsx
-// IC): kept here until the merge, as web/README.md asks.
-export const GLYPHS: Record<string, string> = {
-  monitor: "", eye: "", laptop: "", folder: "",
-  sync: "", moon: "", chip: "", video: "",
-  keyboard: "", warning: "", message: "", volume: "",
-  phone: "", contact: "", lock: "", key: "",
-  globe: "", file: "", info: "", help: "",
-  mic: "", book: "", camera: "", bell: "",
-  history: "", search: "", settings: "", down: "",
-  tick: "", close: "", play: "", link: "",
-  copy: "", power: "", stop: "", open: "",
-  left: "", sun: "",
-};
