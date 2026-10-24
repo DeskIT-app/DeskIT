@@ -1296,7 +1296,9 @@ class DeskConfig:
     """[desk]: which window the desk opens as. `web` is the React desk
     in WebView2 (deskweb.py) and is honoured in the checkout only: the
     release keeps the Tk desk until every place of the web one is built
-    (the owner, 2026-09-22 — one launch, never a half-moved window)."""
+    (the owner, 2026-09-22 — one launch, never a half-moved window).
+    The launch is deskweb.LAUNCHED, one line: then the web desk is every
+    copy's and this key is a person's way back to Tk (deskweb.wanted)."""
     web: bool = False
 
 

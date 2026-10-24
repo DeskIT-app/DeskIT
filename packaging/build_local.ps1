@@ -73,13 +73,24 @@ foreach ($f in "LICENSE", "NOTICE", "OFL.txt", "NETWORK.md", "SECURITY.md") {
     if (Test-Path $src) { Copy-Item $src (Join-Path $Stage $f) }
 }
 
+# 6a. the web desk's pages, built from web\ (export-ignored) into app\web\dist
+#     as release.yml does; npm ci only when web\node_modules is missing, so
+#     a look at the installer does not reinstall the checkout's toolchain
+Push-Location web
+if (-not (Test-Path node_modules)) { npm ci --ignore-scripts --no-audit --no-fund; if ($LASTEXITCODE) { Pop-Location; throw "npm ci failed" } }
+npm run build
+if ($LASTEXITCODE) { Pop-Location; throw "npm run build failed" }
+Pop-Location
+New-Item -ItemType Directory -Force (Join-Path $Stage "app\web") | Out-Null
+Copy-Item -Recurse web\dist (Join-Path $Stage "app\web\dist")
+
 # 7. the manifest, and a read-back
 & $Python (Join-Path $Stage "app\manifest.py") write $Stage
 & $Python (Join-Path $Stage "app\manifest.py") verify $Stage
 if ($LASTEXITCODE) { throw "the manifest does not verify" }
 
 # and the tree starts on its own interpreter
-& (Join-Path $py "python.exe") -B -c "import sys, tkinter, numpy, PIL, sounddevice; print('staged python', sys.version.split()[0], 'tk', tkinter.TkVersion, 'numpy', numpy.__version__)"
+& (Join-Path $py "python.exe") -B -c "import sys, tkinter, numpy, PIL, sounddevice, webview, clr; print('staged python', sys.version.split()[0], 'tk', tkinter.TkVersion, 'numpy', numpy.__version__)"
 if ($LASTEXITCODE) { throw "the staged python cannot import the base set" }
 $size = (Get-ChildItem -Recurse $Stage -File | Measure-Object -Property Length -Sum).Sum
 Write-Host ("stage: {0:N0} MB on disk" -f ($size / 1MB))
