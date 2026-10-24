@@ -43691,8 +43691,9 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
 
 
 def test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback():
-    """deskweb.LAUNCHED is the launch, one line, and it is not flipped:
-    False — the web desk is the checkout's, and only when [desk] web asks;
+    """deskweb.LAUNCHED is the launch, one line, flipped on his "works"
+    (2026-10-24): False — the web desk is the checkout's, and only when
+    [desk] web asks;
     True — every copy's, defaults.toml's `false` no longer decides, a
     person's own `[desk] web = false` (state.json over settings.toml)
     still opens Tk, and wherever the window cannot open (ready() no) the
@@ -43701,9 +43702,9 @@ def test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback():
     import deskweb
 
     src = (REPO / "deskweb.py").read_text("utf-8")
-    assert re.findall(r"^LAUNCHED = (\w+)$", src, re.M) == ["False"], \
-        "the launch is ONE line, and it is the launch session's to flip"
-    assert deskweb.LAUNCHED is False
+    assert re.findall(r"^LAUNCHED = (\w+)$", src, re.M) == ["True"], \
+        "the launch is ONE line, and it is launched"
+    assert deskweb.LAUNCHED is True
     folder = Path(tempfile.mkdtemp(prefix="webdesk-launch-", dir=_SCRATCH_HOME))
     state, settings = folder / "state.json", folder / "settings.toml"
     off = config_mod.load(REPO / "defaults.toml")
@@ -51308,7 +51309,9 @@ def _web_desk_fill(folder: Path) -> tuple[list, list]:
 
 
 def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
-    """[desk] web is off by default and honoured only in the checkout, and
+    """Before the launch (LAUNCHED False — the launch itself is
+    test_the_web_desk_launch_is_one_line_and_the_tk_desk_stays_its_fallback):
+    [desk] web is off by default and honoured only in the checkout, and
     only where the window can open (pages built, WebView2 there); the Tk
     desk asks before it takes its own mutex, `--tk` skips the question,
     and the page calls nothing the Api does not offer and presses
@@ -51325,7 +51328,8 @@ def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
     copy.write_text(text.replace("\nweb = false", "\nweb = true"), "utf-8")
     assert config_mod.load(copy).desk.web is True
     on = dataclasses.replace(base, desk=config_mod.DeskConfig(web=True))
-    with _patched(config_mod, "load_layered", lambda *a, **k: on):
+    with _patched(config_mod, "load_layered", lambda *a, **k: on), \
+            _patched(deskweb, "LAUNCHED", False):
         with _patched(paths, "DEVELOPER", False), _patched(deskweb, "ready", lambda: True):
             assert deskweb.wanted() is False
         with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: False):

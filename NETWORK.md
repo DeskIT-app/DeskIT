@@ -40,8 +40,8 @@ settings sync to your account.
 
 ## The desk's web window (WebView2) — outside `net.py`
 
-When the desk opens as a web page (`deskweb.py`; today only in the
-developer's own copy), the page is drawn by Microsoft Edge WebView2, a
+The desk opens as a web page (`deskweb.py`; the older window takes its
+place on a PC without WebView2), and the page is drawn by Microsoft Edge WebView2, a
 component of Windows that DeskIT does not ship and cannot change.
 WebView2 has network code of its own, so `net.py`, the Network screen
 and Offline mode do not reach it. It is kept quiet another way, and
