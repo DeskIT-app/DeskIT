@@ -51815,6 +51815,406 @@ def test_web_desk_said_is_wired():
     _web_desk_place_wired("said")
 
 
+#: one day of everything transcripts.log can say, oldest first, as the app
+#: writes it — the Said place's tests read it through history.py itself
+_SAID_DAY = "2026-10-24"
+_SAID_LINES = (
+    "2026-10-22 23:12:00,100 | OK | PHONE | 4.1s | 0.6s latency | תזכיר לי מחר בבוקר לעבור על ה-Pull Request.",
+    "2026-10-23 23:40:00,100 | LOOKUP-IN | 12 chars | אידמפוטנטי",
+    "2026-10-23 23:40:02,100 | LOOKUP-OUT | 1.3s | gemini | פעולה שאפשר להריץ שוב ושוב.",
+    "2026-10-24 15:02:00,100 | DISCARDED | 400.0s | hit the 400 s cap",
+    "2026-10-24 15:30:00,100 | ERROR | 31.0s | local | TranscriptionError | kept: rec-153000.wav",
+    "2026-10-24 16:29:00,100 | OK | 10.2s | local | 0.5s latency | אני חושב שהשיחה השנייה כבר סיימה",
+    "2026-10-24 16:29:01,100 | POLISHED | 0.4s | groq | אני חושב שהשיחה השנייה כבר סיימה.",
+    "2026-10-24 18:18:00,100 | PUNCTUATE-IN | 70 chars | תסתכל על המטלה",
+    "2026-10-24 18:18:01,100 | PUNCTUATE-OUT | 0.8s | gemini | תסתכל על המטלה.",
+    "2026-10-24 19:44:00,100 | TRANSLATE-IN | 60 chars | תוכל לבדוק אם האתר אמין?",
+    "2026-10-24 19:44:02,100 | TRANSLATE-OUT | 1.1s | gemini | Can you check whether this site is trustworthy?",
+    "2026-10-24 20:15:00,100 | CORRECTED | פתחתי את הדאשבורד ואת הריפו || פתחתי את ה-dashboard ואת ה-repo",
+    "2026-10-24 20:31:00,100 | REVIEW | accepted | הרליסס || ה-releases",
+    "2026-10-24 21:09:30,100 | DRAINED | 5.0s | local | הקלטה שחזרה מהתור.",
+    "2026-10-24 21:14:03,100 | OK | 11.0s | local | 0.4s latency | תשנה את כל הצבעים ל-Dev",
+)
+_SAID_REMOTE = ("2026-10-24 17:52:00,100 | REMOTE | dictation | laptop | local | 15.0s | "
+                "תעדכן את כל ה-release notes.")
+
+
+@contextlib.contextmanager
+def _said_place(lines=_SAID_LINES, remote=_SAID_REMOTE, vocab=None, keep_days=30,
+                teach="ctrl+f9", cap=40):
+    """A desk_said.Place over a transcripts.log, a pulled history.log and a
+    vocab.json of the test's own (history.py reads them as it reads his),
+    "today" pinned to _SAID_DAY, the config's three facts given, and
+    the clipboard and the file opener stood in for. Yields (place,
+    folder, copied, opened)."""
+    import types
+    from datetime import date
+
+    import desk_said
+    import history as history_mod
+    import injector
+    import launch
+
+    folder = Path(tempfile.mkdtemp(prefix="said-", dir=_SCRATCH_HOME))
+    (folder / "sync").mkdir()
+    log = folder / "transcripts.log"
+    if lines is not None:
+        log.write_text("\n".join(lines) + "\n", "utf-8")
+    if remote:
+        (folder / "sync" / "history.log").write_text(remote + "\n", "utf-8")
+    if vocab is not None:
+        (folder / "vocab.json").write_text(json.dumps(vocab, ensure_ascii=False), "utf-8")
+    cfg = types.SimpleNamespace(correct_hotkey=teach,
+                                vocab=types.SimpleNamespace(max_terms=cap),
+                                history=types.SimpleNamespace(keep_days=keep_days))
+    copied: list = []
+    opened: list = []
+    y, m, d = (int(x) for x in _SAID_DAY.split("-"))
+    with _patched(history_mod, "LOG", log), \
+            _patched(paths, "SYNC_DIR", folder / "sync"), \
+            _patched(paths, "VOCAB_FILE", folder / "vocab.json"), \
+            _patched(desk_said, "_today", lambda: date(y, m, d)), \
+            _patched(desk_said.config_mod, "load_layered", lambda *a, **k: cfg), \
+            _patched(injector, "set_text", lambda text: copied.append(text)), \
+            _patched(launch, "open_path", lambda path: opened.append(path) or True):
+        yield desk_said.Place(lambda *a, **k: None), folder, copied, opened
+
+
+def test_web_desk_said_draws_every_kind_of_row_in_the_tk_desks_words():
+    """Said, as data: the rows newest first and grouped by day (Today,
+    Yesterday, the date — the day's dictations counted and timed), each
+    with its time and seconds, its kind's glyph and class, its tags in the
+    Tk row's words (the kind's label, Polished, From the phone, from
+    <device>, Second reading, Recovered, the error), the engine and the
+    latency under them, its text and its reading order — a learned row
+    its pairs instead, a discarded row its reason, dimmed. Every word the
+    Tk desk draws on this place is the Tk desk's own (dashboard.py's
+    source holds each one), and the two numbers are its numbers."""
+    import re
+
+    import desk_said
+
+    with _said_place() as (place, _folder, _copied, _opened):
+        said = place.read()
+    assert said["ok"] is True and said["head"] == "Said"
+    assert said["sub"] == "the last 100 of what you said"
+    assert [f["name"] for f in said["filters"]] == ["All", "Dictation", "Translated",
+                                                   "Punctuated", "Looked up", "Learned", "Failed"]
+    assert said["filter"] == "" and said["q"] == "" and said["shown"] == 25
+    assert said["more"] is None and said["empty"] == ""
+    days = said["days"]
+    assert [d["day"] for d in days] == ["Today", "Yesterday", "22 Oct"], days
+    # Today: four dictations (the drained one and the other PC's among them)
+    assert days[0]["facts"] == ["4 today", "41 seconds of speech"], days[0]["facts"]
+    assert days[1]["facts"] == [] and days[2]["facts"] == ["1 that day", "4 seconds of speech"]
+    rows = [r for d in days for r in d["rows"]]
+    assert [r["when"] for r in rows] == ["21:14", "21:09", "20:31", "20:15", "19:44", "18:18",
+                                        "17:52", "16:29", "15:30", "15:02", "23:40", "23:12"]
+    assert len({r["id"] for r in rows}) == len(rows)
+    by = {r["when"]: r for r in rows}
+
+    newest = by["21:14"]
+    assert newest["kind"] == "dict" and newest["glyph"] == "mic" and newest["tags"] == []
+    assert newest["secs"] == "11.0 s" and newest["meta"] == ["local", "0.4 s latency"]
+    assert newest["text"] == "תשנה את כל הצבעים ל-Dev" and newest["rtl"] is True
+    assert newest["copy"] is True and newest["pairs"] == []
+    assert by["21:09"]["tags"] == [{"t": "Recovered"}] and by["21:09"]["meta"] == ["local"]
+    assert by["16:29"]["tags"] == [{"t": "Polished", "g": "pip"}]
+    assert by["16:29"]["text"] == "אני חושב שהשיחה השנייה כבר סיימה."
+    assert by["17:52"]["tags"] == [{"t": "From laptop", "g": "laptop"}]
+    assert by["23:12"]["tags"] == [{"t": "From the phone", "g": "phone"}]
+    assert by["23:12"]["meta"] == ["0.6 s latency"]
+    translated = by["19:44"]
+    assert translated["kind"] == "trans" and translated["tags"] == [{"t": "Translated"}]
+    assert translated["rtl"] is False and translated["meta"] == ["gemini"]
+    assert by["18:18"]["kind"] == "punct" and by["23:40"]["kind"] == "look"
+    review = by["20:31"]
+    assert review["kind"] == "learn" and review["glyph"] == "learned"
+    assert review["tags"] == [{"t": "Learned"}, {"t": "Second reading"}]
+    assert review["pairs"] == [{"heard": "הרליסס", "meant": "ה-releases", "rtl": True}]
+    assert review["text"] == ""
+    corrected = by["20:15"]
+    assert corrected["tags"] == [{"t": "Learned"}, {"t": "2 words"}]
+    assert [(p["heard"], p["meant"]) for p in corrected["pairs"]] == [
+        ("הדאשבורד", "ה-dashboard"), ("הריפו", "ה-repo")]
+    failed = by["15:30"]
+    assert failed["kind"] == "fail" and failed["label"] == "Failed"
+    assert failed["tags"] == [{"t": "Failed"}, {"t": "TranscriptionError"}]
+    assert failed["text"] == "rec-153000.wav" and failed["meta"] == ["local"]
+    gone = by["15:02"]
+    assert gone["kind"] == "gone" and gone["dim"] is True and gone["copy"] is False
+    assert gone["tags"] == [{"t": "Discarded"}] and gone["text"] == "hit the 400 s cap"
+    assert gone["secs"] == "400.0 s"
+
+    # the words are the Tk desk's own, and so are its numbers
+    src = (REPO / "dashboard.py").read_text("utf-8")
+    joined = re.sub(r'"\s*\n\s*f?"', "", src)
+    for words in (desk_said.PLACEHOLDER, desk_said.OLDER, desk_said.OPEN,
+                  desk_said.EMPTY_OFF, desk_said.EMPTY_NONE, desk_said.EMPTY_MISS,
+                  desk_said.NOTHING_LEARNED, "words it has learned to hear your way",
+                  "teach it a word",
+                  "of what you said", "older still here", "there is no text on that one",
+                  "copied {len(text)} characters",
+                  "The best of them go into the decoder's prompt before it listens"):
+        assert words in joined, words
+    for spaced, word in (("L A T E L Y", said["vocab"]["lately"]),
+                         ("V O C A B U L A R Y", said["vocab"]["eyebrow"])):
+        assert spaced in src and spaced.replace(" ", "").title() == word
+    assert re.search(r"^SAID_PAGE = 25\b", src, re.M) and desk_said.SAID_PAGE == 25
+    assert re.search(r"^HISTORY_ROWS = 100\b", src, re.M) and desk_said.HISTORY_ROWS == 100
+
+
+def test_web_desk_said_searches_filters_and_shows_more_as_the_tk_desk_does():
+    """history.filtered decides what a filter and a search leave, as on the
+    Tk desk; SAID_PAGE rows at a time, Show more saying how many it adds
+    and how many older are still here; the oldest day of a full window
+    says no count (the hundred may have cut it); and an empty list says
+    which of the Tk desk's three things it is."""
+    many = [f"2026-10-24 {8 + i // 60:02d}:{i % 60:02d}:00,000 | OK | 2.0s | local | "
+            f"0.3s latency | שורה {i}" for i in range(120)]
+    with _said_place(lines=many, remote=None) as (place, _folder, _c, _o):
+        first = place.read()
+        assert sum(len(d["rows"]) for d in first["days"]) == 25
+        assert first["more"] == {"words": "Show 25 more", "left": "75 older still here"}
+        assert first["days"][0]["facts"] == [], "a day the hundred cut is not counted"
+        assert first["days"][0]["rows"][0]["text"] == "שורה 119"
+        more = place.read(shown=50)
+        assert sum(len(d["rows"]) for d in more["days"]) == 50
+        assert more["more"]["left"] == "50 older still here"
+        last = place.read(shown=90)
+        assert last["more"] == {"words": "Show 10 more", "left": "10 older still here"}
+        every = place.read(shown=100)
+        assert every["more"] is None and sum(len(d["rows"]) for d in every["days"]) == 100
+        assert place.read(shown=10_000)["shown"] == 100
+        for odd in (True, "50", 3.5, None, -4, 0):
+            assert place.read(shown=odd)["shown"] == 25, odd
+        hit = place.read(q="  שורה 11")
+        assert [r["text"] for d in hit["days"] for r in d["rows"]] == \
+            ["שורה 119", "שורה 118", "שורה 117", "שורה 116", "שורה 115", "שורה 114",
+             "שורה 113", "שורה 112", "שורה 111", "שורה 110"]
+        assert hit["q"] == "  שורה 11"
+        missed = place.read(q="zzqx")
+        assert missed["days"] == [] and missed["empty"] == "Nothing matches that."
+        assert missed["more"] is None
+        assert place.read(filter="learned")["empty"] == "Nothing matches that."
+    with _said_place() as (place, _folder, _c, _o):
+        learned = place.read(filter="learned")
+        assert {r["kind"] for d in learned["days"] for r in d["rows"]} == {"learn"}
+        assert learned["filter"] == "learned"
+        failed = place.read(filter="error")
+        assert [r["when"] for d in failed["days"] for r in d["rows"]] == ["15:30"]
+        assert [r["when"] for d in place.read(filter="dictation", q="laptop")["days"]
+                for r in d["rows"]] == ["17:52"], "from <device> is searched, as on the Tk desk"
+        assert [r["when"] for d in place.read(q="GEMINI")["days"] for r in d["rows"]] == \
+            ["19:44", "18:18", "23:40"], "the haystack is history.Event's"
+    with _said_place(lines=None, remote=None) as (place, _folder, _c, _o):
+        assert place.read()["empty"] == "Nothing here yet."
+    with _said_place(lines=None, remote=None, keep_days=0) as (place, _folder, _c, _o):
+        assert place.read()["empty"] == "History is off (Settings > Privacy > Kept on this PC)."
+    # a translation keeps the time it STARTED: begun before midnight and
+    # answered after a dictation made past it, its day comes round twice
+    # — two groups, each with a key of its own (the page keys them)
+    midnight = ("2026-10-23 22:00:00,000 | OK | 2.0s | local | 0.3s latency | לפני",
+                "2026-10-23 23:59:59,000 | TRANSLATE-IN | 9 chars | שלום",
+                "2026-10-24 00:00:01,000 | OK | 2.0s | local | 0.3s latency | אחרי",
+                "2026-10-24 00:00:03,000 | TRANSLATE-OUT | 4.0s | gemini | Hello")
+    with _said_place(lines=midnight, remote=None) as (place, _folder, _c, _o):
+        days = place.read()["days"]
+        assert [d["day"] for d in days] == ["Yesterday", "Today", "Yesterday"], days
+        assert len({d["key"] for d in days}) == 3
+
+
+def test_web_desk_said_reads_the_log_again_only_when_it_moves():
+    """history.load is asked once per change of history.stamp() — the Tk
+    desk's poller rule, a stat per poll and a parse per change — and a
+    log that cannot be read keeps the rows already read."""
+    import history as history_mod
+
+    with _said_place() as (place, folder, _c, _o):
+        loads = []
+        real = history_mod.load
+
+        def counted(limit=100):
+            loads.append(limit)
+            return real(limit)
+
+        with _patched(history_mod, "load", counted):
+            for _ in range(5):
+                place.read()
+            place.read(q="x")
+            place.read(filter="learned", shown=50)
+            assert loads == [100], loads
+            log = folder / "transcripts.log"
+            log.write_text(log.read_text("utf-8")
+                           + "2026-10-24 22:00:00,000 | OK | 1.0s | local | 0.2s latency | חדש\n",
+                           "utf-8")
+            assert place.read()["days"][0]["rows"][0]["text"] == "חדש"
+            assert loads == [100, 100], loads
+
+        def broken(limit=100):
+            raise OSError("rotating")
+
+        with _patched(history_mod, "load", broken), \
+                _patched(history_mod, "stamp", lambda: ("moved",)):
+            again = place.read()
+            assert again["ok"] is True and again["days"][0]["rows"][0]["text"] == "חדש"
+
+
+def test_web_desk_said_keeps_the_vocabulary_beside_the_list():
+    """The panel beside the list (dashboard._vocab_panel): how many words
+    vocab.json holds ("—" with no file), the teach key as caps from the
+    config ("Off" when it has none), Lately — the log's learned pairs
+    newest first, vocab.json's last ones when the log has none, the
+    sentence when neither has any — and the decoder's cap in the foot."""
+    vocab = {"corrections": [{"heard": h, "meant": m, "hits": 3} for h, m in
+                             (("אינסטולר", "installer"), ("ריפו", "repo"), ("kicard", "keyboard"))]}
+    with _said_place(vocab=vocab) as (place, _folder, _c, _o):
+        v = place.read()["vocab"]
+        assert v["count"] == "3" and v["teach"] == ["Ctrl", "F9"]
+        assert [(p["heard"], p["meant"]) for p in v["pairs"]] == [
+            ("הרליסס", "ה-releases"), ("הדאשבורד", "ה-dashboard"), ("הריפו", "ה-repo")]
+        assert v["foot"] == ("The best of them go into the decoder's prompt before it "
+                             "listens — 40 at a time.")
+        assert v["w"] == "words" and v["w2"] == "it has learned to hear your way"
+    dictations = [line for line in _SAID_LINES if "CORRECTED" not in line and "REVIEW" not in line]
+    with _said_place(lines=dictations, remote=None, vocab=vocab, teach="", cap=None) \
+            as (place, _folder, _c, _o):
+        v = place.read()["vocab"]
+        assert [(p["heard"], p["meant"], p["rtl"]) for p in v["pairs"]] == [
+            ("kicard", "keyboard", False), ("ריפו", "repo", True), ("אינסטולר", "installer", True)]
+        assert v["teach"] == ["off"]
+        assert v["foot"] == "The best of them go into the decoder's prompt before it listens."
+    with _said_place(lines=dictations, remote=None) as (place, _folder, _c, _o):
+        v = place.read()["vocab"]
+        assert v["count"] == "—" and v["pairs"] == []
+        assert v["nothing"].startswith("Nothing learned yet — say Yes to a second reading")
+
+
+def test_web_desk_said_copies_the_logs_words_and_trusts_nothing_the_page_names():
+    """A copy names a row by the id this module gave it and puts THAT row's
+    text on the clipboard through injector — the page's words never reach
+    it; a busy clipboard is tried once more; a refusal is words. The page's
+    filter, search, shown and extra arguments are checked before anything
+    reads them; "open" opens transcripts.log and only it, whatever arg
+    comes with it; an unknown action is refused in words. And his words
+    stay out of app.log whatever fails."""
+    import logging
+
+    import history as history_mod
+    import injector
+
+    lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    catch = _Catch()
+    app_log = logging.getLogger("app")
+    level = app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catch)
+    try:
+        with _said_place() as (place, _folder, copied, opened):
+            rows = [r for d in place.read()["days"] for r in d["rows"]]
+            by = {r["when"]: r for r in rows}
+            done = place.act("copy", by["21:14"]["id"])
+            assert done == {"ok": True, "note": "copied 23 characters", "copied": True}, done
+            assert copied == ["תשנה את כל הצבעים ל-Dev"]
+            learned = place.act("copy", by["20:15"]["id"])
+            assert learned["copied"] is True and copied[-1] == "פתחתי את ה-dashboard ואת ה-repo"
+            nothing = place.act("copy", by["15:02"]["id"])
+            assert nothing == {"ok": True, "note": "there is no text on that one",
+                               "copied": False}
+            for odd in (None, 7, True, "", "x" * 49, ["id"], {"id": 1},
+                        "20261024211403100000-dictation-9", "../transcripts.log"):
+                refused = place.act("copy", odd)
+                assert refused["ok"] is True and refused["copied"] is False, odd
+                assert "not in the list" in refused["note"], (odd, refused)
+            assert len(copied) == 2
+
+            tries = []
+
+            def busy_once(text):
+                tries.append(text)
+                if len(tries) == 1:
+                    raise injector.ClipboardBusyError("clipboard is locked")
+                copied.append(text)
+
+            with _patched(injector, "set_text", busy_once):
+                assert place.act("copy", by["21:14"]["id"])["copied"] is True
+            assert len(tries) == 2
+
+            def busy(text):
+                raise injector.ClipboardBusyError(f"could not write {text}")
+
+            with _patched(injector, "set_text", busy):
+                held = place.act("copy", by["21:14"]["id"])
+            assert held == {"ok": True, "note": "the clipboard is busy — try again in a moment",
+                            "copied": False}
+
+            assert place.act("open") == {"ok": True, "note": ""}
+            assert place.act("open", "C:\\Windows\\System32\\calc.exe")["ok"] is True
+            assert opened == [history_mod.LOG, history_mod.LOG], opened
+            with _patched(__import__("launch"), "open_path", lambda path: False):
+                assert place.act("open")["note"] == "could not open transcripts.log"
+            for do in ("delete", "Copy", "", "open.capture", "x" * 300):
+                refused = place.act(do, 1)
+                assert refused["ok"] is False and "is not a Said action" in refused["error"], do
+                assert len(refused["error"]) < 80
+
+            assert place.read(filter="nope")["error"] == "that is not one of the filters"
+            assert place.read(filter=["learned"])["ok"] is False
+            assert place.read(filter=None)["filter"] == ""
+            assert place.read(where="C:\\")["error"] == "Said reads filter, q and shown"
+            assert place.read(q=["x"])["q"] == "" and len(place.read(q="א" * 5000)["q"]) == 200
+
+            def broken(limit=100):
+                raise ValueError("תשנה את כל הצבעים")
+
+            with _patched(history_mod, "load", broken), \
+                    _patched(history_mod, "stamp", lambda: ("moved",)):
+                place.read()
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+    said = [t for line in _SAID_LINES + (_SAID_REMOTE,)
+            for t in line.split(" | ")[-1:] if t.strip()]
+    for line in lines:
+        for words in said + ["תשנה את כל הצבעים"]:
+            assert words not in line, line
+    assert any("ClipboardBusyError" in line for line in lines), lines
+    assert any("could not be read (ValueError)" in line for line in lines), lines
+
+
+def test_web_desk_said_page_draws_only_what_it_is_answered():
+    """The page (places/said.tsx): its data is usePlace("said", {filter,
+    q, shown}) polled at the Tk desk's 800 ms; its only buttons are a copy
+    that names a row by its id and "open"; it writes no clipboard of its
+    own and no HTML (no navigator.clipboard, no innerHTML); a Hebrew run
+    reads right to left on the left edge (dir=rtl, text-align:left); the
+    sky is placed for Said through its own body class; and the place
+    keeps its filter, search, rows and scroll between visits."""
+    import re
+
+    page = (REPO / "web" / "src" / "places" / "said.tsx").read_text("utf-8")
+    css = (REPO / "web" / "src" / "places" / "said.css").read_text("utf-8")
+    assert 'usePlace<Said>("said", { filter, q, shown }, POLL_MS)' in page
+    assert "const POLL_MS = 800;" in page and "const PAGE = 25;" in page
+    acts = re.findall(r'placeCall<\w+>\("said", "act", \{ do: "(\w+)"([^}]*)\}', page)
+    assert sorted(a[0] for a in acts) == ["copy", "open"], acts
+    assert dict(acts)["copy"].strip() == ", arg: row.id"
+    for sink in ("dangerouslySetInnerHTML", "innerHTML", "navigator.clipboard",
+                 "execCommand", "document.write", "eval(", "localStorage"):
+        assert sink not in page, sink
+    assert 'dir={row.rtl ? "rtl" : "ltr"}' in page
+    assert re.search(r"\.place-said \.say\{[^}]*text-align:left", css)
+    assert 'document.body.classList.add("said-here")' in page
+    assert 'document.body.classList.remove("said-here")' in page
+    assert re.search(r"^body\.said-here \.sky \.indigo\{", css, re.M)
+    assert "const kept = { filter:" in page and "kept.scroll" in page
+
+
 # ======================================== web desk place: Keys
 # Owners: the Keys session — desk_keys.py, web/src/places/keys.tsx,
 # web/src/places/keys.css. The Keys session adds its tests BELOW this
