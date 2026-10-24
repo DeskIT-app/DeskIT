@@ -44,7 +44,7 @@ export function Card({ s, press, pressed, go }: Props) {
         <div className="card glass">
           <div className="r">
             <div className="t">
-              <div className="status">{s.fresh ? <span className="okdot" /> : <span className="okdot idle" />}{s.line}</div>
+              <div className="status"><span className={`okdot${s.fresh ? "" : s.newer ? " new" : " idle"}`} />{s.line}</div>
             </div>
             <Buttons list={s.buttons} press={press} pressed={pressed} go={go} className="ctl" />
           </div>
@@ -88,7 +88,7 @@ export function Card({ s, press, pressed, go }: Props) {
                 ? <Buttons list={s.buttons} press={press} pressed={pressed} go={go} className="under" /> : null}
             </div>
             <div className="ctl">
-              <Sw on={s.on} busy={pressed === k} label={s.label} onFlip={(v) => void press({ do: s.do, arg: v }, k)} />
+              <Sw on={s.on} busy={pressed === k} label={s.label} onFlip={(v) => press({ do: s.do, arg: v }, k)} />
             </div>
           </div>
         </div>
@@ -193,7 +193,7 @@ export function Card({ s, press, pressed, go }: Props) {
  *  the real one is; where it is; the corner menu; Move the dot. */
 function DotCard({ s, press, pressed }: { s: Extract<Section, { kind: "dot" }>; press: Press; pressed: string }) {
   const row = s.row;
-  const spot = s.moved ? " free" : s.corner_at === "top-right" ? " tr" : " br";
+  const spot = s.moved ? " at-free" : s.corner_at === "top-right" ? " at-tr" : " at-br";
   return (
     <div className="card glass dot">
       <div className="scr"><span className={`d${spot}${s.live ? "" : " off"}`} /></div>
@@ -205,7 +205,7 @@ function DotCard({ s, press, pressed }: { s: Extract<Section, { kind: "dot" }>; 
             <>
               <span className="lbl">Corner</span>
               <Menu value={String(row.value ?? "")} options={row.options ?? []} width={172} label={row.label}
-                    onPick={(v) => void press({ do: "set", arg: { path: row.path, value: v } }, keyOf("set", row.path))} />
+                    onPick={(v) => press({ do: "set", arg: { path: row.path, value: v } }, keyOf("set", row.path))} />
             </>
           ) : null}
           <div className={`btn primary mv${s.move ? "" : " dis"}${pressed === keyOf("dot.move", "") ? " down" : ""}`}

@@ -13,23 +13,37 @@ export function keyOf(doName: string, arg?: unknown): string {
   return `${doName}:${typeof arg === "string" ? arg : JSON.stringify(arg ?? "")}`;
 }
 
+/** What a control shows while its press is answered: the value it was
+ *  pressed to, and — once the answer has landed — the value the place
+ *  says, whichever that is (a refused write puts it back). */
+function useHeld<T>(value: T): [T, (v: T, settles: Promise<void> | void) => void] {
+  const [held, setHeld] = useState(value);
+  const truth = useRef(value);
+  truth.current = value;
+  useEffect(() => setHeld(value), [value]);
+  const press = (v: T, settles: Promise<void> | void) => {
+    setHeld(v);
+    if (settles) void settles.finally(() => setHeld(truth.current));
+  };
+  return [held, press];
+}
+
 /** A switch: no accent — a soft lavender-grey track when on, a hollow
  *  ring when off (the approved picture). It moves the moment it is
  *  pressed; the answer puts it where the file says. */
 export function Sw({ on, onFlip, busy, label }: {
-  on: boolean; onFlip: (v: boolean) => void; busy?: boolean; label: string;
+  on: boolean; onFlip: (v: boolean) => Promise<void> | void; busy?: boolean; label: string;
 }) {
-  const [shown, setShown] = useState(on);
-  useEffect(() => setShown(on), [on]);
+  const [shown, hold] = useHeld(on);
+  const flip = () => hold(!shown, onFlip(!shown));
   return (
     <span className={`sw${shown ? " on" : ""}${busy ? " busy" : ""}`} role="switch"
           aria-checked={shown} aria-label={label} tabIndex={0}
-          onClick={() => { setShown(!shown); onFlip(!shown); }}
+          onClick={flip}
           onKeyDown={(e) => {
             if (e.key === " " || e.key === "Enter") {
               e.preventDefault();
-              setShown(!shown);
-              onFlip(!shown);
+              flip();
             }
           }}>
       <i />
@@ -40,7 +54,7 @@ export function Sw({ on, onFlip, busy, label }: {
 /** A menu: the pill with the value on it, and its choices on a pane of
  *  frost that opens under it — the window's own, never the system's. */
 export function Menu({ value, options, onPick, width, glyph, label }: {
-  value: string; options: { v: string; label: string }[]; onPick: (v: string) => void;
+  value: string; options: { v: string; label: string }[]; onPick: (v: string) => Promise<void> | void;
   width: number; glyph?: string; label: string;
 }) {
   const pill = useRef<HTMLDivElement>(null);
@@ -49,8 +63,8 @@ export function Menu({ value, options, onPick, width, glyph, label }: {
   const [lit, setLit] = useState(-1);
   const litRef = useRef(-1);
   litRef.current = lit;
-  const [held, setHeld] = useState(value);
-  useEffect(() => setHeld(value), [value]);
+  const [held, hold] = useHeld(value);
+  const pick = (v: string) => { if (v !== value) hold(v, onPick(v)); };
   const current = options.find((o) => o.v === held);
 
   useLayoutEffect(() => {
@@ -74,7 +88,7 @@ export function Menu({ value, options, onPick, width, glyph, label }: {
         else if (k === "ArrowUp") setLit((i) => Math.max(0, i - 1));
         else if (k === "Enter") {
           const o = options[litRef.current];
-          if (o) { setHeld(o.v); if (o.v !== value) onPick(o.v); }
+          if (o) pick(o.v);
           setOpen(false);
         } else return;
         e.preventDefault();
@@ -118,7 +132,7 @@ export function Menu({ value, options, onPick, width, glyph, label }: {
               <div key={o.v} role="option" aria-selected={o.v === held}
                    className={`opt${o.v === held ? " on" : ""}${i === lit ? " lit" : ""}`}
                    onMouseEnter={() => setLit(i)}
-                   onClick={() => { setHeld(o.v); setOpen(false); if (o.v !== value) onPick(o.v); }}>
+                   onClick={() => { setOpen(false); pick(o.v); }}>
                 <span className="v">{o.label}</span>
                 {o.v === held ? <i className="ic">{ic("tick")}</i> : null}
               </div>
@@ -164,11 +178,11 @@ export function RowView({ row, press, pressed }: { row: Row; press: Press; press
   const busy = pressed === keyOf("set", row.path);
   let control = null;
   if (row.ctl === "switch") {
-    control = <Sw on={row.value === true} busy={busy} label={row.label} onFlip={(v) => void set(v)} />;
+    control = <Sw on={row.value === true} busy={busy} label={row.label} onFlip={set} />;
   } else if (row.ctl === "menu") {
     const mic = row.path === "audio.device";
     control = <Menu value={String(row.value ?? "")} options={row.options ?? []} width={mic ? 304 : 236}
-                    glyph={mic ? "mic" : undefined} label={row.label} onPick={(v) => void set(v)} />;
+                    glyph={mic ? "mic" : undefined} label={row.label} onPick={set} />;
   } else if (row.ctl === "field") {
     control = <TextField value={String(row.value ?? "")} num={row.num} width={row.num ? 120 : 236}
                          label={row.label} onDone={(v) => void set(v)} />;

@@ -548,8 +548,12 @@ class Place:
         except Exception:                                    # noqa: BLE001
             line = "Not looked yet"
         setting = self._find(sections, "privacy.update_check")
+        try:
+            newer = updates.status()["available"] is not None
+        except Exception:                                    # noqa: BLE001
+            newer = False
         return {"kind": "updates", "line": line,
-                "fresh": line.startswith("You have the newest"),
+                "fresh": line.startswith("You have the newest"), "newer": newer,
                 "buttons": [] if self._update_busy else self._update_buttons(),
                 "row": (self._row(settings_mod.words_for(setting), setting)
                         if setting is not None else None)}
@@ -834,7 +838,9 @@ class Place:
         The link carries the phone's token, so the page is shown it with
         the token as dots; Copy link copies it from here."""
         url = str((self.status or {}).get("phone") or "")
-        shown = url.split("#", 1)[0] + "#t=" + "•" * 12 if "#" in url else url
+        # whatever follows the address (#t=, or a query) is the token's
+        cut = min((i for i in (url.find("#"), url.find("?")) if i >= 0), default=-1)
+        shown = url[:cut] + url[cut:cut + 3] + "•" * 12 if cut >= 0 else url
         return {"kind": "phone", "url": shown,
                 "none": "DeskIT is not running, or the switch below is off",
                 "said": ("Put the DeskIT keyboard on your phone, give it this "

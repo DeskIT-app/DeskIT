@@ -44,7 +44,7 @@ export type Section = Head & (
   | { kind: "rows"; rows: Row[] }
   | { kind: "dot"; where: string; said: string; live: boolean; corner_at: string; moved: boolean;
       row: Row | null; move: boolean; home: boolean }
-  | { kind: "updates"; line: string; fresh: boolean; buttons: Btn[]; row: Row | null }
+  | { kind: "updates"; line: string; fresh: boolean; newer: boolean; buttons: Btn[]; row: Row | null }
   | { kind: "awake"; state: string; meta: string; hint: string; tone: string; toggle: string;
       live: boolean; rows: { label: string; text: string; tone: Tone }[]; probed: boolean;
       probing: boolean; checked: string; intro: string }

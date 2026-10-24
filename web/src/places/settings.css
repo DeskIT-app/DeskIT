@@ -113,8 +113,8 @@ body.settings-on .sky .r2{left:300px;top:520px;width:820px;height:44px;transform
   background:radial-gradient(circle at 40% 38%, var(--lamp-core), var(--lamp-listen) 62%);
   box-shadow:0 0 0 3px var(--listen-ring), 0 0 0 7px var(--listen-ring2), 0 0 16px 3px var(--listen-glow);
   transition:top .3s ease, bottom .3s ease, right .3s ease}
-.place-settings .scr .d.tr{bottom:auto;top:10px}
-.place-settings .scr .d.free{right:44px;bottom:30px}
+.place-settings .scr .d.at-tr{bottom:auto;top:10px}
+.place-settings .scr .d.at-free{right:44px;bottom:30px}
 .place-settings .scr .d.off{background:var(--lamp-idle);box-shadow:none}
 .place-settings .dot .t{flex:1;min-width:0}
 .place-settings .dot .hl, .place-settings .version .hl{font-family:var(--font-display);font-size:17px;font-weight:var(--w-strong);letter-spacing:-.01em;line-height:22px}
@@ -126,6 +126,7 @@ body.settings-on .sky .r2{left:300px;top:520px;width:820px;height:44px;transform
 .place-settings .status{display:flex;align-items:center;gap:10px;font-size:14px}
 .place-settings .okdot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-wash), 0 0 8px var(--ok-glow);flex:none}
 .place-settings .okdot.idle{background:var(--lamp-idle);box-shadow:none}
+.place-settings .okdot.new{background:var(--iris);box-shadow:0 0 0 3px var(--iris-wash), 0 0 8px var(--iris-glow)}
 
 /* awake */
 .place-settings .hero{display:flex;align-items:flex-start;gap:18px;padding:22px 24px 20px 26px;position:relative}

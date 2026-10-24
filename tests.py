@@ -50959,6 +50959,391 @@ def test_web_desk_settings_is_wired():
     _web_desk_place_wired("settings")
 
 
+@contextlib.contextmanager
+def _web_settings(status=_WEB_STATUS, running=True):
+    """desk_settings.Place over the web desk's scratch stores, with its
+    own per-user files (config.save lands there), every door out of the
+    process recorded instead of opened, and a pipe that answers status
+    with `status` (None: nothing running) and every other verb with ok.
+    Yields (place, asked, doors, files)."""
+    import autostart
+    import cues as cues_mod
+    import desk_settings
+    import launch
+    import notify_hook
+
+    d, s, t = _layer_files()
+    asked: list = []
+    doors: list = []
+
+    def send(command, timeout_ms=2000, **args):
+        asked.append((command, dict(args)))
+        if command == "status":
+            return dict(status) if (status is not None and running) else None
+        if command == "option":
+            return {"ok": True, "message": f"{args.get('name')} written by the app"}
+        return {"ok": True, "message": f"{command} answered"}
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(injector, "set_text", lambda text: doors.append(("clipboard", text))), \
+            _patched(cues_mod, "play", lambda kind: doors.append(("cue", kind))), \
+            _patched(singleton, "request_quit", lambda *a, **k: doors.append(("quit",)) or True), \
+            _patched(singleton, "is_running", lambda *a, **k: False), \
+            _patched(launch, "open_path", lambda p: doors.append(("open", str(p))) or True), \
+            _patched(launch, "run_step", lambda *a, **k: doors.append(("step",) + a) or True), \
+            _patched(notify_hook, "install_hook", lambda *a, **k: doors.append(("hook+",))), \
+            _patched(notify_hook, "uninstall_hook", lambda *a, **k: doors.append(("hook-",)) or True), \
+            _patched(autostart, "apply", lambda on: doors.append(("autostart", on))):
+        place = desk_settings.Place(send)
+        assert place._warm.wait(60), "the warm-up never finished"
+        yield place, asked, doors, (s, t)
+
+
+def test_web_desk_settings_draws_the_tk_desks_layout_and_words():
+    """The web place's tables ARE the Tk desk's: LAYOUT, BLOCK_PATHS, the
+    folders, every cue's words, the providers, the Snipping-Tool keys and
+    the move's patience — spelled twice so this window never imports
+    dashboard.py, and held equal here. Every tab is in one answer, each
+    under its slug, in LAYOUT's order; every line settings.TABS draws is
+    drawn exactly once (dot.corner and the weekly switch on their cards);
+    a gate is drawn as a consent row, never a switch; and the phone link's
+    token never reaches the page."""
+    import dashboard as dash
+    import desk_settings
+    import desk_settings_keys
+    import settings as settings_mod
+
+    assert desk_settings.LAYOUT == dash.Dashboard.LAYOUT
+    assert desk_settings.BLOCK_PATHS == dash.Dashboard.BLOCK_PATHS
+    assert desk_settings.FOLDER_SETTINGS == dash.FOLDER_SETTINGS
+    assert desk_settings.SOUND_WORDS == dash.SOUND_WORDS
+    assert desk_settings_keys.PROVIDERS == dash.Dashboard.KEY_PROVIDERS
+    assert (desk_settings.SNIP_KEY, desk_settings.PLAIN_SNIP_KEY) == \
+        (dash.Dashboard.SNIP_KEY, dash.Dashboard.PLAIN_SNIP_KEY)
+    assert desk_settings.DOT_WAIT_S == dash.DOT_WAIT_S
+    assert desk_settings.PAPERS == tuple(label for label, _c in
+                                         dash.Dashboard._about_rows(
+                                             dash.Dashboard.__new__(dash.Dashboard)))
+    assert list(desk_settings.SLUGS) == settings_mod.tab_names()
+    assert set(desk_settings.BLOCK_TITLES) >= {e for keys in desk_settings.LAYOUT.values()
+                                               for e in keys if not e.isupper()}
+    with _web_settings() as (place, _asked, _doors, _files):
+        answer = place.read()
+    assert answer["ok"] is True and answer["running"] is True and answer["warming"] is False
+    assert [t["slug"] for t in answer["tabs"]] == list(desk_settings.SLUGS.values())
+    text = json.dumps(answer, ensure_ascii=False)
+    assert "secret" not in text, "the phone link's token reached the page"
+    drawn: list = []
+    for name, slug in desk_settings.SLUGS.items():
+        sections = answer["pages"][slug]
+        cards = [s["id"] for s in sections if not s["id"].startswith("group:")]
+        wanted = [e for e in desk_settings.LAYOUT[name] if not e.isupper() and e != "voice"]
+        assert cards == wanted, (name, cards, wanted)
+        for section in sections:
+            rows = list(section["rows"]) if section["kind"] == "rows" else []
+            if isinstance(section.get("row"), dict):
+                rows.append(section["row"])
+            for row in rows:
+                drawn.append(row["path"])
+                assert row["label"] == settings_mod.WORDS[row["path"]].label
+                if row["path"] in config_mod.CONSENT_KEYS:
+                    assert row["ctl"] == "consent" and "consent" in row, row
+                if row["path"] in desk_settings.FOLDER_SETTINGS:
+                    assert row["ctl"] == "folder", row
+    sections = settings_mod.read(paths.DEFAULTS_FILE)
+    expected = [p for p in settings_mod.friendly_paths() if settings_mod.find(sections, p)]
+    assert sorted(drawn) == sorted(expected), set(drawn) ^ set(expected)
+    general = {s["id"]: s for s in answer["pages"]["general"]}
+    assert general["dot"]["row"]["path"] == "dot.corner"
+    assert general["updates"]["row"]["path"] == "privacy.update_check"
+    phone = {s["id"]: s for s in answer["pages"]["phone"]}["phone"]
+    assert phone["url"] == "http://x/?t=" + "•" * 12, phone
+
+
+def test_web_desk_settings_refuses_what_the_page_may_not_ask():
+    """Every argument from the page is untrusted: an action that is not
+    on the list, a path no tab draws, a consent gate as a setting, a
+    folder as a typed string, a menu value the menu does not have, a word
+    to a switch, a Hebrew line, a line too long, an unknown provider,
+    consent, cue, paper, file or link, a Delete nobody was asked about —
+    each is refused in words before anything is written or sent."""
+    with _web_settings() as (place, asked, doors, (s, t)):
+        refused = [
+            ("nothing", None), ("set", "hint.enabled"),
+            ("set", {"path": "tests.whatever", "value": 1}),
+            ("set", {"path": "hint.after_ms", "value": 1}),
+            ("set", {"path": "privacy.cloud_text", "value": True}),
+            ("set", {"path": "capture.folder", "value": "C:\\Windows\\System32"}),
+            ("set", {"path": "polish.when", "value": "rm -rf"}),
+            ("set", {"path": "hint.enabled", "value": "yes"}),
+            ("set", {"path": "history.keep_days", "value": True}),
+            ("set", {"path": "history.keep_days", "value": "4.5"}),
+            ("set", {"path": "translate.target", "value": "עברית"}),
+            ("set", {"path": "camera.device", "value": "x" * 400}),
+            ("set", {"path": "camera.device", "value": "cam\nera"}),
+            ("browse", "../../etc"), ("browse", "translate.target"),
+            ("key.save", {"name": "openai", "value": "sk-x"}), ("key.remove", "groq/../x"),
+            ("consent.withdraw", "everything"), ("consent.on", "offline"),
+            ("consent.sync", "cloud_text"),
+            ("cue.play", "../../boom"), ("paper", "C:\\x.txt"), ("file.open", "C:\\x.txt"),
+            ("url", "https://example.com/phish"), ("pack.install", "evil"),
+            ("account.do", "delete"), ("account.do", "signout_all"), ("account.do", "rm"),
+            ("account.ask", "everything"), ("lock.do", ["recover", "x"]),
+            ("lock.do", "approve"), ("awake.screens", "off"),
+            ("snip", "yes"), ("claude.flip", "on"),
+        ]
+        for do, arg in refused:
+            answer = place.act(do, arg)
+            assert answer["ok"] is False and answer["error"], (do, arg, answer)
+            assert "Traceback" not in answer["error"] and "\\" not in answer["error"], answer
+        assert [c for c, _a in asked if c != "status"] == [], asked
+        assert doors == [] and not s.exists() and not t.exists(), (doors, s.exists())
+        # a lock request the app's status never named is not sent either
+        assert "not waiting" in place.act("lock.do", ["approve", "made-up"])["note"]
+        assert [c for c, _a in asked if c != "status"] == []
+
+
+def test_web_desk_settings_writes_where_the_tk_desk_writes():
+    """A line goes through the running app's `option` verb (the app writes
+    it and takes it live) and, with nothing running, straight into
+    config.save — settings.toml, never a round trip — with the Run value
+    asked for at once for Start with Windows. The Snipping-Tool switch is
+    a `rebind`; the dot, the tour, the account and a test card go down
+    their own verbs; Delete my account only after the card asked; Quit is
+    the named event, not the pipe."""
+    signed_in = dict(_WEB_STATUS, account={"configured": True, "signed_in": True,
+                                           "email": "someone@example.com"})
+    with _web_settings(signed_in) as (place, asked, doors, (s, t)):
+        answer = place.act("set", {"path": "hint.enabled", "value": False})
+        assert answer["ok"] and answer["note"] == "hint.enabled written by the app", answer
+        assert ("option", {"name": "hint.enabled", "value": False}) in asked
+        assert "pages" in answer["place"]
+        assert not s.exists(), "the app writes the line while it runs, not the desk"
+        place.act("set", {"path": "polish.when", "value": "never"})
+        assert ("option", {"name": "polish.when", "value": "never"}) in asked
+        place.act("set", {"path": "history.keep_days", "value": "12"})
+        assert ("option", {"name": "history.keep_days", "value": 12}) in asked
+        place.act("snip", False)
+        assert ("rebind", {"field": "capture_hotkey", "key": "ctrl+f11"}) in asked
+        place.act("dot.move", None)
+        assert ("dot", {"do": "move"}) in asked
+        place.act("tour", None)
+        assert ("tour", {}) in asked
+        place.act("notify.test", None)
+        assert ("notify", {"do": "test"}) in asked
+        place.act("account.do", "google")
+        assert ("account", {"do": "google"}) in asked
+        assert place.act("account.ask", "delete")["ok"]
+        place.act("account.do", "delete")
+        assert ("account", {"do": "delete"}) in asked
+        assert place.act("account.do", "delete")["ok"] is False, "the question is asked once per press"
+        place.act("quit", None)
+        assert ("quit",) in doors and ("quit", {}) not in asked
+        place.act("phone.copy", None)
+        assert ("clipboard", signed_in["phone"]) in doors
+        place.act("cue.play", "ready")
+        assert ("cue", "ready") in doors
+    with _web_settings(running=False) as (place, asked, doors, (s, t)):
+        answer = place.act("set", {"path": "hint.enabled", "value": False})
+        assert "next time it starts" in answer["note"], answer
+        assert "hint.enabled = false" in s.read_text("utf-8")
+        assert [c for c, _a in asked if c != "status"] == []
+        place.act("set", {"path": "setup.autostart", "value": True})
+        assert ("autostart", True) in doors
+        place.act("snip", False)
+        assert 'capture.capture_hotkey = "ctrl+f11"' in s.read_text("utf-8")
+        assert "start dictation first" in place.act("dot.move", None)["note"]
+        assert "start dictation first" in place.act("account.do", "google")["note"]
+        drawn = {r["path"]: r for sec in place.read()["pages"]["general"]
+                 if sec["kind"] == "rows" for r in sec["rows"]}
+        assert drawn["hint.enabled"]["value"] is False, "the page is answered with the file as it is"
+
+
+def test_web_desk_settings_gates_open_and_close_only_through_their_doors():
+    """A gate is never a setting: Withdraw is privacy.withdraw; [Turn on]
+    on a row whose words changed is privacy.grant, and only for a kind
+    privacy.stale() names; a shut sync asks the running app for its card.
+    The rows say what the consent file says, in the Tk desk's words."""
+    import privacy
+
+    withdrawn, granted = [], []
+    with _web_settings() as (place, asked, _doors, _files), \
+            _patched(privacy, "withdraw", lambda kind: withdrawn.append(kind) or True), \
+            _patched(privacy, "grant", lambda kind, *a, **k: granted.append(kind) or {}), \
+            _patched(privacy, "configure", lambda cfg: None):
+        with _patched(privacy, "stale", lambda: []):
+            assert "not waiting" in place.act("consent.on", "cloud_text")["note"]
+        with _patched(privacy, "stale", lambda: ["cloud_text"]):
+            assert "on — from the next press" in place.act("consent.on", "cloud_text")["note"]
+        assert granted == ["cloud_text"]
+        assert "withdrawn" in place.act("consent.withdraw", "cloud_audio")["note"]
+        assert withdrawn == ["cloud_audio"]
+        place.act("consent.sync", "history_sync")
+        assert ("account", {"do": "sync", "kind": "history_sync"}) in asked
+        status = [{"kind": k, "open": k == "cloud_text", "stale": k == "cloud_audio",
+                   "when": "2026-10-01T10:00:00" if k in ("cloud_text", "cloud_audio") else "",
+                   "gate": False} for k in privacy.KINDS]
+        with _patched(privacy, "status", lambda: status):
+            rows = {r["path"]: r["consent"] for sec in place.read()["pages"]["privacy"]
+                    if sec["kind"] == "rows" for r in sec["rows"] if r["ctl"] == "consent"}
+            account = {r["path"]: r["consent"] for sec in place.read()["pages"]["account"]
+                       if sec["kind"] == "rows" for r in sec["rows"] if r["ctl"] == "consent"}
+    assert rows["privacy.cloud_text"]["text"] == "On since 2026-10-01"
+    assert rows["privacy.cloud_text"]["button"]["do"] == "consent.withdraw"
+    assert rows["privacy.cloud_audio"]["text"] == "Its words changed — Home asks again"
+    assert rows["privacy.cloud_audio"]["button"]["do"] == "consent.on"
+    assert rows["privacy.cloud_screenshots"] == {"text": "Off — its card opens on first use",
+                                                 "tone": "faint", "button": None}
+    assert account["privacy.settings_sync"]["button"]["do"] == "consent.sync"
+
+
+def test_web_desk_settings_a_key_goes_once_into_the_store_and_never_back():
+    """YOUR CLOUD KEYS: the pasted value goes straight into
+    secretstore.trial — taken out of the page's argument, never in an
+    answer, never in the log — and is checked by name on a thread; a key
+    the provider takes locks the row (dots, the same for every key), one
+    it refuses gives the saved key back, Remove empties the store."""
+    import logging
+
+    import desk_settings_keys
+    import keyrow
+    import secretstore
+
+    value = "gsk_" + "A1b2C3d4" * 6
+    stored, settled = [], []
+    lines = io.StringIO()
+    handler = logging.StreamHandler(lines)
+    logging.getLogger("app").addHandler(handler)
+    try:
+        with _patched(keyrow, "stored", lambda name: (False, "not found")), \
+                _patched(secretstore, "trial", lambda name, v: stored.append((name, v)) or False), \
+                _patched(secretstore, "trial_passed", lambda name: settled.append(("passed", name))), \
+                _patched(secretstore, "trial_failed", lambda name: settled.append(("failed", name)) or True), \
+                _patched(secretstore, "delete", lambda name: settled.append(("deleted", name)) or True):
+            verdict = {"groq": "ok"}
+
+            def probe(name):
+                if verdict[name] == "bad":
+                    raise keyrow.KeyRefused("HTTP 401")
+                return 3
+
+            with _web_settings() as (place, asked, _doors, _files):
+                place._keys = desk_settings_keys.Keys(nudge=place._nudge_vault, say=place._say,
+                                                      probe=probe)
+                arg = {"name": "groq", "value": value}
+                answer = place.act("key.save", arg)
+                assert stored == [("groq", value)], stored
+                assert "value" not in arg, "the value stayed in the page's argument"
+                assert value not in json.dumps(answer, ensure_ascii=False)
+                assert _until(lambda: place._keys._rows["groq"]["state"] == "locked")
+                row = [r for r in place.read()["pages"]["privacy"] if r["id"] == "keys"][0]["rows"][0]
+                assert row["state"] == "locked" and row["dots"] == keyrow.DOTS
+                assert row["say"].startswith("✓  Key works"), row
+                assert ("passed", "groq") in settled
+                assert ("account", {"do": "nudge", "kind": "vault"}) in asked
+                verdict["groq"] = "bad"
+                place.act("key.change", {"name": "groq"})
+                place.act("key.save", {"name": "groq", "value": value + "x"})
+                assert _until(lambda: place._keys._rows["groq"]["state"] == "locked")
+                assert ("failed", "groq") in settled
+                assert "did not accept that key" in place._keys._rows["groq"]["say"]
+                assert "not look like" in (place.act("key.save", {"name": "gemini", "value": "שלום"})
+                                           and place._keys._rows["gemini"]["say"])
+                place.act("key.remove", {"name": "groq"})
+                assert ("deleted", "groq") in settled
+                assert place._keys._rows["groq"]["state"] == "open"
+                every = json.dumps(place.read(), ensure_ascii=False)
+                assert value not in every and "A1b2C3d4" not in every
+    finally:
+        logging.getLogger("app").removeHandler(handler)
+    assert "A1b2C3d4" not in lines.getvalue(), "the key reached the log"
+
+
+def test_web_desk_settings_network_screen_reads_the_log_and_hides_loopback():
+    """#/settings/network (dashboard._screen_network): newest first, the
+    hosts seen as chips, loopback hidden until asked for, a host nobody
+    has seen read as All, the Offline banner's words, and the sentence
+    that is the proof when the table is empty."""
+    import net
+
+    log = Path(tempfile.mkdtemp(dir=_SCRATCH_HOME)) / "network.log"
+    rows = [net.Row("2026-10-24 09:00:00", "api.groq.com", "polish", 10, 20, "200", "groq", "cloud_text@x"),
+            net.Row("2026-10-24 09:00:01", "127.0.0.1", "notify", 1, 2, "200", "-", "-"),
+            net.Row("2026-10-24 09:00:02", "api.github.com", "update-check", 3, 4, "403", "-", "-")]
+    log.write_text("".join(net.format_row(r) + "\n" for r in rows), "utf-8")
+    with _patched(paths, "NETWORK_LOG", log), _web_settings() as (place, _asked, _doors, _files):
+        plain = place.read(net=1)
+        assert plain["hosts"] == ["All", "api.github.com", "api.groq.com"]
+        assert [r[1] for r in plain["rows"]] == ["api.github.com", "api.groq.com"]
+        assert plain["rows"][0][3] == "3 ↑ 4 ↓" and plain["line"] == "2 of 3 rows"
+        assert plain["toggle"] == "Show loopback (phone)"
+        both = place.read(net=1, loopback=True)
+        assert [r[1] for r in both["rows"]][1] == "127.0.0.1" and both["toggle"] == "Hide loopback"
+        one = place.read(net=1, host="api.groq.com")
+        assert [r[1] for r in one["rows"]] == ["api.groq.com"]
+        assert place.read(net=1, host="<script>")["host"] == "All"
+        assert place.read(net=1, loopback="yes")["loopback"] is False
+        connections = [s for s in place.read()["pages"]["privacy"] if s["id"] == "connections"][0]
+        assert connections["line"].startswith(("0 requests today", "2 requests today")), connections
+    assert plain["empty"] == "During plain dictation this table stays empty — that is the proof."
+
+
+def test_web_desk_settings_search_finds_what_the_tk_search_finds():
+    """The magnifier (dashboard._fill_settings while searching): every
+    drawn line that matches, one card per tab titled with the tab, and the
+    Tk desk's words when nothing does."""
+    import settings as settings_mod
+
+    with _web_settings() as (place, _asked, _doors, _files):
+        found = place.read(q="corner")
+        nothing = place.read(q="zzqqxx")
+    sections = settings_mod.read(paths.DEFAULTS_FILE)
+    want = {name: [row.path for g in settings_mod.groups_for(name) for row in g.rows
+                   if (s := settings_mod.find(sections, row.path)) and settings_mod.matches(s, "corner")]
+            for name in settings_mod.tab_names()}
+    got = {f["title"]: [r["path"] for r in f["rows"]] for f in found["found"]}
+    assert got == {k: v for k, v in want.items() if v}, (got, want)
+    assert "dot.corner" in got["General"]
+    assert nothing["found"] == [] and nothing["none"] == "no setting matches 'zzqqxx'"
+
+
+def test_web_desk_settings_page_presses_only_what_python_does():
+    """The page asks for nothing the module does not do: every `do:` it
+    sends is in desk_settings.ACTS and has its _do_ method, every card
+    kind the module answers is drawn by a case in cards.tsx, every glyph a
+    section names is in the page's own table, the key and recovery fields
+    are password fields that keep no React state, and no part of the page
+    sets innerHTML."""
+    import re
+
+    import desk_settings
+
+    src = REPO / "web" / "src" / "places"
+    page = "\n".join(p.read_text("utf-8") for p in
+                     [src / "settings.tsx", *sorted((src / "settings").glob("*.ts*"))])
+    sent = set(re.findall(r'do: "([\w.]+)"', page))
+    py = (REPO / "desk_settings.py").read_text("utf-8")
+    answered = set(re.findall(r'"do": "([\w.]+)"', py))
+    for name in sent | answered:
+        assert name in desk_settings.ACTS, name
+    for name in desk_settings.ACTS:
+        assert hasattr(desk_settings.Place, "_do_" + name.replace(".", "_")), name
+    cards = (src / "settings" / "cards.tsx").read_text("utf-8")
+    kinds = set(re.findall(r'"kind": "(\w+)"', py))
+    for kind in kinds:
+        assert f'case "{kind}":' in cards, kind
+    model = (src / "settings" / "model.ts").read_text("utf-8")
+    table = {name for name, glyph in re.findall(r'(\w+): "(.)"', model)
+             if 0xE000 <= ord(glyph) <= 0xF8FF}
+    named = {g for _t, g in desk_settings.BLOCK_TITLES.values()} | set(desk_settings.GROUP_GLYPHS.values())
+    assert table and named <= table, named - table
+    assert "dangerouslySetInnerHTML" not in page and "innerHTML" not in page
+    for field in ('placeholder={k.placeholder}', 'placeholder={s.placeholder}'):
+        line = next(ln for ln in page.splitlines() if field in ln)
+        assert "<input" in line and 'type="password"' in line and "value=" not in line, line
+    assert "useState(value" not in cards.split("function KeyLine")[1]
+
+
 # ======================================== web desk places: the end
 # Shared. Keeps the Settings section's last line away from the end of the
 # file, where every other branch adds its tests.
