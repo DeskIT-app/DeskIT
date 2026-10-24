@@ -54,6 +54,7 @@ from __future__ import annotations
 
 from PIL import Image, ImageChops
 
+import look
 import shelf_card as sc
 
 HTTRANSPARENT, HTCLIENT = sc.HTTRANSPARENT, sc.HTCLIENT
@@ -64,13 +65,14 @@ HTTRANSPARENT, HTCLIENT = sc.HTTRANSPARENT, sc.HTCLIENT
 # second picture; the first (0.11, and louder) he called "shouting".
 REACH = 0.18
 REACH_MIN = 96            # px, on a screen small enough for the share to be less
-# Three layers, all gold, outermost first: a wide soft wash, a firmer
-# band inside it, and a thin hot rim at the very edge — a lamp against
-# the bezel rather than a painted border. (r, g, b), the share of REACH
-# each one crosses, its alpha AT THE EDGE, and the power of its falloff.
-WASH = ((236, 150, 46), 1.00, 118, 2.0)
-BAND = ((243, 186, 78), 0.45, 110, 1.7)
-RIM = ((255, 226, 150), 0.06, 96, 1.2)
+# Three layers, all B+'s iris (2026-10-23; gold under LAMPLIGHT),
+# outermost first: a wide soft wash, a firmer band inside it, and a thin
+# lavender-white rim at the very edge — light against the bezel rather
+# than a painted border. (r, g, b), the share of REACH each one crosses,
+# its alpha AT THE EDGE, and the power of its falloff.
+WASH = ((148, 134, 238), 1.00, 118, 2.0)
+BAND = ((165, 151, 255), 0.45, 110, 1.7)
+RIM = ((222, 216, 255), 0.06, 96, 1.2)
 LAYERS = (WASH, BAND, RIM)
 
 # --------------------------------------------------------------- the card
@@ -83,7 +85,7 @@ BEAD_HIT = 13             # half the square a click on a bead may land in
 SCREEN_GAP = 6            # between two drawn screens
 LABEL_PT = 7.5
 SHADOW = sc.SHADOW        # the room a glass window leaves around the card
-RADIUS = 18
+RADIUS = 22               # B+'s corner (18 under LAMPLIGHT)
 PAD = 18
 TITLE_PT = 11.0
 BTN_H = 34
@@ -114,7 +116,10 @@ def _rim_mask(w: int, h: int, length: int, a0: int, power: float
               ) -> Image.Image:
     """One layer's alpha over the whole monitor: the ramp laid along all
     four edges, joined with `lighter` where two meet so a corner is the
-    brighter of the two and never their sum."""
+    brighter of the two and never their sum — and then each corner turned
+    round a quarter circle (`_corner`), because `lighter` alone meets at a
+    45-degree ridge that the eye reads as a drawn line (the polish pass,
+    2026-10-23, at 1:1 on the iris light)."""
     r = _ramp(length, a0, power)
     n = r.height
     top = r.resize((w, n))
@@ -126,7 +131,31 @@ def _rim_mask(w: int, h: int, length: int, a0: int, power: float
     m.paste(ImageChops.lighter(m.crop((0, h - n, w, h)), bottom), (0, h - n))
     m.paste(ImageChops.lighter(m.crop((0, 0, n, h)), left), (0, 0))
     m.paste(ImageChops.lighter(m.crop((w - n, 0, w, h)), right), (w - n, 0))
+    c = _corner(n, a0, power)
+    if c is not None:
+        for piece, at in ((c, (0, 0)),
+                          (c.transpose(Image.FLIP_LEFT_RIGHT), (w - n, 0)),
+                          (c.transpose(Image.FLIP_TOP_BOTTOM), (0, h - n)),
+                          (c.transpose(Image.ROTATE_180), (w - n, h - n))):
+            box = (at[0], at[1], at[0] + n, at[1] + n)
+            m.paste(ImageChops.lighter(m.crop(box), piece), at)
     return m
+
+
+def _corner(n: int, a0: int, power: float):
+    """The top-left n x n of one layer: the ramp of `_ramp` measured from
+    the corner of the dark middle, so its lines of equal light are quarter
+    circles. Equal to the edge ramp along both of its inner sides, so it
+    joins them without a step; at the screen's corner it is `a0`, the
+    edges' own value. None without numpy (the ridge stays)."""
+    try:
+        import numpy as np
+    except Exception:
+        return None
+    k = max(1, n - 1)
+    off = k - np.arange(n, dtype=np.float32)
+    t = np.minimum(np.sqrt(off[None, :] ** 2 + off[:, None] ** 2) / k, 1.0)
+    return Image.fromarray((a0 * t ** power).astype(np.uint8), "L")
 
 
 def reach(w: int, h: int) -> int:
@@ -177,7 +206,7 @@ def card_for(monitors=None) -> dict:
         "esc": "Esc",
         "back": "puts it back",
         "options": "Options",
-        "corners": "OR PUT IT IN A CORNER",
+        "corners": "Or put it in a corner",
         "monitors": rects,
     }
 
@@ -212,19 +241,20 @@ def _layout(card: dict, scale: float, cache: dict, open: bool = False) -> dict:
     `open` is the map unfolded under the row; the card is taller then
     and no wider, so the window keeps its place along the top."""
     s = clamp_scale(scale)
-    title = sc._text(cache, card.get("title") or "", TITLE_PT * s,
-                     colour="ink", weight=600, rtl=False)
-    done = sc._text(cache, card.get("done") or "", BTN_PT * s,
-                    colour="on_accent", weight=700, rtl=False)
-    key = sc._text(cache, card.get("enter") or "", KEY_PT * s,
-                   colour="on_accent", weight=700, rtl=False)
-    esc = sc._text(cache, card.get("esc") or "", KEY_PT * s, colour="dim",
-                   weight=700, rtl=False)
-    back = sc._text(cache, card.get("back") or "", NOTE_PT * s, colour="dim",
-                    weight=400, rtl=False)
-    opt = sc._text(cache, card.get("options") or "", NOTE_PT * s,
-                   colour="dim", weight=600, rtl=False)
-    chev = sc._glyph(cache, "chevron", 11 * s, colour="faint")
+    ink = sc.INK
+    title = look.text(cache, card.get("title") or "", TITLE_PT * s,
+                      tuple(ink["ink"]), look.W_STRONG)
+    done = look.text(cache, card.get("done") or "", BTN_PT * s,
+                     tuple(ink["on_accent"]), look.W_STRONG)
+    key = look.text(cache, card.get("enter") or "", KEY_PT * s,
+                    tuple(ink["on_accent"]), look.W_STRONG)
+    esc = look.text(cache, card.get("esc") or "", KEY_PT * s,
+                    tuple(ink["ink"]), look.W_LABEL)
+    back = look.text(cache, card.get("back") or "", NOTE_PT * s,
+                     tuple(ink["dim"]), look.W_BODY)
+    opt = look.text(cache, card.get("options") or "", NOTE_PT * s,
+                    tuple(ink["dim"]), look.W_LABEL)
+    chev = look.glyph("chevron", 11 * s, tuple(ink["muted"]) + (255,))
     pad = PAD * s
     key_w = key.width + 12 * s
     btn_w = 14 * s + done.width + 10 * s + key_w + 10 * s
@@ -258,8 +288,8 @@ def _layout(card: dict, scale: float, cache: dict, open: bool = False) -> dict:
     # THE MAP: every screen in one row, to one scale, the row as wide as
     # the card allows. A bead sits MAP_MARGIN in from each drawn corner.
     rects = card.get("monitors") or []
-    label = sc._text(cache, card.get("corners") or "", LABEL_PT * s,
-                     colour="faint", weight=700, rtl=False)
+    label = look.text(cache, card.get("corners") or "", LABEL_PT * s + 1,
+                      tuple(ink["muted"]), look.W_LABEL)
     y = height - pad + 8 * s
     out["rule"] = (pad, y, width - pad)
     y += 9 * s
@@ -367,25 +397,22 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     title, tx, ty = lay["title"]
     place(title, tx, ty)
 
-    # THE BUTTON IS GOLD. The shelf keeps its one lit thing for the door
-    # at the bottom; this card has exactly one thing on it, and it is the
-    # way out, so the lamp is spent here.
+    # THE BUTTON IS THE ONE LIT THING (B+'s soft iris pill). The shelf
+    # keeps its light for the door at the bottom; this card has exactly
+    # one thing on it, and it is the way out, so the light is spent here.
     x0, y0, x1, y1 = lay["button"]
     lit = hover == DONE
-    place(sc._rr((x1 - x0, y1 - y0), 10 * s,
-                 fill=tuple(ink["accent_text" if lit else "accent"]) + (255,)),
-          x0, y0)
+    look.primary(img, (x0, y0, x1, y1), hover=lit, glow=False)
     done, dx, dy = lay["done"]
     place(done, dx, dy)
     key, kx, ky, kw, kh = lay["key"]
-    place(sc._rr((kw, kh), 5 * s, fill=(0, 0, 0, 0),
-                 outline=tuple(ink["on_accent"]) + (170,), width=1), kx, ky)
+    place(sc._rr((kw, kh), 6 * s, fill=(0, 0, 0, 0),
+                 outline=tuple(ink["on_accent"]) + (150,), width=1), kx, ky)
     place(key, kx + (kw - key.width) / 2, ky + (kh - key.height) / 2)
 
-    # the way back: a quiet key cap and four words
+    # the way back: the desk's key cap and four words
     esc, ex, ey, ew, eh = lay["esc"]
-    place(sc._rr((ew, eh), 5 * s, fill=tuple(ink["card"]) + (255,),
-                 outline=tuple(ink["line"]) + (255,), width=1), ex, ey)
+    look.keycap(img, (ex, ey, ex + ew, ey + eh))
     place(esc, ex + (ew - esc.width) / 2, ey + (eh - esc.height) / 2)
     back, bx, by = lay["back"]
     place(back, bx, by)
@@ -395,35 +422,31 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     opt, chev, ox, oy = lay["options"]
     lit_opt = hover == OPTIONS or open
     if lit_opt:
-        opt = sc._text(cache, card.get("options") or "", NOTE_PT * s,
-                       colour="ink", weight=600, rtl=False)
-        chev = sc._glyph(cache, "chevron", 11 * s, colour="dim")
+        opt = look.text(cache, card.get("options") or "", NOTE_PT * s,
+                        tuple(ink["ink"]), look.W_LABEL)
+        chev = look.glyph("chevron", 11 * s, tuple(ink["dim"]) + (255,))
     place(opt, ox, oy)
     # the chevron points DOWN — at the map — and UP once it is out
     place(chev.rotate(90 if open else -90), ox + opt.width + 6 * s, oy + 1)
     if not open:
         return img
 
-    # THE MAP. A hairline, the label, every screen as a plate the shape
-    # of the real one, a taskbar strip along its foot so it reads as a
-    # screen, and a bead in each corner: the dot's own picture, bigger
-    # and ringed in gold under the pointer.
+    # THE MAP. A fading hairline, the label, every screen as a pane of
+    # the night the shape of the real one, a taskbar strip along its foot
+    # so it reads as a screen, and a bead in each corner: the listening
+    # lamp, bigger and ringed in iris under the pointer.
     rx, ry, rx1 = lay["rule"]
-    place(sc._rr((rx1 - rx, 1), 0, fill=tuple(ink["line"]) + (170,)), rx, ry)
+    look.fade_rule(img, rx, rx1, ry)
     label, lx, ly = lay["label"]
     place(label, lx, ly)
     for x0, y0, x1, y1 in lay["screens"]:
-        place(sc._rr((x1 - x0, y1 - y0), 6 * s,
-                     fill=tuple(ink["plate"]) + (255,),
-                     outline=tuple(ink["plate_edge"]) + (255,), width=1),
-              x0, y0)
+        look.slip(img, (x0, y0, x1, y1), 6 * s, lit=True)
         place(sc._rr((max(1, x1 - x0 - 2), 3 * s), 1 * s,
-                     fill=tuple(ink["line"]) + (255,)), x0 + 1, y1 - 4 * s)
+                     fill=(255, 255, 255, 26)), x0 + 1, y1 - 4 * s)
     for name, cx, cy in lay["beads"]:
         on = hover == name
-        bead = sc._glyph(cache, "dot", (BEAD_PX + 6 if on else BEAD_PX) * s,
-                         colour="cool")
-        place(bead, cx - bead.width / 2, cy - bead.height / 2)
+        look.lamp(img, cx, cy, "cool", r=(4.5 if on else 3.5) * s,
+                  rings=True, glow=1.0 if on else 0.7)
         if on:
             ring = BEAD_PX * s + 10 * s
             place(sc._rr((ring, ring), ring / 2, fill=None,

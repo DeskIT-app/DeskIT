@@ -77,7 +77,9 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
+
+import look
 
 # Win32 hit-test answers, spelled out so this module needs no skin import.
 # No HTCAPTION: nothing on this panel drags it (2026-10-04, below at
@@ -87,32 +89,37 @@ HTTRANSPARENT, HTCLIENT = -1, 1
 # ---------------------------------------------------------------- THE TABLE
 # name on this card -> (the names to try in skin\palette.py, in order, and
 # the colour to draw with when none of them is there). The fallbacks are
-# LAMPLIGHT, measured; they are what the panel looks like with skin\ gone.
+# B+ (2026-10-23), measured; they are what the panel looks like with skin\
+# gone. The glass, the buttons, the lamps and the switch are look.py's.
 _INK_SOURCE: dict[str, tuple[tuple[str, ...], str]] = {
-    "ink":         (("FG",), "#f1ece2"),
-    "dim":         (("DIM",), "#b2a896"),
+    "ink":         (("FG",), "#efedf7"),
+    "dim":         (("DIM",), "#c0c3d8"),
+    # times, eyebrows, facts — the desk's third voice
+    "muted":       (("MUTED", "DIM"), "#a4a9c2"),
     # rules and micro-labels only, never prose
-    "faint":       (("FAINT",), "#7e7564"),
-    "line":        (("LINE",), "#3a342a"),
-    "ground":      (("BG",), "#14110c"),
+    "faint":       (("FAINT",), "#70758e"),
+    "line":        (("LINE",), "#30365a"),
+    "ground":      (("BG",), "#0b0d19"),
     # the face the presenter paints, and a row's own plate one step over it
-    "card":        (("CARD",), "#24201a"),
-    "plate":       (("CARD_HI",), "#2e2921"),
-    "plate_edge":  (("LINE_HI", "LINE"), "#4e4737"),
-    "accent":      (("ACCENT",), "#e3a63c"),
-    "accent_text": (("ACCENT_TEXT",), "#f0ba5c"),
-    "accent_soft": (("ACCENT_SOFT",), "#332711"),
-    "accent_edge": (("ACCENT_EDGE", "LINE_HI"), "#5a4520"),
-    "on_accent":   (("ACCENT_ON",), "#1a1409"),
-    "green":       (("GREEN",), "#63c88c"),
-    "amber":       (("AMBER", "ACCENT"), "#e3a63c"),
-    "red":         (("RED",), "#f1867a"),
+    "card":        (("CARD",), "#1a1e35"),
+    "plate":       (("CARD_HI",), "#242944"),
+    "plate_edge":  (("LINE_HI", "LINE"), "#454c78"),
+    "accent":      (("ACCENT",), "#a597ff"),
+    "accent_text": (("ACCENT_TEXT",), "#c2b9ff"),
+    "accent_soft": (("ACCENT_SOFT",), "#393961"),
+    "accent_edge": (("ACCENT_EDGE", "LINE_HI"), "#595490"),
+    "on_accent":   (("ACCENT_ON",), "#140f33"),
+    "green":       (("GREEN",), "#5fdba6"),
+    "amber":       (("AMBER", "ACCENT"), "#ffb84d"),
+    "red":         (("RED",), "#ff6e7e"),
     # the dot while the microphone is live, and while it is latched on
-    "recording":   (("RECORDING", "RED"), "#ff5b4e"),
-    "locked":      (("RECORDING", "RED"), "#ff8a7e"),
-    "cool":        (("COOL", "TEAL"), "#8fc0f0"),
-    "teal":        (("TEAL", "COOL"), "#8fc0f0"),
-    "violet":      (("VIOLET", "ACCENT_TEXT"), "#c89ef7"),
+    "recording":   (("RECORDING", "RED"), "#ff5d6e"),
+    "locked":      (("RECORDING", "RED"), "#ff8d99"),
+    "cool":        (("COOL", "TEAL"), "#4db8ff"),
+    "teal":        (("TEAL", "COOL"), "#5ed0c4"),
+    "violet":      (("VIOLET", "ACCENT_TEXT"), "#d4a8f0"),
+    # the idle lamp: grey, and no light
+    "idle":        (("LAMP_IDLE", "FAINT"), "#8a93a8"),
 }
 
 
@@ -181,7 +188,7 @@ INK, INK_FALLBACKS = load_ink()
 # The dot's colour per app state, and the pile's colour per kind. Both
 # read out of the table above and nowhere else.
 STATE_COLOUR = {"listening": "cool", "recording": "recording",
-                "locked": "locked", "paused": "faint", "busy": "amber"}
+                "locked": "locked", "paused": "idle", "busy": "amber"}
 STATE_WORD = {"listening": "Listening", "recording": "Recording",
               "locked": "Locked on", "paused": "Paused", "busy": "Working"}
 
@@ -429,7 +436,8 @@ def _fit(cache: dict, img, avail: float, rtl: bool, pt: float,
         return img
     ell = _text(cache, ELLIPSIS, pt, colour=colour, rtl=False)
     w = max(1, int(avail))
-    keep = max(1, w - ell.width - int(round(pt * 0.3)))
+    gap = int(round(pt * 0.3))
+    keep = _word_cut(img, max(1, w - ell.width - gap), rtl, pt)
     # The dots sit ON the line, not under it. Both images are cropped to
     # their own glyphs, so aligning their bottoms puts an ellipsis whose
     # box is three dots high at the very bottom of a box that is a whole
@@ -440,11 +448,43 @@ def _fit(cache: dict, img, avail: float, rtl: bool, pt: float,
     if rtl:
         out.alpha_composite(img.crop((img.width - keep, 0, img.width,
                                       img.height)), (w - keep, 0))
-        out.alpha_composite(ell, (0, ey))
+        out.alpha_composite(ell, (max(0, w - keep - gap - ell.width), ey))
     else:
         out.alpha_composite(img.crop((0, 0, keep, img.height)), (0, 0))
-        out.alpha_composite(ell, (w - ell.width, ey))
+        out.alpha_composite(ell, (min(w - ell.width, keep + gap), ey))
     return out
+
+
+def _word_cut(img, keep: int, rtl: bool, pt: float) -> int:
+    """How much of a line to keep so the cut falls BETWEEN two words.
+
+    `keep` pixels of the end that is read first fit; this walks back from
+    that cut to the nearest space — a run of empty columns wider than the
+    gap between two letters — and keeps the words before it whole. The
+    polish pass of 2026-10-23 found "…את כ" on the shelf at 3x: a Hebrew
+    line cut through a letter, which the ellipsis does not excuse. Nothing
+    nearer than a third of the way in is a word gap worth taking, so a
+    line that is one long word is cut where it was.
+    """
+    try:
+        import numpy as np
+        ink = np.asarray(img.getchannel("A")).max(axis=0) > 24
+    except Exception:
+        return keep
+    need = max(2, int(round(pt * 0.3)))
+    width = img.width
+    if rtl:
+        start = width - keep
+        for x in range(start, width - keep // 3 - need):
+            if not ink[x:x + need].any():
+                nxt = np.flatnonzero(ink[x + need:])
+                return width - (x + need + int(nxt[0])) if nxt.size else keep
+        return keep
+    for x in range(keep, max(need, keep // 3), -1):
+        if not ink[x - need:x].any():
+            last = np.flatnonzero(ink[:x - need])
+            return int(last[-1]) + 1 if last.size else keep
+    return keep
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +611,8 @@ def _glyph(cache: dict, kind: str, size: float, colour="dim", weight=1.6):
         a.rectangle(box(46, 34, 54, 54), fill=255)      # the flat side
         img.paste(Image.new("RGBA", (m, m), c), (0, 0), area)
         d.ellipse(box(30 - 10, 34 - 10, 30 + 10, 34 + 10),
-                  fill=tuple(INK["accent"]) + (255,))
+                  fill=tuple(INK["on_accent" if colour == "on_accent"
+                                 else "accent_text"]) + (255,))
     got = img.resize((n, n), Image.LANCZOS)
     cache[key] = got
     return got
@@ -819,6 +860,13 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     skin\\notify.py.
 
     `hover` is a region name; the thing under the pointer brightens.
+
+    B+ SINCE 2026-10-23 — the desk's Home in a pocket: the state is the
+    desk's lamp and word, every button a pill of frost (look.quiet), the
+    X the desk's round control, each waiting thing a slip of frost with
+    its kind's lamp, the screens a switch, and the door the panel's one
+    soft iris light (look.primary). Every rectangle is still the one
+    `regions` claims, so a button is pressed where it is drawn.
     """
     cache = cache if cache is not None else {}
     s = clamp_scale(scale)
@@ -833,49 +881,75 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     def place(image, x, y):
         img.alpha_composite(image, (int(round(x)), int(round(y))))
 
-    def button(name, label, ink, glyph=None, fill="card", edge="line",
-               glyph_px: float = 12, inset: float = 9, gap: float = 5):
-        """One head button, drawn inside the rectangle `regions` claimed
-        for it — so a button can never be pressed anywhere but where it
-        is painted. `glyph_px`, `inset` and `gap` are the Move button's:
-        its bead is mostly halo, so it is drawn bigger and closer in."""
+    def local(name):
         x0, y0, x1, y1 = boxes[name]
-        x0, y0, x1, y1 = x0 - SHADOW, y0 - SHADOW, x1 - SHADOW, y1 - SHADOW
+        return x0 - SHADOW, y0 - SHADOW, x1 - SHADOW, y1 - SHADOW
+
+    def label(words, pt, colour, weight=look.W_LABEL):
+        return look.text(cache, words, pt, tuple(INK[colour]), weight)
+
+    def on_row(words, pt, colour, weight, cy, ref_pt=None, by="cap"):
+        """A line placed on its row by its BASELINE (look.row_line): each
+        word centred on its own cropped box put "Keep" and "Copy" a pixel
+        above "No" for their descenders (the polish pass, 2026-10-23)."""
+        return look.row_line(cache, words, pt, tuple(INK[colour]), weight,
+                             cy, ref_pt, by)
+
+    def button(name, words, ink, glyph=None, bead=False):
+        """One head button: a pill of frost in the rectangle `regions`
+        claimed for it, a glyph and a word."""
+        x0, y0, x1, y1 = local(name)
         lit = hover == name
-        plate = _rr((x1 - x0, y1 - y0), 7 * s,
-                    fill=tuple(INK["plate" if lit else fill]) + (255, ),
-                    outline=tuple(INK["line" if not lit else "plate_edge"])
-                    + (255,), width=1)
-        place(plate, x0, y0)
-        text = _text(cache, label, 8.5 * s, colour=ink, weight=600, rtl=False)
-        gx = x0 + inset * s
-        if glyph is not None:
-            g = _glyph(cache, glyph, glyph_px * s, colour=ink)
-            place(g, gx, y0 + ((y1 - y0) - g.height) / 2)
-            gx += g.width + gap * s
-        place(text, gx, y0 + ((y1 - y0) - text.height) / 2)
+        look.quiet(img, (x0, y0, x1, y1), hover=lit)
+        gx = x0 + 9 * s
+        cy = (y0 + y1) / 2
+        text, ty = on_row(words, 8.5 * s, "ink" if lit else ink,
+                          look.W_LABEL, cy)
+        if bead:
+            # THE DOT ITSELF on the Move button (2026-09-21: a four-arrow
+            # glyph read as "it moves the bar"): the listening lamp, its
+            # light kept inside the button — at 0.6 it would spill past the
+            # pill's end and onto the uptime line beside it
+            w, h = int(x1 - x0) + 1, int(y1 - y0) + 1
+            light = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            look.lamp(light, gx + 4 * s - x0, cy - y0, "cool", r=3.5 * s,
+                      rings=False, glow=0.7)
+            light.putalpha(ImageChops.multiply(
+                light.getchannel("A"), look.rounded((w, h), (0, 0, x1 - x0,
+                                                              y1 - y0),
+                                                    (y1 - y0) / 2)))
+            place(light, x0, y0)
+            gx += 13 * s
+        elif glyph is not None:
+            g = look.glyph(glyph, 11 * s, tuple(INK["ink" if lit else ink])
+                           + (255,), 1.5)
+            place(g, gx, cy - g.height / 2)
+            gx += g.width + 4 * s
+        place(text, gx, ty)
 
     # ---- 1. the state -----------------------------------------------------
     top, band_h = bands["head"]
-    dot = _disc(cache, 9 * s, card.get("dot") or "cool")
-    place(dot, left + 1 * s, top + 6 * s)
-    title = _text(cache, card.get("title") or "", 13.0 * s, colour="ink",
-                  weight=700, rtl=False)
-    place(title, left + 17 * s, top + 2 * s)
+    colour = card.get("dot") or "cool"
+    look.lamp(img, left + 5 * s, top + 13 * s, tuple(INK[colour]),
+              r=4.0 * s, rings=True, glow=1.0 if colour != "idle" else 0)
+    # the state word on the lamp's line by its x-height, so "Paused" and
+    # "Listening" sit alike beside it whatever their descenders
+    title, ty = on_row(card.get("title") or "", 13.0 * s, "ink",
+                       look.W_STRONG, top + 13 * s, by="x")
+    place(title, left + 19 * s, ty)
     sub = card.get("uptime") or ""
     if sub:
         # Cut to the room before the first button, with an ellipsis: "up
         # 4h 32m · 12:34" is the longest this line gets and at scale 0.6
-        # it is wider than the room. The title is never cut — the state
-        # words are short and the row is measured for the longest.
-        sub_img = _text(cache, sub, 8.5 * s, colour="faint", rtl=False)
-        room = boxes[MOVE][0] - SHADOW - (left + 17 * s) - 6 * s
-        sub_img = _fit(cache, sub_img, room, False, 8.5 * s, colour="faint")
-        place(sub_img, left + 17 * s, top + 22 * s)
-    # Move first, at the left of the row: the bead, then the word.
-    button(MOVE, "Move", "dim", "dot", glyph_px=BEAD_PX, inset=5, gap=3)
-    button(PAUSE, "Pause" if card.get("mode") != "paused" else "Resume",
-           "dim", "pause" if card.get("mode") != "paused" else "play")
+        # it is wider than the room. The title is never cut.
+        sub_img = label(sub, 8.5 * s, "muted", look.W_BODY)
+        room = boxes[MOVE][0] - SHADOW - (left + 19 * s) - 6 * s
+        sub_img = _fit(cache, sub_img, room, False, 8.5 * s, colour="muted")
+        place(sub_img, left + 19 * s, top + 25 * s)
+    button(MOVE, "Move", "dim", bead=True)
+    paused = card.get("mode") == "paused"
+    button(PAUSE, "Resume" if paused else "Pause", "dim",
+           "play" if paused else "pause")
     # ARMED, not confirmed: the first press turns the word into a question
     # and the second one quits. There is no undo for a quit and this panel
     # opens with one keystroke.
@@ -884,192 +958,170 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
            "Stop?" if (card.get("stop_armed") and stop_ok) else "Stop",
            ("red" if card.get("stop_armed") else "dim") if stop_ok
            else "faint", "stop")
-    # THE X, at the top-right of the band: the same plate as its two
-    # neighbours, lit the same way on hover, with the glyph alone in it.
-    # Drawn inside the rectangle `regions` claimed, like every button.
-    x0, y0, x1, y1 = (c - SHADOW for c in boxes[CLOSE])
+    # THE X, the desk's round control, at the top-right of the band
+    x0, y0, x1, y1 = local(CLOSE)
     lit = hover == CLOSE
-    place(_rr((x1 - x0, y1 - y0), 7 * s,
-              fill=tuple(INK["plate" if lit else "card"]) + (255,),
-              outline=tuple(INK["plate_edge" if lit else "line"]) + (255,),
-              width=1), x0, y0)
-    cross = _glyph(cache, "close", 14 * s, colour="ink" if lit else "dim")
-    place(cross, x0 + ((x1 - x0) - cross.width) / 2,
-          y0 + ((y1 - y0) - cross.height) / 2)
+    look.disc(img, (x0 + x1) / 2, (y0 + y1) / 2, (y1 - y0) / 2, hover=lit)
+    cross = look.glyph("x", 13 * s, tuple(INK["ink" if lit else "dim"])
+                       + (255,), 1.5)
+    place(cross, (x0 + x1 - cross.width) / 2, (y0 + y1 - cross.height) / 2)
 
-    # ---- the hairlines ----------------------------------------------------
-    # Walked off the sections list rather than off `bands`: there are two
-    # rules on this card and `_bands` keeps one entry per NAME, so the map
-    # would only ever remember the second one.
+    # ---- the hairlines: B+'s, fading out at both ends ---------------------
     y = pad
     for name, h in _sections(card):
         if name == "rule":
-            place(_rr((inner, 1), 0, fill=tuple(INK["line"]) + (170,)),
-                  left, y)
+            look.fade_rule(img, left, right, y)
         y += h * s
 
     # ---- 2. the pile ------------------------------------------------------
     top, band_h = bands["eyebrow"]
-    eyebrow = _text(cache, "WAITING FOR YOU", 7.5 * s, colour="faint",
-                    weight=700, rtl=False)
-    place(eyebrow, left, top + (band_h - eyebrow.height) / 2)
+    eyebrow = label("Waiting for you", 9.0 * s, "muted")
+    place(eyebrow, left + 2 * s, top + (band_h - eyebrow.height) / 2)
     waiting = int(card.get("waiting") or 0)
     if waiting:
-        # A COUNT, NOT A LIGHT. The accent is the lamp and this panel has
-        # exactly one lit thing on it — the door at the bottom — so the
-        # badge that says how many are waiting is a plate with prose on
-        # it. The rows underneath are what shouts.
-        count = _chip(cache, str(waiting), 7.5 * s, "ink",
-                      "plate", "plate_edge", 8 * s, 16 * s, 8 * s,
-                      rtl=False)
-        place(count, right - count.width, top + (band_h - count.height) / 2)
+        # A COUNT, NOT A LIGHT: a pill of frost with the number on it.
+        n = label(str(waiting), 8.0 * s, "ink", look.W_STRONG)
+        ph = 18 * s
+        pw = max(ph, n.width + 14 * s)
+        cy = top + band_h / 2
+        look.quiet(img, (right - pw, cy - ph / 2, right, cy + ph / 2))
+        place(n, right - pw + (pw - n.width) / 2, cy - n.height / 2)
 
     for index, row in enumerate(card.get("rows") or []):
         top, band_h = bands[f"row{index}"]
         colour = row.get("colour") or "cool"
         lit = bool(hover and hover.startswith(f"row{index}."))
-        plate = _rr((inner, band_h), 11 * s,
-                    fill=tuple(INK["plate" if lit else "card"]) + (215,),
-                    outline=tuple(INK["plate_edge"]) + (220,), width=1)
-        place(plate, left, top)
-        # the kind's colour as a 3 px bar down the RIGHT edge of the plate,
-        # where a right-to-left eye starts the row
-        place(_rr((3 * s, band_h - 16 * s), 1.5 * s,
-                  fill=tuple(INK[colour]) + (235,)),
-              right - 9 * s, top + 8 * s)
+        look.slip(img, (left, top, right, top + band_h), 14 * s, lit=lit)
 
-        # the header line: the kind, what it was, how long it has waited
+        # the header line, read from the right: the kind's lamp, its word,
+        # the changed word on the proposal's pill, how long it has waited
         band = ANSWER_H * s
         ky = top + 8 * s
-        word = _text(cache, row.get("word") or "", 7.5 * s, colour=colour,
-                     weight=700, rtl=False)
-        place(word, right - 16 * s - word.width,
-              ky + (band - word.height) / 2)
-        x_right = right - 16 * s - word.width - 8 * s
+        cy = ky + band / 2
+        look.lamp(img, right - 14 * s, cy, tuple(INK[colour]), r=3.2 * s,
+                  rings=False, glow=0.8)
+        word, wy = on_row(row.get("word") or "", 8.0 * s, "dim",
+                          look.W_LABEL, cy)
+        place(word, right - 24 * s - word.width, wy)
+        x_right = right - 24 * s - word.width - 8 * s
         pill = row.get("pill") or ""
         if pill:
-            chip = _chip(cache, pill, 8.0 * s, "ink", "accent_soft",
-                         "accent_edge", 7 * s, 17 * s, 5 * s, weight=600)
-            place(chip, x_right - chip.width, ky + (band - chip.height) / 2)
-            x_right -= chip.width + 8 * s
+            p_img = look.text(cache, pill, 8.0 * s, look.INK["prop_ink"])
+            pw, ph = p_img.width + 16 * s, 18 * s
+            look.pill(img, (x_right - pw, cy - ph / 2, x_right, cy + ph / 2),
+                      "prop")
+            place(p_img, x_right - pw + 8 * s, cy - p_img.height / 2)
+            x_right -= pw + 8 * s
         when = row.get("when") or ""
         if when:
-            w_img = _text(cache, when, 7.5 * s, colour="faint", rtl=False)
-            place(w_img, x_right - w_img.width,
-                  ky + (band - w_img.height) / 2)
+            w_img, wy = on_row(when, 7.5 * s, "muted", look.W_BODY, cy,
+                               ref_pt=8.0 * s)
+            place(w_img, x_right - w_img.width, wy)
 
-        # the sentence, on its own line and across the whole plate
+        # the sentence, on its own line and across the whole slip
         room = inner - 26 * s
         text = row.get("text") or ""
         rtl = _is_rtl(text)
-        t_img = _fit(cache, _text(cache, text, 10.0 * s, colour="ink"),
+        t_img = _fit(cache, look.text(cache, text, 10.0 * s,
+                                      tuple(INK["ink"])),
                      room, rtl, 10.0 * s)
         ty = top + 32 * s
-        place(t_img, right - 16 * s - t_img.width if rtl else left + 10 * s,
+        place(t_img, right - 14 * s - t_img.width if rtl else left + 12 * s,
               ty)
 
-        # the two answers, at the far left of the header line
-        for slot, (do, label) in zip(("a", "b"), row.get("answers") or []):
+        # the two answers, pills of frost at the far left of the header
+        for slot, (do, words) in zip(("a", "b"), row.get("answers") or []):
             name = row_name(index, slot)
-            x0, y0, x1, y1 = (c - SHADOW for c in boxes[name])
-            on = slot == "a"
+            x0, y0, x1, y1 = local(name)
             here = hover == name
-            # THE FIRST ANSWER IS STRONGER, AND IT IS NOT GOLD. The accent
-            # is the lamp: one lit thing per surface, and on this panel
-            # that is the door at the bottom. Five gold buttons down a
-            # pile would leave the door meaning nothing — so the primary
-            # answer is a lifted plate with prose-weight text and the
-            # second a quiet one, which is the same hierarchy without
-            # spending the light on it five times.
-            place(_rr((x1 - x0, y1 - y0), 6 * s,
-                      fill=tuple(INK["plate" if on else "card"])
-                      + (255 if here else 235 if on else 215,),
-                      outline=tuple(INK["plate_edge" if on else "line"])
-                      + (255,), width=1), x0, y0)
-            lab = _text(cache, label, 8.0 * s,
-                        colour="ink" if on else "dim",
-                        weight=700 if on else 600, rtl=False)
-            place(lab, x0 + ((x1 - x0) - lab.width) / 2,
-                  y0 + ((y1 - y0) - lab.height) / 2)
+            look.quiet(img, (x0, y0, x1, y1), hover=here)
+            lab, ly = on_row(words, 8.0 * s,
+                             "ink" if (slot == "a" or here) else "dim",
+                             look.W_STRONG if slot == "a" else look.W_LABEL,
+                             (y0 + y1) / 2)
+            place(lab, x0 + ((x1 - x0) - lab.width) / 2, ly)
 
     if int(card.get("more") or 0) > 0:
         top, band_h = bands["more"]
         lit = hover == MORE
-        text = _text(cache, f"+{int(card['more'])} more on the desk",
-                     8.5 * s, colour="accent_text" if lit else "dim",
-                     rtl=False)
+        text = label(f"+{int(card['more'])} more on the desk", 8.5 * s,
+                     "accent_text" if lit else "dim")
         place(text, left + 10 * s, top + (band_h - text.height) / 2)
-        chev = _glyph(cache, "chevron", 11 * s,
-                      colour="accent_text" if lit else "faint")
+        chev = look.glyph("chevron", 11 * s, tuple(INK["accent_text" if lit
+                                                       else "muted"]) + (255,))
         place(chev, right - 10 * s - chev.width,
               top + (band_h - chev.height) / 2)
 
     if "empty" in bands:
         top, band_h = bands["empty"]
-        text = _text(cache, card.get("empty") or "", 10.0 * s, colour="faint",
-                     rtl=False)
+        text = label(card.get("empty") or "", 10.0 * s, "muted", look.W_BODY)
         place(text, left + 2 * s, top + (band_h - text.height) / 2)
 
     # ---- 3. the last thing he said ----------------------------------------
     top, band_h = bands["lasthead"]
-    head = _text(cache, "WHAT YOU SAID LAST", 7.5 * s, colour="faint",
-                 weight=700, rtl=False)
-    place(head, left, top + (band_h - head.height) / 2)
-    button(COPY, "Copy", "dim", "copy")
+    head, hy = on_row("What you said last", 9.0 * s, "muted", look.W_LABEL,
+                      top + band_h / 2)
+    place(head, left + 2 * s, hy)
+    x0, y0, x1, y1 = local(COPY)
+    lit = hover == COPY
+    look.quiet(img, (x0, y0, x1, y1), hover=lit)
+    g = look.glyph("copy", 10 * s, tuple(INK["ink" if lit else "dim"])
+                   + (255,), 1.4)
+    t, cty = on_row("Copy", 7.5 * s, "ink" if lit else "dim", look.W_LABEL,
+                    (y0 + y1) / 2)
+    gx = x0 + ((x1 - x0) - g.width - 3 * s - t.width) / 2
+    place(g, gx, (y0 + y1 - g.height) / 2)
+    place(t, gx + g.width + 3 * s, cty)
     when = card.get("last_when") or ""
     if when:
-        w_img = _text(cache, when, 7.5 * s, colour="faint", rtl=False)
-        place(w_img, left + head.width + 10 * s,
-              top + (band_h - w_img.height) / 2)
+        w_img, wy = on_row(when, 8.0 * s, "muted", look.W_BODY,
+                           top + band_h / 2, ref_pt=9.0 * s)
+        place(w_img, left + 2 * s + head.width + 10 * s, wy)
     top, band_h = bands["last"]
     line = card.get("last") or ""
     if line:
-        l_img = _fit(cache, _text(cache, line, 11.0 * s, colour="ink",
-                                  rtl=True), inner, True, 11.0 * s)
+        l_img = _fit(cache, look.text(cache, line, 11.0 * s,
+                                      tuple(INK["ink"]), rtl=True),
+                     inner, True, 11.0 * s)
         place(l_img, right - l_img.width, top + (band_h - l_img.height) / 2)
     else:
-        l_img = _text(cache, "nothing yet", 9.5 * s, colour="faint",
-                      rtl=False)
-        place(l_img, left, top + (band_h - l_img.height) / 2)
+        l_img = label("nothing yet", 9.5 * s, "muted", look.W_BODY)
+        place(l_img, left + 2 * s, top + (band_h - l_img.height) / 2)
 
-    # ---- 4. screens off ---------------------------------------------------
+    # ---- 4. screens off: a row of frost and the desk's switch -------------
     top, band_h = bands["screens"]
     off = bool(card.get("screens_off"))
     lit = hover == SCREENS
-    place(_rr((inner, band_h), 9 * s,
-              fill=tuple(INK["plate" if lit else "card"]) + (200,),
-              outline=tuple(INK["line"]) + (200,), width=1), left, top)
-    moon = _glyph(cache, "moon", 14 * s, colour="amber" if off else "dim")
-    place(moon, left + 11 * s, top + (band_h - moon.height) / 2)
-    label = _text(cache, "Screens off", 9.5 * s,
-                  colour="ink" if not off else "amber", rtl=False)
-    place(label, left + 11 * s + moon.width + 9 * s,
-          top + (band_h - label.height) / 2)
-    state_chip = _chip(cache, "dark now" if off else "on", 7.5 * s,
-                       "amber" if off else "faint",
-                       "card", "line", 8 * s, 17 * s, 8 * s, rtl=False)
-    place(state_chip, right - 10 * s - state_chip.width,
-          top + (band_h - state_chip.height) / 2)
+    look.slip(img, (left, top, right, top + band_h), band_h / 2, lit=lit)
+    moon = look.glyph("moon", 14 * s, tuple(INK["amber" if off else "dim"])
+                      + (255,))
+    place(moon, left + 12 * s, top + (band_h - moon.height) / 2)
+    words = label("Screens off", 9.5 * s, "ink")
+    place(words, left + 12 * s + moon.width + 9 * s,
+          top + (band_h - words.height) / 2)
+    look.switch(img, right - 12 * s - 34 * s, top + (band_h - 18 * s) / 2,
+                off, s * 34 / 40, hover=lit)
 
-    # ---- 5. the door ------------------------------------------------------
+    # ---- 5. the door: the panel's one soft iris light ---------------------
     top, band_h = bands["door"]
     lit = hover == DOOR
-    place(_rr((inner, band_h), 12 * s,
-              fill=tuple(INK["accent_soft"]) + (255 if lit else 230,),
-              outline=tuple(INK["accent_edge"]) + (255,), width=1),
-          left, top)
-    mark = _glyph(cache, "desk", 26 * s, colour="accent_text", weight=2.1)
-    place(mark, left + 13 * s, top + (band_h - mark.height) / 2)
-    door = _text(cache, card.get("door") or "", 11.0 * s,
-                 colour="accent_text", weight=600, rtl=False)
-    place(door, left + 13 * s + mark.width + 11 * s,
-          top + (band_h - door.height) / 2 - 5 * s)
-    hint = _text(cache, "history · keys · settings · everything else",
-                 7.5 * s, colour="faint", rtl=False)
-    place(hint, left + 13 * s + mark.width + 11 * s,
-          top + (band_h - door.height) / 2 + 11 * s)
-    chev = _glyph(cache, "chevron", 13 * s, colour="accent_text")
-    place(chev, right - 12 * s - chev.width, top + (band_h - chev.height) / 2)
+    look.primary(img, (left, top + 3 * s, right, top + band_h - 3 * s),
+                 hover=lit, glow=False)
+    mark = _glyph(cache, "desk", 24 * s, colour="on_accent", weight=2.1)
+    place(mark, left + 14 * s, top + (band_h - mark.height) / 2)
+    door = label(card.get("door") or "", 11.0 * s, "on_accent",
+                 look.W_STRONG)
+    place(door, left + 14 * s + mark.width + 11 * s,
+          top + (band_h - door.height) / 2 - 6 * s)
+    hint = look.text(cache, "history · keys · settings · everything else",
+                     7.5 * s, tuple(INK["on_accent"]))
+    hint = hint.copy()
+    hint.putalpha(hint.getchannel("A").point(lambda v: v * 176 // 255))
+    place(hint, left + 14 * s + mark.width + 11 * s,
+          top + (band_h - door.height) / 2 + 9 * s)
+    chev = look.glyph("chevron", 13 * s, tuple(INK["on_accent"]) + (255,),
+                      1.8)
+    place(chev, right - 14 * s - chev.width, top + (band_h - chev.height) / 2)
     return img
 
 
@@ -1084,9 +1136,9 @@ def flat(card: dict, scale: float = 1.0, hover: str | None = None,
     cache = cache if cache is not None else {}
     s = clamp_scale(scale)
     width, height = measure(card, s)
-    face = Image.new("RGBA", (width, height), tuple(INK["card"]) + (255,))
-    face.alpha_composite(_rr((width, height), RADIUS * s, fill=None,
-                             outline=tuple(INK["line"]) + (255,), width=1))
+    face = look.glass(look.rounded((width, height), (0, 0, width, height),
+                                   RADIUS * s), (0, 0, width, height),
+                      opaque=True)
     face.alpha_composite(compose(card, s, hover, cache))
     return face
 

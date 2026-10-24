@@ -20649,6 +20649,121 @@ def test_every_colour_the_palette_promises_is_the_contrast_it_claims() -> None:
             f"status light nobody can find is not a status light")
 
 
+def test_the_desktop_glass_keeps_every_voice_readable_over_a_white_page(
+        ) -> None:
+    """B+'s cards sit on whatever is behind them, not on the desk's floor
+    (2026-10-23). The palette promises that its glass is dense enough for
+    the third voice to pass AA even with a white page behind it — the
+    lightest thing a card's face can be composited over. This is that
+    promise in numbers: the face's top (its lightest stop) over white, and
+    every voice a card writes in on it. MUTED is the one that decides the
+    density; FAINT is labels and rules and is not held to it."""
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    from skin import palette as pal
+
+    def over(colour: str, alpha: int, ground: str) -> str:
+        a = alpha / 255.0
+        fg, bg = pal.rgb(colour), pal.rgb(ground)
+        return "#%02x%02x%02x" % tuple(int(round(f * a + b * (1 - a)))
+                                       for f, b in zip(fg, bg))
+
+    for top, a in ((pal.GLASS_TOP, pal.GLASS_A_TOP),
+                   (pal.GLASS_BOT, pal.GLASS_A_BOT)):
+        face = over(top, a, "#ffffff")
+        for name in ("FG", "DIM", "MUTED", "ACCENT_TEXT", "GREEN", "COOL"):
+            ratio = _wcag(getattr(pal, name), face)
+            assert ratio >= 4.45, (
+                f"{name} on the glass over a white page is {ratio:.2f}:1 — "
+                f"the face is too thin for the words a card writes on it")
+    # and opaque, as a Tk window draws it
+    for name in ("FG", "DIM", "MUTED", "ACCENT_TEXT"):
+        assert _wcag(getattr(pal, name), pal.GLASS_FLAT) >= 4.5, name
+
+
+def test_the_cards_draw_the_palette_with_or_without_the_skin_folder(
+        ) -> None:
+    """look.py reads every colour from skin\\palette.py by name and spells
+    the same value beside it for a deleted skin\\ — and the painters that
+    keep tuples of their own (notify_card, review_card) hold the same
+    values. A drift here is a card that changes colour when the skin pack
+    is missing, which is exactly what the 2026-09-19 decision ruled out."""
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    import look
+    import notify_card as nc
+    import review_card as rc
+    from skin import palette as pal
+    for name, (attr, literal) in look._SOURCE.items():
+        assert getattr(pal, attr).lower() == literal.lower(), (name, attr)
+        assert look.INK[name] == pal.rgb(literal), name
+    for value, attr in ((nc.INK, "FG"), (nc.INK_DIM, "DIM"),
+                        (nc.INK_MUTED, "MUTED"), (nc.INK_FAINT, "FAINT"),
+                        (nc.LINE, "LINE"), (nc.CARD, "CARD"),
+                        (rc.INK, "FG"), (rc.INK_MUTED, "MUTED"),
+                        (rc.ACCENT, "ACCENT"), (rc.ACCENT_HI, "ACCENT_HI"),
+                        (rc.ACCENT_SOFT, "ACCENT_SOFT"),
+                        (rc.ACCENT_ON, "ACCENT_ON"), (rc.RED, "RED"),
+                        (rc.RED_SOFT, "RED_SOFT"), (rc.EDGE, "EDGE"),
+                        (rc.EDGE_HI, "EDGE_HI"), (rc.CARD, "CARD")):
+        assert tuple(value) == pal.rgb(getattr(pal, attr)), attr
+    for name, alpha_attr in look._ALPHA.items():
+        assert look.ALPHA[name] == getattr(pal, alpha_attr[0]), name
+
+
+def test_the_b_plus_pieces_stay_inside_their_own_box() -> None:
+    """Every piece look.py draws is drawn on a patch the size of its own
+    box (plus the room its light needs) and composited once — so a piece
+    can never touch a pixel of the card beyond that room, and a piece
+    drawn twice in two places is the same picture twice."""
+    import look
+    from PIL import Image
+    W, H = 300, 200
+    box = (100, 80, 190, 114)
+    for draw, room in ((lambda im: look.quiet(im, box), 2),
+                       (lambda im: look.primary(im, box), 24),
+                       (lambda im: look.bubble(im, box), 2),
+                       (lambda im: look.keycap(im, box), 2),
+                       (lambda im: look.pill(im, box, "prop"), 2),
+                       (lambda im: look.pill(im, box, "heard"), 2),
+                       (lambda im: look.slip(im, box, 12), 2),
+                       (lambda im: look.disc(im, 145, 97, 17), 2),
+                       (lambda im: look.lamp(im, 145, 97, "cool"), 20),
+                       (lambda im: look.mark(im, 145, 97, 15, "ok"), 19)):
+        im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw(im)
+        bb = im.getchannel("A").getbbox()
+        assert bb is not None, "a piece drew nothing"
+        assert bb[0] >= box[0] - room - 1 and bb[1] >= box[1] - room - 1 \
+            and bb[2] <= box[2] + room + 1 and bb[3] <= box[3] + room + 1, \
+            (bb, room)
+    # the lamp of the idle state casts no light, the others do
+    lit = Image.new("RGBA", (60, 60), (0, 0, 0, 0))
+    look.lamp(lit, 30, 30, "cool", r=4)
+    idle = Image.new("RGBA", (60, 60), (0, 0, 0, 0))
+    look.lamp(idle, 30, 30, "idle", r=4)
+    assert lit.getpixel((30, 39))[3] > 0 and idle.getpixel((30, 39))[3] == 0
+    # The primary's light scales with its pill: a fixed 18 px pool was
+    # degenerate under the second reading's buttons at scale 0.6 and the
+    # card did not paint at all (ValueError, the polish pass 2026-10-23).
+    # Every small pill paints, and a box under a pixel is an empty mask.
+    for h in (6, 12, 20, 34):
+        im = Image.new("RGBA", (120, 80), (0, 0, 0, 0))
+        look.primary(im, (20, 20, 80, 20 + h))
+        assert im.getchannel("A").getbbox() is not None, h
+    assert look.rounded((10, 10), (2, 2, 2.1, 8), 3).getbbox() is None
+    import review_card as rc
+    card = rc.card_for({"id": "x", "text": "Canrout send five agents",
+                        "changes": [{"before": "Canrout", "after": "you can",
+                                     "kind": "replace", "span": [0, 1],
+                                     "why": "", "family": "term",
+                                     "support": 1}]}, seconds=20)
+    for scale in (rc.SCALE_MIN, 1.0, rc.SCALE_MAX):
+        assert rc.flat(card, scale).size == rc.measure(card, scale), scale
+
+
 def test_the_window_has_a_name_for_every_shade_its_widgets_draw() -> None:
     """No colour literal may live BELOW ui.py's palette block.
 
@@ -21177,6 +21292,41 @@ def test_a_stalled_frame_cannot_skip_the_moment() -> None:
     assert "card.released_at += shift" in boot, (
         "the card's release instant is not shifted with the clock, so a "
         "stall will still jump the reveal past its own start")
+
+
+def test_the_arrival_rings_once_on_each_note_of_the_ready_cue() -> None:
+    """The owner, 2026-10-23: check that the dot's sound and the release
+    on the screen match. The "ready" cue is fired on the first frame of
+    the arrival pulse (boot._land_ms) and it is two notes; the arrival's
+    first ring leaves on that frame and its second CUE_GAP_MS later, on
+    the resolving note. Measured that day on the GPU path: the light at
+    the dot reaches full brightness at 1130 ms, the second note. This
+    holds the numbers together, so retuning the cue moves the ring."""
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    try:
+        from skin import reveal as rv
+        from skin import boot as bm
+    except Exception:
+        return
+    import cues
+    first = cues.CUES["ready"][0]
+    assert rv.CUE_GAP_MS == first[1], (rv.CUE_GAP_MS, cues.CUES["ready"])
+    shot = rv.Reveal.__new__(rv.Reveal)
+    assert bm._land_ms(shot) == rv.T_LAND[1] - 320
+    assert rv.T_LAND[1] - 320 + rv.CUE_GAP_MS < rv.T_LAND[1] <= rv.T_END, \
+        "the second ring has no time left to leave in"
+    # the release's light keeps falling stop by stop, which _front and
+    # every gradient in the file assume
+    ys = [rv.CORE, rv.HOT, rv.WARM, rv.MID, rv.COOL, rv.DEEP, rv.DIM]
+
+    def lum(c):
+        lin = [v / 255 / 12.92 if v / 255 <= 0.04045
+               else ((v / 255 + 0.055) / 1.055) ** 2.4 for v in c]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    lums = [lum(c) for c in ys]
+    assert lums == sorted(lums, reverse=True), lums
 
 
 def test_the_reveal_still_finishes_after_a_two_second_stall() -> None:
@@ -22926,7 +23076,10 @@ def test_the_shelf_has_an_x_that_closes_it() -> None:
             lit = sc.compose(card, scale, sc.CLOSE)
             other = sc.compose(card, scale, sc.STOP)
             px = (int(cx - sc.SHADOW), int(cy - sc.SHADOW))
-            edge = (int(x0 - sc.SHADOW + 2), int(y0 - sc.SHADOW + 2))
+            # read beside the glyph, inside B+'s round control (the old
+            # corner pixel of the square plate is outside the disc now)
+            edge = (int(x0 - sc.SHADOW + (x1 - x0) * 0.22),
+                    int(cy - sc.SHADOW))
             assert lit.getpixel(edge) != plain.getpixel(edge), \
                 (scale, "hovering the X does not light it")
             assert other.getpixel(edge) == plain.getpixel(edge), \
@@ -25838,10 +25991,10 @@ def test_an_english_row_runs_left_to_right_and_a_hebrew_row_does_not(
                          rc.EDIT: "E"}}
         img = rc.compose(card, 1.0, 1.0, cache={})
         # the fill is ACCENT_SOFT (the proposal) or RED_SOFT (the heard
-        # word) at alpha 230; compositing onto the transparent ground
-        # rounds each channel by one
+        # word), opaque since B+ (look.pill; 230 before); compositing onto
+        # the transparent ground rounds each channel by one
         xs = [x for x in range(img.width) for y in range(img.height)
-              if (lambda p: p[3] == 230 and all(
+              if (lambda p: p[3] >= 230 and all(
                   abs(a - b) <= 2 for a, b in zip(p[:3], fill)))(
                   img.getpixel((x, y)))]
         assert xs, "the pills are the only things painted in that fill"
@@ -29005,8 +29158,15 @@ def test_the_notify_card_is_measured_and_pressed_where_drawn() -> None:
     assert face.size == img.size
     cx, cy = face.width // 2, face.height // 2
     assert face.getpixel((cx, cy))[3] == 255, "flat must be opaque"
-    assert face.getpixel((cx, 1))[:3] == nc.KIND_COLOUR["done"], \
-        "the colour bar runs along the top"
+    # B+ (2026-10-23): the kind is the LAMP before the sender's name, not a
+    # bar along the top — the lamp's centre is the kind's colour
+    lx = int(nc.PAD + nc.CROSS + 10 + 3.5)
+    ly = int(nc.PAD + nc.CROSS / 2)
+    got = face.getpixel((lx, ly))[:3]
+    assert all(abs(a - b) <= 6 for a, b in zip(got,
+                                               nc.KIND_COLOUR["done"])), got
+    assert face.getpixel((cx, 1))[:3] != nc.KIND_COLOUR["done"], \
+        "the colour bar is back"
 
 
 def test_the_card_never_hands_one_string_both_hebrew_and_latin() -> None:
@@ -29614,9 +29774,13 @@ def test_the_skin_notify_face_actually_rounds_the_corner() -> None:
                 f"owner asked us to remove is back")
     # Just inside the arc it is the face, at full face weight, and so is
     # the middle. If these were transparent the corner would be "round"
-    # only because the whole card had vanished.
-    for cy, cx in ((pad + 6, pad + 6), (pad + 6, pad + w - 7),
-                   (pad + h - 7, pad + 6), (pad + h - 7, pad + w - 7)):
+    # only because the whole card had vanished. The arc meets the diagonal
+    # at RADIUS * (1 - 1/sqrt 2): 5.86 px for LAMPLIGHT's 20, 6.44 for
+    # B+'s 22 (2026-10-23) — so the face is read a pixel past that.
+    k = int(nc.RADIUS * (1 - 0.5 ** 0.5)) + 2
+    for cy, cx in ((pad + k, pad + k), (pad + k, pad + w - 1 - k),
+                   (pad + h - 1 - k, pad + k),
+                   (pad + h - 1 - k, pad + w - 1 - k)):
         assert alpha[cy, cx] >= 200, (cy, cx, alpha[cy, cx])
     assert alpha[pad + h // 2, pad + w // 2] >= 200, "the face is not there"
     # ...and the ramp between them is a ramp, not a step: an antialiased
@@ -29634,7 +29798,11 @@ def test_the_skin_notify_face_actually_rounds_the_corner() -> None:
     ramp = [int(alpha[pad + d, pad + d]) for d in range(11)]
     assert any(0 < v < 200 for v in ramp), (
         f"no feather on the corner, just an edge: {ramp}")
-    assert ramp == sorted(ramp), (
+    # monotonic up to the face; past it B+'s frosted rim sits ON the edge
+    # and is a hair denser than the face behind it (233 then 232, measured
+    # 2026-10-23), which is the rim and not a hole
+    feather = ramp[:next(i for i, v in enumerate(ramp) if v >= 200) + 1]
+    assert feather == sorted(feather), (
         f"the corner does not open outward monotonically: {ramp}")
 
     # The flat face, for contrast: the Tk fallback's corner is OPAQUE, and
@@ -35544,6 +35712,22 @@ def test_consent_card_words_and_layout():
         assert (img.width, img.height) == (w, h)
         small_w, small_h = cc.measure(card, 0.6, cache)
         assert small_w < w and small_h < h
+        # A CLASSIC DIALOG (the owner, 2026-10-23: "more classic"): every
+        # label in a column of its own on the left, its words beside it
+        # and never under it, and both buttons on the command strip at
+        # the foot, which runs to the card's bottom edge.
+        lay = cc.layout(card, 1.0, cache)
+        pieces = lay["items"]
+        for i, (kind_, piece, y, x) in enumerate(pieces):
+            if kind_ != "label":
+                continue
+            body = pieces[i + 1]
+            assert body[0] == "body" and x == 0, (kind, i)
+            assert body[3] >= piece.width + 8, "a label runs into its words"
+            assert abs(body[2] - y) <= 4, "the words are not beside the label"
+        for name, _w in cc.BUTTONS:
+            y0, y1 = boxes[name][1] - cc.SHADOW, boxes[name][3] - cc.SHADOW
+            assert lay["band_y"] < y0 and y1 < h, (name, lay["band_y"])
     # The cloud cards quote the providers' own words, in their words —
     # cut short since 2026-09-19 evening (the owner: "English and much
     # shorter"), the whole quotes in the guide's cloud chapter.
@@ -46846,8 +47030,9 @@ def test_google_signin_round_trip_and_delete_me():
 def test_signin_page_is_the_apps_own_and_fetches_nothing():
     """The loopback page after Sign in with Google (sb.signin_page): the
     owner's verdict of 2026-09-19 was a bare white page he had to leave
-    to go and find the app. Now: English, LAMPLIGHT (the ground, the
-    text, the dim, the gold — skin\\palette.py's numbers), the mark
+    to go and find the app. Now: English, the palette (B+ since
+    2026-10-23: the ground, the text, the dim, the iris — skin\\palette.py's
+    numbers), the mark
     inline as a data: URI of icon.png, the two sentences, a [Close this
     tab] that calls window.close(), and NOT ONE request to anywhere — no
     src/href that is not data:, no <link>, no @import, no url(), a font
@@ -48822,7 +49007,9 @@ def test_the_shelf_has_a_move_button_with_the_dot_on_it() -> None:
             plain = sc.compose(card, scale, None)
             lit = sc.compose(card, scale, sc.MOVE)
             other = sc.compose(card, scale, sc.PAUSE)
-            edge = (int(x0 - sc.SHADOW + 2), int(y0 - sc.SHADOW + 2))
+            # read at the middle of the plate's left end: B+'s buttons are
+            # pills, and the old corner pixel is outside the curve now
+            edge = (int(x0 - sc.SHADOW + 3), int(cy - sc.SHADOW))
             assert lit.getpixel(edge) != plain.getpixel(edge), \
                 (scale, "hovering Move does not light it")
             assert other.getpixel(edge) == plain.getpixel(edge), \
@@ -48865,6 +49052,52 @@ def test_the_shelf_has_a_move_button_with_the_dot_on_it() -> None:
                 (scale, "the uptime line runs into the Move button")
 
 
+def test_a_cut_shelf_line_keeps_whole_words() -> None:
+    """shelf_card._fit cuts a line too long for its row, and since the
+    polish pass (2026-10-23) the cut falls in the SPACE nearest the room,
+    not through a letter — "…את כ" was a Hebrew line cut mid-letter. A
+    space is a run of empty columns wider than a gap between letters;
+    with none in reach the line is cut where it was."""
+    from PIL import Image
+    import shelf_card as sc
+
+    def line(cols, width):
+        img = Image.new("RGBA", (width, 6), (0, 0, 0, 0))
+        for x in cols:
+            for y in range(6):
+                img.putpixel((x, y), (255, 255, 255, 255))
+        return img
+
+    # a word of 21 columns, a 5-column space, a word of 35, 1-column gaps
+    # inside the second word between its "letters"
+    word2 = [x for x in range(26, 61) if x not in (33, 47)]
+    img = line(list(range(0, 21)) + word2, 61)
+    # Hebrew keeps the right: 45 columns would cut into the first word,
+    # so only the second, whole, is kept
+    assert sc._word_cut(img, 45, True, 10.0) == 35
+    # a letter gap is not a space: 30 columns cut inside the second word
+    # and find no space within reach, so the cut stays where it was
+    assert sc._word_cut(img, 30, True, 10.0) == 30
+    # Latin keeps the left, mirrored
+    mirror = img.transpose(Image.FLIP_LEFT_RIGHT)
+    assert sc._word_cut(mirror, 45, False, 10.0) == 35
+    # and the real thing: a long Hebrew row, cut, keeps whole words — the
+    # columns just inside its cut end are the empty ones of a space
+    text = ("תעדכן בבקשה את כל הקבצים של ההגדרות, ואחרי זה תריץ את כל "
+            "הבדיקות על השולחן הנסתר")
+    cache: dict = {}
+    full = sc._text(cache, text, 10.0, "ink", rtl=True)
+    room = full.width * 2 // 3
+    cut = sc._fit(cache, full, room, True, 10.0)
+    assert cut.width == room
+    kept = sc._word_cut(full, room - 20, True, 10.0)
+    assert kept < room - 20, "the cut moved back to a space"
+    alpha = full.getchannel("A")
+    start = full.width - kept
+    assert all(alpha.getpixel((start - 1, y)) <= 24
+               for y in range(full.height)), "a space before the kept words"
+
+
 def test_the_halo_is_light_at_the_edge_and_nothing_in_the_middle() -> None:
     """move_card.glow: the rim round one monitor.
 
@@ -48872,7 +49105,7 @@ def test_the_halo_is_light_at_the_edge_and_nothing_in_the_middle() -> None:
     the edge, and a window whose middle is not alpha 0 would tint every
     screen; brighter at the edge than a fifth of the way in; the same on
     all four edges; a corner no brighter than the brighter of its two
-    edges (they are joined with `lighter`, never added); gold, not red
+    edges (they are joined with `lighter`, never added); iris, not red
     (R/(R+G+B) well under the 0.8 that every photosensitivity guideline
     singles out); and the owner's second picture, not his first — the
     edge alpha stays under 220 and the reach is 0.18 of the shorter side.
@@ -48900,9 +49133,18 @@ def test_the_halo_is_light_at_the_edge_and_nothing_in_the_middle() -> None:
         assert abs(px[w // 2, h - 1][3] - edge) <= 1, "bottom differs"
         # a corner is the brighter of its edges, not their sum
         assert px[0, 0][3] <= max(px[0, 8][3], px[8, 0][3]) + 1, px[0, 0]
-        # gold: warm, and nowhere near the red that guidelines single out
+        # ...and turned ROUND, not mitred (the polish pass, 2026-10-23):
+        # `lighter` alone meets at a 45-degree ridge the eye reads as a
+        # line, where a point on the diagonal is exactly as lit as the
+        # edge at the same depth; turned round it is lit more
+        d = span // 4
+        assert px[d, d][3] > px[d, h // 2][3], (px[d, d], px[d, h // 2])
+        assert px[w - 1 - d, h - 1 - d][3] == px[d, d][3], "corners alike"
+        # iris since B+ (2026-10-23; gold before): violet light — blue
+        # above red above green — and nowhere near the red that every
+        # photosensitivity guideline singles out
         r, g, b, _a = px[0, h // 2]
-        assert r > g > b, (r, g, b)
+        assert b > r > g, (r, g, b)
         assert r / (r + g + b) < 0.5, (r, g, b)
 
 
@@ -48916,7 +49158,7 @@ def test_the_done_card_claims_its_button_and_nothing_else() -> None:
     Esc note, the face and the whole shadow margin answer HTTRANSPARENT,
     so a click aimed at whatever is under the card lands there; there is
     no HTCAPTION anywhere — this card is dismissed, not dragged; the
-    button is the accent's gold at rest and brighter under the pointer;
+    button is the accent's iris at rest and brighter under the pointer;
     and compose() is exactly measure() big at every scale.
     """
     import move_card as mc
@@ -48951,8 +49193,10 @@ def test_the_done_card_claims_its_button_and_nothing_else() -> None:
         img = mc.compose(card, scale, None, cache)
         assert img.size == (width, height), (scale, img.size, width, height)
         lit = mc.compose(card, scale, mc.DONE, cache)
-        # the button's plate: gold at rest, and a different gold lit
-        inside = (int(x0 - mc.SHADOW + 4), int(y0 - mc.SHADOW + 4))
+        # the button's plate: the iris at rest, a brighter iris lit — read
+        # at the middle of its left end, inside B+'s pill (a corner pixel
+        # of the old 10 px rectangle is outside the curve now)
+        inside = (int(x0 - mc.SHADOW + 6 * scale), int(cy - mc.SHADOW))
         rest = img.getpixel(inside)
         assert rest[3] > 200 and all(abs(rest[i] - accent[i]) < 30
                                      for i in range(3)), (scale, rest)
@@ -49740,7 +49984,8 @@ def test_the_screens_card_says_what_the_plan_says() -> None:
 
     card = _pin_card()
     assert card["id"] == nc.PIN_ID and card["pinned"] is True
-    assert card["kind"] == "info" and card["label"] == "SCREENS OFF"
+    # the label in sentence case since B+ (2026-10-23), like a sender's name
+    assert card["kind"] == "info" and card["label"] == "Screens off"
     assert card["title"] == "Screens off is on"
     assert card["when"] == "since 14:35", card["when"]
     assert card["button"] == "Screens on"
@@ -49975,10 +50220,10 @@ def test_the_live_blur_sits_on_one_window_per_card_never_on_the_column(
     on the real screen that day: layered or plain, SetWindowRgn or a DWM
     blur region, every pixel of the rectangle blurred); the one shape it
     honours is Windows 11's own rounded corner. So the column's window
-    never asks for the blur, every piece of glass gets a blur window of
-    exactly its own size with that corner, and the face over the blur is
-    drawn at the compositor's radius — so the face covers every pixel the
-    blur does, and nothing outside it."""
+    never asks for the blur and every piece of glass gets a blur window
+    with that corner — inset under the piece since 2026-10-23, so the
+    face keeps B+'s rounder corner and still covers every pixel the blur
+    does, and nothing outside it."""
     skin = _skin_or_skip()
     if skin is None:
         return
@@ -50001,34 +50246,39 @@ def test_the_live_blur_sits_on_one_window_per_card_never_on_the_column(
         "a window region never cut the blur; do not bring it back"
     assert "coverage_rects" not in nc.__all__
 
-    # The face at the compositor's radius covers exactly the rounded
-    # rectangle Windows blurs behind: inside the card, the only empty
-    # pixels are the four corners outside an 8 px arc (and the arc's own
-    # antialiased edge); outside the card, nothing at all.
+    # B+ (2026-10-23): the face keeps its own 22 px corner over the live
+    # blur, and each blur window is INSET under its piece by blur_inset()
+    # so that Windows' 8 px corner lies wholly inside the face's. Every
+    # pixel the compositor blurs — the inset rectangle with its 8 px arcs
+    # — is under the face; outside the card there is nothing at all.
+    assert "blur_inset(r)" in src, "the blur windows are no longer inset"
     w, h, pad = 200, 120, 20
+    radius = nc.RADIUS
+    d = skin_notify.blur_inset(radius)
+    assert d >= (radius - skin_glass.DWM_RADIUS) * (1 - 0.5 ** 0.5)
+    assert skin_notify.blur_inset(skin_glass.DWM_RADIUS) == 0
     surface = skia.Surface(w + 2 * pad, h + 2 * pad)
     canvas = surface.getCanvas()
     canvas.clear(0x00000000)
     skin_notify.face(canvas, w, h, 1.0, None, pad, pad,
-                     radius=skin_glass.DWM_RADIUS)
+                     dense_edge=d + 1)
     alpha = surface.makeImageSnapshot().toarray(
         colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
-    import numpy as np
-    # (the rim is a 1 px stroke centred ON the edge, so half of it lands a
-    # pixel outside — face where there is no blur, which is harmless; the
-    # direction that matters is the next loop's)
     outside = alpha.copy()
-    outside[pad - 1:pad + h + 1, pad - 1:pad + w + 1] = 0
+    outside[pad:pad + h, pad:pad + w] = 0
     assert not outside.any(), "the face paints outside its card"
     r = skin_glass.DWM_RADIUS
-    for y in range(h):
-        for x in range(w):
-            dx = max(0, r - x - 0.5, x + 0.5 - (w - r))
-            dy = max(0, r - y - 0.5, y + 0.5 - (h - r))
-            inside_arc = (dx * dx + dy * dy) ** 0.5 <= r - 1
-            if inside_arc:
-                assert alpha[pad + y, pad + x] > 0, (
-                    f"a hole in the face at ({x}, {y}) where the blur shows")
+    bw, bh = w - 2 * d, h - 2 * d
+    for y in range(bh):
+        for x in range(bw):
+            dx = max(0, r - x - 0.5, x + 0.5 - (bw - r))
+            dy = max(0, r - y - 0.5, y + 0.5 - (bh - r))
+            if (dx * dx + dy * dy) ** 0.5 <= r:
+                assert alpha[pad + d + y, pad + d + x] >= 200, (
+                    f"the blur shows through at ({d + x}, {d + y})")
+    # and over the band round the edge, where the desktop behind is NOT
+    # blurred, the face is nearly opaque
+    assert alpha[pad + h // 2, pad + 1] >= 240, alpha[pad + h // 2, pad + 1]
 
 
 def test_closing_one_card_takes_only_that_card_and_leaves_the_rest_standing(
@@ -50130,8 +50380,9 @@ def test_the_glass_column_changes_in_place_and_its_blur_windows_follow(
     a hidden desktop; house rule 8). A column that changes is the SAME
     window — same handle — resized and repainted, never taken down and
     built again. While the blur is live there is one blur window per piece
-    of glass, exactly that piece's rectangle on the screen and below the
-    column in the z-order, and they follow it: one fewer when a card
+    of glass, that piece's rectangle (inset under its corner since
+    2026-10-23) on the screen and below the column in the z-order, and
+    they follow it: one fewer when a card
     goes, one more when one comes, none when the last goes. What only a
     screen can show — the blur itself — is measured by hand (2026-10-19,
     the probe in the commit message) and left for his eyes."""
@@ -50196,15 +50447,19 @@ def test_the_glass_column_changes_in_place_and_its_blur_windows_follow(
             return bottom - top
 
         def check_behind(column):
-            """Every blur window is its piece, on the screen, under the
+            """Every blur window is its piece — inset by blur_inset under
+            B+'s rounder corner (2026-10-23) — on the screen, under the
             column; and there is one per piece."""
             behind = list(getattr(card, "behind", []) or [])
             if not behind:
                 return True                  # no live blur on this desktop
             win = ours()[0]
             gx, gy = rect(win.hwnd)[:2]
-            want = [(gx + x, gy + y, gx + x + w, gy + y + h)
-                    for x, y, w, h, _r in nc.stack_shapes(column, 1.0)]
+            want = []
+            for x, y, w, h, r in nc.stack_shapes(column, 1.0):
+                d = skin_notify.blur_inset(r)
+                want.append((gx + x + d, gy + y + d, gx + x + w - d,
+                             gy + y + h - d))
             assert [rect(b) for b in behind] == want, (
                 [rect(b) for b in behind], want)
             below, h = set(), user32.GetWindow(ctypes.c_void_p(win.hwnd), 2)

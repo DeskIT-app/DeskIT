@@ -86,7 +86,7 @@ import time
 from . import ease
 from .glass import (Glass, HTCAPTION, HTCLIENT, HTTRANSPARENT,
                     virtual_screen, work_area)
-from .palette import DOT_STATES, NO_HALO, argb, rgb
+from .palette import DOT_STATES, LAMP_CORE, NO_HALO, argb, rgb
 
 _log = logging.getLogger("app")
 
@@ -276,6 +276,16 @@ class Dot:
                             argb(52 * glow * halo, fill),
                             argb(0, fill)],
                     positions=[0.0, 0.62, 1.0])))
+            # B+'s lamp (2026-10-23, bplus.css `.lamp`): two soft rings of
+            # the lamp's own colour round the bead — .16 for the first
+            # 3 px, .06 for the next 3 — the desk's chip lamp at the dot's
+            # size. Gated with the halo, so paused still casts nothing.
+            canvas.drawCircle(cx, cy, CORE * 0.5 + 1.5, skia.Paint(
+                AntiAlias=True, Style=skia.Paint.kStroke_Style,
+                StrokeWidth=3.0, Color=argb(41 * glow * halo, fill)))
+            canvas.drawCircle(cx, cy, CORE * 0.5 + 4.5, skia.Paint(
+                AntiAlias=True, Style=skia.Paint.kStroke_Style,
+                StrokeWidth=3.0, Color=argb(15 * glow * halo, fill)))
 
         # A hairline containing ring, so the dot has an edge against a
         # white window as well as against a dark one — and, while it is
@@ -304,8 +314,19 @@ class Dot:
                 StrokeWidth=2.0, StrokeCap=skia.Paint.kRound_Cap,
                 Color=argb(210, fill)))
 
-        canvas.drawCircle(cx, cy, CORE * 0.5, skia.Paint(
-            AntiAlias=True, Color=argb(255, fill)))
+        if self.state == "ready" and alarm_fill is None and k >= 1.0:
+            # the listening lamp has a hot centre, up and left (B+'s
+            # --lamp-core); every other lamp is its colour throughout
+            canvas.drawCircle(cx, cy, CORE * 0.5, skia.Paint(
+                AntiAlias=True, Shader=skia.GradientShader.MakeRadial(
+                    center=(cx - CORE * 0.1, cy - CORE * 0.12),
+                    radius=CORE * 0.6,
+                    colors=[argb(255, LAMP_CORE), argb(255, fill),
+                            argb(255, fill)],
+                    positions=[0.0, 0.62, 1.0])))
+        else:
+            canvas.drawCircle(cx, cy, CORE * 0.5, skia.Paint(
+                AntiAlias=True, Color=argb(255, fill)))
         # a specular highlight, up and left, the way a lit bead has one
         canvas.drawCircle(cx - CORE * 0.16, cy - CORE * 0.18, CORE * 0.20,
                           skia.Paint(AntiAlias=True,

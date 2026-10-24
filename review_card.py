@@ -50,11 +50,13 @@ from __future__ import annotations
 
 from PIL import Image, ImageDraw
 
+import look
+
 # Win32 hit-test answers, spelled out so this module needs no skin import.
 HTTRANSPARENT, HTCLIENT, HTCAPTION = -1, 1, 2
 
 CARD_W = 460              # 400 until 2026-09-21: the heard word joined the row
-RADIUS = 20
+RADIUS = 22               # B+'s corner (20 under LAMPLIGHT)
 PAD = 16
 HEAD_H = 40               # title and sub-line
 BAR_H = 4                 # the clock under the head
@@ -77,24 +79,26 @@ BUTTONS = ((ACCEPT, 112), (REJECT, 92), (LATER, 104))   # name, width at 1.0
 # skin folder deleted, and overlay.py keeps its fallback palette the same
 # way. Tuples, because Pillow wants them.
 #
-# The gold is spent ONCE on this card, on the accept button, because
-# that is the one primary action it offers. Reject and Later are
-# secondary faces with a hairline; that is the whole 'never two gold
-# things lit on one surface' rule, in one place where it is visible.
-INK = (241, 236, 226)        # FG          13.76:1 on the card
-INK_DIM = (178, 168, 150)    # DIM          6.89:1
-INK_FAINT = (126, 117, 100)  # FAINT        3.56:1 — labels only
-LINE = (58, 52, 42)          # LINE
-EDGE = (41, 36, 29)          # EDGE         a secondary button
-EDGE_HI = (51, 45, 36)       # EDGE_HI
-ACCENT = (227, 166, 60)      # ACCENT       the lamp
-ACCENT_HI = (240, 184, 84)   # ACCENT_HI
-ACCENT_SOFT = (51, 39, 17)   # ACCENT_SOFT  the changed word's pill
-ACCENT_TEXT = (240, 186, 92)  # ACCENT_TEXT  9.17:1 on the card
-ACCENT_ON = (26, 20, 9)      # ACCENT_ON    the label ON the gold fill
-RED = (241, 134, 122)        # RED          6.50:1
-RED_SOFT = (61, 26, 22)      # the danger red at card weight
-CARD = (36, 32, 26)          # CARD
+# The iris is spent ONCE on this card, on the accept button, because
+# that is the one primary action it offers. Reject and Later are pills of
+# frost; that is the whole 'never two lit things on one surface' rule, in
+# one place where it is visible. B+ since 2026-10-23 (look.py draws the
+# pieces); consent_card and tour_card read these same names.
+INK = (239, 237, 247)        # FG          14.15:1 on the card
+INK_DIM = (192, 195, 216)    # DIM          9.40:1
+INK_MUTED = (164, 169, 194)  # MUTED        7.05:1 — the note, the count
+INK_FAINT = (112, 117, 142)  # FAINT        3.61:1 — labels only
+LINE = (48, 54, 90)          # LINE
+EDGE = (31, 35, 64)          # EDGE         a secondary button
+EDGE_HI = (42, 48, 80)       # EDGE_HI
+ACCENT = (165, 151, 255)     # ACCENT       iris, the one soft light
+ACCENT_HI = (185, 174, 255)  # ACCENT_HI
+ACCENT_SOFT = (57, 57, 97)   # ACCENT_SOFT  the proposal's pill
+ACCENT_TEXT = (194, 185, 255)  # ACCENT_TEXT  9.12:1 on the card
+ACCENT_ON = (20, 15, 51)     # ACCENT_ON    the label ON the iris fill
+RED = (255, 110, 126)        # RED          6.08:1
+RED_SOFT = (72, 46, 68)      # the danger red at card weight
+CARD = (26, 30, 53)          # CARD
 
 TITLE = "קריאה שנייה"
 LABELS = {ACCEPT: "נכון", REJECT: "לא", LATER: "אחר כך"}
@@ -270,15 +274,14 @@ def _heard_piece(cache: dict, row: dict, pt: float, s: float):
     if row.get("kind") == "drop" or not (row.get("was") or "").strip():
         return None
     rtl = row_rtl(row)
-    txt = _text(cache, row["was"], pt, colour=RED, rtl=rtl)
-    pad = int(8 * s)
-    pill = Image.new("RGBA", (txt.width + 2 * pad, txt.height + int(6 * s)),
+    txt = _text(cache, row["was"], pt, colour=look.INK["bad_ink"], rtl=rtl)
+    pad = int(9 * s)
+    pill = Image.new("RGBA", (txt.width + 2 * pad, txt.height + int(8 * s)),
                      (0, 0, 0, 0))
-    pill.alpha_composite(_rr(pill.size, 7 * s, fill=RED_SOFT + (230,),
-                             outline=RED + (150,), width=1))
-    pill.alpha_composite(txt, (pad, int(3 * s)))
-    arrow = _text(cache, ARROW_RTL if rtl else ARROW_LTR, pt + 2,
-                  colour=ACCENT, rtl=False)
+    look.pill(pill, (0, 0, pill.width, pill.height), "heard")
+    pill.alpha_composite(txt, (pad, int(4 * s)))
+    arrow = look.glyph("arrow-l" if rtl else "arrow-r", pt * 1.25,
+                       INK_MUTED + (255,), 1.4)
     gap = int(6 * s)
     out = Image.new("RGBA", (pill.width + gap + arrow.width,
                              max(pill.height, arrow.height)), (0, 0, 0, 0))
@@ -310,14 +313,15 @@ def _fit(cache: dict, row: dict, avail: float, pt: float, s: float):
     rtl = row_rtl(row)
     drop = row.get("kind") == "drop"
     word = _text(cache, row.get("word") or " ", pt, colour=(
-        RED if drop else ACCENT_TEXT), weight=600, rtl=rtl)
+        look.INK["bad_ink"] if drop else look.INK["prop_ink"]), weight=400,
+        rtl=rtl)
     heard = _heard_piece(cache, row, pt, s)
     if heard is not None:
         avail -= heard.width + 8 * s
     # the tick shares the proposal's pill: its width goes into pill_w
-    tick = None if drop else _text(cache, TICK, pt, colour=ACCENT_TEXT,
-                                   weight=600, rtl=False)
-    pill_w = word.width + 16 * s + (tick.width + 5 * s if tick else 0)
+    tick = None if drop else look.glyph("check", pt * 1.15, ACCENT + (255,),
+                                        1.7)
+    pill_w = word.width + 18 * s + (tick.width + 4 * s if tick else 0)
     right_words = (row.get("right") or "").split()
     left_words = (row.get("left") or "").split()
     cut_r = cut_l = False
@@ -364,21 +368,32 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     right = width - pad
     y = pad
 
-    # -- head: title and count on the right
-    title = _text(cache, card.get("title", TITLE), 12.0 * s, weight=600)
-    img.alpha_composite(title, (int(right - title.width), int(y)))
-    sub = _text(cache, card.get("sub", ""), 9.0 * s, colour=INK_DIM)
-    img.alpha_composite(sub, (int(right - sub.width), int(y + 22 * s)))
+    # -- head: the pencil's mark, the title and the count on the right —
+    # the desk's "Second reading" slip (B+, 2026-10-23), in this card's
+    # Hebrew
+    mr = 15 * s
+    look.mark(img, right - mr, y + mr, mr, "iris_text")
+    pen = look.glyph("pencil", mr * 1.05, "iris_text", 1.5)
+    img.alpha_composite(pen, (int(right - mr - pen.width / 2),
+                              int(y + mr - pen.height / 2)))
+    head_right = right - 2 * mr - 12 * s
+    title = _text(cache, card.get("title", TITLE), 12.5 * s, weight=400)
+    img.alpha_composite(title, (int(head_right - title.width), int(y)))
+    sub = _text(cache, card.get("sub", ""), 9.0 * s, colour=INK_MUTED)
+    img.alpha_composite(sub, (int(head_right - sub.width), int(y + 21 * s)))
     y += HEAD_H * s
 
-    # -- the clock: a bar that empties towards the left
+    # -- the clock: a bar that empties towards the left. Iris, beside the
+    # iris button — the one exception to "one lit thing", for the reason
+    # SKIN.md's decision 2 gives: it is a rule and not a control, and it
+    # says "this is about to go away"
     bar_w = width - 2 * pad
     bar_h = max(2, int(round(BAR_H * s)))
-    track = _rr((bar_w, bar_h), bar_h / 2, fill=LINE + (140,))
+    track = _rr((bar_w, bar_h), bar_h / 2, fill=(255, 255, 255, 20))
     img.alpha_composite(track, (int(pad), int(y)))
     left_w = int(round(bar_w * max(0.0, min(1.0, float(progress)))))
     if left_w > 0:
-        fill = _rr((left_w, bar_h), bar_h / 2, fill=ACCENT + (255,))
+        fill = _rr((left_w, bar_h), bar_h / 2, fill=ACCENT + (200,))
         img.alpha_composite(fill, (int(right - left_w), int(y)))
     y += BAR_H * s + 10 * s
 
@@ -392,10 +407,13 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
                      li.height if li else 0,
                      heard.height - 6 * s if heard else 0) + 6 * s
         cy = y + line_h / 2
-        # the pencil: type what the word should be
-        pen = _text(cache, PENCIL, 12.0 * s, rtl=False,
-                    colour=INK if hover == f"{EDIT}{index}" else INK_FAINT)
-        img.alpha_composite(pen, (int(pad + (PENCIL_W * s - pen.width) / 2),
+        # the pencil: type what the word should be — a round control
+        here = hover == f"{EDIT}{index}"
+        pcx = pad + PENCIL_W * s / 2
+        look.disc(img, pcx, cy, PENCIL_W * s / 2, hover=here)
+        pen = look.glyph("pencil", PENCIL_W * s * 0.62,
+                         (INK if here else INK_DIM) + (255,), 1.4)
+        img.alpha_composite(pen, (int(pcx - pen.width / 2),
                                   int(cy - pen.height / 2)))
         # The sentence runs in ITS direction: a Hebrew row from the right
         # edge leftwards, an English row from the pencil's column
@@ -421,27 +439,24 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
             # reading order — the figure widgets.Change draws on the desk
             img.alpha_composite(heard, (int(place(heard.width)),
                                         int(cy - heard.height / 2)))
-        pill_h = word.height + 6 * s
+        pill_h = word.height + 8 * s
         drop = row.get("kind") == "drop"
-        pill = _rr((pill_w, pill_h), 7 * s,
-                   fill=(RED_SOFT if drop else ACCENT_SOFT) + (230,),
-                   outline=(RED if drop else ACCENT_TEXT) + (110,), width=1)
         px = place(pill_w)
-        img.alpha_composite(pill, (int(px), int(cy - pill_h / 2)))
+        look.pill(img, (px, cy - pill_h / 2, px + pill_w, cy + pill_h / 2),
+                  "heard" if drop else "prop")
         if drop:
-            img.alpha_composite(word, (int(px + 8 * s),
+            img.alpha_composite(word, (int(px + 9 * s),
                                        int(cy - word.height / 2)))
         else:
-            # inside the gold pill, in reading order: the tick, then the
-            # word — the tick at the leading edge, right after the arrow
-            tick = _text(cache, TICK, pt, colour=ACCENT_TEXT, weight=600,
-                         rtl=False)
+            # inside the proposal's pill, in reading order: the tick, then
+            # the word — the tick at the leading edge, right after the arrow
+            tick = look.glyph("check", pt * 1.15, ACCENT + (255,), 1.7)
             if rtl:
-                tx = px + pill_w - 8 * s - tick.width
-                wx = tx - 5 * s - word.width
+                tx = px + pill_w - 9 * s - tick.width
+                wx = tx - 4 * s - word.width
             else:
-                tx = px + 8 * s
-                wx = tx + tick.width + 5 * s
+                tx = px + 9 * s
+                wx = tx + tick.width + 4 * s
             img.alpha_composite(tick, (int(tx), int(cy - tick.height / 2)))
             img.alpha_composite(word, (int(wx), int(cy - word.height / 2)))
         if drop:
@@ -454,7 +469,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
             img.alpha_composite(li, (int(place(li.width)),
                                      int(cy - li.height / 2)))
         y += line_h + 4 * s
-        note = _text(cache, note_for(row), 8.5 * s, colour=INK_FAINT)
+        note = _text(cache, note_for(row), 8.5 * s, colour=INK_MUTED)
         if note.width > avail:
             note = note.crop((note.width - int(avail), 0, note.width,
                               note.height))
@@ -464,7 +479,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
         y += ROW_H * s
     if card.get("more"):
         more = _text(cache, MORE.format(n=card["more"]), 8.5 * s,
-                     colour=INK_FAINT)
+                     colour=INK_MUTED)
         img.alpha_composite(more, (int(right - more.width), int(y)))
         y += MORE_H * s
 
@@ -477,20 +492,13 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
                               bx1 - SHADOW, by1 - SHADOW)
         hot = hover == name
         if name == ACCEPT:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(ACCENT_HI if hot else ACCENT) + (255,))
-            colour = ACCENT_ON      # 8.52:1 on the fill; INK is 1.8:1
-        elif name == REJECT:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(EDGE_HI if hot else EDGE) + (255,),
-                       outline=LINE + (255,))
-            colour = INK
+            # B+'s lit button: iris light from its top, a soft pool under
+            # it. The label is ACCENT_ON, 7.39:1; INK on iris is 2.3:1
+            look.primary(img, (bx0, by0, bx1, by1), hover=hot)
+            colour = ACCENT_ON
         else:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(EDGE + (120,)) if hot else None,
-                       outline=LINE + (255,))
-            colour = INK_DIM
-        img.alpha_composite(face, (int(bx0), int(by0)))
+            look.quiet(img, (bx0, by0, bx1, by1), hover=hot)
+            colour = INK if (name == REJECT or hot) else INK_DIM
         label = LABELS[name]
         key = keys.get(name, "")
         text = f"{label}  {key}" if key else label
@@ -507,9 +515,9 @@ def flat(card: dict, scale: float = 1.0, progress: float = 1.0,
     content on top, no shadow, no glass. Opaque on CARD."""
     s = clamp_scale(scale)
     width, height = measure(card, s)
-    face = Image.new("RGBA", (width, height), CARD + (255,))
-    face.alpha_composite(_rr((width, height), RADIUS * s, fill=None,
-                             outline=LINE + (255,), width=1))
+    face = look.glass(look.rounded((width, height), (0, 0, width, height),
+                                   RADIUS * s), (0, 0, width, height),
+                      opaque=True)
     face.alpha_composite(compose(card, s, progress, hover, cache))
     return face
 

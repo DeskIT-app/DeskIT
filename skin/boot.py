@@ -40,7 +40,7 @@ from . import clock as clock_mod
 from . import ease
 from .burst import Burst, T_DIP, T_END, T_FLASH
 from .glass import Glass, primary_screen, wants_motion, work_area
-from .palette import (ACCENT_TEXT, BG, CARD, FAINT, FG, LIGHT_ACCENT,
+from .palette import (ACCENT_TEXT, BG, FAINT, FG, LIGHT_ACCENT, MUTED,
                       LIGHT_CORE, LIGHT_HOT, LIGHT_MID, LINE, argb, rgb)
 
 _log = logging.getLogger("app")
@@ -49,7 +49,7 @@ _log = logging.getLogger("app")
 PAD = 34                  # room around the card for its shadow and glow
 CARD_W, CARD_H = 396, 132
 WIN_W, WIN_H = CARD_W + PAD * 2, CARD_H + PAD * 2
-RADIUS = 18
+RADIUS = 22                # B+'s corner (18 under LAMPLIGHT)
 MARGIN_X, MARGIN_Y = 24, 24
 
 WAVE_INSET = 28           # card edge to where the waveform starts
@@ -228,9 +228,9 @@ class Card(Progress):
         self.alpha = 0.0
         self._seed = int(time.time() * 1000) & 0xFFFF
 
-        # 600 for the tracked micro-label, 400 for the sentence. A weight
-        # contrast of one step reads as mush; two steps reads as decided.
-        self.f_label = _rubik(600, 10.0)
+        # B+'s label weight (460) for the eyebrow, 400 for the sentence;
+        # the eyebrow is told apart by its voice (MUTED), not its weight
+        self.f_label = _rubik(460, 10.5)
         self.f_status = _rubik(400, 13.5)
         self._plate = None       # the static half of the card, baked once
 
@@ -322,66 +322,29 @@ class Card(Progress):
         85% of it, redrawn ninety times a second to produce an identical
         picture every time.
 
-        Six offset round-rects with geometrically decaying alpha rather than
-        a MaskFilter blur: a blur is a separate rasterise-and-convolve, and
-        stacked hard shapes are indistinguishable from one at this radius.
+        Since 2026-10-23 the picture is B+'s pane (look.plate), the one
+        every card outside the desk sits on.
         """
         if self._plate is not None:
             return self._plate
+        # B+ (2026-10-23): look.plate — the desk's glass, opaque here
+        # (nothing is grabbed behind a splash), its frosted rim and its long
+        # soft shadow — made once by Pillow and handed to skia.
+        import look
         skia = self._skia
-        surface = skia.Surface.MakeRasterN32Premul(WIN_W, WIN_H)
-        canvas = surface.getCanvas()
-        canvas.clear(0x00000000)
-        x0, y0 = PAD, PAD
-        rect = skia.Rect.MakeXYWH(x0, y0, CARD_W, CARD_H)
-        rrect = skia.RRect.MakeRectXY(rect, RADIUS, RADIUS)
-        for i in range(6, 0, -1):
-            grow = i * 3.4
-            a = 15 * (0.62 ** (6 - i))
-            canvas.drawRRect(
-                skia.RRect.MakeRectXY(
-                    skia.Rect.MakeXYWH(rect.left() - grow,
-                                       rect.top() - grow * 0.35 + 5,
-                                       rect.width() + grow * 2,
-                                       rect.height() + grow * 1.5),
-                    RADIUS + grow, RADIUS + grow),
-                skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
-        # the face: a hair lighter at the top, the way a surface lit from
-        # above actually is. A flat fill is what makes a dark UI read as
-        # printed rather than lit.
-        canvas.drawRRect(rrect, skia.Paint(
-            AntiAlias=True, Dither=True,
-            Shader=skia.GradientShader.MakeLinear(
-                points=[(x0, y0), (x0, y0 + CARD_H)],
-                colors=[argb(252, CARD), argb(252, BG)],
-                positions=[0.0, 1.0])))
-        canvas.drawRRect(rrect, skia.Paint(
-            AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-            Color=argb(190, LINE)))
-        # a specular hairline on the top edge only, 60% of the width and
-        # fading at both ends — the cheapest thing that says "glass"
-        canvas.drawLine(
-            x0 + CARD_W * 0.20, y0 + 0.5, x0 + CARD_W * 0.80, y0 + 0.5,
-            skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                       StrokeWidth=1.0,
-                       Shader=skia.GradientShader.MakeLinear(
-                           points=[(x0 + CARD_W * 0.20, y0),
-                                   (x0 + CARD_W * 0.80, y0)],
-                           colors=[argb(0, FG), argb(46, FG), argb(0, FG)],
-                           positions=[0.0, 0.5, 1.0])))
-        self._plate = surface.makeImageSnapshot()
+        img = look.plate(CARD_W, CARD_H, RADIUS, PAD, opaque=True)
+        self._plate = skia.Image.frombytes(img.tobytes(), img.size,
+                                           skia.kRGBA_8888_ColorType)
         return self._plate
 
     def _text(self, canvas, skia, x0, y0, gone):
         fade = self.alpha * (1 - ease.out_quad(ease.seg(gone, 0.0, 0.5)))
-        label = skia.Paint(AntiAlias=True, Color=argb(255 * fade, FAINT))
-        # tracked capitals, drawn a glyph at a time because Skia has no
-        # letter-spacing. Wide tracking on a 10 px label is what makes a
-        # micro-heading read as typography instead of as small text.
-        x = x0 + WAVE_INSET
-        for ch in "DESKIT":
-            canvas.drawString(ch, x, y0 + 34, self.f_label, label)
-            x += self.f_label.measureText(ch) + 1.5
+        label = skia.Paint(AntiAlias=True, Color=argb(255 * fade, MUTED))
+        # B+ (2026-10-23): the desk's eyebrow — the name as it is spelled,
+        # in the third voice, at a label's weight. LAMPLIGHT tracked it out
+        # in capitals; B+ says no letter-spaced caps anywhere.
+        canvas.drawString("DeskIT", x0 + WAVE_INSET, y0 + 34, self.f_label,
+                          label)
 
         # the state word, right-aligned against the label
         # The chip reports the STATE, not the animation. `charge` is the
@@ -391,14 +354,11 @@ class Card(Progress):
         # chip that still said LOADING. `_floor` is the milestone that
         # actually arrived.
         ready = self._floor >= 0.999
-        word = "READY" if ready else "LOADING"
-        tint = ACCENT_TEXT if ready else FAINT
-        width = self.f_label.measureText(word) + 1.5 * len(word)
-        x = x0 + CARD_W - WAVE_INSET - width
+        word = "Ready" if ready else "Loading"
+        tint = ACCENT_TEXT if ready else MUTED
+        x = x0 + CARD_W - WAVE_INSET - self.f_label.measureText(word)
         paint = skia.Paint(AntiAlias=True, Color=argb(255 * fade, tint))
-        for ch in word:
-            canvas.drawString(ch, x, y0 + 34, self.f_label, paint)
-            x += self.f_label.measureText(ch) + 1.5
+        canvas.drawString(word, x, y0 + 34, self.f_label, paint)
 
         line = self._clamp(self.f_status, self.line,
                            CARD_W - WAVE_INSET * 2)
