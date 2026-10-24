@@ -22,7 +22,30 @@ and the numbers meet by construction — the annulus ends exactly at
 y 10..18 where the top leg begins, and exactly at x 46..54 where the side
 leg begins. There is nothing left to align, at any size.
 
-    .venv\\Scripts\\python.exe dev\\make_logo.py            # both icons
+**Every picture of the app's mark comes from here.** icon.ico, and its
+256 px frame as icon.png (the wizard's mark, the desk's badges, the window
+icon, the sign-in page, the installer's pictures) and as the site's
+docs\\assets\\icon.png; packaging\\store\\assets.py draws the Store
+package's logos with `tile`. On 2026-09-24 this file redrew icon.ico and
+left icon.png alone, and for nine days the wizard, the desk's window and
+the Store copy's taskbar showed the old dalet mark while the listing showed
+this one (the Store walk, 2026-10-03, items 1 and 2) — so the PNGs are
+written in the same call as the .ico, and a test holds them to its 256 px
+frame. The root's make_icon.py, which drew the dalet, is gone.
+skin\\mark.py draws the same corner small for the boot card (the product
+cannot import from dev\\), and a test holds it to `mark`.
+
+The phone app's icons come from here too (`android`): the launcher's
+adaptive icon as two layers — the graphite ground, and the corner with
+its gold dot on nothing — at every density, and the notification's
+silhouette as a vector the status bar tints. They were drawn by
+make_icon.py's dalet on 2026-09-13 and stayed the dalet for ten days
+after this file existed, until the guide's pictures were refreshed
+(2026-10-04); a test holds them to this file as it holds icon.png.
+
+    .venv\\Scripts\\python.exe dev\\make_logo.py            # every icon
+    .venv\\Scripts\\python.exe dev\\make_logo.py --app-only # the app's: .ico + both .png
+    .venv\\Scripts\\python.exe dev\\make_logo.py --android-only
     .venv\\Scripts\\python.exe dev\\make_logo.py --preview out.png
 """
 from __future__ import annotations
@@ -35,6 +58,10 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 APP_ICO = REPO / "icon.ico"                      # the app's own icon
+#: its 256 px frame, for everything that reads a PNG: the app's own
+#: badges and pages (firstrun, dashboard, sb's sign-in page), the
+#: installer's pictures (make_wizard_images.py), and the site
+APP_PNGS = (REPO / "icon.png", REPO / "docs" / "assets" / "icon.png")
 #: the master's icon. The NAME matters: Windows caches a desktop icon
 #: by the path of the .ico, and neither ie4uinit nor deleting
 #: iconcache*.db nor rebuilding the shortcut freed the large sizes
@@ -43,6 +70,20 @@ APP_ICO = REPO / "icon.ico"                      # the app's own icon
 #: fresh — so if this is ever redrawn and Windows keeps the old
 #: picture, give it a new name here and re-point the shortcut.
 MASTER_ICO = REPO / "dev" / "master" / "DeskIT-Master.ico"
+#: the phone app's resources: the launcher's two layers per density, and
+#: the notification icon (Notify.kt's setSmallIcon)
+ANDROID_RES = REPO / "android" / "app" / "src" / "main" / "res"
+ANDROID_STATUS = ANDROID_RES / "drawable" / "ic_stat_lamp.xml"
+#: an adaptive icon's layer is 108 dp; px per dp at each density
+DENSITIES = {"mdpi": 1, "hdpi": 1.5, "xhdpi": 2, "xxhdpi": 3, "xxxhdpi": 4}
+#: the share of the 108 dp layer the mark's 64-unit grid gets: 60 dp. The
+#: legs' far corners are 31.1 units from the grid's centre, so they land
+#: 29.2 dp out: inside the 66 dp circle every launcher's mask keeps whole,
+#: and under the roundest mask (a 72 dp circle) one stroke's width in from
+#: its edge. 66 dp was tried first — the safe circle's own edge — and in a
+#: round mask the two leg ends crowded it (2026-10-04, pictures of 60, 62
+#: and 66 side by side). The mark is 41 dp of the 72 a launcher shows.
+ANDROID_GRID = 60 / 108
 
 #: the app's ground: LAMPLIGHT's graphite, the colour its icon has always had
 APP_TOP, APP_BOT = (46, 44, 40), (22, 21, 19)
@@ -100,17 +141,23 @@ def mark(size: int, *, ink=INK, lamp=MASTER_LAMP, scale: float = 1.0,
     return layer
 
 
-def ground(size: int, top, bot) -> Image.Image:
-    """The rounded tile, lit from the top, with a hair of a rim."""
-    tile = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+def ramp(size: int, top, bot) -> Image.Image:
+    """The ground's light: `top` at the top edge to `bot` at the bottom,
+    a full square — the rounding is the tile's, or the launcher's."""
     grad = Image.new("RGBA", (1, size))
     for y in range(size):
         k = y / max(1, size - 1)
         grad.putpixel((0, y), tuple(round(a + (b - a) * k) for a, b in zip(top, bot)) + (255,))
+    return grad.resize((size, size))
+
+
+def ground(size: int, top, bot) -> Image.Image:
+    """The rounded tile, lit from the top, with a hair of a rim."""
+    tile = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1),
                                            radius=round(size * 14 / 64), fill=255)
-    tile.paste(grad.resize((size, size)), (0, 0), mask)
+    tile.paste(ramp(size, top, bot), (0, 0), mask)
     edge = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ImageDraw.Draw(edge).rounded_rectangle(
         (size * 0.012, size * 0.012, size - size * 0.012, size - size * 0.012),
@@ -163,12 +210,79 @@ def tile(size: int, *, master: bool, with_word: bool) -> Image.Image:
     return big.resize((size, size), Image.LANCZOS)
 
 
-def build(path: Path, *, master: bool) -> Path:
+def build(path: Path, *, master: bool, pngs: tuple[Path, ...] = ()) -> Path:
+    """The .ico at every size, and its 256 px frame as each of `pngs` —
+    the same Image object, so the PNG is the frame and not a second
+    drawing of it."""
     frames = [tile(n, master=master, with_word=master and n >= WITH_WORD)
               for n in SIZES]
     frames[-1].save(path, format="ICO", sizes=[(n, n) for n in SIZES],
                     append_images=frames[:-1])
+    for png in pngs:
+        png.parent.mkdir(parents=True, exist_ok=True)
+        frames[-1].save(png, format="PNG", optimize=True)
     return path
+
+
+# ---------------------------------------------------------------- the phone
+
+#: the corner as the outline of the area `mark` fills (the ring's outer
+#: edge, the side leg, the ring's inner edge, the top leg) and the dot,
+#: on the same grid — for the notification icon, which is a vector
+CORNER_PATH = "M10 10H30A24 24 0 0 1 54 34V54H46V34A16 16 0 0 0 30 18H10Z"
+DOT_PATH = "M20 34a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z"
+
+STATUS_XML = """<?xml version="1.0" encoding="utf-8"?>
+<!-- The mark for the status bar: the corner and its dot, white on nothing.
+     Written by dev\\make_logo.py from the mark's 64-unit grid; edit that,
+     not this. The viewport is the mark's 44 units and 2 on each side, so
+     it fills the 22 dp a status icon is drawn in. Android tints it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <group
+        android:translateX="-8"
+        android:translateY="-8">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="{corner}" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="{dot}" />
+    </group>
+</vector>
+"""
+
+
+def android_layers(big: Image.Image | None = None) -> dict[str, tuple[Image.Image, Image.Image]]:
+    """The launcher icon's two layers at every density, by density name:
+    (background, foreground). The ground is a full square — the launcher
+    cuts it to its own shape — and the foreground is the corner and its
+    dot on nothing, at ANDROID_GRID of the layer."""
+    big = big or mark(BIG, lamp=APP_LAMP, scale=ANDROID_GRID)
+    out = {}
+    for name, k in DENSITIES.items():
+        px = round(108 * k)
+        out[name] = (ramp(px, APP_TOP, APP_BOT), big.resize((px, px), Image.LANCZOS))
+    return out
+
+
+def android() -> list[Path]:
+    """Write the phone app's icons into android\\app\\src\\main\\res."""
+    written = []
+    for name, (back, fore) in android_layers().items():
+        folder = ANDROID_RES / f"mipmap-{name}"
+        folder.mkdir(parents=True, exist_ok=True)
+        for layer, image in (("background", back), ("foreground", fore)):
+            path = folder / f"ic_launcher_{layer}.png"
+            image.save(path, format="PNG", optimize=True)
+            written.append(path)
+    ANDROID_STATUS.write_text(STATUS_XML.format(corner=CORNER_PATH, dot=DOT_PATH),
+                              "utf-8", newline="\n")
+    written.append(ANDROID_STATUS)
+    return written
 
 
 def preview(path: Path) -> Path:
@@ -188,14 +302,23 @@ def preview(path: Path) -> Path:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="draw icon.ico and dev\\master\\master.ico")
+    ap = argparse.ArgumentParser(
+        description="draw icon.ico, icon.png, docs\\assets\\icon.png, the master's "
+                    "icon and the phone app's icons")
     ap.add_argument("--preview", help="also write a strip of both icons here")
     ap.add_argument("--app-only", action="store_true")
     ap.add_argument("--master-only", action="store_true")
+    ap.add_argument("--android-only", action="store_true")
     ns = ap.parse_args()
-    if not ns.master_only:
-        print(build(APP_ICO, master=False))
-    if not ns.app_only:
+    every = not (ns.app_only or ns.master_only or ns.android_only)
+    if every or ns.app_only:
+        print(build(APP_ICO, master=False, pngs=APP_PNGS))
+        for png in APP_PNGS:
+            print(png)
+    if every or ns.master_only:
         print(build(MASTER_ICO, master=True))
+    if every or ns.android_only:
+        for path in android():
+            print(path)
     if ns.preview:
         print(preview(Path(ns.preview)))

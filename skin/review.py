@@ -31,7 +31,6 @@ import time
 
 import review_card as rc
 from .glass import Glass, primary_screen, virtual_screen
-from .palette import BG, CARD, LINE, FG, argb
 
 _log = logging.getLogger("app")
 
@@ -63,50 +62,24 @@ def _frost(x: int, y: int, width: int, height: int):
         return None
 
 
-def face(canvas, width: int, height: int, scale: float, backdrop=None) -> None:
-    """The glass under the words: shadow, frost, face, rim, hairline.
-    skin\\hint.py's recipe, at the same offsets, so the two cards read as
-    one family."""
-    import skia
+def face(canvas, width: int, height: int, scale: float, backdrop=None,
+         cache: dict | None = None) -> None:
+    """The glass under the words: B+'s long soft shadow, the frost, the
+    navy face lit from above, its light, the rim — look.plate, the same
+    pane the key card and the move card sit on. Kept in `cache`: the
+    clock repaints this card ten times a second and the glass under it
+    does not change."""
     s = rc.clamp_scale(scale)
-    x0 = y0 = SHADOW
-    rect = skia.Rect.MakeXYWH(x0, y0, width, height)
-    radius = RADIUS * s
-    rrect = skia.RRect.MakeRectXY(rect, radius, radius)
-    for i in range(6, 0, -1):
-        grow = i * 3.4
-        a = 17 * (0.62 ** (6 - i))
-        canvas.drawRRect(
-            skia.RRect.MakeRectXY(
-                skia.Rect.MakeXYWH(rect.left() - grow,
-                                   rect.top() - grow * 0.35 + 5,
-                                   rect.width() + grow * 2,
-                                   rect.height() + grow * 1.5),
-                radius + grow, radius + grow),
-            skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
-    if backdrop is not None:
-        canvas.save()
-        canvas.clipRRect(rrect, doAntiAlias=True)
-        canvas.drawImage(_to_skia(backdrop), 0, 0)
-        canvas.restore()
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Dither=True,
-        Shader=skia.GradientShader.MakeLinear(
-            points=[(x0, y0), (x0, y0 + height)],
-            colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
-            positions=[0.0, 1.0])))
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(180, LINE)))
-    canvas.drawLine(
-        x0 + width * 0.20, y0 + 0.5, x0 + width * 0.80, y0 + 0.5,
-        skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                   StrokeWidth=1.0,
-                   Shader=skia.GradientShader.MakeLinear(
-                       points=[(x0 + width * 0.20, y0),
-                               (x0 + width * 0.80, y0)],
-                       colors=[argb(0, FG), argb(64, FG), argb(0, FG)],
-                       positions=[0.0, 0.5, 1.0])))
+    key = ("plate", int(width), int(height), round(s, 3),
+           id(backdrop) if backdrop is not None else None)
+    img = cache.get(key) if cache is not None else None
+    if img is None:
+        import look
+        img = look.plate(int(width), int(height), RADIUS * s, SHADOW,
+                         backdrop)
+        if cache is not None:
+            cache[key] = img
+    canvas.drawImage(_to_skia(img), 0, 0)
 
 
 def run(card) -> None:
@@ -174,7 +147,7 @@ def run(card) -> None:
         canvas = glass.canvas
         canvas.clear(0x00000000)
         w, h = rc.measure(shown, card.scale)
-        face(canvas, w, h, card.scale, frost)
+        face(canvas, w, h, card.scale, frost, cache)
         content = rc.compose(shown, card.scale, progress, hover, cache)
         canvas.drawImage(_to_skia(content), SHADOW, SHADOW)
         glass.flush()

@@ -1,0 +1,48 @@
+/* The kit's own rules (kit.tsx). Unscoped on purpose: a place's title,
+   the change figure, the switch and the keycaps read the same in every
+   place. bplus.css holds the look's base (.cap, .seg, .btn, .glass). */
+
+/* a place's name: the same size at the same spot in every place, as the
+   approved pictures draw it (28 px at 18 — lists, settings, keys). Home's
+   headline is a sentence, not a name, and is its picture's 30 px at 20. */
+.title{position:absolute;left:-1px;top:18px;font-family:var(--font-display);font-weight:var(--w-display);font-size:28px;
+  letter-spacing:var(--display-track);line-height:36px}
+
+/* the change, in its place (Change, Segs) */
+.ctx{color:var(--ink-2)}
+.chg{display:inline-flex;flex-direction:row;align-items:center;gap:7px;vertical-align:-3px;margin:0 5px}
+.pill{height:25px;display:inline-flex;align-items:center;gap:5px;padding:0 11px;border-radius:13px;font-size:14.5px;line-height:1}
+.pill.heard{background:var(--bad-pill);color:var(--bad-ink);box-shadow:inset 0 0 0 1px var(--bad-edge)}
+.pill.heard .ic{font-size:8.5px;color:var(--bad)}
+.pill.prop{background:var(--prop-pill);color:var(--prop-ink);box-shadow:inset 0 0 0 1px var(--iris-edge), inset 0 1px 0 var(--btn-hi)}
+.pill.prop .ic{font-size:11px;color:var(--iris)}
+.arrow{font-size:12px;color:var(--ink-3)}
+
+/* "worth a look" (a consent, a key, the lock, the model) as a disc like
+   its three siblings in bplus.css — which has no .mk.warn — mixed from
+   --warn itself, so the one colour stays decided in one place */
+.mk.warn{color:var(--warn);
+  background:radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--warn) 22%, transparent),
+    color-mix(in srgb, var(--warn) 5%, transparent) 75%);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--warn) 28%, transparent),
+    0 0 22px -6px color-mix(in srgb, var(--warn) 45%, transparent)}
+
+/* a keycap that is an arrow (Caps with `arrow`) */
+.cap.gl .ic{font-size:10px}
+
+/* the switch (Switch): no accent. On = a soft lavender-grey track, a white
+   knob that sits in it. Off = a hollow ring. The knob slides. */
+.sw{width:42px;height:24px;border-radius:12px;position:relative;flex:none;display:inline-block;vertical-align:middle;
+  background:var(--sw-off);box-shadow:inset 0 0 0 1.5px var(--sw-ring);transition:background .18s ease, box-shadow .18s ease}
+.sw i{position:absolute;top:5px;left:5px;width:14px;height:14px;border-radius:50%;background:var(--knob-off);
+  transition:left .18s cubic-bezier(.22,.61,.36,1), top .18s ease, width .18s ease, height .18s ease, background .18s ease}
+.sw.on{background:linear-gradient(180deg, var(--sw-on), var(--sw-on));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 -1px 2px var(--shade-3)}
+.sw.on i{top:3px;left:21px;width:18px;height:18px;background:var(--knob);box-shadow:0 1px 3px var(--shade-1), inset 0 -1px 1px var(--line)}
+.sw[role="switch"]{cursor:pointer}
+.sw[role="switch"]:hover{filter:brightness(1.12)}
+.sw:focus-visible{outline:none;box-shadow:0 0 0 2px var(--iris-halo), inset 0 0 0 1px var(--iris-edge)}
+.sw.busy{opacity:.85}
+
+/* the page opened outside the desk's window (app.tsx) */
+.outside{position:absolute;left:0;top:96px;width:560px;padding:24px 26px 22px;font-size:16px;line-height:24px;color:var(--ink);
+  background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card)}

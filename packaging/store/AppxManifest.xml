@@ -21,14 +21,36 @@
   justification is packaging/store/justification.md), internetClient (the
   model download and the consented cloud calls), privateNetworkClientServer
   (the phone on the same Wi-Fi), microphone.
+
+  The desktop shortcut (desktop7:Shortcut, the Store walk's item 18): the
+  website installer puts DeskIT on the desktop because he closed a copy
+  once and could not find it again, and an MSIX gets only what its
+  manifest declares. Windows makes it at install and removes it at
+  uninstall. It is called "DeskIT App", the Store's name for this copy, so
+  it never collides with the website copy's DeskIT.lnk on a PC that has
+  both. desktop7 needs Windows build 19645 (every Windows 11); it is in
+  IgnorableNamespaces, so an older Windows 10 skips the shortcut and
+  installs the rest. The Icon is written with the [{Package}] token, and
+  that is measured, not style: on the runner (Windows Server 2025, the
+  Windows 11 24H2 shell) a shortcut whose Icon was the bare relative path
+  showed Windows' blank page on the desktop and through the shell's own
+  icon call, while the token form, created first and asked at once, drew
+  the mark; both links report the same IconLocation, so only the drawn
+  icon tells them apart (2026-10-03, two probe runs; a .png Icon is blank
+  either way). The taskbar button was blank with it: Windows gives a
+  window's button the icon of the shortcut carrying the app's ID. With
+  the token both draw the mark. store.yml now fails on a blank one. The logos and the
+  index that makes their targetsize names count are assets.py's and
+  priconfig.xml's.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop7="http://schemas.microsoft.com/appx/manifest/desktop/windows10/7"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap3 desktop rescap">
+  IgnorableNamespaces="uap uap3 desktop desktop7 rescap">
 
   <Identity
     Name="YoavShimron.DeskITApp"
@@ -68,6 +90,10 @@
             <desktop:ExecutionAlias Alias="deskit-hook.exe" />
           </uap3:AppExecutionAlias>
         </uap3:Extension>
+        <desktop7:Extension Category="windows.shortcut">
+          <desktop7:Shortcut File="$(Desktop)\DeskIT App.lnk" Icon="[{Package}]\assets\DeskIT.ico"
+            Description="Hold a key, speak, release: the text appears at the cursor." />
+        </desktop7:Extension>
       </Extensions>
     </Application>
   </Applications>

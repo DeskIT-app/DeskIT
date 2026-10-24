@@ -63,17 +63,22 @@ import queue
 import time
 
 import notify_card as nc
-from .glass import Glass, primary_screen, virtual_screen
-from .palette import BG, CARD, LINE, FG, argb
+from PIL import Image
+from .glass import DWM_RADIUS, Glass, primary_screen, virtual_screen
 
 _log = logging.getLogger("app")
 
 SHADOW = nc.SHADOW        # the room the window leaves round the card
 RADIUS = nc.RADIUS
-FACE_A = 202              # the face's alpha — skin\hint.py's glass weight
 BLUR = 11
 TICK_S = 0.03             # the loop; a click must feel immediate
 REPAINT_S = 0.1           # the clock: ten frames a second is smooth enough
+CACHE_MAX = 400           # text images kept across columns; a column of
+                          # eight cards is under 100, so this is weeks of
+                          # notifications before a trim, never a hover
+_said = False             # the glass's kind is logged once per run
+LATCH_S = 1.5             # a press with no new column after it this long
+                          # frees the latch (see the loop)
 CLICK_PX = 4              # a release that travelled less is a click, not a
                           # drag — overlay.NotifyCard._build_and_loop's rule
                           # and its constant, so the two paths agree on what
@@ -89,8 +94,15 @@ def _to_skia(img):
 def _frost(x: int, y: int, width: int, height: int):
     """What is behind the card, blurred. None if it cannot be had.
 
-    Grabbed BEFORE the window exists, which is the only moment the answer
-    is the desktop rather than ourselves.
+    THE FALLBACK SINCE 2026-10-18, not the frost. A photograph is out of
+    date the moment it is taken: the owner moved a window and the card
+    kept showing the one that had been there ("it takes time to update
+    the background ... I want it live, so if I move a window behind it I
+    see it going in behind"). The live blur is the compositor's
+    (Glass.blur_behind); this is what a Windows that refuses that call
+    still gets. Grabbed while the window exists but is not yet shown,
+    which is the only moment the answer is the desktop rather than
+    ourselves.
     """
     try:
         from PIL import ImageGrab, ImageFilter
@@ -128,9 +140,64 @@ def _frost(x: int, y: int, width: int, height: int):
 # has no single instant to freeze.
 
 
+def blur_inset(radius: float) -> int:
+    """How far in from a piece's edge its live-blur window has to start
+    so that Windows' own corner (DWM_RADIUS, the one shape the compositor
+    honours) lies wholly inside this face's rounder one: the 8 px arc's
+    centre may sit at most (radius - 8) from the face's arc centre, which
+    puts the window (radius - 8)(1 - 1/sqrt 2) in from the edge — 4.1 px
+    for B+'s 22 — and one pixel more for the antialiasing. A face whose
+    corner is no rounder than Windows' needs none."""
+    if radius <= DWM_RADIUS:
+        return 0
+    return int((radius - DWM_RADIUS) * (1.0 - 0.5 ** 0.5)) + 2
+
+
+def face_image(width: int, height: int, scale: float, backdrop=None,
+               x0: int = 0, y0: int = 0, radius: float | None = None,
+               backdrop_at: tuple = (0, 0), dense_edge: float = 0.0,
+               cache: dict | None = None):
+    """ONE piece's glass as a Pillow picture its size: look.glass — the
+    frost, B+'s navy face lit from above, its light at the top-left, the
+    inner top light and the frosted rim — cut to a rounded rectangle.
+
+    `backdrop` is the photograph of what is behind the WINDOW, taken with
+    its top-left at `backdrop_at` (window-relative), so this piece is
+    given the part of it that is actually behind the piece. Kept in
+    `cache` on everything it was made from: a hover repaints the column,
+    and the glass under it has not changed."""
+    s = nc.clamp_scale(scale)
+    radius = RADIUS * s if radius is None else float(radius)
+    key = ("face", int(width), int(height), round(radius, 2),
+           id(backdrop) if backdrop is not None else None,
+           tuple(backdrop_at), int(x0), int(y0), round(dense_edge, 2))
+    if cache is not None:
+        got = cache.get(key)
+        if got is not None:
+            return got
+    import look
+    w, h = int(width), int(height)
+    mask = look.rounded((w, h), (0, 0, w, h), radius)
+    frost = None
+    if backdrop is not None:
+        bx, by = backdrop_at
+        frost = backdrop.convert("RGBA").crop((x0 - bx, y0 - by,
+                                               x0 - bx + w, y0 - by + h))
+    img = look.glass(mask, (0, 0, w, h), frost, dense_edge=dense_edge)
+    if cache is not None:
+        cache[key] = img
+    return img
+
+
 def face(canvas, width: int, height: int, scale: float, backdrop=None,
-         x0: int = SHADOW, y0: int = SHADOW) -> None:
-    """The glass under the words: frost, face, rim, hairline — no shadow.
+         x0: int = SHADOW, y0: int = SHADOW, radius: float | None = None,
+         backdrop_at: tuple = (0, 0), dense_edge: float = 0.0,
+         cache: dict | None = None) -> None:
+    """The glass under the words: frost, face, rim, light — no shadow.
+
+    B+ SINCE 2026-10-23: the picture is face_image's (look.glass), drawn
+    on the skia canvas; what is written below about the corners, the
+    margin and the frost is still how it is placed.
 
     skin\\review.py's recipe at the same offsets and the same alphas, on
     purpose — the review card and the notify card are the same object to
@@ -149,64 +216,23 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None,
     the way to UpdateLayeredWindow — which is the entire fix. Nothing here
     ever draws a plain Rect; one would put the square straight back.
 
-    The frost is drawn at the window's own origin under EVERY card's clip,
-    on purpose: it is one grab of the whole window, so each card shows the
-    part of the desktop that is actually behind it rather than a repeat of
-    the top of the picture.
+    The frost is drawn at `backdrop_at` — where the grab was taken,
+    window-relative — under EVERY card's clip, on purpose: it is one grab
+    of the whole window, so each card shows the part of the desktop that
+    is actually behind it rather than a repeat of the top of the picture.
+    With the live blur on there is no frost at all (`backdrop` None): the
+    compositor draws what is behind, under this face, every frame.
+
+    `radius` is the corner's, RADIUS at the scale by default; the
+    Clear-all pill passes half its height and is a capsule.
     """
-    import skia
-    s = nc.clamp_scale(scale)
-    rect = skia.Rect.MakeXYWH(x0, y0, width, height)
-    radius = RADIUS * s
-    rrect = skia.RRect.MakeRectXY(rect, radius, radius)
-    # NO DROP SHADOW, BY REQUEST (2026-09-04). This used to be six offset
-    # round-rects with geometrically decaying alpha — boot.py's recipe,
-    # drawn outside the face in the SHADOW margin — and the owner asked for
-    # it gone: "I want without, only like the box, the message. Without the
-    # shadow that it's outside the box." So the only thing this window
-    # paints outside the curve now is nothing at all.
-    #
-    # The SHADOW margin itself STAYS, empty. It is transparent, the hit
-    # test already hands it back to the desktop, and it is load-bearing
-    # arithmetic everywhere else: notify_card.measure() sizes the window by
-    # it, regions()/hit_test() are expressed in it, origin() subtracts it so
-    # a dragged card is saved by the CARD's top-left rather than the
-    # window's, and the position in [notify] x/y was written under that
-    # rule. Reclaiming the 26 px would move a card the owner has already
-    # placed, to buy back pixels nobody can see.
-    # The frost, clipped to the rounded face with doAntiAlias=True. Without
-    # that flag the clip is a hard 1-bit mask and the blurred desktop would
-    # stair-case out to the corner of the image — a square edge again, made
-    # of the backdrop this time instead of the face.
-    if backdrop is not None:
-        canvas.save()
-        canvas.clipRRect(rrect, doAntiAlias=True)
-        canvas.drawImage(_to_skia(backdrop), 0, 0)
-        canvas.restore()
-    # The face: a hair lighter at the top the way a surface lit from above
-    # actually is, and translucent (FACE_A of 255) so the frost behind it
-    # still reads as the desktop rather than as a texture.
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Dither=True,
-        Shader=skia.GradientShader.MakeLinear(
-            points=[(x0, y0), (x0, y0 + height)],
-            colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
-            positions=[0.0, 1.0])))
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(180, LINE)))
-    # A specular hairline on the top edge only, 60% of the width, fading at
-    # both ends — the cheapest thing that says "glass". It stops well short
-    # of the corners so it never fights the curve.
-    canvas.drawLine(
-        x0 + width * 0.20, y0 + 0.5, x0 + width * 0.80, y0 + 0.5,
-        skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                   StrokeWidth=1.0,
-                   Shader=skia.GradientShader.MakeLinear(
-                       points=[(x0 + width * 0.20, y0),
-                               (x0 + width * 0.80, y0)],
-                       colors=[argb(0, FG), argb(64, FG), argb(0, FG)],
-                       positions=[0.0, 0.5, 1.0])))
+    # NO DROP SHADOW, BY REQUEST (2026-09-04): "I want without, only like
+    # the box, the message." The SHADOW margin stays, empty and
+    # transparent: notify_card.measure() sizes the window by it, the hit
+    # test is expressed in it and [notify] x/y was written under it.
+    img = face_image(width, height, scale, backdrop, x0, y0, radius,
+                     backdrop_at, dense_edge, cache)
+    canvas.drawImage(_to_skia(img), x0, y0)
 
 
 def run(card) -> None:
@@ -215,8 +241,11 @@ def run(card) -> None:
     The queue, `_alive`, `_closing` and the `_DONE` sentinel stay exactly
     where overlay.py put them, and every decision still belongs to
     overlay.NotifyCard: this only paints and reports. The window is built
-    when a card arrives and destroyed when it goes, like the review card's,
-    because its height depends on how many lines the body wrapped to.
+    when the first card arrives and destroyed when the last one goes; in
+    between, a column that changes — a card closed, a card arriving — is
+    the SAME window resized and repainted in one flush (`put_up`,
+    2026-10-18), because a rebuild left the screen empty for as long as it
+    took and the owner saw every card blink out with the one he closed.
 
     IT IS A COLUMN NOW (2026-09-04). What arrives on the queue is a LIST
     of card dicts, newest first, and ONE window holds all of them: one
@@ -242,13 +271,18 @@ def run(card) -> None:
 
     glass = None
     shown = None                   # the LIST of card dicts on screen
-    frost = None
+    frost = None                   # the fallback's photograph, skia.Image
+    frost_at = (0, 0)              # where on the screen it was taken
+    live = False                   # the compositor blurs what is behind
+    behind: list = []              # one blur window per piece of glass
+    pieces: list = []              # their (x, y, w, h) in the column window
     hover = None                   # (index, what) or None
     caption = None                 # index of the card a drag started on
     cache: dict = {}
     deadline = None
     placed_at = (0, 0)             # where we last KNOW the window was put
     dismissing = False             # a click was already turned into a press
+    latched_at = 0.0               # when it was, for LATCH_S below
     last_tick = time.monotonic()
     last_paint = 0.0
     dirty = False
@@ -266,13 +300,24 @@ def run(card) -> None:
             return None
         return shown[index].get("id")
 
+    def drop_behind():
+        """Close every blur window. Before the column's own window when
+        both go, so no blurred patch outlives the face it was under."""
+        while behind:
+            behind.pop().close()
+        pieces.clear()
+        card.behind = []
+
     def take_down():
         nonlocal glass, shown, frost, hover, deadline, dismissing, caption
+        nonlocal live
+        drop_behind()
         if glass is not None:
             glass.close()
             glass = None
         shown = None
         frost = None
+        live = False
         hover = None
         caption = None
         deadline = None
@@ -335,15 +380,20 @@ def run(card) -> None:
         both arrive for one release, and firing a press twice would mark a
         second, unseen notification as read — or raise a window twice.
         """
-        nonlocal placed_at, dismissing
+        nonlocal placed_at, dismissing, latched_at
         if glass is None or shown is None:
             return
         x, y = glass.where()
         if abs(x - placed_at[0]) + abs(y - placed_at[1]) < CLICK_PX:
             if dismissing:
                 return
+            target = ident(caption)
+            if target == nc.PIN_ID:
+                return             # a click on the pinned card's body is
+                                   # nothing — and must not take the latch
             dismissing = True
-            card.pressed("open", ident(caption))
+            latched_at = time.monotonic()
+            card.pressed("open", target)
             return
         placed_at = (x, y)
         card.placed(x + SHADOW, y + SHADOW)
@@ -351,25 +401,38 @@ def run(card) -> None:
                      x + glass.width - SHADOW, y + glass.height - SHADOW)
 
     def on_click(x, y):
-        """A left click on an HTCLIENT pixel — which is only ever the ×.
+        """A left click on an HTCLIENT pixel — a ×, the Clear-all pill, or
+        the pinned card's own pill.
 
         The rest of the card is HTCAPTION and never reaches WM_LBUTTONDOWN
         at all; its click arrives through on_move above, and means the
-        opposite thing. This road is the close button and only the close
-        button: `pressed("dismiss")`, no window raised, nothing moved.
+        opposite thing. This road is the close buttons and only the close
+        buttons: `pressed("dismiss")`, no window raised, nothing moved —
+        one card's id for its ×, None ("all of them", the dismiss key's
+        meaning) for Clear all.
         """
-        nonlocal dismissing
+        nonlocal dismissing, latched_at
         if shown is None or dismissing:
             return
         code, where = nc.stack_hit_test(shown, card.scale, x, y)
         what = where[1] if where else None
         if code == nc.HTCLIENT and what == nc.DISMISS:
             dismissing = True
+            latched_at = time.monotonic()
             card.pressed("dismiss", ident(where[0]))
+        elif code == nc.HTCLIENT and what == nc.CLEAR:
+            dismissing = True
+            latched_at = time.monotonic()
+            card.pressed("dismiss", None)
+        elif code == nc.HTCLIENT and what == nc.BUTTON:
+            # No latch: the pin is not taken down by this press, and a
+            # second click while the screens come back is harmless.
+            card.pressed("button", ident(where[0]))
 
     def paint(progress: float):
-        """One frame: a face per card, painted fresh, each with its own
-        content composited on it.
+        """One frame: a face per piece of glass, painted fresh, each with
+        its own content composited on it — the Clear-all pill when it is
+        up, then the cards.
 
         `canvas.clear(0x00000000)` is what makes the corners a hole rather
         than black — the DIB behind a layered window is premultiplied BGRA
@@ -384,34 +447,176 @@ def run(card) -> None:
             return
         canvas = glass.canvas
         canvas.clear(0x00000000)
-        for index, (x, y, w, h) in enumerate(
-                nc.stack_layout(shown, card.scale)):
-            face(canvas, w, h, card.scale, frost, x, y)
+        s = card.scale
+        # where the fallback's photograph sits in THIS window: it was taken
+        # where the window was then, and a column that has since grown or
+        # shrunk has moved its top-left
+        at = (frost_at[0] - glass.x, frost_at[1] - glass.y)
+        # Over the live blur the faces keep B+'s round corner (2026-10-23).
+        # Windows rounds a blur window at DWM_RADIUS and at nothing else
+        # (Glass.blur_behind), so each one sits blur_inset() px INSIDE its
+        # piece (sync_behind) with its 8 px corner wholly under this curve,
+        # and the face is drawn nearly opaque over the band round its edge
+        # where the desktop behind is not blurred (`dense_edge`). Until
+        # then the face itself was drawn at DWM_RADIUS.
+        pill = nc.clear_box(shown, s)
+        if pill is not None:
+            pw, ph = pill[2] - pill[0], pill[3] - pill[1]
+            face(canvas, pw, ph, s, frost, pill[0], pill[1],
+                 radius=ph / 2, backdrop_at=at,
+                 dense_edge=blur_inset(ph / 2) + 1 if live else 0,
+                 cache=cache)
+            canvas.drawImage(_to_skia(nc.compose_clear(
+                shown, s, hover == (None, nc.CLEAR), cache)), pill[0], pill[1])
+        for index, (x, y, w, h) in enumerate(nc.stack_layout(shown, s)):
+            face(canvas, w, h, s, frost, x, y, backdrop_at=at,
+                 dense_edge=blur_inset(RADIUS * s) + 1 if live else 0,
+                 cache=cache)
             # compose(), never flat(): flat() is the Tk fallback's OPAQUE
             # face with the same content on top, and drawing it here would
             # paint a solid CARD rectangle over the rounded glass — the
             # exact defect this module exists to remove.
             what = hover[1] if (hover and hover[0] == index) else None
-            content = nc.compose(shown[index], card.scale, progress, what,
-                                 cache)
+            content = nc.compose(shown[index], s, progress, what, cache)
             canvas.drawImage(_to_skia(content), x, y)
         glass.flush()
         last_paint = time.monotonic()
         dirty = False
 
-    def put_up(items):
-        nonlocal shown, deadline, hover, dismissing, caption
-        take_down()
-        shown = list(items)
-        hover = None
-        caption = None
-        dismissing = False
+    def progress_now() -> float:
+        """The clock's fill right now: 1.0 with no clock, which is the
+        default since 2026-09-04."""
+        seconds = float(shown[0].get("seconds") or 0) if shown else 0.0
+        if deadline is None or seconds <= 0:
+            return 1.0
+        return max(0.0, min(1.0, (deadline - time.monotonic()) / seconds))
+
+    def restart_clock():
+        nonlocal deadline
         # ONE clock for the column, read off the newest card. Every card in
         # a column carries the same `seconds` (NotifyCard.show builds them
         # all with its own), and the default has been 0 since 2026-09-04,
         # which means no clock at all.
         seconds = float(shown[0].get("seconds") or 0) if shown else 0.0
         deadline = (time.monotonic() + seconds) if seconds > 0 else None
+
+    def place(items):
+        """(x, y, width, height) of the window that holds `items`.
+
+        primary for the corners, the whole desktop for a saved position:
+        a card left on a second screen belongs on that second screen.
+        `inset=SHADOW` is how NotifyCard.origin knows the window is bigger
+        than the card, so mid-height on the right edge is the CARD's right
+        edge and not the shadow's — and under the default bottom anchor
+        a column of a new height keeps its bottom edge where it was.
+        """
+        s = nc.clamp_scale(card.scale)
+        win_w, win_h = nc.stack_measure(items, s)
+        x, y = card.origin(win_w, win_h, primary_screen(), SHADOW,
+                           virtual_screen())
+        return x, y, win_w, win_h
+
+    def new_behind(x, y, w, h):
+        """One blur window: click-through, never focused, exactly the size
+        of its piece, rounded by Windows, the compositor's blur behind it
+        and nothing of its own in it. None when Windows will not give it
+        both the blur and the corner — a square blur is the frame again."""
+        b = Glass(x, y, w, h, gpu=False)
+        if not (b.round_corners() and b.blur_behind()):
+            b.close()
+            return None
+        b.present(Image.new("RGBA", (w, h), (0, 0, 0, 0)))
+        return b
+
+    def follow():
+        """The column moved — every step of a drag Windows runs for it —
+        and the blur windows go with it, so the glass never slides off its
+        face. Asked on WM_MOVE, so it must stay cheap: the offsets are
+        `pieces`, worked out when the column last changed."""
+        if glass is None or not behind:
+            return
+        gx, gy = glass.where()
+        for b, (x, y, _w, _h) in zip(behind, pieces):
+            b.place(gx + x, gy + y)
+
+    def sync_behind(show: bool) -> bool:
+        """One blur window per piece of glass — the Clear-all pill and
+        every card — each its piece's size, at its piece's place on the
+        screen, directly under the column's own window. Windows are kept
+        and moved rather than built again when the column changes; extra
+        ones close. False when a new one could not be made live, and then
+        none are left: the column goes on with a photograph instead."""
+        nonlocal live
+        if glass is None or shown is None or not live:
+            return False
+        want = []
+        for x, y, w, h, r in nc.stack_shapes(shown, card.scale):
+            d = blur_inset(r)
+            want.append((int(x) + d, int(y) + d, int(w) - 2 * d,
+                         int(h) - 2 * d))
+        gx, gy = glass.x, glass.y
+        while len(behind) > len(want):
+            behind.pop().close()
+        for i, (x, y, w, h) in enumerate(want):
+            if i < len(behind):
+                b = behind[i]
+                b.resize(w, h)
+                b.move(gx + x, gy + y)
+                b.present(Image.new("RGBA", (w, h), (0, 0, 0, 0)))
+            else:
+                b = new_behind(gx + x, gy + y, w, h)
+                if b is None:
+                    drop_behind()
+                    live = False
+                    return False
+                behind.append(b)
+            if show:
+                b.show()
+            b.under(glass.hwnd)
+        pieces[:] = want
+        card.behind = [int(b.hwnd) for b in behind]
+        return True
+
+    def put_up(items):
+        """A new column. Onto the window that is already up when there is
+        one — resized, moved, repainted, all in the one
+        UpdateLayeredWindow, so nothing on screen goes away first.
+
+        THE OWNER'S BUG, 2026-10-18: "when I close one, all the cards
+        vanish for a second and then all of them come back without the
+        one I closed". Every change used to be `take_down()` and a new
+        window: the glass closed, the text cache thrown away and every
+        string drawn again through DrawTextW, the desktop photographed
+        and blurred again, a GPU surface allocated — a gap the length of
+        all of that, with nothing on screen. Now only the first card of a
+        column builds a window, and the last one going takes it down.
+        """
+        nonlocal shown, hover, dismissing, caption
+        items = list(items)
+        if glass is not None and not hushed:
+            if items == shown:
+                return             # the engine re-saying what is up
+            shown = items
+            hover = None
+            caption = None
+            dismissing = False
+            restart_clock()
+            try:
+                relayout()
+            except Exception:
+                _log.info("skin: the notify column would not relayout; "
+                          "building it again", exc_info=True)
+                take_down()
+                shown = items
+                restart_clock()
+                map_card()
+            return
+        take_down()
+        shown = items
+        hover = None
+        caption = None
+        dismissing = False
+        restart_clock()
         if hushed:
             # A NOTIFICATION LANDING MID-SELECTION, which is the case the
             # hush exists for. The item is accepted and its clock is
@@ -422,6 +627,25 @@ def run(card) -> None:
             return
         map_card()
 
+    def relayout():
+        """The window that is up, made the shape of `shown` in place: same
+        handle, new size and position and picture in one flush, then the
+        region. The text cache is kept — the strings of the cards that
+        stayed are the same strings — and only trimmed when it has grown
+        past what any column could need."""
+        nonlocal placed_at
+        if len(cache) > CACHE_MAX:
+            cache.clear()
+        x, y, win_w, win_h = place(shown)
+        glass.resize(win_w, win_h)
+        glass.move(x, y)
+        placed_at = (x, y)
+        paint(progress_now())
+        if live and not sync_behind(show=True):
+            paint(progress_now())  # back to the photograph's rounder face
+        card.rect = (x + SHADOW, y + SHADOW, x + win_w - SHADOW,
+                     y + win_h - SHADOW)
+
     def map_card():
         """Build the glass for the whole column and put it on screen.
 
@@ -429,43 +653,53 @@ def run(card) -> None:
         without losing it: `put_up` decides WHAT is on screen, this
         decides WHEN, and the two are no longer the same moment.
         """
-        nonlocal glass, frost, placed_at
+        global _said
+        nonlocal glass, frost, frost_at, placed_at, live
         item = shown
         if not item or glass is not None:
             return
-        s = nc.clamp_scale(card.scale)
-        win_w, win_h = nc.stack_measure(item, s)
-        width, height = win_w - SHADOW * 2, win_h - SHADOW * 2
-        # primary for the corners, the whole desktop for a saved position:
-        # a card left on a second screen belongs on that second screen.
-        # `inset=SHADOW` is how NotifyCard.origin knows the window is
-        # bigger than the card, so mid-height on the right edge is the
-        # CARD's right edge and not the shadow's.
-        x, y = card.origin(win_w, win_h, primary_screen(), SHADOW,
-                           virtual_screen())
-        frost = _frost(x, y, win_w, win_h)
+        x, y, win_w, win_h = place(item)
         glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
-                      clicked=on_click)
+                      clicked=on_click, moving=follow)
         # NO `_hide_from_capture(glass.hwnd)` HERE ANY MORE — removed
         # 2026-09-04, at the owner's request, because the card announcing
         # that Claude had finished could not be photographed by the person
         # it was announcing to. See the block where that helper used to
         # live, above `face`, for the whole argument.
+        # The blur is never on THIS window: on a window this size it would
+        # fill the margin and the gaps between the cards too — the dark
+        # frame the owner circled on 2026-10-19 — because the compositor
+        # cuts its blur to nothing but its own rounded corner. It goes on
+        # one window per card, under this one (sync_behind).
+        live = True
+        live = sync_behind(show=False)
+        if live:
+            frost = None
+        else:
+            # the window exists and is not shown yet, so the grab is the
+            # desktop and not ourselves
+            shot = _frost(x, y, win_w, win_h)
+            frost = _to_skia(shot) if shot is not None else None
+            frost_at = (x, y)
+        if not _said:
+            _said = True
+            _log.info("skin: the notify column's glass is %s",
+                      "live (the compositor's blur)" if live
+                      else "a photograph (no blur behind on this Windows)")
         placed_at = (x, y)
         # Painted BEFORE it is shown, so the card is never on screen for
         # even one frame as an empty layer. The progress is computed
         # rather than assumed to be 1.0: coming back from a hush, the card
         # resumes with the seconds it went down with.
-        seconds = float(item[0].get("seconds") or 0)
-        progress = 1.0
-        if deadline is not None and seconds > 0:
-            progress = max(0.0, min(1.0,
-                                    (deadline - time.monotonic()) / seconds))
-        paint(progress)
+        paint(progress_now())
+        for b in behind:
+            b.show()
         glass.show()
         glass.raise_()
-        card.rect = (x + SHADOW, y + SHADOW, x + width + SHADOW,
-                     y + height + SHADOW)
+        for b in behind:
+            b.under(glass.hwnd)
+        card.rect = (x + SHADOW, y + SHADOW, x + win_w - SHADOW,
+                     y + win_h - SHADOW)
 
     def set_hushed(on: bool):
         """Obey `card._hushed`, on this thread and nowhere else.
@@ -474,15 +708,17 @@ def run(card) -> None:
         only set an Event. Every window call is here, because Glass is as
         thread-bound as Tk is.
         """
-        nonlocal hushed, glass, frost, hover, dismissing
+        nonlocal hushed, glass, frost, hover, dismissing, live
         if on == hushed:
             return
         hushed = on
         if on:
+            drop_behind()
             if glass is not None:
                 glass.close()
                 glass = None
             frost = None
+            live = False
             hover = None
             dismissing = False
             # hovering() reads this; None means the card is not under the
@@ -513,6 +749,11 @@ def run(card) -> None:
             set_hushed(card._hushed.is_set())
             now = time.monotonic()
             dt, last_tick = now - last_tick, now
+            if dismissing and now - latched_at > LATCH_S:
+                # The latch is let go by the next column (put_up); if none
+                # comes — an engine that never answered a press — a card
+                # must not stay deaf to its own × for good.
+                dismissing = False
             if shown is not None and hushed and deadline is not None:
                 # Down for somebody's selection: the clock waits, exactly
                 # as it waits under the pointer below. Seconds spent off

@@ -334,6 +334,23 @@ def _unb64(prefix: str, text: str) -> bytes:
 #: sits in char_length, because Postgres caps a regex bound at 255).
 SEALED_MAX = 7603
 
+#: The most plaintext bytes that seal within SEALED_MAX: "v1." and the
+#: base64 of nonce ‖ ciphertext ‖ tag, 5,672 bytes. A value longer than
+#: this is refused by the server's check, and a refused row refuses the
+#: whole batch it travels in (measured 2026-10-23: one lookup of 5,956
+#: bytes sealed to 7,983 characters and held 135 rows behind it for
+#: three days).
+PLAIN_MAX = (SEALED_MAX - 3) // 4 * 3 - NONCE_BYTES - TAG_BYTES
+
+
+def _json_bytes(obj) -> bytes:
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def fits_json(obj) -> bool:
+    """True when ``seal_json(obj)`` comes out within SEALED_MAX."""
+    return len(_json_bytes(obj)) <= PLAIN_MAX
+
 
 def is_sealed(text: str) -> bool:
     """The shape the migration's ``is_sealed()`` admits, so a value the
@@ -359,7 +376,7 @@ def open_(key: bytes, sealed: str, aad: str) -> bytes:
 
 
 def seal_json(key: bytes, obj, aad: str) -> str:
-    return seal(key, json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), aad)
+    return seal(key, _json_bytes(obj), aad)
 
 
 def open_json(key: bytes, sealed: str, aad: str):
@@ -711,9 +728,11 @@ def unwrap_recovery(wrapped: str, recovery: str, aad: str) -> bytes:
 # ------------------------------------------- the cloud keys' narrow door
 
 def export_keys(account_key: bytes, uid: str, only=None) -> dict[str, str]:
-    """Every cloud key this PC keeps in Windows Credential Manager (only
-    there — a developer's .env or shell variable is that machine's
-    affair), each sealed under the account key: {name: v1.…}; ``only``
+    """Every cloud key this copy keeps in Windows Credential Manager —
+    under its own prefix, secretstore.TARGET_PREFIX, never another copy's
+    on the same PC (only there: a developer's .env or shell variable is
+    that machine's affair), each sealed under the account key:
+    {name: v1.…}; ``only``
     narrows it to some names. A name with no key is a sealed empty
     value, so a key removed here is removed on the other PCs too (sb.py
     decides when an empty one travels)."""
@@ -778,7 +797,8 @@ def import_keys(account_key: bytes, uid: str, rows: dict[str, str]) -> list[str]
 
 __all__ = [
     "VaultError", "KEY_NAME", "KEY_BYTES", "seal", "open_", "seal_json", "open_json",
-    "is_sealed", "fingerprint", "key", "have", "create", "keep", "forget",
+    "is_sealed", "SEALED_MAX", "PLAIN_MAX", "fits_json",
+    "fingerprint", "key", "have", "create", "keep", "forget",
     "ASIDE_NAME", "set_aside", "confirmed", "aside", "refuse", "refused",
     "pairing_code", "code_hint", "new_recovery", "normalize", "pretty", "CODE_CHARS",
     "CODE_GROUP", "HINT_CHARS", "RECOVERY_CHARS",

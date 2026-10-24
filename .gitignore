@@ -163,3 +163,9 @@ dev/master/state/
 dev/master/__pycache__/
 dev/master/web/node_modules/
 dev/master/web/dist/
+
+# The web desk (webdesk.py, 2026-09-22): web\ holds the page SOURCES and
+# the npm lock; what npm installs and what `npm run build` makes are
+# rebuilt from those two, never committed.
+/web/node_modules/
+/web/dist/

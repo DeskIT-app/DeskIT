@@ -202,6 +202,17 @@ SECRETS_DIR = _rel("SECRETS_DIR")
 SYNC_DIR = _rel("SYNC_DIR")
 CACHE_DIR = _rel("CACHE_DIR")
 CUES_DIR = _rel("CUES_DIR")
+#: WebView2's user data folder for the web desk (webdesk.py): the browser
+#: process's own files, an InPrivate profile on top, so nothing a page
+#: stores outlives the window. A cache — may be deleted at any time, and
+#: nothing deletes it on its own. Installed: cache\webview. In the flat
+#: layout NOT beside the code: the checkout grows no folder the app did
+#: not make before paths.py existed (D4) — the spike's `cache\webview`
+#: there failed test_paths_installed_layout_through_deskit_home the first
+#: time a web desk ran from a checkout (2026-10-23) — so it is the OS's
+#: temp folder, which a cache may live in.
+WEBVIEW_DIR = (Path(os.environ.get("TEMP") or os.environ.get("TMP") or str(DATA_DIR))
+               / "DeskIT.dev-webview" if FLAT else CACHE_DIR / "webview")
 TMP_DIR = _rel("TMP_DIR")
 
 #: The tracked configuration document: every key with its measurement
@@ -225,6 +236,10 @@ FONTS_DIR = APP_DIR / "fonts"
 SKIN_DIR = APP_DIR / "skin"
 ICON_ICO = APP_DIR / "icon.ico"
 ICON_PNG = APP_DIR / "icon.png"
+#: The web desk's built pages (`npm run build` in web\, webdesk.py). The
+#: sources under web\ never ship (.gitattributes); a release that ships
+#: the web desk builds this folder in CI and places it here.
+WEB_DIST = APP_DIR / "web" / "dist"
 
 # ---- D30: the checkout is "DeskIT Dev" and never collides with the release
 
@@ -360,8 +375,58 @@ def ensure() -> Path:
     return DATA_DIR
 
 
+#: Windows' own folders a setting may start with, as ``{pictures}/DeskIT``
+#: (the KNOWNFOLDERID GUIDs). Since 2026-10-03 the pictures and the
+#: recordings go there by default: the old ``captures`` sat under
+#: ``DATA_DIR``, which nobody finds, and which a Store uninstall deletes
+#: with the app — the person's own screenshots and videos with it (the
+#: owner's Store walk, item 17). A full-trust package writes these real
+#: folders, not a virtualised copy, and they outlive an uninstall.
+KNOWN_FOLDERS = {"pictures": "33E28130-4E1E-4676-835A-98395C3BC3BB",
+                 "videos": "18989B1D-99B5-455B-841C-AB7C74E4DDFC"}
+_FALLBACK_FOLDERS = {"pictures": "Pictures", "videos": "Videos"}
+
+
+def known_folder(name: str) -> Path:
+    """Where Windows keeps `name` ("pictures", "videos") for this user —
+    SHGetKnownFolderPath, so a Pictures folder moved to another drive or
+    into OneDrive is the one answered. ``~\\Pictures`` when the call fails.
+
+    A private ``WinDLL``: declaring argtypes on ``ctypes.windll.shell32``
+    would change them for every module (AGENTS, the capture.py trap)."""
+    guid = KNOWN_FOLDERS[name]
+    try:
+        import ctypes
+        import uuid
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_uint32), ("b", ctypes.c_uint16),
+                        ("c", ctypes.c_uint16), ("d", ctypes.c_ubyte * 8)]
+
+        u = uuid.UUID(guid)
+        g = GUID(u.fields[0], u.fields[1], u.fields[2],
+                 (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+        shell = ctypes.WinDLL("shell32")
+        ole = ctypes.WinDLL("ole32")
+        shell.SHGetKnownFolderPath.argtypes = [
+            ctypes.POINTER(GUID), ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_wchar_p)]
+        shell.SHGetKnownFolderPath.restype = ctypes.c_long
+        out = ctypes.c_wchar_p()
+        hr = shell.SHGetKnownFolderPath(ctypes.byref(g), 0, None, ctypes.byref(out))
+        try:
+            if hr == 0 and out.value:
+                return Path(out.value)
+        finally:
+            ole.CoTaskMemFree(out)
+    except Exception:                                      # noqa: BLE001
+        pass
+    return Path.home() / _FALLBACK_FOLDERS[name]
+
+
 def resolve_folder(folder: str | os.PathLike) -> Path:
-    """A user-typed folder: absolute stays; relative is under ``DATA_DIR``.
+    """A user-typed folder: absolute stays; relative is under ``DATA_DIR``;
+    ``{pictures}/…`` and ``{videos}/…`` start in Windows' own folders.
 
     Used for ``[capture] folder`` and friends. Relative to the DATA folder
     and not the working directory, because the app is launched from a
@@ -369,7 +434,14 @@ def resolve_folder(folder: str | os.PathLike) -> Path:
     ideas about the working directory. In portable mode ``DATA_DIR`` is the
     code folder, which is exactly what those settings meant before.
     """
-    path = Path(folder).expanduser()
+    text = os.fspath(folder)
+    for name in KNOWN_FOLDERS:
+        mark = "{" + name + "}"
+        if text.lower().startswith(mark):
+            rest = text[len(mark):].lstrip("/\\")
+            base = known_folder(name)
+            return base / rest if rest else base
+    path = Path(text).expanduser()
     if not path.is_absolute():
         path = DATA_DIR / path
     return path

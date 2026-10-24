@@ -10,8 +10,9 @@ title: Quick start
    from the [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). If Windows
    says "Windows protected your PC": **More info**, then **Run anyway** ([why](01-install)).
 2. **Install.** No administrator password. DeskIT opens by itself at the end.
-3. **The wizard.** Seven pages; only three ask anything. Talk to the microphone, press
-   **Download** for the Hebrew model (1.62 GB, once), and **Next** through the rest.
+3. **The wizard.** A few pages; most are just **Next**. Talk to the microphone, press
+   **Download** for the Hebrew model (1.62 GB, once), paste a free cloud key if you want the
+   repair, punctuation and translation, and **Next** through the rest.
 4. **The tour.** Four cards beside the dot show you the dot, the key and the shelf. **דלג**
    (skip) if you are in a hurry; **Show the tour** in Settings brings it back.
 5. **Dictate.** Click into any text field, hold the key, speak, release. The Hebrew text is

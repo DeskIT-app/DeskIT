@@ -99,7 +99,9 @@ TRAPS PAID FOR HERE
   visual_qa records: it races the topmost window and returns black. Every
   mark lives as POINTS in Python and is replayed into the pristine crop
   with Pillow; the canvas item under the pointer is only there for the
-  live feel and is deleted the moment the stroke commits.
+  live feel and is deleted once the committed stroke is ON the canvas —
+  never before, or the stroke blinks out between the two (it did, for
+  125-290 ms after every release, until 2026-10-17).
 - **ImageDraw's `fill` REPLACES pixels, it does not blend them.** The
   highlighter and the blur box are built as their own RGBA layers and
   composited, or they punch a hole through the screenshot.
@@ -235,16 +237,52 @@ _FREEZE_LUT = _vq._FREEZE_LUT
 # — the four most-separated saturated inks a marker set has. The red is
 # a hair brighter than it was so it still reads against the app's own
 # gold chrome when a capture is taken OF the app.
+#
+# FOUR WAS TOO FEW (2026-10-17, his words: "the colour choice should be
+# much more versatile and wide"). The ink chip cycled red -> yellow ->
+# blue -> white and nothing else. It opens a palette now: these eighteen
+# in two rows — the vivid row first, then the neutrals and the deep
+# shades — the rainbow under them for ANY colour, the colours he picked
+# that are not here, a pipette that takes a colour off the picture
+# itself, and four line widths. The grid's order is this tuple's order,
+# and red stays first: it is still the default and INKS[0] still means
+# red.
 INKS = (
     ("red", (232, 62, 48)),
+    ("orange", (255, 140, 26)),
     ("yellow", MARK),
+    ("lime", (178, 226, 52)),
+    ("green", (46, 190, 92)),
+    ("teal", (24, 190, 196)),
     ("blue", (86, 156, 245)),
+    ("purple", (158, 94, 240)),
+    ("pink", (255, 84, 166)),
     ("white", (245, 249, 255)),
+    ("light grey", (196, 200, 208)),
+    ("grey", (134, 139, 150)),
+    ("dark grey", (66, 70, 80)),
+    ("black", (16, 16, 20)),
+    ("brown", (138, 86, 46)),
+    ("dark red", (150, 24, 32)),
+    ("dark green", (22, 108, 60)),
+    ("navy", (30, 54, 146)),
 )
 PEN_W = 3                    # px, the freehand and the arrow
 BOX_W = 3                    # px, the rectangle outline
 HIGHLIGHT_W = 18             # px, and translucent — a marker, not a pen
 HIGHLIGHT_A = 92
+# The four line widths the palette offers, by name. The second is the
+# width every mark had before there was a choice, and it is the default.
+# A highlighter is a marker and not a pen, so it has its own four.
+SIZES = (("thin", 2), ("medium", PEN_W), ("thick", 5), ("heavy", 8))
+HIGHLIGHT_SIZES = (12, HIGHLIGHT_W, 28, 42)
+SIZE_DEFAULT = 1
+# What the pen was the last time, so the next picture starts where this
+# one left off. Plain numbers and nothing else: no module-level name may
+# hold a Tk object (AGENTS.md, the Tcl_AsyncDelete trap), and these are
+# tuples. Per run of the app, not written to disk.
+_PEN = {"colour": INKS[0][1], "size": SIZE_DEFAULT, "recent": []}
+RECENT_MAX = 7               # the colours he picked that are not in INKS
 
 # THE INK IS OVERSAMPLED. Pillow antialiases nothing, so a diagonal drawn
 # straight onto the picture is a staircase — see ink_scale for the whole
@@ -261,9 +299,14 @@ ARROW_HEAD = 6.5             # head length, as a multiple of the stroke.
 ARROW_HEAD_MIN = 16          # px, so a hairline arrow still has a point
 ARROW_SPREAD = 27            # degrees off the shaft to each barb
 ARROW_NOTCH = 0.62           # how far back the notch sits, of the head
-# How far each kind of mark can paint outside the points it is made of.
+# How far each kind of mark can paint outside the points it is made of,
+# at the widths every mark had before the palette. `_mark_pad` is the
+# same arithmetic for any width.
 _MARK_PAD = {"pen": PEN_W + 2, "arrow": 44, "box": BOX_W + 3,
              "highlight": HIGHLIGHT_W + 2}
+_MARK_W = {"pen": PEN_W, "arrow": PEN_W, "box": BOX_W,
+           "highlight": HIGHLIGHT_W}
+INKED = ("pen", "arrow", "box", "highlight")   # the marks that are ink
 PIXEL_BLOCK = 12             # the redaction mosaic; below ~8 px, 12 pt
                              # text is still readable in the blocks
 
@@ -275,19 +318,39 @@ BAR_H = 82
 BAR_RADIUS = 22
 BAR_GAP = 18                 # between the selection and the toolbar
 
+# The palette the ink chip opens: one more sheet of the same glass, over
+# the toolbar when there is room and under it when there is not.
+SWATCH = 24                  # a preset, round
+SWATCH_GAP = 8
+PALETTE_COLS = 9             # two rows of nine: INKS, in its own order
+PALETTE_PAD = 14
+PALETTE_ROW = 30             # the pipette and the four widths
+SPECTRUM_H = 64              # the rainbow: hue across, light to dark down
+PALETTE_GAP = 10             # between the palette and the toolbar
+PALETTE_RADIUS = 22             # B+: a card of glass
+SIZE_DOTS = (6, 9, 13, 18)   # how the four widths are drawn on a chip
+LOUPE_PX = 11                # the pipette's magnifier: 11x11 real pixels
+LOUPE_ZOOM = 8               # ...each drawn 8 px wide, so 88 px across
+# How long the pump sleeps while a stroke is being drawn, against _TICK_S
+# the rest of the time. Windows keeps only the LATEST mouse position until
+# it is read, so the pump's period is the stroke's sampling rate: at 15 ms
+# a fast curve came out as a polygon with visible corners.
+DRAW_TICK_S = 0.004
+STAGE_TILE = 256             # px, the lit picture's tiles (see _lay_tiles)
+
 # The hint card the selector opens with: one sheet of glass holding the
 # instructions and a tile per monitor. Glass rather than card stock,
 # because at this moment the screen is frozen and we own the pixels
 # behind it — the same reason the editor's toolbar can be glass and the
 # clip bar cannot.
 HINT_PAD = 18
-HINT_RADIUS = 20
+HINT_RADIUS = 22                # B+: a card of glass
 CHIP_W, CHIP_H = 134, 72
 CHIP_GAP = 10
 # The two sound switches under the screen chips when a RECORDING is being
 # framed: "Computer sound" and "Microphone". Pills, not tiles — a switch
 # is on or off and needs no picture of itself.
-SWITCH_W, SWITCH_H = 150, 34
+SWITCH_W, SWITCH_H = 172, 34    # B+'s switch, the name, the key letter
 SWITCH_GAP = 10
 SOUND_SWITCHES = (("system", "Computer sound", "s"),
                   ("mic", "Microphone", "m"))
@@ -303,7 +366,7 @@ CROP_BACK = 0.42             # how far the area you already cut away is
 # the shape the owner asked for — and then gets out of the way as a small
 # corner pill that is only a red dot and a clock. Hovering it brings the
 # controls back.
-ANNOUNCE_W, ANNOUNCE_H = 344, 58
+ANNOUNCE_W, ANNOUNCE_H = 396, 58   # room for the stop key in the line
 ANNOUNCE_S = 2.6             # how long "Recording started" stays up
 TIMER_H = 34
 BAR_BTN = 30
@@ -1435,41 +1498,23 @@ def arrow_shape(start, end, width: int = PEN_W):
     ]
 
 
-def tk_arrowshape(width: int = PEN_W) -> tuple[int, int, int]:
-    """The same head, in the three numbers Tk's canvas wants.
-
-    Tk draws the live preview and Pillow draws the picture, and they are
-    two different arrowheads unless somebody makes them agree. This is
-    that somebody: (neck-to-tip, barb-to-tip, half-width), read off the
-    geometry above so a change there moves both.
-    """
-    import math
-    head = max(ARROW_HEAD_MIN, width * ARROW_HEAD)
-    return (max(2, round(head * ARROW_NOTCH)), max(3, round(head)),
-            max(2, round(head * math.sin(math.radians(ARROW_SPREAD)))))
-
-
 def ink_scale(width: int, height: int) -> int:
-    """How far to oversample one mark's own rectangle before shrinking it.
+    """How far to oversample one PIECE of ink before shrinking it.
 
     PILLOW ANTIALIASES NOTHING. `ImageDraw.line` and `.polygon` write hard
     pixels, so every diagonal an arrow or a pen stroke makes comes out as
     a staircase — plainly visible at 1x and the reason the first version
     of this editor's ink looked hand-cut. The fix is the one `icon()` and
-    `rr_layer` already use: draw it big and shrink it with LANCZOS.
+    `rr_layer` already use: draw it big and shrink it (a box average since
+    2026-10-17, see `_ink_stamp`; it was LANCZOS when this was measured).
 
-    Big is not free, and a mark's rectangle can be the whole picture (one
-    arrow corner to corner). So the factor is whatever fits the budget:
-    4x for the marks people actually draw, dropping to 2x for the ones
-    that span a 1440p screenshot. Measured on this machine, per mark:
-
-        220x160 box       4x     1.9 ms
-        1280x720 arrow    2x    24.0 ms
-        2560x1440 arrow   1x     3.1 ms   (too big to oversample at all)
-
-    and none of it is per-frame — `ShotWindow.picture()` caches on a
-    revision counter, so this runs when the ink changes and not when the
-    pointer moves.
+    Big is not free. This used to be asked of a mark's WHOLE rectangle,
+    and the answer for one arrow corner to corner of a 1440p shot was 1x
+    — no antialiasing, a staircase (measured 2026-08 on this machine:
+    220x160 box 4x 1.9 ms, 1280x720 arrow 2x 24 ms, 2560x1440 arrow 1x).
+    Since 2026-10-17 it is asked of each piece (`mark_pieces`), and a
+    piece is at most PIECE_MAX px long, so the answer is INK_SS for every
+    mark of every size; the budget stays as the guard it always was.
     """
     area = max(1, width * height)
     for scale in (INK_SS, 3, 2):
@@ -1487,92 +1532,267 @@ def pixelate(image, box, block: int = PIXEL_BLOCK):
     thing under it is an address or a token. 12 px blocks were picked by
     reading the result: at 8 px a 12 pt password was still guessable.
     """
-    from PIL import Image
     left, top, right, bottom = clamp_box(box, (0, 0, image.width, image.height))
     if right - left < 2 or bottom - top < 2:
         return image
     out = image.copy()
-    patch = out.crop((left, top, right, bottom))
+    _pixelate_into(out, (left, top, right, bottom), block)
+    return out
+
+
+def _pixelate_into(image, box, block: int = PIXEL_BLOCK):
+    """The same mosaic, written INTO `image`. The rectangle it touched.
+
+    The editor's live picture takes each new mark in place rather than
+    being replayed from the start (see ShotWindow._commit), and a blur is
+    a mark like any other, so it needs a version that does not copy a
+    screenful to change a rectangle. `pixelate` is this on a copy, so the
+    two cannot disagree about what a mosaic is.
+    """
+    from PIL import Image
+    left, top, right, bottom = clamp_box(box, (0, 0, image.width, image.height))
+    if right - left < 2 or bottom - top < 2:
+        return None
+    patch = image.crop((left, top, right, bottom))
     small = patch.resize((max(1, patch.width // block),
                           max(1, patch.height // block)), Image.BILINEAR)
-    out.paste(small.resize(patch.size, Image.NEAREST), (left, top))
-    return out
+    image.paste(small.resize(patch.size, Image.NEAREST), (left, top))
+    return (left, top, right, bottom)
+
+
+def stroke_width(kind: str, size: int = SIZE_DEFAULT) -> int:
+    """The width in pixels a mark of `kind` is drawn at, for a palette size.
+
+    One table for the pen, the arrow and the box, another for the
+    highlighter, because a marker that is only as wide as a pen is a pen
+    with the colour turned down.
+    """
+    size = max(0, min(len(SIZES) - 1, int(size)))
+    if kind == "highlight":
+        return HIGHLIGHT_SIZES[size]
+    return SIZES[size][1]
+
+
+def _mark_pad(kind: str, width: int) -> int:
+    """How far a mark of this width can paint outside its own points.
+
+    An arrow's head is proportional to its stroke (`arrow_shape`), so a
+    heavy arrow reaches much further past its points than a thin one —
+    a fixed pad clipped the barbs of the first heavy arrow drawn.
+    """
+    if kind == "arrow":
+        return int(max(ARROW_HEAD_MIN, width * ARROW_HEAD)) + width + 4
+    if kind == "box":
+        return width + 3
+    return width + 2
 
 
 # One rendered stamp per mark, because a mark never changes after it is
 # committed — a crop only moves where it is PASTED. Without this, every
-# repaint of a picture carrying eight marks would oversample all eight
-# again, and the whole point of oversampling is that it is not cheap.
+# repaint of a picture carrying eight marks would rasterise all eight
+# again. Bounded by count AND by pixels: one stroke across a 1440p shot
+# is a 15 MB stamp, and sixty-four of those would be a gigabyte.
 _INK_CACHE: dict = {}
 _INK_CACHE_MAX = 64
+_INK_CACHE_PIXELS = 40_000_000
+_INK_CACHE_HELD = [0]
 
 
-def _ink_stamp(kind: str, points: tuple, colour: tuple):
+def _keep_stamp(key, stamp):
+    layer = stamp[0]
+    size = layer.width * layer.height
+    if (len(_INK_CACHE) >= _INK_CACHE_MAX
+            or _INK_CACHE_HELD[0] + size > _INK_CACHE_PIXELS):
+        _INK_CACHE.clear()          # a whole generation at a time: the
+        _INK_CACHE_HELD[0] = 0      # entries are all the same age and
+    _INK_CACHE[key] = stamp         # none is special
+    _INK_CACHE_HELD[0] += size
+    return stamp
+
+
+# THE INK IS DRAWN IN PIECES (2026-10-17). A mark used to be oversampled
+# as ONE layer the size of its whole rectangle, and a rectangle the size
+# of a big screenshot does not fit the oversampling budget: ink_scale gave
+# 1x — no antialiasing at all — to any mark spanning more than about
+# 1000x1000 px. Measured that day: a pen line, an arrow or a box drawn
+# across a 2400x1320 span had 0% soft edge pixels, a staircase, where the
+# same mark at 900x495 had 50%. Every mark is now a set of small pieces —
+# a straight run of at most PIECE_MAX px with round ends, an arrowhead, a
+# band of a box's outline — each drawn at INK_SS on its own and laid into
+# the mark's coverage with MAX, so overlapping pieces neither darken where
+# they meet nor depend on the order they were laid in. The live preview
+# lays the very same pieces into the very same kind of mask as the mouse
+# moves, so what is drawn while dragging is what the release keeps.
+PIECE_MAX = 96
+
+
+def _split(a, b):
+    """A straight run cut into pieces no longer than PIECE_MAX."""
+    length = math.hypot(b[0] - a[0], b[1] - a[1])
+    n = max(1, math.ceil(length / PIECE_MAX))
+    if n == 1:
+        return [(a, b)]
+    return [((a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n),
+             (a[0] + (b[0] - a[0]) * (i + 1) / n,
+              a[1] + (b[1] - a[1]) * (i + 1) / n)) for i in range(n)]
+
+
+def _capsule(a, b, stroke: int):
+    """One straight run with round ends: (coverage L at 1x, (left, top))."""
+    from PIL import Image, ImageDraw
+    half = stroke / 2
+    left = math.floor(min(a[0], b[0]) - half) - 1
+    top = math.floor(min(a[1], b[1]) - half) - 1
+    right = math.ceil(max(a[0], b[0]) + half) + 2
+    bottom = math.ceil(max(a[1], b[1]) + half) + 2
+    s = ink_scale(right - left, bottom - top)
+    big = Image.new("L", ((right - left) * s, (bottom - top) * s), 0)
+    draw = ImageDraw.Draw(big)
+    ax, ay = (a[0] - left) * s, (a[1] - top) * s
+    bx, by = (b[0] - left) * s, (b[1] - top) * s
+    radius = half * s
+    draw.line([(ax, ay), (bx, by)], fill=255, width=max(1, round(stroke * s)))
+    # Round ends, which ImageDraw has no keyword for. A flat cap on a 3 px
+    # stroke is a visible chisel at either end of every squiggle, and the
+    # ends of the pieces of one stroke are its round joins.
+    for x, y in ((ax, ay), (bx, by)):
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius),
+                     fill=255)
+    return (big.reduce(s) if s > 1 else big), (left, top)
+
+
+def _polygon_piece(points):
+    from PIL import Image, ImageDraw
+    left = math.floor(min(p[0] for p in points)) - 1
+    top = math.floor(min(p[1] for p in points)) - 1
+    right = math.ceil(max(p[0] for p in points)) + 2
+    bottom = math.ceil(max(p[1] for p in points)) + 2
+    s = ink_scale(right - left, bottom - top)
+    big = Image.new("L", ((right - left) * s, (bottom - top) * s), 0)
+    ImageDraw.Draw(big).polygon([((x - left) * s, (y - top) * s)
+                                 for x, y in points], fill=255)
+    return (big.reduce(s) if s > 1 else big), (left, top)
+
+
+def _box_bands(start, end, stroke: int):
+    """A box's outline as four bands, each drawn on its own. The whole
+    rounded rectangle is drawn into each band and ImageDraw clips it, so a
+    corner is the same pixels whichever band it lands in."""
+    from PIL import Image, ImageDraw
+    x0, y0, x1, y1 = normalize_bbox(start[0], start[1], end[0], end[1])
+    reach = max(stroke, 4) + 2
+    for left, top, right, bottom in ((x0 - 1, y0 - 1, x1 + 2, y0 + reach),
+                                     (x0 - 1, y1 - reach, x1 + 2, y1 + 2),
+                                     (x0 - 1, y0 - 1, x0 + reach, y1 + 2),
+                                     (x1 - reach, y0 - 1, x1 + 2, y1 + 2)):
+        s = ink_scale(right - left, bottom - top)
+        big = Image.new("L", ((right - left) * s, (bottom - top) * s), 0)
+        ImageDraw.Draw(big).rounded_rectangle(
+            ((x0 - left) * s, (y0 - top) * s, (x1 - left) * s,
+             (y1 - top) * s), 4 * s, outline=255, width=stroke * s)
+        yield (big.reduce(s) if s > 1 else big), (left, top)
+
+
+def mark_pieces(kind: str, points, stroke: int, start: int = 0):
+    """The antialiased pieces a mark is made of, in virtual-screen pixels.
+
+    `start` is for a stroke being drawn: the pieces of the segments from
+    point `start` on, so the editor can lay only what a move added.
+    """
+    if kind in ("pen", "highlight"):
+        for i in range(max(1, start), len(points)):
+            for a, b in _split(points[i - 1], points[i]):
+                yield _capsule(a, b, stroke)
+    elif kind == "arrow":
+        notch, head = arrow_shape(points[0], points[-1], stroke)
+        for a, b in _split(points[0], notch):
+            yield _capsule(a, b, stroke)
+        if head:
+            yield _polygon_piece(head)
+    elif kind == "box":
+        yield from _box_bands(points[0], points[-1], stroke)
+
+
+def lay_piece(mask, piece, at) -> tuple[int, int, int, int] | None:
+    """MAX one piece into a coverage mask whose top-left is `at` (in the
+    piece's coordinates), clipped. The rectangle it touched, in the
+    piece's coordinates, or None when it fell outside the mask."""
+    from PIL import ImageChops
+    image, (left, top) = piece
+    x, y = left - at[0], top - at[1]
+    x0, y0 = max(0, x), max(0, y)
+    x1 = min(mask.width, x + image.width)
+    y1 = min(mask.height, y + image.height)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    part = image if (x0, y0, x1, y1) == (x, y, x + image.width,
+                                         y + image.height) \
+        else image.crop((x0 - x, y0 - y, x1 - x, y1 - y))
+    mask.paste(ImageChops.lighter(mask.crop((x0, y0, x1, y1)), part),
+               (x0, y0))
+    return (x0 + at[0], y0 + at[1], x1 + at[0], y1 + at[1])
+
+
+def stamp_rect(kind: str, points, stroke: int) -> tuple[int, int, int, int]:
+    """Where a mark's stamp lies, in virtual-screen pixels: its points
+    and as far past them as a mark of this width can reach."""
+    pad = _mark_pad(kind, stroke)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    left, top = int(min(xs)) - pad, int(min(ys)) - pad
+    return (left, top, int(max(xs)) + pad + 1, int(max(ys)) + pad + 1)
+
+
+def tint_mask(mask, colour, kind: str):
+    """A coverage mask as ink: the colour, at the mask's alpha — or at the
+    highlighter's, which never covers more than HIGHLIGHT_A whatever the
+    pieces under it, so a highlight is one even tint."""
+    from PIL import Image
+    layer = Image.new("RGBA", mask.size, tuple(colour)[:3] + (0,))
+    layer.putalpha(mask.point(_HIGHLIGHT_LUT) if kind == "highlight"
+                   else mask)
+    return layer
+
+
+def _ink_stamp(kind: str, points: tuple, colour: tuple,
+               stroke: int | None = None):
     """(the mark as a small RGBA image, where its top-left belongs).
 
     Both in the marks' own coordinate space — virtual-screen pixels — so
     the caller subtracts the crop's origin and nothing here has to know
-    what is being cropped to.
+    what is being cropped to. `stroke` is the line's width in pixels;
+    None is the width every mark had before the palette had sizes.
     """
-    key = (kind, points, colour)
+    from PIL import Image
+    if kind not in ("pen", "arrow", "box", "highlight"):
+        return None
+    stroke = int(stroke or _MARK_W.get(kind, PEN_W))
+    key = (kind, points, colour, stroke)
     stamp = _INK_CACHE.get(key)
     if stamp is not None:
         return stamp
-
-    from PIL import Image, ImageDraw
-    pad = _MARK_PAD.get(kind, PEN_W + 2)
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-    left, top = int(min(xs)) - pad, int(min(ys)) - pad
-    width = int(max(xs)) + pad + 1 - left
-    height = int(max(ys)) + pad + 1 - top
-    scale = ink_scale(width, height)
-    layer = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-    at = [((x - left) * scale, (y - top) * scale) for x, y in points]
-    solid = tuple(colour) + (255,)
-    radius = PEN_W * scale / 2
-
-    def cap(x, y) -> None:
-        """Round ends, which ImageDraw has no keyword for. A flat cap on a
-        3 px stroke is a visible chisel at either end of every squiggle."""
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius),
-                     fill=solid)
-
-    if kind == "pen":
-        draw.line(at, fill=solid, width=PEN_W * scale, joint="curve")
-        cap(*at[0])
-        cap(*at[-1])
-    elif kind == "arrow":
-        notch, head = arrow_shape(points[0], points[-1], PEN_W)
-        draw.line([at[0], ((notch[0] - left) * scale,
-                           (notch[1] - top) * scale)],
-                  fill=solid, width=PEN_W * scale)
-        cap(*at[0])
-        if head:
-            draw.polygon([((x - left) * scale, (y - top) * scale)
-                          for x, y in head], fill=solid)
-    elif kind == "box":
-        x0, y0, x1, y1 = normalize_bbox(at[0][0], at[0][1],
-                                        at[-1][0], at[-1][1])
-        draw.rounded_rectangle((x0, y0, x1, y1), 4 * scale, outline=solid,
-                               width=BOX_W * scale)
-    elif kind == "highlight":
-        draw.line(at, fill=tuple(colour) + (HIGHLIGHT_A,),
-                  width=HIGHLIGHT_W * scale, joint="curve")
-    else:
-        return None
-
-    if scale > 1:
-        layer = layer.resize((width, height), Image.LANCZOS)
-    if len(_INK_CACHE) >= _INK_CACHE_MAX:
-        _INK_CACHE.clear()          # a whole generation at a time: the
-    _INK_CACHE[key] = (layer, (left, top))    # entries are all the same
-    return _INK_CACHE[key]                    # age and none is special
+    left, top, right, bottom = stamp_rect(kind, points, stroke)
+    mask = Image.new("L", (right - left, bottom - top), 0)
+    for piece in mark_pieces(kind, points, stroke):
+        lay_piece(mask, piece, (left, top))
+    return _keep_stamp(key, (tint_mask(mask, colour, kind), (left, top)))
 
 
-def _ink(out, kind: str, points, colour: tuple, origin: tuple[int, int]):
-    """Composite one mark onto the picture, clipped to it.
+def keep_live_stamp(kind: str, points, colour, stroke: int, mask, origin):
+    """File the stamp of a mark that was drawn live, straight out of the
+    mask the preview laid its pieces into (whose top-left is `origin`),
+    so the release does not rasterise the stroke a second time. The same
+    pieces with MAX, so it is the stamp `_ink_stamp` would have made."""
+    left, top, right, bottom = stamp_rect(kind, points, stroke)
+    part = mask.crop((left - origin[0], top - origin[1],
+                      right - origin[0], bottom - origin[1]))
+    key = (kind, tuple(map(tuple, points)), tuple(colour), int(stroke))
+    return _keep_stamp(key, (tint_mask(part, colour, kind), (left, top)))
+
+
+def _ink(out, kind: str, points, colour: tuple, origin: tuple[int, int],
+         stroke: int | None = None):
+    """Composite one mark onto the picture, clipped to it. IN PLACE.
 
     `alpha_composite` refuses a paste that hangs off the edge, and a mark
     hanging off the edge is the NORMAL case after a crop — so the stamp is
@@ -1580,7 +1800,8 @@ def _ink(out, kind: str, points, colour: tuple, origin: tuple[int, int]):
     """
     if len(points) < 2:
         return out
-    stamp = _ink_stamp(kind, tuple(map(tuple, points)), tuple(colour))
+    stamp = _ink_stamp(kind, tuple(map(tuple, points)), tuple(colour),
+                       stroke)
     if stamp is None:
         return out
     layer, (mleft, mtop) = stamp
@@ -1614,19 +1835,41 @@ def draw_marks(image, marks: list, origin: tuple[int, int]):
     softening the ones between its blocks would be undoing the point of
     it.
     """
-    out = image.convert("RGBA")
+    out = image.convert("RGBA")      # always a new image, even from RGBA
     for mark in marks:
-        kind = mark["kind"]
-        colour = tuple(mark.get("colour", INKS[0][1]))
-        points = mark.get("points", ())
-        if kind == "blur":
-            shifted = _shift(points, *origin)
-            if len(shifted) >= 2:
-                out = pixelate(out, (shifted[0][0], shifted[0][1],
-                                     shifted[-1][0], shifted[-1][1]))
-            continue
-        out = _ink(out, kind, points, colour, origin)
+        mark_into(out, mark, origin)
     return out
+
+
+def mark_into(out, mark: dict, origin: tuple[int, int]):
+    """Put ONE mark onto an RGBA picture, in place. The rectangle it may
+    have changed, in the marks' own (virtual-screen) coordinates, or None.
+
+    `draw_marks` is this in a loop over a fresh copy, and the editor calls
+    it once per stroke on the picture it already has — which is why the
+    two are one function: the file and the screen are the same replay,
+    one of them merely done a mark at a time.
+    """
+    kind = mark["kind"]
+    points = mark.get("points", ())
+    if len(points) < 2:
+        return None
+    if kind == "blur":
+        shifted = _shift(points, *origin)
+        hit_box = _pixelate_into(out, (shifted[0][0], shifted[0][1],
+                                       shifted[-1][0], shifted[-1][1]))
+        if hit_box is None:
+            return None
+        return (hit_box[0] + origin[0], hit_box[1] + origin[1],
+                hit_box[2] + origin[0], hit_box[3] + origin[1])
+    colour = tuple(mark.get("colour", INKS[0][1]))
+    stroke = mark.get("width")
+    stamp = _ink_stamp(kind, tuple(map(tuple, points)), colour, stroke)
+    if stamp is None:
+        return None
+    _ink(out, kind, points, colour, origin, stroke)
+    layer, (mleft, mtop) = stamp
+    return (mleft, mtop, mleft + layer.width, mtop + layer.height)
 
 
 def cut_to_shape(image, shape: list, origin: tuple[int, int]):
@@ -1766,6 +2009,7 @@ class Clip:
         self._audio = None
         self._resampler = None
         self._audio_pts = 0
+        self._to_yuv = None
         self.frames = 0
 
     def _open(self) -> None:
@@ -1799,6 +2043,23 @@ class Clip:
         # loses the last second when you stop it.
         stream.options = {"preset": "veryfast", "tune": "zerolatency",
                           "crf": str(self.crf)}
+        # THE COLOURS ARE BT.709, AND THE FILE SAYS SO. Until 2026-10-17
+        # PyAV's own bgra -> yuv420p step used the BT.601 matrix and wrote
+        # no tag, and every player reads an untagged HD stream as BT.709:
+        # Chromium drew (220,40,40) as (236,58,37) and (40,180,60) as
+        # (30,160,57), every recording since the recorder existed. Each
+        # frame is converted by add_frame with the matching matrix, and
+        # these four tags (BT.709 matrix, primaries, transfer, limited
+        # range) go into the stream so no player has to guess — a small
+        # region, which a guessing player would read as SD and BT.601,
+        # included. Measured: the same Chromium then draws every patch
+        # within 1 of the source; 1440p encodes at 12.5-13.6 ms a frame
+        # either way.
+        context = stream.codec_context
+        context.colorspace = 1         # AVCOL_SPC_BT709
+        context.color_primaries = 1    # AVCOL_PRI_BT709
+        context.color_trc = 1          # AVCOL_TRC_BT709
+        context.color_range = 1        # AVCOL_RANGE_MPEG (limited)
         # WALL-CLOCK STAMPS, not frame numbers. A grab that could only
         # manage 24 fps must not play back 20% fast; every frame carries
         # the millisecond it was taken at instead.
@@ -1815,7 +2076,15 @@ class Clip:
     def add_frame(self, bgra, at_ms: int) -> None:
         import fractions
         import av
-        frame = av.VideoFrame.from_ndarray(bgra, format="bgra")
+        if self._to_yuv is None:
+            # ONE reformatter for the clip: VideoFrame.reformat builds a
+            # new one per frame, which cost +6.6 ms a frame at 1080p.
+            from av.video.reformatter import VideoReformatter
+            self._to_yuv = VideoReformatter()
+        frame = self._to_yuv.reformat(
+            av.VideoFrame.from_ndarray(bgra, format="bgra"),
+            format="yuv420p", dst_colorspace="ITU709",
+            dst_color_range="MPEG")
         frame.pts = int(at_ms)
         frame.time_base = fractions.Fraction(1, CLOCK_HZ)
         with self._lock:
@@ -2667,6 +2936,247 @@ class Camera:
 
 # ------------------------------------------------------------------ icons
 
+# ------------------------------------------------------------------ B+
+# Every surface in this file is drawn with B+'s pieces since 2026-10-24
+# (look.py, the desk's look outside the desk): a round control is a disc
+# of frost (look.disc), the chosen one of a set is the desk's bubble
+# (look.bubble), a button with words is a quiet pill (look.quiet), the
+# recording lamp is look.lamp, Stop is a disc of red light (look.mark),
+# the sound switches are look.switch, and the words are Rubik through
+# FreeType at B+'s weights — 400 for words, 460 for labels, 500 for the
+# one strong word; nothing at 700, no letter-spaced capitals. The card
+# stock under the clip bar, the toasts and the camera card is B+'s pane
+# with nothing behind it (look.glass, opaque): those three float over a
+# LIVE screen, so there is no photograph to blur (the module docstring).
+#
+# Pillow pictures only in these caches — AGENTS.md: nothing module-level
+# may hold a Tk object, and none of these is one.
+_BP: dict = {}
+_BP_TEXT: dict = {}
+W_WORDS, W_LABEL, W_STRONG = 400, 460, 500
+_EDGE_RGB = (165, 151, 255)     # the ring round the lit picture: iris (ACCENT)
+_THUMB_WELL = (17, 20, 37)      # B+'s well (.42 night) on the card's face
+_SHADE = (25, 29, 51)           # B+'s glass foot, for a plate over a picture
+
+
+def _look():
+    import look
+    return look
+
+
+def _bp_keep(key, draw):
+    got = _BP.get(key)
+    if got is None:
+        if len(_BP) > 400:
+            _BP.clear()
+        got = _BP[key] = draw()
+    return got
+
+
+def _bp_weight(weight: int) -> int:
+    """The old painters asked GDI for 600 and 700; B+ has 400/460/500."""
+    if weight >= 600:
+        return W_STRONG
+    return max(W_WORDS, min(W_STRONG, int(weight)))
+
+
+def bp_text(words: str, pt: float, colour, weight: int = W_WORDS):
+    """One line, cropped to its ink (look.text: FreeType Rubik for Latin,
+    the checked bidi path for Hebrew). Drawn as text only — a file name
+    or a device name is never interpreted."""
+    if len(_BP_TEXT) > 300:
+        _BP_TEXT.clear()
+    return _look().text(_BP_TEXT, words or " ", pt, tuple(colour)[:3],
+                        _bp_weight(weight))
+
+
+def bp_fit(words: str, room: int, pt: float, colour,
+           weight: int = W_WORDS):
+    """`words` at most `room` px wide, marked with … where it was cut. A
+    file name is cut in its MIDDLE, so its date and its extension both
+    survive; a line of parts ("805 × 525   ·   mic on") loses whole parts
+    from its end; a sentence loses whole words."""
+    img = bp_text(words, pt, colour, weight)
+    if img.width <= room or not words:
+        return img
+    sep = next((s for s in ("   ·   ", "  ·  ", " · ") if s in words),
+               "   ·   ")
+    parts = words.split(sep)
+    if len(parts) > 1:
+        head = sep.join(parts[:-1]) + sep
+        if _bp_named(parts[-1]):
+            name = _bp_middle(parts[-1], room - bp_text(head, pt, colour,
+                                                         weight).width,
+                              pt, colour, weight)
+            if name is not None:
+                return bp_text(head + name, pt, colour, weight)
+        while len(parts) > 1:
+            parts.pop()
+            img = bp_text(sep.join(parts) + "  …", pt, colour, weight)
+            if img.width <= room:
+                return img
+    one = parts[0]
+    if not _bp_named(one):
+        kept = one.split(" ")
+        while len(kept) > 1:
+            kept.pop()
+            img = bp_text(" ".join(kept) + " …", pt, colour, weight)
+            if img.width <= room:
+                return img
+    cut = _bp_middle(one, room, pt, colour, weight)
+    return bp_text(cut if cut is not None else "…", pt, colour, weight)
+
+
+def _bp_named(text: str) -> bool:
+    """A file name: something with an extension at its end."""
+    import re
+    return re.search(r"\.[A-Za-z0-9]{2,4}$", text.strip()) is not None
+
+
+def _bp_middle(name: str, room: int, pt: float, colour, weight: int):
+    """`name` with its middle taken out until it fits `room`, or None
+    when not even a few letters each side would."""
+    if bp_text(name, pt, colour, weight).width <= room:
+        return name
+    keep = len(name) - 1
+    while keep >= 8:
+        head = name[:(keep + 1) // 2].rstrip()
+        tail = name[len(name) - keep // 2:].lstrip()
+        trial = f"{head}…{tail}"
+        if bp_text(trial, pt, colour, weight).width <= room:
+            return trial
+        keep -= 1
+    return None
+
+
+def bp_round(d: int, state: str = "rest"):
+    """A round control `d` px across: "rest" a disc of frost (.07),
+    "hover" a step brighter, "chosen" the desk's bubble."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (d, d), (0, 0, 0, 0))
+        if state == "chosen":
+            _look().bubble(img, (0, 0, d, d))
+        else:
+            _look().disc(img, d / 2, d / 2, d / 2, hover=state == "hover")
+        return img
+    return _bp_keep(("round", d, state), draw)
+
+
+def bp_pill(w: int, h: int, state: str = "rest"):
+    """A pill with words in it: the quiet pill of frost, lifted under the
+    pointer; "chosen" is the bubble."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        if state == "chosen":
+            _look().bubble(img, (0, 0, w, h))
+        else:
+            _look().quiet(img, (0, 0, w, h), hover=state == "hover")
+        return img
+    return _bp_keep(("pill", w, h, state), draw)
+
+
+def bp_tile(w: int, h: int, radius: int, state: str = "rest"):
+    """A tile in a row (a screen on the hint card): a row's own pane of
+    frost and its rim (look.slip), a step brighter under the pointer."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        _look().slip(img, (0, 0, w, h), radius, lit=state == "hover")
+        return img
+    return _bp_keep(("tile", w, h, radius, state), draw)
+
+
+def bp_mark(d: int, colour: str, hover: bool = False):
+    """A disc of coloured light (look.mark) — Stop, in the recording red."""
+    def draw():
+        from PIL import Image
+        pad = 4
+        img = Image.new("RGBA", (d + 2 * pad, d + 2 * pad), (0, 0, 0, 0))
+        _look().mark(img, d / 2 + pad, d / 2 + pad, d / 2, colour)
+        if hover:
+            look = _look()
+            img.alpha_composite(look.flat(img.size, look.c(colour, 34),
+                                          look.circle(img.size, d / 2 + pad,
+                                                      d / 2 + pad, d / 2)))
+        return img.crop((pad, pad, pad + d, pad + d))
+    return _bp_keep(("mark", d, colour, hover), draw)
+
+
+def bp_lamp(d: int, colour: str, lit: bool = True):
+    """The recording lamp, `d` px of room round its bead: look.lamp with
+    its rings; unlit (the blink's off half) a bead at a quarter."""
+    def draw():
+        from PIL import Image
+        img = Image.new("RGBA", (d, d), (0, 0, 0, 0))
+        _look().lamp(img, d / 2, d / 2, colour, r=4.5, rings=lit,
+                     glow=1.0 if lit else 0.0)
+        if not lit:
+            img.putalpha(img.getchannel("A").point(lambda v: v * 70 // 255))
+        return img
+    return _bp_keep(("lamp", d, colour, lit), draw)
+
+
+def bp_switch(on: bool, s: float = 0.8, hover: bool = False):
+    """B+'s switch (no accent): look.switch on a clear patch."""
+    def draw():
+        from PIL import Image
+        w, h = int(round(40 * s)) + 2, int(round(22 * s)) + 2
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        _look().switch(img, 1, 1, on, s=s, hover=hover)
+        return img
+    return _bp_keep(("switch", on, s, hover), draw)
+
+
+def bp_stock(w: int, h: int, radius: int, ground=None):
+    """Card stock in B+: the pane with nothing behind it — its face lit
+    from above, its own light top-left, the frosted rim — on `ground`
+    (the colour SetWindowRgn cuts away), as an RGBA picture."""
+    def draw():
+        from PIL import Image
+        look = _look()
+        img = Image.new("RGBA", (w, h), (ground or _hex(PANE)) + (255,))
+        mask = look.rounded((w, h), (0, 0, w, h), radius)
+        img.alpha_composite(look.glass(mask, (0, 0, w, h), opaque=True))
+        return img
+    return _bp_keep(("stock", w, h, radius, ground), draw)
+
+
+def _paste(img, layer, x: int, y: int) -> None:
+    """alpha_composite `layer` at (x, y), clipped to `img` — a lamp's light
+    near the card's edge reaches past it, and Pillow refuses a negative
+    destination."""
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(img.width, x + layer.width), min(img.height, y + layer.height)
+    if x1 > x0 and y1 > y0:
+        img.alpha_composite(layer.crop((x0 - x, y0 - y, x1 - x, y1 - y)),
+                            (x0, y0))
+
+
+def bp_row(img, words: str, pt: float, colour, weight: int, x: int,
+           cy: float, room: int | None = None, right: bool = False) -> int:
+    """One line of words into `img`, centred on the row at `cy` by its
+    BASELINE (look.row_line: a descender hangs, it does not lift the
+    word), from `x` — or ending at `x` when `right`. Cut to `room`.
+    Returns its width."""
+    look = _look()
+    w = _bp_weight(weight)
+    line = bp_fit(words, room, pt, colour, w) if room else \
+        bp_text(words, pt, colour, w)
+    if look.has_hebrew(words) or line.width != bp_text(words, pt, colour,
+                                                          w).width:
+        top = cy - line.height / 2
+    else:
+        _im, top = look.row_line(_BP_TEXT, words, pt, tuple(colour)[:3], w,
+                                 cy)
+        line = _im
+    left = x - line.width if right else x
+    img.alpha_composite(line, (max(0, int(round(left))),
+                               max(0, int(round(top)))))
+    return line.width
+
+
 _SHARED_ICONS = ("pencil", "undo", "trash", "close", "copy", "send",
                  "keyboard", "mic", "mic_off", "pin", "speak")
 
@@ -2766,6 +3276,14 @@ def icon(kind: str, size: int = 20, colour=INK, width: int = 2):
         d.arc((n * .14, n * .14, n * .86, n * .86), 35, 305, fill=c, width=lw)
         d.polygon([(n * .84, n * .10), (n * .90, n * .40), (n * .60, n * .28)],
                   fill=c)
+    elif kind == "pick":
+        # A pipette: the glass tube on the diagonal, the collar across
+        # it, the rubber bulb at the top. The shape every paint program
+        # uses for "take this colour", so it needs no label.
+        d.line([(n * .16, n * .84), (n * .56, n * .44)], fill=c, width=lw)
+        d.line([(n * .40, n * .32), (n * .68, n * .60)], fill=c, width=lw)
+        d.ellipse((n * .54, n * .12, n * .88, n * .46), fill=c)
+        d.ellipse((n * .10, n * .78, n * .22, n * .90), fill=c)
     else:
         raise ValueError(f"no such icon: {kind}")
     return img.resize((size, size), Image.LANCZOS)
@@ -2867,6 +3385,117 @@ def bar_layout(tools=TOOLS, actions=ACTIONS) -> dict:
     return {"spots": spots, "size": (x, BAR_H)}
 
 
+def palette_layout() -> dict:
+    """Where everything on the palette sits, in palette-local pixels.
+
+    The same shape as `bar_layout`, for the same reason: one table feeds
+    the painter and the hit test. Top to bottom: INKS as two rows of
+    nine round swatches (`swatch:<i>`), the rainbow (`spectrum`), a row
+    of the colours he picked himself (`recent:<i>`) with the pipette at
+    its right end (`pick`), and the four line widths (`size:<i>`).
+    """
+    spots: dict[str, tuple[int, int, int, int]] = {}
+    left = top = PALETTE_PAD
+    inner = PALETTE_COLS * SWATCH + (PALETTE_COLS - 1) * SWATCH_GAP
+    for i in range(len(INKS)):
+        row, col = divmod(i, PALETTE_COLS)
+        x = left + col * (SWATCH + SWATCH_GAP)
+        y = top + row * (SWATCH + SWATCH_GAP)
+        spots[f"swatch:{i}"] = (x, y, x + SWATCH, y + SWATCH)
+    rows = -(-len(INKS) // PALETTE_COLS)
+    y = top + rows * SWATCH + (rows - 1) * SWATCH_GAP + 12
+    spots["spectrum"] = (left, y, left + inner, y + SPECTRUM_H)
+    y += SPECTRUM_H + 12
+    nudge = (PALETTE_ROW - SWATCH) // 2
+    for i in range(RECENT_MAX):
+        x = left + i * (SWATCH + SWATCH_GAP)
+        spots[f"recent:{i}"] = (x, y + nudge, x + SWATCH, y + nudge + SWATCH)
+    spots["pick"] = (left + inner - PALETTE_ROW, y, left + inner,
+                     y + PALETTE_ROW)
+    y += PALETTE_ROW + 10
+    for i in range(len(SIZES)):
+        x = left + i * (PALETTE_ROW + 8)
+        spots[f"size:{i}"] = (x, y, x + PALETTE_ROW, y + PALETTE_ROW)
+    spots["_name"] = (left + len(SIZES) * (PALETTE_ROW + 8) + 4, y,
+                      left + inner, y + PALETTE_ROW)
+    y += PALETTE_ROW + PALETTE_PAD
+    return {"spots": spots, "size": (left + inner + PALETTE_PAD, y)}
+
+
+def spectrum_colour(fx: float, fy: float) -> tuple[int, int, int]:
+    """The colour at one point of the rainbow, both axes in 0..1.
+
+    Hue goes once round the wheel from left to right, red to red. Down
+    the strip the same hue goes from a pale tint at the top, through the
+    pure colour in the middle, to a deep shade at the bottom — so any
+    colour a marker set or a highlighter could have is one click, and
+    the neutrals are the presets' job.
+    """
+    import colorsys
+    fx = min(1.0, max(0.0, fx))
+    fy = min(1.0, max(0.0, fy))
+    light = 0.90 - fy * 0.78
+    r, g, b = colorsys.hls_to_rgb(fx, light, 1.0)
+    return (round(r * 255), round(g * 255), round(b * 255))
+
+
+def spectrum_image(size: tuple[int, int]):
+    """The rainbow as a picture, built by `spectrum_colour` pixel by pixel.
+
+    Through the same function the click reads, so the colour under the
+    pointer is exactly the colour that is picked. 18 k pixels, ~20 ms,
+    so it is built once per size for the life of the app — a PIL image,
+    which a module may keep; a Tk one it may not.
+    """
+    from PIL import Image
+    w, h = size
+    img = _SPECTRUM.get((w, h))
+    if img is None:
+        img = Image.new("RGB", (w, h))
+        img.putdata([spectrum_colour(x / max(1, w - 1), y / max(1, h - 1))
+                     for y in range(h) for x in range(w)])
+        _SPECTRUM[(w, h)] = img
+    return img.copy()
+
+
+_SPECTRUM: dict = {}
+
+
+def remember_colour(rgb) -> None:
+    """Put a colour he picked himself at the front of the palette's recent
+    row. One of INKS is already on the palette and is not repeated; the
+    row keeps RECENT_MAX and drops the oldest."""
+    rgb = tuple(int(c) for c in rgb)[:3]
+    if any(tuple(value) == rgb for _name, value in INKS):
+        return
+    recent = [c for c in _PEN["recent"] if tuple(c) != rgb]
+    _PEN["recent"] = [rgb] + recent[:RECENT_MAX - 1]
+
+
+def _union(a, b):
+    """The smallest rectangle holding both; either may be None."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return (min(a[0], b[0]), min(a[1], b[1]),
+            max(a[2], b[2]), max(a[3], b[3]))
+
+
+# The highlighter's live mask is 0 or 255; this is what 255 becomes.
+_HIGHLIGHT_LUT = [v * HIGHLIGHT_A // 255 for v in range(256)]
+
+
+def colour_name(rgb) -> str:
+    """What the status line calls a colour: its name if it is one of
+    INKS, its hex code otherwise."""
+    rgb = tuple(rgb)[:3]
+    for name, value in INKS:
+        if tuple(value) == rgb:
+            return name
+    return "#%02X%02X%02X" % rgb
+
+
 def hit(spots: dict, x: int, y: int) -> str | None:
     """Which control is under (x, y), in bar-local pixels."""
     for name, (x0, y0, x1, y1) in spots.items():
@@ -2949,7 +3578,9 @@ class ShotWindow:
         self.marks: list = []
         self.history: list = []
         self.tool = "pen"
-        self.ink = 0
+        # THE PEN: a colour, a width, and what was picked last time.
+        self.colour = tuple(_PEN["colour"])
+        self.size = int(_PEN["size"])
         self.saved_path: Path | None = None
         self.result: dict | None = None
         self.asked = False
@@ -2969,6 +3600,53 @@ class ShotWindow:
         self._layout = bar_layout()
         self._hover: str | None = None
         self._dirty = True
+
+        # THE PAINT IS IN LAYERS, and only the one that changed is redone
+        # (2026-10-17, measured on this machine: every hover over the
+        # toolbar rebuilt the whole lit picture, 73 ms at 1280x720 and
+        # 190 ms at 2560x1440, and every stroke did the same at the
+        # release — after its preview had already been deleted, which is
+        # the "it disappears for a split second and then comes back" he
+        # reported). `_frame` is what lies UNDER the picture (the dim, the
+        # halo, the part a crop cut away) and changes only with the
+        # rectangle; `_pic` is the picture with every mark on it and takes
+        # a new mark in place (`_commit`); the stage photo on the canvas
+        # takes the changed rectangle only, by Tk's own photo copy.
+        self._rev = 0                    # bumps whenever `marks` changes
+        self._frame = None               # RGBA, the stage's own size
+        self._frame_key = None
+        self._stage_at = (0, 0)          # its top-left, canvas pixels
+        self._pic = None                 # RGBA, the box's size
+        self._pic_key = None
+        self._scene = None               # RGB: exactly what the stage shows
+        self._scene_rev = 0
+        self._scene_stale = None         # where _scene is behind the screen
+        self._scene_log: list = []       # (rev, rect | None) of its changes
+        self._last_input = time.monotonic()
+        self._warmth = None              # the idle warm-up, a generator
+        self._tile_grid = None           # (left, top, size) of the tiles
+        self._stage_gen = 0              # bumps on every whole repaint
+        self._stage_painted = None       # (box, path, back, rev) on screen
+        self._bar_item = None
+        self._bar_glass = None
+        self._sprites: dict = {}         # icons and soft shapes, by recipe
+        self._live_mask = None           # the live stroke's coverage
+        self._live_rects: list = []      # what a live SHAPE covers now
+        self._live_end = None            # the end a live shape was laid to
+        self._laid = 1                   # points of a live trail laid
+        self._preview_box = None         # what the live stroke has touched
+        # THE PALETTE.
+        self._palette = palette_layout()
+        self._palette_open = False
+        self._palette_at: tuple[int, int] | None = None
+        self._palette_item = None
+        self._palette_glass = None
+        self._palette_hover: str | None = None
+        self._spectrum = None            # the rainbow, built on first open
+        self._spectrum_at: tuple[float, float] | None = None
+        self._spectrum_drag = False
+        self._picking = False            # the pipette is armed
+        self._loupe = None               # (image item, ring, text) ids
 
         self._build()
         if self.start_box is not None:
@@ -2993,7 +3671,8 @@ class ShotWindow:
         # features are recognisably one app.
         self.dark = self.full.point(_FREEZE_LUT)
         self._keep["dark"] = ImageTk.PhotoImage(self.dark, master=root)
-        canvas.create_image(0, 0, anchor="nw", image=self._keep["dark"])
+        self._backdrop = canvas.create_image(0, 0, anchor="nw",
+                                             image=self._keep["dark"])
 
         px, py = root.winfo_pointerx(), root.winfo_pointery()
         self._hint_id = None
@@ -3029,10 +3708,9 @@ class ShotWindow:
         timer numeral ended up against a chip's left curve. Trim first,
         place second, everywhere.
         """
-        glyph = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
-                             single=True, weight=weight)
-        ink = glyph.getbbox()
-        return glyph.crop(ink) if ink else glyph
+        if width < 900:
+            return bp_fit(text, width, pt, colour, weight)
+        return bp_text(text, pt, colour, weight)
 
     def _draw_hint(self, px: int, py: int) -> None:
         """The instructions and the screen chips, as ONE card of glass.
@@ -3147,62 +3825,56 @@ class ShotWindow:
         which one is the wide monitor and which is the laptop. A tile with
         a little display on it, IN THAT DISPLAY'S OWN ASPECT RATIO, says
         it before the label is read — and "All screens" is the only one
-        with two of them, which is the whole thing it means.
+        with two of them, which is the whole thing it means. B+: the tile
+        is a row's own pane of frost (bp_tile), a step brighter under the
+        pointer.
         """
         cx0, cy0, cx1, cy1 = chip["box"]
         x, y = cx0 - origin[0], cy0 - origin[1]
         width, height = cx1 - cx0, cy1 - cy0
         hot = (label == self._chip_hover)
-        fill = (110, 160, 235, 92) if hot else (255, 255, 255, 20)
-        edge = (150, 195, 255, 210) if hot else (255, 255, 255, 46)
-        tile = _vq.rr_layer((width, height), 12, fill, edge)
+        tile = bp_tile(width, height, 14, "hover" if hot else "rest").copy()
         glyph = screen_glyph((46, 31), chip["aspect"], chip["panes"],
                              colour=INK if hot else INK_DIM)
         tile.alpha_composite(glyph, ((width - glyph.width) // 2, 9))
         name = self._text_ink(label, 9.0, INK if hot else INK_DIM,
-                              weight=600)
+                              weight=W_LABEL, width=width - 16)
         tile.alpha_composite(name, ((width - name.width) // 2, height - 28))
-        size = self._text_ink(chip["size"], 7.8,
-                              INK_DIM if hot else INK_FAINT)
+        size = self._text_ink(chip["size"], 7.8, INK_FAINT,
+                              width=width - 16)
         tile.alpha_composite(size, ((width - size.width) // 2, height - 15))
         if chip["primary"]:
             # A dot, not the word "primary": the row is read at a glance
             # and one of these is always the one everything opens on.
-            dot = _vq.rr_layer((5, 5), 2, (150, 195, 255, 220))
-            tile.alpha_composite(dot, (width - 12, 8))
+            look = _look()
+            tile.alpha_composite(look.flat(tile.size, tuple(INK_DIM) + (230,),
+                                           look.circle(tile.size, width - 10,
+                                                       10, 2.5)))
         plate.alpha_composite(tile, (x, y))
 
     def _draw_switch(self, plate, key: str, switch: dict, origin) -> None:
-        """One sound switch: a pill with a lamp at its left end.
+        """One sound switch: a quiet pill holding B+'s switch, its name
+        and its key letter.
 
-        ON is the lit blue the chips use for hover, so a lit switch and a
-        chip under the hand read as the same family of "this one";
-        OFF is the plain glass of an idle chip. The lamp is the state at
-        a glance — the same dot the primary screen's chip carries — and
-        the key letter sits at the right end so the hint line's "S / M"
-        has something to point at.
+        The switch carries no accent (B+): on is the lavender-grey track
+        and the white knob, off the hollow ring — so a lit switch never
+        competes with anything else on the card. The key letter sits at
+        the right end so the hint line's "S / M" has something to point
+        at.
         """
         sx0, sy0, sx1, sy1 = switch["box"]
         x, y = sx0 - origin[0], sy0 - origin[1]
         width, height = sx1 - sx0, sy1 - sy0
         on = bool(self.sound.get(key))
         hot = (key == self._switch_hover)
-        fill = ((110, 160, 235, 118) if on and hot
-                else (110, 160, 235, 92) if on
-                else (255, 255, 255, 34) if hot
-                else (255, 255, 255, 20))
-        edge = (150, 195, 255, 210) if on else (255, 255, 255, 46)
-        tile = _vq.rr_layer((width, height), height // 2, fill, edge)
-        lamp = _vq.rr_layer((8, 8), 4, (150, 195, 255, 235) if on
-                            else (255, 255, 255, 60))
-        tile.alpha_composite(lamp, (14, (height - 8) // 2))
-        name = self._text_ink(switch["label"], 9.0,
-                              INK if on else INK_DIM, weight=600)
-        tile.alpha_composite(name, (30, (height - name.height) // 2))
-        letter = self._text_ink(switch["key"].upper(), 7.8,
-                                INK if on else INK_FAINT)
-        tile.alpha_composite(letter, (width - 14 - letter.width,
-                                      (height - letter.height) // 2))
+        tile = bp_pill(width, height, "hover" if hot else "rest").copy()
+        knob = bp_switch(on, 0.66)
+        tile.alpha_composite(knob, (9, (height - knob.height) // 2))
+        bp_row(tile, switch["label"], 9.0, INK if on else INK_DIM, W_LABEL,
+               9 + knob.width + 7, height / 2,
+               room=width - 9 - knob.width - 7 - 24)
+        bp_row(tile, switch["key"].upper(), 7.8, INK_FAINT, W_LABEL,
+               width - 13, height / 2, right=True)
         plate.alpha_composite(tile, (x, y))
 
     def _switch_under(self, x: int, y: int) -> str | None:
@@ -3235,6 +3907,7 @@ class ShotWindow:
     # -- the selection phase --
 
     def _on_press(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "edit":
             return self._edit_press(event)
         flipped = self._switch_under(event.x, event.y)
@@ -3268,6 +3941,7 @@ class ShotWindow:
         self._drop_hint()
 
     def _on_drag(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "edit":
             return self._edit_drag(event)
         if self._start is None:
@@ -3282,6 +3956,7 @@ class ShotWindow:
                                        event.x_root, event.y_root))
 
     def _on_release(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "edit":
             return self._edit_release(event)
         if self._spent:
@@ -3318,6 +3993,7 @@ class ShotWindow:
         self._chose(monitor_near(px, py), None)
 
     def _on_move(self, event) -> None:
+        self._last_input = time.monotonic()
         if self.phase == "select":
             hot = self._chip_under(event.x, event.y)
             hot_switch = self._switch_under(event.x, event.y)
@@ -3329,11 +4005,17 @@ class ShotWindow:
             return
         if self.phase != "edit" or self._bar_at is None:
             return
+        x, y = event.x + self._vx, event.y + self._vy
+        if self._picking:
+            self._paint_loupe(x, y)
         bx, by = self._bar_at
         spots = self._layout["spots"]
-        name = hit(spots, event.x + self._vx - bx, event.y + self._vy - by)
-        if name != self._hover:
-            self._hover = name
+        name = hit(spots, x - bx, y - by)
+        hot = self._palette_under(x, y)
+        if name != self._hover or hot != self._palette_hover:
+            # The toolbar and the palette are repainted, and the picture
+            # is not: see _paint. A hover used to cost the whole stage.
+            self._hover, self._palette_hover = name, hot
             self._dirty = True
 
     def _chip_under(self, x: int, y: int) -> str | None:
@@ -3405,7 +4087,7 @@ class ShotWindow:
         self.canvas.create_text(right - self._vx - 6, y,
                                 text=selection_readout(box), fill=FG,
                                 anchor="ne",
-                                font=(_vq._pick_face(), 9, "bold"),
+                                font=(_vq._pick_face(), 9),
                                 tags="sel")
 
     def _chose(self, box, path) -> None:
@@ -3539,7 +4221,23 @@ class ShotWindow:
                 # _chose for the bug this second line closes.
                 self._start = None
                 self._free = None
+                if self._picking:
+                    self._stop_picking()
+                if name != "ink" and self._palette_open:
+                    self._close_palette()
                 return self._activate(name)
+        spot = self._palette_under(x, y)
+        if spot is not None:
+            self._start = None
+            self._free = None
+            return self._palette_press(spot, x, y)
+        if self._palette_open:
+            # A press anywhere else puts the palette away AND is still the
+            # press it was: he picks a colour and goes straight on to draw
+            # with it, without a click spent on closing something.
+            self._close_palette()
+        if self._picking:
+            return self._take_colour(x, y)
         # The CROP may be started anywhere it may end, which after a crop
         # is a bigger rectangle than the picture — that is the whole point
         # of being able to grow one back. Every other tool draws ON the
@@ -3549,87 +4247,299 @@ class ShotWindow:
         if not (left <= x <= right and top <= y <= bottom):
             return                       # a click on the dim: ignored
         self._start = (x, y)
-        self._free = None
+        self._free = [(x, y)] if self.tool in ("pen", "highlight") else None
         self._live = []
+        self._preview_box = None
+        self._live_rects = []
+        self._laid = 1
+        self._live_end = None
+        self._live_mask = None
+        if self.tool in INKED:
+            # The live stroke's coverage, the size of the whole surface
+            # so a stroke that runs off the picture is laid as it will be
+            # kept (a crop can grow back over it). 6 MB of zeros, ~1 ms.
+            from PIL import Image
+            self._live_mask = Image.new("L", (self._vw, self._vh), 0)
 
     def _edit_drag(self, event) -> None:
+        if self._spectrum_drag:
+            return self._spectrum_pick(event.x_root, event.y_root)
         if self._start is None:
             return
         x, y = event.x_root, event.y_root
-        colour = "#%02x%02x%02x" % INKS[self.ink][1]
-        for item in self._live:
-            self.canvas.delete(item)
-        self._live = []
+        if self.tool in ("pen", "highlight"):
+            last = self._free[-1]
+            if abs(last[0] - x) + abs(last[1] - y) < 2:
+                return
+            self._free.append((x, y))
+            return self._lay_live(self._free)
+        if self.tool in ("arrow", "box"):
+            return self._lay_live([self._start, (x, y)])
+        # THE BLUR AND THE CROP are outlines of what they will act on, and
+        # an outline that is not the mark may be a canvas item: straight
+        # lines on whole pixels, which Tk draws as crisply as anything.
         sx, sy = self._start
         cx0, cy0 = sx - self._vx, sy - self._vy
         cx1, cy1 = x - self._vx, y - self._vy
-        # THE CANVAS ITEM IS A PREVIEW AND NOTHING ELSE. The picture is
-        # rebuilt from points when the stroke commits — never read back
-        # off the screen, which races the topmost window and returns
-        # black (visual_qa.py records paying for that one).
-        if self.tool == "pen":
-            self._free = (self._free or [self._start])
-            if abs(self._free[-1][0] - x) + abs(self._free[-1][1] - y) >= 2:
-                self._free.append((x, y))
-            flat = [c for p in self._free
-                    for c in (p[0] - self._vx, p[1] - self._vy)]
-            if len(flat) >= 4:
-                # smooth + round joins, not PIL's joint= — that keyword
-                # belongs to ImageDraw and Tk's canvas answers it with
-                # 'unknown option "-joint"'. The two draw the same stroke
-                # through APIs that only look alike.
-                self._live = [self.canvas.create_line(
-                    *flat, fill=colour, width=PEN_W, capstyle="round",
-                    joinstyle="round", smooth=True, tags="ink")]
-        elif self.tool == "highlight":
-            self._free = (self._free or [self._start])
-            if abs(self._free[-1][0] - x) + abs(self._free[-1][1] - y) >= 2:
-                self._free.append((x, y))
-            flat = [c for p in self._free
-                    for c in (p[0] - self._vx, p[1] - self._vy)]
-            if len(flat) >= 4:
-                self._live = [self.canvas.create_line(
-                    *flat, fill=colour, width=HIGHLIGHT_W, capstyle="round",
-                    joinstyle="round", smooth=True, tags="ink")]
-        elif self.tool == "arrow":
-            self._live = [self.canvas.create_line(
-                cx0, cy0, cx1, cy1, fill=colour, width=PEN_W, arrow="last",
-                arrowshape=tk_arrowshape(), tags="ink")]
-        elif self.tool in ("box", "blur", "crop"):
-            dash = (5, 4) if self.tool == "crop" else None
-            outline = FG if self.tool == "crop" else colour
-            self._live = [self.canvas.create_rectangle(
-                cx0, cy0, cx1, cy1, outline=outline, width=BOX_W, dash=dash,
-                tags="ink")]
+        if self._live:
+            # The same item, moved — not a new one per mouse move.
+            self.canvas.coords(self._live[0], cx0, cy0, cx1, cy1)
+            return
+        crop = self.tool == "crop"
+        item = self.canvas.create_rectangle(
+            cx0, cy0, cx1, cy1,
+            outline=FG if crop else "#%02x%02x%02x" % tuple(self.colour),
+            width=BOX_W, dash=(5, 4) if crop else None, tags="ink")
+        self._live = [self._under_bar(item)]
+
+    def _lay_live(self, points, show: bool = True) -> None:
+        """The live stroke, laid from the same pieces the mark is made of.
+
+        THE PREVIEW IS THE MARK. It used to be a Tk line (or, for the
+        highlighter, a mask drawn at 1x) — and Tk antialiases nothing, so
+        what he saw while dragging was a jagged line that turned smooth at
+        the release, a visible change on top of being a different line.
+        Now every move lays its pieces (`mark_pieces`) into the live mask
+        with MAX and composites only the rectangles they touched, at the
+        mark's own alpha, over the picture; the release files that very
+        mask as the mark's stamp (`keep_live_stamp`). A trail (the pen,
+        the highlighter) only ever grows, so a move lays the segment it
+        added; a shape (the arrow, the box) is laid again whole, and what
+        it covered a move ago is put back first.
+        """
+        width = stroke_width(self.tool, self.size)
+        origin = (self._vx, self._vy)
+        mask = self._live_mask
+        shape = self.tool in ("arrow", "box")
+        stale = []
+        if shape:
+            for left, top, right, bottom in self._live_rects:
+                mask.paste(0, (left - origin[0], top - origin[1],
+                               right - origin[0], bottom - origin[1]))
+            stale = self._live_rects
+            self._live_rects = []
+            pieces = mark_pieces(self.tool, points, width)
+            self._live_end = tuple(points[-1])
+        else:
+            pieces = mark_pieces(self.tool, points, width, start=self._laid)
+            self._laid = len(points)
+        fresh = []
+        for piece in pieces:
+            rect = lay_piece(mask, piece, origin)
+            if rect is not None:
+                fresh.append(rect)
+        if shape:
+            self._live_rects = fresh
+        # Piece i of a shape a move ago and piece i now are a few pixels
+        # apart, so each is patched with the other as ONE rectangle: half
+        # the patches of patching the two lists one rectangle at a time.
+        touched = [_union(stale[i] if i < len(stale) else None,
+                          fresh[i] if i < len(fresh) else None)
+                   for i in range(max(len(stale), len(fresh)))]
+        for rect in touched:
+            self._preview_box = _union(self._preview_box, rect)
+        if show:
+            self._patch_rects(touched, (mask, self.colour, self.tool))
+
+    def _patch_rects(self, rects, overlay=None) -> None:
+        """Patch a handful of rectangles as one when they are close, one by
+        one when they are not — an arrow across the screen touches a thin
+        diagonal band, and its bounding box would be most of the screen."""
+        rects = [r for r in rects if r is not None]
+        if not rects:
+            return
+        whole = None
+        area = 0
+        for rect in rects:
+            whole = _union(whole, rect)
+            area += (rect[2] - rect[0]) * (rect[3] - rect[1])
+        span = (whole[2] - whole[0]) * (whole[3] - whole[1])
+        if span <= max(2 * area, 120_000):
+            return self._patch(whole, overlay)
+        for rect in rects:
+            self._patch(rect, overlay)
 
     def _edit_release(self, event) -> None:
+        if self._spectrum_drag:
+            self._spectrum_drag = False
+            return self._spectrum_done()
         if self._start is None:
             return
         start, self._start = self._start, None
-        points = self._free or [start, (event.x_root, event.y_root)]
-        self._free = None
-        for item in self._live:
-            self.canvas.delete(item)
-        self._live = []
         end = (event.x_root, event.y_root)
-        if self.tool in ("arrow", "box", "blur", "crop"):
+        points = list(self._free or ())
+        self._free = None
+        live, self._live = self._live, []
+        if self.tool in ("pen", "highlight"):
+            if points and abs(points[-1][0] - end[0]) \
+                    + abs(points[-1][1] - end[1]) >= 2:
+                points.append(end)       # to where the button came up
+            if len(points) < 2:
+                points = [start, end]
+        else:
             points = [start, end]
         if (self.tool != "crop"
                 and abs(end[0] - start[0]) + abs(end[1] - start[1]) < 4
                 and len(points) < 4):
-            return                       # a click, not a stroke
+            return self._drop_preview(live)     # a click, not a stroke
         if self.tool == "crop":
             box = clamp_box((start[0], start[1], end[0], end[1]),
                             self._crop_stage())
             if box[2] - box[0] < 16 or box[3] - box[1] < 16:
-                return
+                return self._drop_preview(live)
             self._push_history()
             self._crop_to(box)
-            return
+            # Painted NOW, under the dashed rectangle, which goes only once
+            # the new picture is on the canvas. Tk draws both changes in
+            # one redraw, so there is no instant showing neither.
+            self._paint_now()
+            return self._drop_preview(live)
+        mark = {"kind": self.tool, "points": points,
+                "colour": tuple(self.colour)}
+        if self.tool != "blur":
+            mark["width"] = stroke_width(self.tool, self.size)
+        if self.tool in INKED and self._live_mask is not None:
+            # Bring the live mask to exactly the mark's points — the last
+            # stretch to where the button came up — and file it as the
+            # mark's stamp. The release draws the stroke no second time.
+            if self.tool in ("pen", "highlight"):
+                if len(points) > self._laid:
+                    self._lay_live(points)
+            elif self._live_end != tuple(points[-1]):
+                self._lay_live(points)
+            keep_live_stamp(self.tool, points, self.colour, mark["width"],
+                            self._live_mask, (self._vx, self._vy))
+            # The screen already shows exactly this mark — the preview IS
+            # it — so the commit puts it into the picture and repaints
+            # nothing (_commit, `shown`).
+            self._commit(mark, shown=True)
+            return self._drop_preview(live)
+        self._commit(mark)
+        # ...and only then the preview goes. This order IS the fix for "it
+        # disappears for a split second and then appears": the preview
+        # used to be deleted here and the picture repainted on the NEXT
+        # tick, 125-290 ms later, and every frame in between showed the
+        # picture without the stroke.
+        self._drop_preview(live)
+
+    def _commit(self, mark: dict, shown: bool = False) -> None:
+        """One new mark: into the history, into the picture, onto the screen.
+
+        THE PICTURE TAKES THE MARK IN PLACE (`mark_into`, the very function
+        `draw_marks` replays the whole list with, so the file and the
+        screen stay one replay) and the STAGE takes only the rectangle the
+        mark changed. Measured 2026-10-17 on this machine, a stroke's
+        release was a whole repaint — 125 ms on a 1280x720 shot, 260 ms on
+        a 2560x1440 one; one rectangle is the size of the stroke and
+        nothing else. When the layers are not in step with what is on the
+        screen (nothing painted yet), it falls back to the whole repaint,
+        at once rather than next tick.
+
+        `shown`: the live preview already put these very pixels on the
+        screen (it is laid from the mark's own pieces), so nothing is
+        blitted at all — the picture takes the mark, and the window's PIL
+        copy of what is on the screen is brought up to date the next time
+        something reads it (`_settle_scene`). The release of a stroke
+        across a 1440p shot spent ~20 ms repainting what was already there.
+        """
+        in_step = (self._pic is not None and self._pic_key == self._pic_want()
+                   and self._stage_painted == self._stage_want())
         self._push_history()
-        self.marks.append({"kind": self.tool, "points": list(points),
-                           "colour": INKS[self.ink][1]})
-        self._dirty = True
+        self.marks.append(mark)
+        self._rev += 1
+        if not in_step:
+            self._preview_box = None
+            return self._paint_now()
+        rect = mark_into(self._pic, mark, (self.box[0], self.box[1]))
+        self._pic_key = self._pic_want()
+        self._stage_painted = self._stage_want()
+        region = _union(rect, self._preview_box)
+        self._preview_box = None
+        if region is None:
+            return
+        if shown:
+            self._scene_stale = _union(self._scene_stale, region)
+        else:
+            self._patch(region)
+
+    def _drop_preview(self, live) -> None:
+        """Take the live stroke off the canvas — after whatever replaces it
+        is already there. The ink's preview is painted INTO the stage
+        rather than over it (see _lay_live), so a stroke that was not kept
+        puts back the rectangle it touched."""
+        for item in live:
+            self.canvas.delete(item)
+        if self._preview_box is not None:
+            box, self._preview_box = self._preview_box, None
+            self._patch(box)
+        self._live_mask = None
+        self._live_rects = []
+
+    def _under_bar(self, item):
+        """A live outline goes under the toolbar and the palette, never over
+        them: what it outlines is clipped to the picture."""
+        if self._bar_item is not None:
+            self.canvas.tag_lower(item, self._bar_item)
+        return item
+
+    def _mark_rect(self, mark: dict):
+        """Where a mark can have changed the picture, virtual pixels."""
+        points = mark.get("points", ())
+        if len(points) < 2:
+            return None
+        if mark["kind"] == "blur":
+            return normalize_bbox(points[0][0], points[0][1],
+                                  points[-1][0], points[-1][1])
+        stroke = int(mark.get("width") or _MARK_W.get(mark["kind"], PEN_W))
+        return stamp_rect(mark["kind"], points, stroke)
+
+    def _unpaint(self, gone) -> None:
+        """Undo of a stroke: the picture is drawn again only where the
+        strokes that went had been, and that rectangle only is patched.
+
+        A whole repaint of a 2560x1440 picture was ~100-160 ms per press of
+        Undo, and Undo is the button people press five times in a row. The
+        rectangle grows to hold WHOLE any blur that crosses it, because a
+        mosaic's blocks are counted from its own corner: half a blur drawn
+        again would be a different mosaic. `render_shot` over the
+        rectangle is then the same pixels as over the picture.
+        """
+        left, top, right, bottom = self.box
+        region = None
+        for mark in gone:
+            region = _union(region, self._mark_rect(mark))
+        if region is not None:
+            region = clamp_box(region, self.box)
+            grown = True
+            while grown:
+                grown = False
+                for mark in self.marks:
+                    if mark["kind"] != "blur":
+                        continue
+                    blur = self._mark_rect(mark)
+                    if blur is None:
+                        continue
+                    blur = clamp_box(blur, self.box)
+                    crosses = not (blur[2] <= region[0] or region[2] <= blur[0]
+                                   or blur[3] <= region[1]
+                                   or region[3] <= blur[1])
+                    inside = (region[0] <= blur[0] and region[1] <= blur[1]
+                              and blur[2] <= region[2]
+                              and blur[3] <= region[3])
+                    if crosses and not inside:
+                        region = _union(region, blur)
+                        grown = True
+        if region is not None and region[2] > region[0] \
+                and region[3] > region[1]:
+            part = render_shot(self.full, region, self.marks, self.path,
+                               screen_origin=(self._vx, self._vy))
+            self._pic.paste(part.convert("RGBA"),
+                            (region[0] - left, region[1] - top))
+        self._pic_key = self._pic_want()
+        self._pic_path = self.path
+        self._stage_painted = self._stage_want()
+        if region is not None:
+            self._patch(region)
 
     def _crop_stage(self) -> tuple[int, int, int, int]:
         """The rectangle the crop tool is allowed to work in.
@@ -3684,16 +4594,30 @@ class ShotWindow:
             self._dirty = True
             return
         if name == "ink":
-            self.ink = (self.ink + 1) % len(INKS)
-            self.say(INKS[self.ink][0])
-            self._dirty = True
-            return
+            # The palette, not the next of four colours.
+            if self._palette_open:
+                return self._close_palette()
+            return self._open_palette()
         if name == "undo":
             state, self.history = undo_step(self.history)
             if state is None:
                 return self.say("nothing to undo")
-            self.box, self.path, marks = state
+            box, path, marks = state
+            # Taking strokes back, and nothing else: the picture is drawn
+            # again only where they were (_unpaint). A crop undone, or a
+            # picture not yet in step with the screen, is the whole repaint.
+            only_ink = (box == self.box and path is self.path
+                        and len(marks) < len(self.marks)
+                        and all(a is b for a, b in zip(marks, self.marks))
+                        and self._pic is not None
+                        and self._pic_key == self._pic_want()
+                        and self._stage_painted == self._stage_want())
+            gone = self.marks[len(marks):]
+            self.box, self.path = box, path
             self.marks = list(marks)
+            self._rev += 1
+            if only_ink:
+                return self._unpaint(gone)
             self._dirty = True
             return
         if name == "copy":
@@ -3755,31 +4679,179 @@ class ShotWindow:
 
     # -- painting --
 
-    def _paint(self) -> None:
-        from PIL import Image, ImageDraw, ImageFilter, ImageTk
-        if self.phase != "edit" or self.box is None:
-            return
-        canvas = self.canvas
-        canvas.delete("sel")
-        left, top, right, bottom = self.box
-        shot = self.picture()
-        # While the crop tool is up you may drag outside the picture, so
-        # something outside it has to be visible. On a frozen screen that
-        # is the whole dimmed desktop, which is already painted and costs
-        # nothing — the halo stays around the SELECTION and the rest of
-        # the screen is the same canvas the first drag was made on. Only a
-        # camera photo needs the faint layer, because there the reachable
-        # part is a rectangle rather than everything.
-        back = None
+    def _paint_now(self) -> None:
+        """Paint here and now, rather than on the pump's next tick — for
+        the moments where a preview is waiting to be taken off the canvas
+        and must not go before what replaces it is on."""
+        self._dirty = False
+        self._paint()
+
+    def _back(self):
+        """The part a crop can reach back to, when it has to be SHOWN.
+
+        While the crop tool is up you may drag outside the picture, so
+        something outside it has to be visible. On a frozen screen that is
+        the whole dimmed desktop, which is already painted and costs
+        nothing. Only a camera photo needs the faint layer, because there
+        the reachable part is a rectangle rather than everything.
+        """
         if self.tool == "crop":
             stage = self._crop_stage()
             if stage != self._whole_screen() and stage != self.box:
-                back = stage
-        stage = back or self.box
+                return stage
+        return None
 
-        # The lit selection, its halo and its edge, computed on a CROP
-        # around the rectangle rather than over the whole screen: a
-        # full-screen blur here was 500 ms of the ask card's first draft.
+    def _stage_want(self) -> tuple:
+        return (self.box, self._back(), self._rev, id(self.path))
+
+    def _pic_want(self) -> tuple:
+        return (self.box, self._rev, id(self.path))
+
+    def _paint(self) -> None:
+        """Whatever changed, and nothing that did not.
+
+        The stage (the lit picture, its halo and its edge) only when what
+        it shows is different — see _paint_stage. The toolbar and the
+        palette every time, because they are small: a hover, a tool, a
+        colour or a line of status text costs a few milliseconds now, where
+        it used to rebuild the whole picture.
+        """
+        if self.phase != "edit" or self.box is None:
+            return
+        if self._stage_painted != self._stage_want():
+            self._paint_stage()
+        self._paint_bar()
+        if self._palette_open:
+            self._place_palette()
+            self._paint_palette()
+        if self._loupe is not None:
+            self.canvas.tag_raise("loupe")
+
+    def _paint_stage(self) -> None:
+        """The lit picture and everything around it, rebuilt.
+
+        Only when what it shows changed: the rectangle, the lasso, the
+        part a crop can reach back to, or the marks by something other
+        than one new stroke (an undo — a new stroke is `_commit`'s and
+        never comes here).
+        """
+        canvas = self.canvas
+        if self._tile_grid is None:
+            canvas.delete("sel")         # the selection drag's own leftovers
+        back = self._back()
+        stage = back or self.box
+        frame_key = (self.box, stage, self._rev if back else None)
+        if frame_key != self._frame_key:
+            self._frame = self._build_frame(stage, back)
+            self._frame_key = frame_key
+        pic = self._picture_layer()
+        sx, sy = self._stage_at
+        scene = self._frame.copy()
+        scene.alpha_composite(pic, (self.box[0] - self._vx - sx,
+                                    self.box[1] - self._vy - sy))
+        scene = scene.convert("RGB")
+        self._draw_edge(scene, (0, 0))
+        self._scene = scene
+        self._scene_changed(None)
+        self._scene_stale = None
+        self._lay_tiles(scene)
+        self._stage_painted = self._stage_want()
+        self._stage_path = self.path     # held, so its id cannot be reused
+
+    def _lay_tiles(self, scene) -> None:
+        """The stage onto the canvas as tiles of STAGE_TILE px, not one photo.
+
+        Measured 2026-10-17: Tk's photo `copy` costs in proportion to the
+        photo copied INTO, not to what is copied — after every put it reads
+        the whole destination's alpha to decide how to draw it (Tk 8.6's
+        ToggleComplexAlphaIfNeeded). 40x40 px into a 2560x1440 photo was
+        0.95 ms, into a 256x256 one 0.02 ms. A long arrow re-laid at every
+        move is a few dozen patches, and on one photo that was 35-50 ms a
+        move; on tiles each patch pays for the tiles it lands on.
+        """
+        from PIL import ImageTk
+        canvas = self.canvas
+        sx, sy = self._stage_at
+        grid = (sx, sy, scene.size)
+        old = self._keep.get("tiles", {})
+        same = grid == self._tile_grid
+        tiles = {}
+        for ty in range(0, scene.height, STAGE_TILE):
+            for tx in range(0, scene.width, STAGE_TILE):
+                photo = ImageTk.PhotoImage(
+                    scene.crop((tx, ty, min(tx + STAGE_TILE, scene.width),
+                                min(ty + STAGE_TILE, scene.height))),
+                    master=self.root)
+                if same:
+                    item = old[(tx, ty)][1]
+                    canvas.itemconfigure(item, image=photo)
+                else:
+                    item = canvas.create_image(sx + tx, sy + ty, anchor="nw",
+                                               image=photo, tags="stage")
+                tiles[(tx, ty)] = (photo, item)
+        if not same:
+            for _photo, item in old.values():
+                canvas.delete(item)
+            # Just over the dim backdrop and under everything else: the
+            # toolbar, the palette, an outline being dragged.
+            canvas.tag_raise("stage", self._backdrop)
+        self._keep["tiles"] = tiles
+        self._tile_grid = grid
+        self._stage_gen += 1
+
+    def _blit(self, piece, lx: int, ly: int) -> None:
+        """An RGB piece onto the stage's tiles at stage pixel (lx, ly)."""
+        from PIL import ImageTk
+        tiles = self._keep.get("tiles")
+        if not tiles:
+            return
+        # ONE scratch photo for every blit, pasted into and copied out of
+        # by its corner — a photo created and deleted per patch was half
+        # the Tk calls a live arrow made.
+        scratch = self._keep.get("scratch")
+        if scratch is None:
+            scratch = self._keep["scratch"] = ImageTk.PhotoImage(
+                "RGB", (STAGE_TILE, STAGE_TILE), master=self.root)
+        x1, y1 = lx + piece.width, ly + piece.height
+        for ty in range(ly - ly % STAGE_TILE, y1, STAGE_TILE):
+            for tx in range(lx - lx % STAGE_TILE, x1, STAGE_TILE):
+                tile = tiles.get((tx, ty))
+                if tile is None:
+                    continue
+                ix0, iy0 = max(lx, tx), max(ly, ty)
+                ix1 = min(x1, tx + STAGE_TILE)
+                iy1 = min(y1, ty + STAGE_TILE)
+                if ix1 <= ix0 or iy1 <= iy0:
+                    continue
+                part = piece if (ix0, iy0, ix1, iy1) == (lx, ly, x1, y1) \
+                    else piece.crop((ix0 - lx, iy0 - ly, ix1 - lx, iy1 - ly))
+                scratch.paste(part)
+                self.root.tk.call(str(tile[0]), "copy", str(scratch),
+                                  "-from", 0, 0, ix1 - ix0, iy1 - iy0,
+                                  "-to", ix0 - tx, iy0 - ty)
+
+    def _stage_pixel(self, x: int, y: int) -> tuple[int, int, int]:
+        """The colour the stage shows at a virtual-screen point, read back
+        off Tk's own photo — what is on the canvas, not what should be."""
+        sx, sy = self._stage_at
+        lx, ly = x - self._vx - sx, y - self._vy - sy
+        tile = self._keep["tiles"][(lx - lx % STAGE_TILE,
+                                    ly - ly % STAGE_TILE)]
+        got = self.root.tk.call(str(tile[0]), "get", lx % STAGE_TILE,
+                                ly % STAGE_TILE)
+        if isinstance(got, str):
+            got = got.split()
+        return tuple(int(v) for v in got)[:3]
+
+    def _build_frame(self, stage, back):
+        """What lies UNDER the picture: the dim, the halo, the faint part.
+
+        The halo is computed on a CROP around the rectangle rather than
+        over the whole screen: a full-screen blur here was 500 ms of the
+        ask card's first draft. It depends on the rectangle and nothing
+        else, so it is built when the rectangle moves and kept otherwise.
+        """
+        from PIL import Image, ImageDraw, ImageFilter
         pad = 46
         hx0 = max(0, stage[0] - self._vx - pad)
         hy0 = max(0, stage[1] - self._vy - pad)
@@ -3787,34 +4859,126 @@ class ShotWindow:
         hy1 = min(self.dark.height, stage[3] - self._vy + pad)
         local = self.dark.crop((hx0, hy0, hx1, hy1)).convert("RGBA")
         lw, lh = local.size
-        ox, oy = left - self._vx - hx0, top - self._vy - hy0
-        ex, ey = ox + (right - left), oy + (bottom - top)
-        halo = Image.new("L", (lw, lh), 0)
-        ImageDraw.Draw(halo).rounded_rectangle(
-            (stage[0] - self._vx - hx0 - 3, stage[1] - self._vy - hy0 - 3,
-             stage[2] - self._vx - hx0 + 3, stage[3] - self._vy - hy0 + 3),
-            14, outline=255, width=16)
-        halo = halo.filter(ImageFilter.GaussianBlur(9)).point(
-            lambda v: int(v * .45))
-        local.alpha_composite(Image.merge("RGBA", (
-            Image.new("L", (lw, lh), 86), Image.new("L", (lw, lh), 156),
-            Image.new("L", (lw, lh), 245), halo)))
+        # THE HALO IS DRAWN AT A QUARTER OF ITS SIZE and stretched back.
+        # It is a 9 px blur of a 16 px band — nothing in it is sharper
+        # than a few pixels — and at full size its blur was the largest
+        # single cost of opening the editor on a big shot (~35 ms of
+        # 220 at 2400x1320, 2026-10-17). `box=` maps the small image back
+        # exactly, so the glow does not drift off the rectangle.
+        q = 4
+        small = Image.new("L", (-(-lw // q), -(-lh // q)), 0)
+        ImageDraw.Draw(small).rounded_rectangle(
+            ((stage[0] - self._vx - hx0 - 3) / q,
+             (stage[1] - self._vy - hy0 - 3) / q,
+             (stage[2] - self._vx - hx0 + 3) / q,
+             (stage[3] - self._vy - hy0 + 3) / q),
+            14 / q, outline=255, width=16 // q)
+        halo = small.filter(ImageFilter.GaussianBlur(9 / q)).point(
+            lambda v: int(v * .45)).resize((lw, lh), Image.BILINEAR,
+                                           box=(0, 0, lw / q, lh / q))
+        local.paste(_EDGE_RGB + (255,), (0, 0), halo)
         if back is not None:
             self._paint_recoverable(local, back, (hx0, hy0))
-        local.alpha_composite(shot.convert("RGBA"), (ox, oy))
-        edge = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
-        ImageDraw.Draw(edge).rounded_rectangle((ox - 2, oy - 2, ex + 1, ey + 1),
-                                               13,
-                                               outline=(86, 156, 245, 235),
-                                               width=2)
-        local.alpha_composite(edge)
+        self._stage_at = (hx0, hy0)
+        return local
 
-        scene = local.convert("RGB")
-        self._keep["stage"] = ImageTk.PhotoImage(scene, master=self.root)
-        canvas.create_image(hx0, hy0, anchor="nw", image=self._keep["stage"],
-                            tags="sel")
-        self._paint_bar()
-        canvas.tag_raise("ink")
+    def _picture_layer(self):
+        """The picture with every mark on it, as RGBA, the box's size —
+        `picture()` itself, kept, so a new mark can be added to it rather
+        than every mark being drawn again."""
+        if self._pic is None or self._pic_key != self._pic_want():
+            self._pic = self.picture().convert("RGBA")
+            self._pic_key = self._pic_want()
+            self._pic_path = self.path
+        return self._pic
+
+    def _settle_scene(self) -> None:
+        """Bring the window's PIL copy of the stage up to what the screen
+        shows, where a commit left it behind (`_commit`, `shown`). Called
+        by whatever reads the copy — the palette's glass — and never on
+        the way to the screen, which is already right."""
+        stale, self._scene_stale = self._scene_stale, None
+        if stale is not None:
+            self._patch(stale, blit=False)
+
+    def _patch(self, region, overlay=None, blit: bool = True) -> None:
+        """Repaint one rectangle of the stage, from the layers, in place.
+
+        Into the photo that is already on the canvas, by Tk's own `copy`
+        — so nothing is replaced, nothing is re-sent and only that
+        rectangle is redrawn. `region` is in virtual-screen pixels and is
+        clipped to the picture, because nothing outside the picture can
+        have changed. `overlay` is the live stroke (its coverage mask, the
+        size of the surface; its colour; its kind): a PREVIEW, painted over
+        the picture and not into it, so the scene this window keeps of what
+        is final is left alone.
+        """
+        if self._pic is None or self._frame is None or not self._tile_grid:
+            return
+        left, top, right, bottom = self.box
+        x0, y0 = max(int(region[0]), left), max(int(region[1]), top)
+        x1 = min(int(math.ceil(region[2])), right)
+        y1 = min(int(math.ceil(region[3])), bottom)
+        if x1 <= x0 or y1 <= y0:
+            return
+        sx, sy = self._stage_at
+        lx0, ly0 = x0 - self._vx - sx, y0 - self._vy - sy
+        lx1, ly1 = x1 - self._vx - sx, y1 - self._vy - sy
+        inside = (x0 - left, y0 - top, x1 - left, y1 - top)
+        piece = self._frame.crop((lx0, ly0, lx1, ly1))
+        piece.alpha_composite(self._pic.crop(inside))
+        if overlay is not None:
+            mask, colour, kind = overlay
+            piece.alpha_composite(tint_mask(
+                mask.crop((x0 - self._vx, y0 - self._vy,
+                           x1 - self._vx, y1 - self._vy)), colour, kind))
+        piece = piece.convert("RGB")
+        self._draw_edge(piece, (lx0, ly0))
+        if overlay is None:
+            self._scene.paste(piece, (lx0, ly0))
+            self._scene_changed((x0, y0, x1, y1))
+        if blit:
+            self._blit(piece, lx0, ly0)
+
+    def _draw_edge(self, img, offset) -> None:
+        """The blue hairline round the picture, into `img`, whose top-left
+        is `offset` in stage pixels.
+
+        Drawn into a mask and blended once, because ImageDraw would blend
+        the corners' overlapping pieces twice and darken them. Only the
+        four bands the ring can touch are visited — 16 px either side of
+        the picture's edge — so the whole stage costs four thin strips,
+        not a screenful, and a patch in the middle of the picture costs
+        nothing at all.
+        """
+        from PIL import Image, ImageDraw
+        sx, sy = self._stage_at
+        ox, oy = self.box[0] - self._vx - sx, self.box[1] - self._vy - sy
+        ex = ox + (self.box[2] - self.box[0])
+        ey = oy + (self.box[3] - self.box[1])
+        dx, dy = offset
+        # Four bands that never overlap, however small the picture: an
+        # overlap would blend the ring twice there.
+        reach = 16
+        ty1 = min(oy + reach, (oy + ey) // 2)
+        by0 = max(ey - reach, ty1)
+        lx1 = min(ox + reach, (ox + ex) // 2)
+        rx0 = max(ex - reach, lx1)
+        bands = ((ox - reach, oy - reach, ex + reach, ty1),
+                 (ox - reach, by0, ex + reach, ey + reach),
+                 (ox - reach, ty1, lx1, by0),
+                 (rx0, ty1, ex + reach, by0))
+        for bx0, by0, bx1, by1 in bands:
+            x0, y0 = max(bx0, dx), max(by0, dy)
+            x1, y1 = min(bx1, dx + img.width), min(by1, dy + img.height)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            ring = Image.new("L", (x1 - x0, y1 - y0), 0)
+            ImageDraw.Draw(ring).rounded_rectangle(
+                (ox - 2 - x0, oy - 2 - y0, ex + 1 - x0, ey + 1 - y0), 13,
+                outline=235, width=2)
+            img.paste(_EDGE_RGB, (x0 - dx, y0 - dy, x1 - dx, y1 - dy),
+                      ring)
 
     def _crop_hint(self) -> str:
         if self._crop_stage() == self._whole_screen():
@@ -3847,6 +5011,36 @@ class ShotWindow:
                               (stage[0] - self._vx - hx0,
                                stage[1] - self._vy - hy0))
 
+    def _sprite(self, key, build):
+        """A small picture this window draws again and again — an icon, a
+        chip, a line of text — built once per recipe.
+
+        Per WINDOW, and PIL only: nothing module-level may hold a Tk
+        object, and none of these is one. A hover used to rebuild every
+        icon on the bar at 4x and shrink it again.
+        """
+        sprite = self._sprites.get(key)
+        if sprite is None:
+            if len(self._sprites) > 400:
+                self._sprites.clear()
+            sprite = self._sprites[key] = build()
+        return sprite
+
+    def _rr(self, size, radius: int, fill, outline=None, width: int = 1):
+        return self._sprite(("rr", size, radius, fill, outline, width),
+                            lambda: _vq.rr_layer(size, radius, fill, outline,
+                                                 width))
+
+    def _glyph(self, kind: str, size: int, colour):
+        return self._sprite(("icon", kind, size, colour),
+                            lambda: icon(kind, size, colour=colour, width=2))
+
+    def _words(self, text: str, width: int, pt: float, colour,
+               weight: int = 400):
+        """A line in Rubik at B+'s weights, cut to `width` (bp_fit)."""
+        return self._sprite(("text", text, width, pt, colour, weight),
+                            lambda: bp_fit(text, width, pt, colour, weight))
+
     def _paint_bar(self) -> None:
         """The toolbar: one glass plate with everything painted into it.
 
@@ -3855,8 +5049,11 @@ class ShotWindow:
         is an image operation rather than a compositor feature Tk does not
         have. The clip bar, which floats over a live screen, cannot do
         this and does not try.
+
+        The glass is built once per PLACE — it depends on where the bar is
+        and on nothing it shows — and the chips are laid onto a copy.
         """
-        from PIL import Image, ImageTk
+        from PIL import ImageTk
         bw, bh = self._layout["size"]
         screen = monitor_near((self.box[0] + self.box[2]) // 2,
                               (self.box[1] + self.box[3]) // 2)
@@ -3868,18 +5065,31 @@ class ShotWindow:
         lx = max(0, min(bx - self._vx, self.dark.width - bw))
         ly = max(0, min(by - self._vy, self.dark.height - bh))
         self._bar_at = (lx + self._vx, ly + self._vy)
-
-        plate = _vq.glass_plate(self.dark, (lx, ly, lx + bw, ly + bh),
-                                radius=BAR_RADIUS)
+        rect = (lx, ly, lx + bw, ly + bh)
+        if self._bar_glass is None or self._bar_glass[0] != rect:
+            self._bar_glass = (rect,
+                               _vq.glass_plate(self.dark, rect,
+                                               radius=BAR_RADIUS),
+                               self.dark.crop(rect).convert("RGBA"))
+        _rect, glass, ground = self._bar_glass
+        plate = glass.copy()
         self._draw_bar_content(plate)
-        under = self.dark.crop((lx, ly, lx + bw, ly + bh)).convert("RGBA")
+        under = ground.copy()
         under.alpha_composite(plate)
-        self._keep["bar"] = ImageTk.PhotoImage(under.convert("RGB"),
-                                               master=self.root)
-        self.canvas.create_image(lx, ly, anchor="nw", image=self._keep["bar"],
-                                 tags="sel")
+        photo = ImageTk.PhotoImage(under.convert("RGB"), master=self.root)
+        if self._bar_item is None:
+            self._bar_item = self.canvas.create_image(
+                lx, ly, anchor="nw", image=photo, tags="bar")
+        else:
+            self.canvas.coords(self._bar_item, lx, ly)
+            self.canvas.itemconfigure(self._bar_item, image=photo)
+        self._keep["bar"] = photo
 
     def _draw_bar_content(self, plate) -> None:
+        """B+: every tool a round control (a disc of frost, a step brighter
+        under the pointer, the chosen one the desk's bubble); the three
+        actions quiet pills with their words; no iris anywhere — nothing
+        on this bar is what Enter does, so nothing on it is lit."""
         from PIL import Image
         spots = self._layout["spots"]
         glyphs = dict((name, glyph) for name, glyph, _l in TOOLS)
@@ -3888,53 +5098,470 @@ class ShotWindow:
 
         for name, (x0, y0, x1, y1) in spots.items():
             if name == "_sep":
-                plate.alpha_composite(
-                    Image.new("RGBA", (max(1, x1 - x0), y1 - y0),
-                              (255, 255, 255, 40)), (x0, y0))
+                plate.alpha_composite(self._sprite(
+                    ("sep", x1 - x0, y1 - y0),
+                    lambda: Image.new("RGBA", (max(1, x1 - x0), y1 - y0),
+                                      (255, 255, 255, 30))), (x0, y0))
                 continue
-            selected = (name == self.tool)
+            selected = (name == self.tool
+                        or (name == "ink" and self._palette_open))
             hovered = (name == self._hover)
+            state = ("chosen" if selected and name not in labels
+                     else "hover" if hovered else "rest")
             if name in labels:
-                fill = (86, 156, 245, 190) if hovered else (255, 255, 255, 26)
-                outline = (255, 255, 255, 70) if hovered else (255, 255, 255, 52)
-            elif selected:
-                fill, outline = (86, 156, 245, 175), (255, 255, 255, 90)
-            elif hovered:
-                fill, outline = (255, 255, 255, 46), (255, 255, 255, 70)
+                plate.alpha_composite(bp_pill(x1 - x0, y1 - y0, state),
+                                      (x0, y0))
             else:
-                fill, outline = (255, 255, 255, 20), (255, 255, 255, 40)
-            radius = 11 if name in labels else CHIP // 2
-            plate.alpha_composite(
-                _vq.rr_layer((x1 - x0, y1 - y0), radius, fill, outline),
-                (x0, y0))
+                plate.alpha_composite(bp_round(x1 - x0, state), (x0, y0))
             if name == "ink":
-                swatch = _vq.rr_layer((14, 14), 7, INKS[self.ink][1] + (255,),
-                                      (255, 255, 255, 130))
-                plate.alpha_composite(swatch, (x0 + (CHIP - 14) // 2,
-                                               y0 + (CHIP - 14) // 2))
+                # THE CHIP IS THE PEN: its colour, in a dot that grows with
+                # the width of the line, so both are read off the bar
+                # without opening anything.
+                dot = SIZE_DOTS[self.size]
+                plate.alpha_composite(
+                    self._rr((dot, dot), dot // 2,
+                             tuple(self.colour) + (255,),
+                             (255, 255, 255, 150)),
+                    (x0 + (CHIP - dot) // 2, y0 + (CHIP - dot) // 2))
                 continue
             glyph_name = glyphs.get(name, name)
             colour = INK if (selected or hovered) else INK_DIM
             if name in labels:
-                text = _vq.text_pil(labels[name], x1 - x0 - 30, pt=10.5,
-                                    colour=INK, rtl=False, single=True,
-                                    weight=600)
-                mark = icon(glyph_name, 17, colour=INK, width=2)
-                plate.alpha_composite(mark, (x0 + 11, y0 + (CHIP - 17) // 2))
-                plate.alpha_composite(text, (x0 + 32,
-                                             y0 + (CHIP - text.height) // 2))
+                mark = self._glyph(glyph_name, 15, INK if hovered else INK_DIM)
+                plate.alpha_composite(mark, (x0 + 12, y0 + (CHIP - 15) // 2))
+                bp_row(plate, labels[name], 9.75, INK, W_LABEL, x0 + 32,
+                       y0 + CHIP / 2, room=x1 - x0 - 38)
                 continue
-            mark = icon(glyph_name, 19, colour=colour, width=2)
-            plate.alpha_composite(mark, (x0 + (CHIP - 19) // 2,
-                                         y0 + (CHIP - 19) // 2))
+            mark = self._glyph(glyph_name, 18, colour)
+            plate.alpha_composite(mark, (x0 + (CHIP - 18) // 2,
+                                         y0 + (CHIP - 18) // 2))
 
         line = self._status if time.monotonic() < self._status_until else ""
         if not line:
             line = (f"{selection_readout(self.box)}   ·   "
-                    f"{INKS[self.ink][0]}   ·   Esc closes")
-        text = _vq.text_pil(line, plate.width - 2 * BAR_PAD_X, pt=9.5,
-                            colour=INK_FAINT, rtl=False, single=True)
-        plate.alpha_composite(text, (BAR_PAD_X, BAR_H - 26))
+                    f"{colour_name(self.colour)}, {SIZES[self.size][0]}"
+                    f"   ·   Esc closes")
+        text = self._words(line, plate.width - 2 * BAR_PAD_X, 9.5, INK_FAINT)
+        plate.alpha_composite(text, (BAR_PAD_X + 2, BAR_H - 27))
+
+    # -- the palette --
+
+    def _open_palette(self) -> None:
+        self._palette_open = True
+        self._palette_hover = None
+        self._place_palette()
+        self.say("pick a colour — or drag across the rainbow for any other",
+                 ttl_ms=6000)
+
+    def _close_palette(self) -> None:
+        self._palette_open = False
+        self._palette_hover = None
+        self._spectrum_drag = False
+        if self._palette_item is not None:
+            self.canvas.delete(self._palette_item)
+            self._palette_item = None
+        self._keep.pop("palette", None)
+        self._dirty = True
+
+    def _place_palette(self) -> None:
+        """Over the toolbar when the monitor has room above it, under it when
+        it does not, centred on the ink chip and pushed back inside the
+        monitor the toolbar is on — the same order of rules as plan_bar."""
+        if self._bar_at is None:
+            return
+        pw, ph = self._palette["size"]
+        bw, bh = self._layout["size"]
+        bx, by = self._bar_at
+        x0, _y0, x1, _y1 = self._layout["spots"]["ink"]
+        sl, st, sr, sb = monitor_near(bx + bw // 2, by + bh // 2)
+        x = bx + (x0 + x1) // 2 - pw // 2
+        x = max(sl + 8, min(x, sr - pw - 8))
+        if by - PALETTE_GAP - ph >= st + 8:
+            y = by - PALETTE_GAP - ph
+        elif by + bh + PALETTE_GAP + ph <= sb - 8:
+            y = by + bh + PALETTE_GAP
+        else:
+            y = max(st + 8, by - PALETTE_GAP - ph)
+        x = max(self._vx, min(x, self._vx + self._vw - pw))
+        y = max(self._vy, min(y, self._vy + self._vh - ph))
+        self._palette_at = (x, y)
+
+    def _palette_under(self, x: int, y: int) -> str | None:
+        """What on the open palette is under a virtual-screen point: a spot's
+        name, "_panel" for the glass between them, None off the palette."""
+        if not self._palette_open or self._palette_at is None:
+            return None
+        px, py = self._palette_at
+        pw, ph = self._palette["size"]
+        if not (px <= x < px + pw and py <= y < py + ph):
+            return None
+        return hit(self._palette["spots"], x - px, y - py) or "_panel"
+
+    def _palette_press(self, spot: str, x: int, y: int) -> None:
+        if spot.startswith("swatch:"):
+            name, rgb = INKS[int(spot.split(":")[1])]
+            self._set_colour(rgb)
+            self._close_palette()
+            return self.say(name, ttl_ms=FLASH_MS)
+        if spot.startswith("recent:"):
+            recent = _PEN["recent"]
+            index = int(spot.split(":")[1])
+            if index < len(recent):
+                self._set_colour(recent[index], remember=True)
+                self._close_palette()
+                self.say(colour_name(self.colour), ttl_ms=FLASH_MS)
+            return
+        if spot == "spectrum":
+            self._spectrum_drag = True
+            return self._spectrum_pick(x, y)
+        if spot == "pick":
+            return self._start_picking()
+        if spot.startswith("size:"):
+            self.size = int(spot.split(":")[1])
+            _PEN["size"] = self.size
+            self._dirty = True
+            return self.say(f"{SIZES[self.size][0]} line", ttl_ms=FLASH_MS)
+        # "_panel": the glass between the controls. Spent, and nothing else.
+
+    def _set_colour(self, rgb, remember: bool = False) -> None:
+        self.colour = tuple(int(c) for c in rgb)[:3]
+        _PEN["colour"] = self.colour
+        if remember:
+            remember_colour(self.colour)
+        self._dirty = True
+
+    def _spectrum_pick(self, x: int, y: int) -> None:
+        """The rainbow, pressed or dragged: the colour under the pointer,
+        live, on the chip and on the palette. A drag that leaves the strip
+        keeps reading its nearest edge, so overshooting is not losing it."""
+        if self._palette_at is None:
+            return
+        px, py = self._palette_at
+        x0, y0, x1, y1 = self._palette["spots"]["spectrum"]
+        fx = (x - px - x0) / max(1, x1 - x0 - 1)
+        fy = (y - py - y0) / max(1, y1 - y0 - 1)
+        fx, fy = min(1.0, max(0.0, fx)), min(1.0, max(0.0, fy))
+        self._spectrum_at = (fx, fy)
+        self._set_colour(spectrum_colour(fx, fy))
+
+    def _spectrum_done(self) -> None:
+        remember_colour(self.colour)
+        self._dirty = True
+        self.say(f"{colour_name(self.colour)} — click the picture to draw",
+                 ttl_ms=FLASH_MS * 2)
+
+    def _start_picking(self) -> None:
+        """The pipette: the next click on the screen takes its colour.
+
+        Off the REAL pixels — the frozen screen undimmed outside the
+        picture, the picture with its marks inside it — never off the
+        dimmed backdrop the screen is showing around the selection.
+        """
+        self._close_palette()
+        self._picking = True
+        self.canvas.config(cursor="tcross")
+        self.say("click any colour on the screen to take it — Esc puts the "
+                 "pipette away", ttl_ms=10000)
+        self._paint_loupe(self.root.winfo_pointerx(),
+                          self.root.winfo_pointery())
+
+    def _stop_picking(self) -> None:
+        self._picking = False
+        if self._loupe is not None:
+            for item in self._loupe:
+                self.canvas.delete(item)
+            self._loupe = None
+        self._keep.pop("loupe", None)
+        self.canvas.config(cursor="crosshair")
+        self._dirty = True
+
+    def _take_colour(self, x: int, y: int) -> None:
+        rgb = self._seen((x, y, x + 1, y + 1)).getpixel((0, 0))
+        self._stop_picking()
+        self._set_colour(rgb, remember=True)
+        self.say(f"took {colour_name(self.colour)}", ttl_ms=FLASH_MS * 2)
+
+    def _seen(self, rect):
+        """The real colours of a virtual-screen rectangle, as RGB: the
+        picture with its marks where the rectangle is on the picture, the
+        frozen screen as it was everywhere else."""
+        x0, y0, x1, y1 = rect
+        out = self.full.crop((x0 - self._vx, y0 - self._vy,
+                              x1 - self._vx, y1 - self._vy)).convert("RGBA")
+        left, top, right, bottom = self.box
+        ix0, iy0 = max(x0, left), max(y0, top)
+        ix1, iy1 = min(x1, right), min(y1, bottom)
+        if ix1 > ix0 and iy1 > iy0:
+            out.alpha_composite(
+                self._picture_layer().crop((ix0 - left, iy0 - top,
+                                            ix1 - left, iy1 - top)),
+                (ix0 - x0, iy0 - y0))
+        return out.convert("RGB")
+
+    def _paint_loupe(self, x: int, y: int) -> None:
+        """The pipette's magnifier beside the pointer: the pixels under it,
+        eight times their size, the one that would be taken ringed, and its
+        colour in a chip with its code. ONE photo for the loupe's whole
+        life, pasted into — a new PhotoImage per mouse move is the
+        allocation the camera card's trap (AGENTS.md) is about."""
+        from PIL import Image, ImageDraw, ImageTk
+        half = LOUPE_PX // 2
+        patch = self._seen((x - half, y - half, x + half + 1, y + half + 1))
+        size = LOUPE_PX * LOUPE_ZOOM
+        big = patch.resize((size, size), Image.NEAREST)
+        draw = ImageDraw.Draw(big)
+        c0 = half * LOUPE_ZOOM
+        draw.rectangle((c0 - 2, c0 - 2, c0 + LOUPE_ZOOM + 1,
+                        c0 + LOUPE_ZOOM + 1), outline=(16, 16, 20))
+        draw.rectangle((c0 - 1, c0 - 1, c0 + LOUPE_ZOOM, c0 + LOUPE_ZOOM),
+                       outline=(255, 255, 255))
+        draw.rectangle((0, 0, size - 1, size - 1), outline=(255, 255, 255))
+        rgb = patch.getpixel((half, half))
+        hexed = "#%02X%02X%02X" % rgb
+        light = rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114 > 140
+        cx, cy = x - self._vx + 22, y - self._vy + 22
+        if cx + size > self._vw:
+            cx = x - self._vx - 22 - size
+        if cy + size + 26 > self._vh:
+            cy = y - self._vy - 22 - size - 26
+        canvas = self.canvas
+        if self._loupe is None:
+            photo = ImageTk.PhotoImage(big, master=self.root)
+            self._keep["loupe"] = photo
+            self._loupe = (
+                canvas.create_image(cx, cy, anchor="nw", image=photo,
+                                    tags="loupe"),
+                canvas.create_rectangle(cx, cy + size + 4, cx + size,
+                                        cy + size + 24, fill=hexed,
+                                        outline="#ffffff", tags="loupe"),
+                canvas.create_text(cx + size // 2, cy + size + 14,
+                                   text=hexed,
+                                   fill="#101014" if light else "#ffffff",
+                                   font=(_vq._pick_face(), 9),
+                                   tags="loupe"))
+            return
+        self._keep["loupe"].paste(big)
+        image, chip, label = self._loupe
+        canvas.coords(image, cx, cy)
+        canvas.coords(chip, cx, cy + size + 4, cx + size, cy + size + 24)
+        canvas.itemconfigure(chip, fill=hexed)
+        canvas.coords(label, cx + size // 2, cy + size + 14)
+        canvas.itemconfigure(label, text=hexed,
+                             fill="#101014" if light else "#ffffff")
+        canvas.tag_raise("loupe")
+
+    def _escape(self) -> bool:
+        """Esc puts away the smallest thing that is open — the pipette,
+        then the palette — and only then the editor. True if it did."""
+        if self._picking:
+            self._stop_picking()
+            self.say("pipette put away", ttl_ms=FLASH_MS)
+            return True
+        if self._palette_open:
+            self._close_palette()
+            return True
+        return False
+
+    def _glass_ground(self, rect):
+        """(what is behind `rect`, `rect` inside it): the dim with the lit
+        picture laid in, so a palette over the picture is glass over the
+        picture and not over the dark it is not standing on."""
+        self._settle_scene()
+        pad = 44
+        x0, y0 = max(0, rect[0] - pad), max(0, rect[1] - pad)
+        x1 = min(self.dark.width, rect[2] + pad)
+        y1 = min(self.dark.height, rect[3] + pad)
+        back = self.dark.crop((x0, y0, x1, y1)).convert("RGB")
+        if self._scene is not None:
+            sx, sy = self._stage_at
+            sw, sh = self._scene.size
+            ix0, iy0 = max(x0, sx), max(y0, sy)
+            ix1, iy1 = min(x1, sx + sw), min(y1, sy + sh)
+            if ix1 > ix0 and iy1 > iy0:
+                back.paste(self._scene.crop((ix0 - sx, iy0 - sy,
+                                             ix1 - sx, iy1 - sy)),
+                           (ix0 - x0, iy0 - y0))
+        return back, (rect[0] - x0, rect[1] - y0, rect[2] - x0, rect[3] - y0)
+
+    def _scene_changed(self, rect) -> None:
+        """Note that the scene changed over `rect` (virtual pixels; None is
+        all of it), so a glass built over it knows whether it is stale."""
+        self._scene_rev += 1
+        self._scene_log.append((self._scene_rev, rect))
+        if len(self._scene_log) > 400:
+            del self._scene_log[:200]
+
+    def _changed_since(self, rev: int, rect) -> bool:
+        if self._scene_log and self._scene_log[0][0] > rev + 1:
+            return True                   # older than the log remembers
+        for at, changed in reversed(self._scene_log):
+            if at <= rev:
+                return False
+            if changed is None or not (changed[2] <= rect[0]
+                                       or rect[2] <= changed[0]
+                                       or changed[3] <= rect[1]
+                                       or rect[3] <= changed[1]):
+                return True
+        return False
+
+    def _palette_glass_for(self, rect):
+        """The palette's glass over `rect` (canvas pixels), built when what
+        is behind it changed and kept otherwise — a stroke at the other end
+        of the picture does not make the glass over the toolbar stale."""
+        self._settle_scene()
+        ground = (rect[0] - 44 + self._vx, rect[1] - 44 + self._vy,
+                  rect[2] + 44 + self._vx, rect[3] + 44 + self._vy)
+        kept = self._palette_glass
+        if kept is not None and kept[0] == rect \
+                and not self._changed_since(kept[1], ground):
+            return kept[2], kept[3]
+        back, local = self._glass_ground(rect)
+        self._palette_glass = (rect, self._scene_rev,
+                               _vq.glass_plate(back, local,
+                                               radius=PALETTE_RADIUS),
+                               back.crop(local).convert("RGBA"))
+        return self._palette_glass[2], self._palette_glass[3]
+
+    def _paint_palette(self) -> None:
+        from PIL import ImageTk
+        pw, ph = self._palette["size"]
+        px, py = self._palette_at
+        lx, ly = px - self._vx, py - self._vy
+        rect = (lx, ly, lx + pw, ly + ph)
+        glass, ground = self._palette_glass_for(rect)
+        plate = glass.copy()
+        self._draw_palette_content(plate)
+        under = ground.copy()
+        under.alpha_composite(plate)
+        photo = ImageTk.PhotoImage(under.convert("RGB"), master=self.root)
+        if self._palette_item is None:
+            self._palette_item = self.canvas.create_image(
+                lx, ly, anchor="nw", image=photo, tags="palette")
+        else:
+            self.canvas.coords(self._palette_item, lx, ly)
+            self.canvas.itemconfigure(self._palette_item, image=photo)
+        self._keep["palette"] = photo
+
+    def _warm_up(self):
+        """What opening the palette needs, built while the editor is idle,
+        one piece per tick of the pump.
+
+        Measured 2026-10-17: the FIRST open of the palette was 70-130 ms —
+        the rainbow (18 k pixels through colorsys), every swatch and ring
+        and dot as a sprite, and the glass — all of it on the click. None of
+        it depends on anything but where the toolbar is, so it is made
+        while nothing is happening and the click only lays it out.
+        """
+        from PIL import Image
+        x0, y0, x1, y1 = self._palette["spots"]["spectrum"]
+        spectrum_image((x1 - x0, y1 - y0))
+        yield
+        self._draw_palette_content(Image.new("RGBA", self._palette["size"]))
+        yield
+        if self._bar_at is not None and not self._palette_open:
+            self._place_palette()
+            pw, ph = self._palette["size"]
+            px, py = self._palette_at
+            self._palette_glass_for((px - self._vx, py - self._vy,
+                                     px - self._vx + pw, py - self._vy + ph))
+        yield
+
+    def _warm_step(self) -> None:
+        if self._warmth is None:
+            self._warmth = self._warm_up()
+        try:
+            next(self._warmth)
+        except StopIteration:
+            self._warmth = False
+        except Exception:                 # a decoration: never fatal
+            log.exception("the palette's warm-up failed")
+            self._warmth = False
+
+    def _swatch(self, plate, spot, rgb, hot: bool) -> None:
+        x0, y0, x1, y1 = spot
+        size = x1 - x0
+        if tuple(rgb) == tuple(self.colour):
+            ring = size + 8
+            plate.alpha_composite(self._rr((ring, ring), ring // 2, None,
+                                           (255, 255, 255, 235), 2),
+                                  (x0 - 4, y0 - 4))
+        elif hot:
+            ring = size + 6
+            plate.alpha_composite(self._rr((ring, ring), ring // 2, None,
+                                           (255, 255, 255, 120), 2),
+                                  (x0 - 3, y0 - 3))
+        # The hairline is what keeps black and navy visible on dark glass.
+        plate.alpha_composite(self._rr((size, size), size // 2,
+                                       tuple(rgb) + (255,),
+                                       (255, 255, 255, 70)), (x0, y0))
+
+    def _draw_palette_content(self, plate) -> None:
+        from PIL import Image
+        spots = self._palette["spots"]
+        hot = self._palette_hover
+        for i, (_name, rgb) in enumerate(INKS):
+            self._swatch(plate, spots[f"swatch:{i}"], rgb,
+                         hot == f"swatch:{i}")
+
+        x0, y0, x1, y1 = spots["spectrum"]
+        if self._spectrum is None:
+            strip = spectrum_image((x1 - x0, y1 - y0)).convert("RGBA")
+            strip.putalpha(self._rr((x1 - x0, y1 - y0), 8,
+                                    (255, 255, 255, 255)).getchannel("A"))
+            self._spectrum = strip
+        plate.alpha_composite(self._spectrum, (x0, y0))
+        plate.alpha_composite(self._rr((x1 - x0, y1 - y0), 8, None,
+                                       (255, 255, 255, 60)), (x0, y0))
+        if (self._spectrum_at is not None
+                and spectrum_colour(*self._spectrum_at) == tuple(self.colour)):
+            fx, fy = self._spectrum_at
+            mx = x0 + round(fx * (x1 - x0 - 1))
+            my = y0 + round(fy * (y1 - y0 - 1))
+            plate.alpha_composite(self._rr((18, 18), 9, None,
+                                           (16, 16, 20, 190), 2),
+                                  (mx - 9, my - 9))
+            plate.alpha_composite(self._rr((14, 14), 7, None,
+                                           (255, 255, 255, 250), 2),
+                                  (mx - 7, my - 7))
+
+        recent = _PEN["recent"][:RECENT_MAX]
+        for i, rgb in enumerate(recent):
+            self._swatch(plate, spots[f"recent:{i}"], rgb, hot == f"recent:{i}")
+        if not recent:
+            rx0, ry0, _rx1, ry1 = spots["recent:0"]
+            room = spots["pick"][0] - rx0 - 8
+            hint = self._words("colours you pick from the rainbow or the "
+                               "screen land here", room, 9, INK_FAINT)
+            plate.alpha_composite(hint, (rx0, ry0 + (ry1 - ry0
+                                                     - hint.height) // 2))
+
+        x0, y0, x1, y1 = spots["pick"]
+        lit = hot == "pick"
+        plate.alpha_composite(bp_round(x1 - x0, "hover" if lit else "rest"),
+                              (x0, y0))
+        glyph = self._glyph("pick", 17, INK if lit else INK_DIM)
+        plate.alpha_composite(glyph, (x0 + (x1 - x0 - 17) // 2,
+                                      y0 + (y1 - y0 - 17) // 2))
+
+        for i in range(len(SIZES)):
+            x0, y0, x1, y1 = spots[f"size:{i}"]
+            state = ("chosen" if i == self.size
+                     else "hover" if hot == f"size:{i}" else "rest")
+            plate.alpha_composite(bp_round(x1 - x0, state), (x0, y0))
+            dot = SIZE_DOTS[i]
+            plate.alpha_composite(self._rr((dot, dot), dot // 2,
+                                           tuple(self.colour) + (255,),
+                                           (255, 255, 255, 150)),
+                                  (x0 + (x1 - x0 - dot) // 2,
+                                   y0 + (y1 - y0 - dot) // 2))
+
+        x0, y0, x1, y1 = spots["_name"]
+        name = self._sprite(
+            ("name", tuple(self.colour)),
+            lambda: self._text_ink(colour_name(self.colour), 9.5, INK_DIM,
+                                   weight=W_LABEL, width=x1 - x0))
+        plate.alpha_composite(name, (x1 - name.width,
+                                     y0 + (y1 - y0 - name.height) // 2))
 
     # -- the pump --
 
@@ -3968,7 +5595,10 @@ class ShotWindow:
                 pressed = _user32.GetAsyncKeyState(0x1B)
                 down, fresh = bool(pressed & 0x8000), bool(pressed & 0x0001)
                 if (down or fresh) and not held:
-                    break
+                    # The pipette and the palette are put away first; the
+                    # editor closes on the Esc after that.
+                    if not self._escape():
+                        break
                 held = down
                 if self._dirty:
                     self._dirty = False
@@ -3980,7 +5610,12 @@ class ShotWindow:
                     root.update()
                 except self.tk.TclError:
                     break
-                time.sleep(_TICK_S)
+                drawing = self._start is not None or self._spectrum_drag
+                if (not drawing and self._warmth is not False
+                        and self.phase == "edit" and self._bar_at is not None
+                        and time.monotonic() - self._last_input > 0.25):
+                    self._warm_step()
+                time.sleep(DRAW_TICK_S if drawing else _TICK_S)
         finally:
             self._keep.clear()
             try:
@@ -4224,10 +5859,14 @@ class ClipBar:
         self._face(width, height, radius)
 
     def _face(self, width: int, height: int, radius: int) -> None:
+        """B+ card stock (bp_stock): the pane with nothing behind it. Kept
+        as a picture too, so each paint lays the live parts onto IT — the
+        face is lit from above, and a button flattened onto one flat
+        colour would wear a rectangle of the wrong shade."""
         from PIL import ImageTk
+        self._face_img = bp_stock(width, height, radius)
         self._keep["face"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(width, height, radius, CARD, PANE, STROKE),
-            master=self.root)
+            self._face_img.convert("RGB"), master=self.root)
         self.canvas.delete("face")
         self.canvas.create_image(0, 0, anchor="nw", image=self._keep["face"],
                                  tags="face")
@@ -4318,75 +5957,81 @@ class ClipBar:
         except Exception:
             return False
 
-    def _dot(self, x: int, y: int, size: int = 12) -> None:
-        """The red dot, blinking while it records and steady while paused.
+    def _dot(self, card, x: int, y: int, size: int = 12) -> None:
+        """The recording lamp (look.lamp, B+'s red with its rings),
+        blinking while it records and steady — in the working amber —
+        while paused, into `card` centred on (x + size/2, y + size/2).
 
         A blink answers "is this still capturing?" from the corner of an
         eye, which is the only question anyone asks an indicator, and it
         answers it without a word to read.
         """
-        from PIL import ImageTk
         recorder = self.recorder
         lit = recorder.paused or (time.monotonic() * 1.6) % 1.0 < 0.62
-        colour = (224, 163, 43) if recorder.paused else (224, 53, 43)
-        dot = _vq.rr_layer((size, size), size // 2,
-                           colour + (255 if lit else 60,))
-        self._keep["dot"] = ImageTk.PhotoImage(dot, master=self.root)
-        self.canvas.create_image(x, y, anchor="nw", image=self._keep["dot"],
+        room = size + 34                 # the lamp's light ends inside it
+        lamp = bp_lamp(room, "warn" if recorder.paused else "rec", lit)
+        _paste(card, lamp, x + size // 2 - room // 2,
+               y + size // 2 - room // 2)
+
+    def _show(self, card) -> None:
+        """One picture for the whole bar, over the face it was drawn on."""
+        from PIL import ImageTk
+        self.canvas.delete("live")
+        self._keep["live"] = ImageTk.PhotoImage(card.convert("RGB"),
+                                                master=self.root)
+        self.canvas.create_image(0, 0, anchor="nw", image=self._keep["live"],
                                  tags="live")
 
-    def _text(self, key: str, text: str, x: int, y: int, *, pt: float,
-              colour, weight: int = 400, width: int = 300) -> None:
-        from PIL import ImageTk
-        image = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
-                             single=True, weight=weight)
-        self._keep[key] = ImageTk.PhotoImage(image, master=self.root)
-        self.canvas.create_image(x, y, anchor="nw", image=self._keep[key],
-                                 tags="live")
+    def _card(self, width: int, height: int):
+        face = getattr(self, "_face_img", None)
+        if face is None or face.size != (width, height):
+            radius = (CLIP_BAR_RADIUS if self.phase() == "announce"
+                      else TIMER_RADIUS)
+            face = bp_stock(width, height, radius)
+        return face.copy()
 
     def _paint_announce(self, width: int, height: int) -> None:
-        self.canvas.delete("live")
-        self._dot(20, height // 2 - 6)
+        card = self._card(width, height)
+        self._dot(card, 18, height // 2 - 6)
         left, top, right, bottom = self.recorder.box
         detail = f"{right - left} × {bottom - top}"
         if self.recorder.system_wanted:
-            detail += "   ·   computer sound"
+            detail += "  ·  computer sound"
         if self.recorder.mic_wanted:
-            detail += "   ·   mic on"
+            detail += "  ·  mic on"
         if self.stop_key:
-            detail += f"   ·   {self.stop_key} to stop"
-        self._text("title", "Recording started", 42, 11, pt=12.0, colour=INK,
-                   weight=600, width=width - 56)
-        self._text("detail", detail, 42, 32, pt=9.5, colour=INK_FAINT,
-                   width=width - 56)
+            detail += f"  ·  {self.stop_key} to stop"
+        bp_row(card, "Recording started", 12.0, INK, W_STRONG, 42,
+               height * 0.36, room=width - 56)
+        bp_row(card, detail, 9.5, INK_FAINT, W_WORDS, 42, height * 0.70,
+               room=width - 56)
+        self._show(card)
 
     def _paint_timer(self, width: int, height: int, spots: dict) -> None:
-        from PIL import Image, ImageTk
-        canvas = self.canvas
-        canvas.delete("live")
+        """The lamp, the clock, and — hovered — the controls: Stop a disc
+        of red light (look.mark), the others round controls of frost, the
+        live microphone the chosen one."""
+        card = self._card(width, height)
         recorder = self.recorder
-        self._dot(15, height // 2 - 6)
-        self._text("time", self._label(), 34, height // 2 - 11, pt=12.5,
-                   colour=INK, weight=600, width=timer_width(self._label()))
+        self._dot(card, 13, height // 2 - 6)
+        bp_row(card, self._label(), 12.5, INK, W_STRONG, 32, height / 2,
+               room=timer_width(self._label()) - 34)
         for name, (x0, y0, x1, y1) in spots.items():
+            d = x1 - x0
             live_mic = (name == "mic" and not recorder.muted)
-            fill = ((224, 53, 43, 210) if name == "stop"
-                    else (86, 156, 245, 170) if live_mic
-                    else (255, 255, 255, 22))
-            plate = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2, fill,
-                                 (255, 255, 255, 46))
             glyph = {"stop": "stop", "pause": "play" if recorder.paused
                      else "pause", "discard": "trash",
                      "mic": "mic" if live_mic else "mic_off"}[name]
-            colour = INK if (name != "mic" or live_mic) else INK_FAINT
-            plate.alpha_composite(icon(glyph, 15, colour=colour, width=2),
-                                  ((x1 - x0 - 15) // 2, (y1 - y0 - 15) // 2))
-            flat = Image.new("RGBA", plate.size, _hex(CARD) + (255,))
-            flat.alpha_composite(plate)
-            self._keep[f"btn{name}"] = ImageTk.PhotoImage(
-                flat.convert("RGB"), master=self.root)
-            canvas.create_image(x0, y0, anchor="nw",
-                                image=self._keep[f"btn{name}"], tags="live")
+            if name == "stop":
+                card.alpha_composite(bp_mark(d, "rec"), (x0, y0))
+                colour = _look().INK["rec"]
+            else:
+                card.alpha_composite(
+                    bp_round(d, "chosen" if live_mic else "rest"), (x0, y0))
+                colour = INK if (name != "mic" or live_mic) else INK_FAINT
+            card.alpha_composite(icon(glyph, 14, colour=colour, width=2),
+                                 (x0 + (d - 14) // 2, y0 + (d - 14) // 2))
+        self._show(card)
 
     def run(self, stop_event: threading.Event) -> None:
         """Pump until the recording stops. Never longer than one tick
@@ -4475,9 +6120,9 @@ class Toast:
         canvas.pack()
         self.canvas = canvas
         self.size = (width, height)
+        self._face_img = bp_stock(width, height, CLIP_BAR_RADIUS)
         self._keep["face"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(width, height, CLIP_BAR_RADIUS, CARD, PANE,
-                             STROKE), master=root)
+            self._face_img.convert("RGB"), master=root)
         canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
         root.update_idletasks()
         round_window(root, CLIP_BAR_RADIUS)
@@ -4509,32 +6154,30 @@ class Toast:
         self.done.set()
 
     def _paint(self) -> None:
-        from PIL import Image, ImageTk
+        """One picture: the name (cut in its middle when it is long, so the
+        date and the extension both stay), what it is, and three round
+        controls of frost."""
+        from PIL import ImageTk
         canvas = self.canvas
         canvas.delete("live")
-        title = _vq.text_pil(self.path.name, 220, pt=11.5, colour=INK,
-                             rtl=False, single=True, weight=600)
-        under = _vq.text_pil(self.subtitle, 220, pt=9.5, colour=INK_FAINT,
-                             rtl=False, single=True)
-        self._keep["title"] = ImageTk.PhotoImage(title, master=self.root)
-        self._keep["under"] = ImageTk.PhotoImage(under, master=self.root)
-        canvas.create_image(16, 13, anchor="nw", image=self._keep["title"],
-                            tags="live")
-        canvas.create_image(16, 36, anchor="nw", image=self._keep["under"],
-                            tags="live")
-        for name, (x0, y0, x1, y1) in self._spots().items():
-            plate = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2,
-                                 (255, 255, 255, 22), (255, 255, 255, 46))
-            plate.alpha_composite(
+        card = self._face_img.copy()
+        spots = self._spots()
+        room = min(x0 for x0, _y0, _x1, _y1 in spots.values()) - 16 - 10
+        height = self.size[1]
+        bp_row(card, self.path.name, 11.5, INK, W_STRONG, 16, height * 0.36,
+               room=room)
+        bp_row(card, self.subtitle, 9.5, INK_FAINT, W_WORDS, 16,
+               height * 0.68, room=room)
+        for name, (x0, y0, x1, y1) in spots.items():
+            card.alpha_composite(bp_round(x1 - x0), (x0, y0))
+            card.alpha_composite(
                 icon({"close": "close", "folder": "folder",
-                      "copy": "copy"}[name], 15, colour=INK, width=2),
-                ((x1 - x0 - 15) // 2, (y1 - y0 - 15) // 2))
-            flat = Image.new("RGBA", plate.size, _hex(CARD) + (255,))
-            flat.alpha_composite(plate)
-            self._keep[name] = ImageTk.PhotoImage(flat.convert("RGB"),
-                                                  master=self.root)
-            canvas.create_image(x0, y0, anchor="nw", image=self._keep[name],
-                                tags="live")
+                      "copy": "copy"}[name], 14, colour=INK_DIM, width=2),
+                (x0 + (x1 - x0 - 14) // 2, y0 + (y1 - y0 - 14) // 2))
+        self._keep["live"] = ImageTk.PhotoImage(card.convert("RGB"),
+                                                master=self.root)
+        canvas.create_image(0, 0, anchor="nw", image=self._keep["live"],
+                            tags="live")
 
     def run(self, ms: int = TOAST_MS) -> None:
         root = self.root
@@ -4658,10 +6301,10 @@ class ShotToast:
         canvas.pack()
         self.canvas = canvas
         self.size = (width, height)
-        self._face_img = _vq._rounded_pil(width, height, CLIP_BAR_RADIUS,
-                                          CARD, PANE, STROKE)
+        self._face_img = bp_stock(width, height, CLIP_BAR_RADIUS)
         self._face_key: tuple | None = None
-        self._keep["face"] = ImageTk.PhotoImage(self._face_img, master=root)
+        self._keep["face"] = ImageTk.PhotoImage(
+            self._face_img.convert("RGB"), master=root)
         canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
         root.update_idletasks()
         no_activate(root)
@@ -4772,7 +6415,7 @@ class ShotToast:
             width, height = TOAST_THUMB
             shrunk = self.image.convert("RGB").copy()
             shrunk.thumbnail((width - 2, height - 2), Image.LANCZOS)
-            tile = Image.new("RGB", (width, height), _hex(PANE))
+            tile = Image.new("RGB", (width, height), _THUMB_WELL)
             tile.paste(shrunk, ((width - shrunk.width) // 2,
                                 (height - shrunk.height) // 2))
             self._keep["thumb_img"] = tile
@@ -4802,20 +6445,29 @@ class ShotToast:
         self._paint_clock()
 
     def _body(self):
-        """The whole card except the clock, as one picture."""
+        """The whole card except the clock, as one picture: the thumbnail
+        on a well with a hairline, "Copied" as the one strong word, what
+        and where in the third voice — the file's name cut in its middle
+        when it does not fit, so its date and extension both stay — and
+        four round controls of frost, a step brighter under the pointer."""
         from PIL import Image
-        card = self._face_img.convert("RGBA")
+        look = _look()
+        card = self._face_img.copy()
+        tw, th = TOAST_THUMB
         card.alpha_composite(self._thumb().convert("RGBA"), (12, 12))
+        frame = look.ring_of(look.rounded((tw, th), (0, 0, tw, th), 0))
+        card.alpha_composite(look.flat((tw, th), look.c("white", 30), frame),
+                             (12, 12))
 
         left, top, right, bottom = self.box
         head = "Copied" if self.copied else "Captured"
         detail = f"{right - left} × {bottom - top}"
         detail += (f"   ·   {self.saved.name}" if self.saved is not None
                    else "   ·   not saved")
-        card.alpha_composite(self._line(head, 11.5, INK, weight=600),
-                             (TOAST_TEXT_X, 14))
-        card.alpha_composite(self._line(detail, 9.0, INK_FAINT),
-                             (TOAST_TEXT_X, 34))
+        room = self.size[0] - TOAST_TEXT_X - 14
+        bp_row(card, head, 11.5, INK, W_STRONG, TOAST_TEXT_X, 23, room=room)
+        bp_row(card, detail, 9.0, INK_FAINT, W_WORDS, TOAST_TEXT_X, 43,
+               room=room)
 
         glyphs = {"edit": "pencil", "save": "save", "copy": "copy",
                   "folder": "folder", "close": "close"}
@@ -4823,14 +6475,12 @@ class ShotToast:
         for name in self._buttons():
             x0, y0, x1, y1 = spots[name]
             hot = (name == self._hover)
-            plate = _vq.rr_layer(
-                (x1 - x0, y1 - y0), (x1 - x0) // 2,
-                (110, 160, 235, 120) if hot else (255, 255, 255, 22),
-                (150, 195, 255, 200) if hot else (255, 255, 255, 46))
-            plate.alpha_composite(
+            card.alpha_composite(bp_round(x1 - x0, "hover" if hot else "rest"),
+                                 (x0, y0))
+            card.alpha_composite(
                 icon(glyphs[name], 14, colour=INK if hot else INK_DIM,
-                     width=2), ((x1 - x0 - 14) // 2, (y1 - y0 - 14) // 2))
-            card.alpha_composite(plate, (x0, y0))
+                     width=2), (x0 + (x1 - x0 - 14) // 2,
+                                y0 + (y1 - y0 - 14) // 2))
         return card.convert("RGB")
 
     def _paint_clock(self) -> None:
@@ -4852,9 +6502,8 @@ class ShotToast:
 
     def _line(self, text: str, pt: float, colour, weight: int = 400):
         """One line of text as an RGBA layer, ready to composite."""
-        return _vq.text_pil(text, self.size[0] - TOAST_TEXT_X - 10, pt=pt,
-                            colour=colour, rtl=False, single=True,
-                            weight=weight)
+        return bp_fit(text, self.size[0] - TOAST_TEXT_X - 10, pt, colour,
+                      weight)
 
     # -- the pump --
 
@@ -5499,10 +7148,12 @@ class CameraWindow:
         root.bind_all("<KeyPress>", self._on_key)
 
     def _face(self) -> None:
+        """B+ card stock (bp_stock); the control strip is laid onto the
+        same picture, so its round controls sit on the face's own light."""
         from PIL import ImageTk
+        self._face_img = bp_stock(self.card_w, self.card_h, CAM_RADIUS)
         self._keep["face"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(self.card_w, self.card_h, CAM_RADIUS, CARD,
-                             PANE, STROKE), master=self.root)
+            self._face_img.convert("RGB"), master=self.root)
         self.canvas.delete("face")
         self.canvas.create_image(0, 0, anchor="nw", image=self._keep["face"],
                                  tags="face")
@@ -5850,17 +7501,16 @@ class CameraWindow:
         """The number, on a disc dark enough to read it over anything."""
         from PIL import Image
         size = 132
-        plate = _vq.rr_layer((size, size), size // 2, (8, 16, 32, 168),
-                             (255, 255, 255, 40))
+        look = _look()
+        plate = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        disc = look.circle((size, size), size / 2, size / 2, size / 2)
+        plate.alpha_composite(look.flat((size, size), _SHADE + (190,), disc))
+        plate.alpha_composite(look.rim(disc, (0, 0, size, size)))
         # Trimmed to the ink before it is centred, for the reason the timer
         # chip is: text_pil hands back a picture of the BOX it was given
         # with the glyphs at one end, and centring that box puts a numeral
         # visibly off to the left of the disc it is supposed to be in.
-        glyph = _vq.text_pil(str(left), size * 2, pt=54, colour=INK,
-                             rtl=False, single=True, weight=700)
-        ink = glyph.getbbox()
-        if ink is not None:
-            glyph = glyph.crop(ink)
+        glyph = bp_text(str(left), 54, INK, W_STRONG)
         plate.alpha_composite(glyph, ((size - glyph.width) // 2,
                                       (size - glyph.height) // 2))
         flat = Image.new("RGBA", plate.size, (0, 0, 0, 0))
@@ -5905,14 +7555,16 @@ class CameraWindow:
         from PIL import Image, ImageTk
         cached = self._keep.get(f"{key}:key")
         if cached != (text, colour, shade):
-            glyph = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
-                                 single=True, weight=weight)
+            glyph = bp_fit(text, width, pt, colour, weight)
             if shade:
-                pad = 7
-                plate = _vq.rr_layer(
-                    (glyph.width + pad * 2, glyph.height + pad), 9,
-                    (8, 16, 32, 150))
-                plate.alpha_composite(glyph, (pad, pad // 2))
+                # a pill of B+'s glass under the words: over a live camera
+                # there is no telling what is behind a caption
+                pad_x, pad_y = 10, 5
+                w, h = glyph.width + pad_x * 2, glyph.height + pad_y * 2
+                look = _look()
+                plate = look.flat((w, h), _SHADE + (178,),
+                                  look.rounded((w, h), (0, 0, w, h), h / 2))
+                plate.alpha_composite(glyph, (pad_x, pad_y))
                 glyph = plate
             flat = Image.new("RGBA", glyph.size, (0, 0, 0, 0))
             flat.alpha_composite(glyph)
@@ -5943,44 +7595,37 @@ class CameraWindow:
                                      tags="strip")
 
     def _strip_image(self, armed: bool):
-        from PIL import Image
-        plate = Image.new("RGBA", (self.card_w, CAM_STRIP_H),
-                          _hex(CARD) + (255,))
+        """The control row in B+: round controls of frost, a step brighter
+        under the pointer, the one that is ON (a mirror, a timer) the
+        desk's bubble — on the face's own picture, not a flat colour."""
+        face = getattr(self, "_face_img", None)
+        if face is not None and face.size == (self.card_w, self.card_h):
+            plate = face.crop((0, self.card_h - CAM_STRIP_H, self.card_w,
+                               self.card_h))
+        else:
+            plate = bp_stock(self.card_w, self.card_h, CAM_RADIUS).crop(
+                (0, self.card_h - CAM_STRIP_H, self.card_w, self.card_h))
         for name, (x0, y0, x1, y1) in self.spots.items():
             if name == "shutter":
                 continue
             lit = ((name == "mirror" and self.camera.mirror)
                    or (name == "timer" and bool(self.timer)))
-            fill = ((86, 156, 245, 170) if lit
-                    else (255, 255, 255, 40) if self._hover == name
-                    else (255, 255, 255, 20))
-            chip = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2, fill,
-                                (255, 255, 255, 46))
-            colour = INK if (lit or self._hover == name) else INK_FAINT
+            state = ("chosen" if lit else "hover" if self._hover == name
+                     else "rest")
+            plate.alpha_composite(bp_round(x1 - x0, state), (x0, y0))
+            colour = INK if (lit or self._hover == name) else INK_DIM
             if name == "timer" and self.timer:
                 # The NUMBER instead of the stopwatch once one is set: a
                 # chip that is merely lit says a timer is on and not which,
-                # and 3 s and 10 s are different plans.
-                #
-                # Laid out in a WIDE box and then trimmed to its ink.
-                # text_pil returns a picture of the box it was given, with
-                # the glyphs at one end of it, so centring on the returned
-                # size put the numeral against the chip's left curve and
-                # clipped it — seen in the first live screenshot, which is
-                # the only place it could have been seen.
-                mark = _vq.text_pil(str(self.timer), 96, pt=12.0,
-                                    colour=colour, rtl=False, single=True,
-                                    weight=700)
-                ink = mark.getbbox()
-                if ink is not None:
-                    mark = mark.crop(ink)
+                # and 3 s and 10 s are different plans. Cropped to its ink
+                # (bp_text) and centred on the chip.
+                mark = bp_text(str(self.timer), 12.0, colour, W_STRONG)
             else:
                 mark = icon({"mirror": "mirror", "timer": "timer",
                              "switch": "switch", "close": "close"}[name],
                             16, colour=colour, width=2)
-            chip.alpha_composite(mark, ((x1 - x0 - mark.width) // 2,
-                                        (y1 - y0 - mark.height) // 2))
-            plate.alpha_composite(chip, (x0, y0))
+            plate.alpha_composite(mark, (x0 + (x1 - x0 - mark.width) // 2,
+                                         y0 + (y1 - y0 - mark.height) // 2))
         plate.alpha_composite(self._shutter_image(armed),
                               self.spots["shutter"][:2])
         return plate.convert("RGB")
@@ -5997,7 +7642,7 @@ class CameraWindow:
                             (238, 245, 255, 225), 2)
         inner = SHUTTER - 14
         if armed:
-            fill = (224, 53, 43, 245)
+            fill = tuple(_look().INK["rec"]) + (245,)
         elif self.frozen is not None:
             fill = (238, 245, 255, 90)
         elif self._hover == "shutter":

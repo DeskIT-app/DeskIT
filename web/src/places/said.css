@@ -1,0 +1,171 @@
+/* Said — owned by the Said session (web/README.md). Every rule here
+   starts with .place-said (the CSS of all five places is one sheet), and
+   the class Said puts on <body> is said-here. The first half is Said as
+   the approved picture drew it (design/2026-09-22/design/rev/lists/
+   said.html, its <style>); the second is what a live window has that a
+   picture does not: a search that types, a hover, a press, a copy, a
+   list that scrolls and a thumb that can be held. */
+
+.place-said{
+  /* what each kind's glyph is: dictation is the quiet one, it is most of the list */
+  --k-dict:#c0c3d8;
+  --k-trans:#5fd6cf;
+  --k-punct:#c2b9ff;
+  --k-look:#5fdba6;
+  --k-learn:#ffb84d;
+  --k-fail:var(--bad);
+  --k-gone:var(--ink-3);
+}
+
+/* the sky, placed for Said: indigo behind the title and the chips, blue
+   behind the vocabulary, plum along the floor */
+body.said-here .sky .indigo{left:-240px;top:-40px;width:780px;height:520px;transform:rotate(-12deg)}
+body.said-here .sky .blue{left:780px;top:210px;width:640px;height:560px}
+body.said-here .sky .plum{left:80px;top:600px;width:880px;height:300px;transform:rotate(3deg)}
+body.said-here .sky .teal{left:620px;top:-120px;width:620px;height:320px;transform:rotate(-6deg)}
+body.said-here .sky .r1{left:60px;top:320px;width:980px;height:66px;transform:rotate(-12deg)}
+body.said-here .sky .r2{left:360px;top:540px;width:760px;height:44px;transform:rotate(-8deg)}
+
+/* ---- the head ---- */
+.place-said .head{position:absolute;left:0;top:18px;height:40px;display:flex;align-items:baseline;gap:18px;white-space:nowrap}
+.place-said .head .title{position:static}
+.place-said .head .sub{font-size:13.5px;line-height:18px;color:var(--ink-2)}
+.place-said .search{position:absolute;left:484px;top:15px;width:340px;height:40px;border-radius:20px;display:flex;align-items:center;gap:10px;padding:0 16px;
+  font-size:13px;color:var(--ink-3);background:var(--glass-track);cursor:text;
+  box-shadow:inset 0 1px 3px var(--shade-1), inset 0 -1px 0 var(--line-faint), 0 0 0 1px var(--line-faint);
+  transition:box-shadow .15s ease}
+.place-said .search .ic{font-size:13px;color:var(--ink-3)}
+.place-said .chips{position:absolute;left:0;top:68px}
+
+/* ---- the list: only it scrolls; its ends fade into the floor ---- */
+.place-said .list{position:absolute;left:0;top:118px;width:836px;height:484px;overflow-x:hidden;overflow-y:auto;scrollbar-width:none;
+  -webkit-mask-image:linear-gradient(180deg, transparent, #000 44px, #000 calc(100% - 44px), transparent);
+          mask-image:linear-gradient(180deg, transparent, #000 44px, #000 calc(100% - 44px), transparent)}
+.place-said .list.at-top{-webkit-mask-image:linear-gradient(180deg, #000 0, #000 calc(100% - 44px), transparent);
+                                 mask-image:linear-gradient(180deg, #000 0, #000 calc(100% - 44px), transparent)}
+.place-said .list.at-end{-webkit-mask-image:linear-gradient(180deg, transparent, #000 44px, #000);
+                                 mask-image:linear-gradient(180deg, transparent, #000 44px, #000)}
+.place-said .list.at-top.at-end{-webkit-mask-image:none;mask-image:none}
+.place-said .list::-webkit-scrollbar{display:none}
+.place-said .list .inner{width:824px;padding:4px 0 14px 0}
+.place-said .list .inner:has(.more){padding-bottom:0}
+.place-said .list .glass{backdrop-filter:none}      /* a masked scroller cannot see behind itself; the sky is already soft */
+.place-said .thumb{position:absolute;left:830px;top:124px;width:5px;height:150px;border-radius:3px;background:var(--thumb);z-index:2}
+
+.place-said .day{display:flex;align-items:baseline;justify-content:flex-start;gap:8px;height:30px;padding:6px 4px 0 4px}
+.place-said .day .eyebrow{font-size:12.5px}
+.place-said .day .facts{font-size:12px;color:var(--ink-3)}
+.place-said .card{border-radius:22px;background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card);margin-top:6px}
+.place-said .dayset + .dayset{margin-top:14px}
+
+.place-said .row{display:grid;grid-template-columns:52px 32px 180px 1fr;column-gap:16px;align-items:center;
+  min-height:60px;padding:10px 24px 10px 22px;position:relative;border-radius:18px}
+.place-said .row + .row::before{content:"";position:absolute;left:22px;right:24px;top:0;height:1px;
+  background:linear-gradient(90deg, var(--line-faint), var(--line) 20%, var(--line) 80%, transparent)}
+.place-said .when{display:grid;grid-template-rows:24px;align-items:center}
+.place-said .when b{font-weight:var(--w-label);font-size:13.5px;line-height:24px;color:var(--ink)}
+.place-said .when span{font-size:12px;line-height:17px;color:var(--ink-3)}
+.place-said .kd{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;
+  background:var(--glass-disc);box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint)}
+.place-said .kd.dict{color:var(--k-dict)} .place-said .kd.trans{color:var(--k-trans)} .place-said .kd.punct{color:var(--k-punct)}
+.place-said .kd.look{color:var(--k-look)} .place-said .kd.learn{color:var(--k-learn)}
+.place-said .kd.fail{color:var(--k-fail)} .place-said .kd.gone{color:var(--k-gone)}
+/* the tags, and under them — level with the seconds — the engine and the latency */
+.place-said .tags{display:grid;grid-template-rows:24px;min-width:0}
+.place-said .tags.two, .place-said .when:has(span){grid-template-rows:24px 17px}
+.place-said .marks{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-width:0;overflow:hidden}
+.place-said .tag{height:24px;flex:0 1 auto;min-width:0;max-width:100%;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:12px;font-size:12px;color:var(--ink-2);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;background:var(--glass-disc);box-shadow:inset 0 0 0 1px var(--line-faint)}
+.place-said .tag .ic{font-size:11px;color:var(--ink-3);flex:none}
+.place-said .tag .tx{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.place-said .tag .pip{width:6px;height:6px;flex:none;border-radius:50%;background:var(--iris);box-shadow:0 0 6px var(--iris-glow)}
+.place-said .tag.copy{color:var(--ink);background:linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));
+  box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim)}
+.place-said .tag.copy .ic{color:var(--ink-2)}
+.place-said .meta{font-size:12px;line-height:17px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-said .meta i, .place-said .day .facts i{font-style:normal;margin-right:8px}
+.place-said .meta span + span i{margin:0 7px 0 7px}
+.place-said .sayw{min-width:0;position:relative}
+.place-said .say{min-width:0;font-size:15px;line-height:24px;text-align:left;color:var(--ink);
+  max-height:48px;overflow:hidden;text-wrap:pretty;overflow-wrap:anywhere}
+/* an English run: the browser's own "…" at its end */
+.place-said .say.en{font-family:var(--font-ui);font-size:14px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.place-said .say.dim{color:var(--ink-3)}
+/* a Hebrew run that was cut: its second line fades into a "…" at the left, where it ends */
+.place-said .sayw.cut .say{
+  -webkit-mask-image:linear-gradient(#000, #000), linear-gradient(90deg, transparent 0, transparent 13px, #000 40px);
+          mask-image:linear-gradient(#000, #000), linear-gradient(90deg, transparent 0, transparent 13px, #000 40px);
+  -webkit-mask-size:100% 24px, 100% 24px;mask-size:100% 24px, 100% 24px;
+  -webkit-mask-position:0 0, 0 24px;mask-position:0 0, 0 24px;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
+.place-said .sayw.cut::after{content:"…";position:absolute;left:0;top:24px;line-height:24px;font-size:15px;color:var(--ink-2);pointer-events:none}
+
+/* the change, in its place - the same figure Home and Corrections draw */
+.place-said .chg{display:inline-flex;align-items:center;gap:7px;margin:0;vertical-align:middle;max-width:100%;min-width:0}
+.place-said .chg .pill{height:26px;min-width:0;flex:0 1 auto;white-space:nowrap}
+.place-said .chg .pill .ic{flex:none}
+.place-said .chg .arrow{flex:none}
+.place-said .chg .w{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.place-said .row .pairs{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:8px 18px;min-width:0}
+.place-said .row .pairs[dir="rtl"]{justify-content:flex-end}
+
+/* Show more: one quiet pill, the count beside it on the floor */
+.place-said .more{display:flex;align-items:center;justify-content:flex-start;gap:14px;padding:18px 0 22px 10px}
+.place-said .more .btn{background:linear-gradient(180deg, var(--quiet-top), var(--quiet-bot))}
+.place-said .more .left{font-size:12.5px;color:var(--ink-3)}
+.place-said .empty{padding:26px 8px 24px 8px;font-size:14px;line-height:20px;color:var(--ink-3)}
+
+/* ---- the vocabulary: one frosted column, like Home's doors ---- */
+.place-said .voc{position:absolute;left:848px;top:68px;width:264px;height:534px;border-radius:24px;padding:20px 22px 0 22px;
+  background:linear-gradient(160deg, var(--frost), transparent 45%), var(--glass-dock)}
+.place-said .voc .eyebrow{height:18px;line-height:18px}
+.place-said .voc .top{display:flex;align-items:baseline;gap:10px;margin-top:8px}
+.place-said .voc .n{font-family:var(--font-display);font-weight:var(--w-num);font-size:34px;letter-spacing:-.02em;line-height:38px}
+.place-said .voc .w{font-size:13.5px;color:var(--ink-2);line-height:18px}
+.place-said .voc .w2{font-size:13.5px;color:var(--ink-2);line-height:18px;margin-top:2px}
+.place-said .voc .teach{display:flex;align-items:center;gap:10px;margin-top:16px;font-size:13px;color:var(--ink-2)}
+.place-said .voc .teach .cap{height:24px;min-width:24px;font-size:11.5px;padding:0 8px}
+.place-said .voc .rule{margin:20px 0 16px 0}
+.place-said .voc .lately{display:flex;flex-direction:column;align-items:flex-start;gap:10px;margin-top:12px;max-height:250px;overflow:hidden;
+  margin-right:-12px}          /* a long pair may use the panel's right margin before it is cut */
+.place-said .voc .lately .pill{padding:0 10px}
+.place-said .voc .lately .w{font-size:14.5px}
+.place-said .voc .nothing{margin-top:12px;font-size:13px;line-height:19px;color:var(--ink-3);text-wrap:pretty}
+.place-said .voc .foot2{position:absolute;left:22px;right:22px;bottom:20px;font-size:12px;line-height:17px;color:var(--ink-3);text-wrap:pretty}
+.place-said .voc .dic{position:absolute;right:20px;top:20px;font-size:14px;color:var(--ink-3)}
+
+/* footer */
+.place-said .foot{position:absolute;left:0;top:612px;width:1112px;height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 2px}
+.place-said .foot::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg, transparent, var(--line) 10%, var(--line) 90%, transparent)}
+.place-said .foot .l{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-2)}
+.place-said .foot .l .ic{font-size:13px;color:var(--ink-2)}
+
+/* =================== what a live window needs on top of the picture */
+
+/* the search: it types, and it says so when it has the caret */
+.place-said .search input{flex:1;min-width:0;height:100%;border:0;outline:0;background:none;padding:0;
+  font-family:var(--font-ui);font-size:13px;color:var(--ink);caret-color:var(--iris);text-align:left;user-select:text}
+.place-said .search input:dir(rtl){font-family:var(--font-he);font-size:14px}
+.place-said .search input::placeholder{color:var(--ink-3);opacity:1}
+.place-said .search:focus-within{box-shadow:inset 0 1px 3px var(--shade-1), inset 0 -1px 0 var(--line-faint), 0 0 0 1px var(--line)}
+.place-said .search:focus-within > .ic{color:var(--ink-2)}
+
+/* a row is the copy button: it lights under the pointer, its Copy tag
+   shows, a press is seen, and a copy says Copied for a moment */
+.place-said .row{cursor:pointer;transition:background-color .12s ease}
+.place-said .row:hover{background:linear-gradient(180deg, var(--quiet-bot), transparent 120%);box-shadow:inset 0 1px 0 var(--inner-hi), inset 0 0 0 1px var(--line-faint)}
+.place-said .row:hover::before, .place-said .row:hover + .row::before{display:none}
+.place-said .row:active{background:linear-gradient(180deg, var(--quiet-top), transparent 120%)}
+.place-said .tag.copy{display:none;flex:none}     /* never the one cut: the tags before it give way */
+.place-said .row:hover .tag.copy, .place-said .row.copied .tag.copy{display:inline-flex}
+.place-said .row.tight:hover .tag:not(.copy):not(:first-child),
+.place-said .row.tight.copied .tag:not(.copy):not(:first-child){display:none}
+.place-said .row:active .tag.copy{transform:translateY(1px);filter:brightness(.92)}
+.place-said .row.copied .tag.copy .ic{color:var(--ok)}
+
+/* the thumb: held, it is brighter; its grip is wider than it looks */
+.place-said .thumb{cursor:pointer;transition:opacity .2s ease, background-color .15s ease}
+.place-said .thumb::after{content:"";position:absolute;left:-6px;right:-6px;top:0;bottom:0}
+.place-said .thumb:hover, .place-said .thumb.held{background:var(--sw-ring)}

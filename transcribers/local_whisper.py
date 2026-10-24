@@ -250,18 +250,60 @@ def hallucination_guards(enabled: bool) -> dict:
         # study-verified reading the pinned arm was CLOSER (197 edits vs
         # 224 over 2254 words). 0 decoder loops in either arm.
         # The ladder is Whisper's standard escape from a repetition loop,
-        # which this repo has been bitten by twice — repetition_penalty
-        # below, collapse_char_runs and the loop warning all remain.
+        # which this repo has been bitten by twice — the loop retry in
+        # _decode (the penalty, greedy, then the ladder), collapse_char_runs
+        # and the loop warning all remain.
         temperature=[0.0],
         word_timestamps=True,
         hallucination_silence_threshold=2.0,
-        # Against token loops: a vocalised hesitation became 222 ה's, and
-        # everything SPOKEN AFTER it was eaten (2026-08-13, twice).
-        # Measured byte-identical on clean audio; the loop itself could not
-        # be reproduced synthetically, so this is the standard knob for the
-        # mechanism, not a proven cure.
-        repetition_penalty=1.15,
+        # No penalty on the first decode. It went in at 1.15 on 2026-08-13
+        # against token loops (a vocalised hesitation became 222 ה's) and
+        # was "measured byte-identical on clean audio" — on short clips.
+        # On natural speech it costs words, because Hebrew repeats its
+        # small words and prefixes and every repeat was penalised ("את זה"
+        # -> "לזה", "רעיון" -> "חיאיון"). Measured 2026-10-14 on public
+        # sets (MODEL_PLAN.md finding 7, none of his recordings), 1.15 ->
+        # 1.0 on this model: FLEURS dev 1210 -> 1109 words wrong, ivrit.ai
+        # eval-whatsapp 875 -> 665, eval-d1 600 -> 499, the FLEURS test
+        # 2679 -> 2638, the Reversim test 1265 -> 1228, Reversim dev
+        # 1292 -> 1309. Without it the decoder DID loop, on 2 of 1,912
+        # clips with this model and 3 with each trained one — always one
+        # word over and over ("ושבע" x68, "של" x22, "זהו" x14, "רבה" x44)
+        # — so the penalty is not gone: it is the first rung of the loop
+        # retry (LOOP_PENALTY, _decode), where it costs nothing on the
+        # clips that never loop. With the retry the FLEURS test is 2536,
+        # not 2638: both of its loops come back.
+        repetition_penalty=1.0,
     )
+
+
+# The decode a loop is retried with first: the penalty every dictation
+# carried from 2026-08-13 to 2026-10-14 (hallucination_guards says why it
+# left the first decode).
+LOOP_PENALTY = 1.15
+
+
+def _word_loop(text: str) -> bool:
+    """One word six times in a row, or a phrase of two to six words four
+    times in a row: a decoder loop made of words, which `_LOOP_RUN` (one
+    letter) cannot see. Over every 2026-10-14 decode, with and without the
+    penalty (15,072 clip-decodes, 1,912 clips, about 7 hours of speech), it
+    fired on the eight real loops without the penalty and on nothing
+    anybody said."""
+    words = re.findall(r"\w+", text.lower())
+    for n in range(1, 7):
+        need = 6 if n == 1 else 4
+        for i in range(len(words) - n * need + 1):
+            unit = words[i:i + n]
+            if all(words[i + k * n:i + (k + 1) * n] == unit
+                   for k in range(1, need)):
+                return True
+    return False
+
+
+def _looped(text: str) -> bool:
+    """Did the decoder loop, in letters or in words?"""
+    return bool(_LOOP_RUN.search(text)) or _word_loop(text)
 
 
 class LocalWhisperTranscriber:
@@ -273,10 +315,13 @@ class LocalWhisperTranscriber:
     _beam_size = 5
     #: The English detector's state: "" (none configured), "loading"
     #: (on its thread, english_later), "ready", "failed", "closed" (it
-    #: landed after close() and was dropped).
+    #: landed after close() and was dropped), "aside" (room for a game,
+    #: english_aside).
     english_state = ""
     _said_loading = False
     _closed = False
+    #: Room for a game asked the detector to stand aside (english_aside).
+    _english_aside = False
     _english_thread: threading.Thread | None = None
     #: Where the seconds went, for the log and the wizard: the ivrit
     #: load, its warm-up, the English load and ITS warm-up — each alone,
@@ -294,8 +339,15 @@ class LocalWhisperTranscriber:
         once by the caller, never a download."""
         source = models_mod.source(model_name)
         from faster_whisper import WhisperModel
-        compute = "float16" if self.device == "cuda" else "int8"
-        log.info("loading English model %s on %s...", model_name, self.device)
+        # the Hebrew model's number format, whatever the ladder settled
+        # on: until 2026-10-23 this was float16 on a card whatever the
+        # setting said, 1 GB of the app's graphics memory for nothing
+        # (the detector at int8_float16: +1.4% words wrong over the six
+        # public sets as a Hebrew witness, each set inside the spread)
+        compute = getattr(self, "_compute", None) or \
+            ("float16" if self.device == "cuda" else "int8")
+        log.info("loading English model %s on %s (%s)...", model_name,
+                 self.device, compute)
         return WhisperModel(source, device=self.device,
                             compute_type=compute)
 
@@ -326,6 +378,11 @@ class LocalWhisperTranscriber:
             log.info("English model loaded after this transcriber was "
                      "closed — dropped")
             return
+        if self._english_aside:
+            self.english_state = "aside"
+            log.info("English model loaded while it was asked to stand "
+                     "aside — dropped")
+            return
         self._english = english
         self.english_state = "ready"
         log.info("English model ready on %s (load %.1f s, warm-up %.1f s)"
@@ -347,6 +404,33 @@ class LocalWhisperTranscriber:
         with the object — only the word to a detector load still on its
         thread that its result is not wanted (see _load_english)."""
         self._closed = True
+
+    def english_aside(self) -> bool:
+        """Room for a game (room.py, rung 2): the English detector off the
+        card, the Hebrew model left where it is. A decode already running
+        keeps its own reference and finishes; the next dictation is
+        Hebrew. A load still on its thread drops what it brings. False
+        when there was no detector to take (none configured, or it failed)."""
+        if not self._english_model_name or self.english_state == "failed":
+            return False
+        self._english_aside = True
+        self._english = None
+        self.english_state = "aside"
+        return True
+
+    def english_back(self) -> None:
+        """The detector back, on a thread of its own (english_later's
+        path): a dictation in the seconds before it lands is Hebrew."""
+        if not self._english_aside:
+            return
+        self._english_aside = False
+        if self._english is not None or self._closed:
+            return
+        self.english_state = "loading"
+        self._said_loading = False
+        self._english_thread = threading.Thread(
+            target=self._load_english, daemon=True, name="english-model")
+        self._english_thread.start()
 
     def _detector(self):
         """The English model, or None — and, while it is still on its
@@ -493,21 +577,30 @@ class LocalWhisperTranscriber:
         self.last_windows: list = []
         self._guards = hallucination_guards(guard_hallucinations)
 
-        # The ladder as it always was, unless the probe (hardware.py, plan
-        # 6.3) or the person named a number format: then that format on
-        # the device asked for, and int8 on the processor underneath.
+        # The ladder, unless the probe (hardware.py, plan 6.3) or the
+        # person named a number format: then that format on the device
+        # asked for, and int8 on the processor underneath. On a card it
+        # tries int8_float16 first since 2026-10-23: the same words as
+        # float16 on all six public sets (night10, 6,351 against 6,362
+        # words wrong, every set inside the run-to-run spread), half the
+        # graphics memory (one model 1,214 MB against 2,238 with CUDA's
+        # context, measured), ~12% more decode time — ~0.04 s on a short
+        # dictation. A card that cannot do int8 refuses it at once and
+        # gets float16. notes\DeskIT-light-plan-2026-10-22.md has the table.
         if compute_type and compute_type != "auto":
             first = "cpu" if device == "cpu" else "cuda"
             attempts = [(first, compute_type)]
+            if first == "cuda" and compute_type == "int8_float16":
+                attempts.append(("cuda", "float16"))
             if first != "cpu":
                 attempts.append(("cpu", "int8"))
         else:
-            attempts = ([("cuda", "float16"), ("cpu", "int8")]
-                        if device == "auto" else
-                        [(device, "float16" if device == "cuda" else "int8")])
+            card = [("cuda", "int8_float16"), ("cuda", "float16")]
+            attempts = (card + [("cpu", "int8")] if device == "auto" else
+                        card if device == "cuda" else [(device, "int8")])
         threads = {"cpu_threads": int(cpu_threads)} if cpu_threads else {}
         last: Exception | None = None
-        for dev, compute in attempts:
+        for i, (dev, compute) in enumerate(attempts):
             started = time.perf_counter()
             try:
                 candidate = WhisperModel(source, device=dev,
@@ -524,14 +617,18 @@ class LocalWhisperTranscriber:
                 log.info("local model cannot use %s (%s) — %s", dev, compute,
                          str(e).splitlines()[0][:120])
                 if dev == "cuda" and not paths.PORTABLE \
+                        and not any(d == "cuda" for d, _ in attempts[i + 1:]) \
                         and packs_mod.state("gpu") in ("ok", "stale"):
                     # the pack is there and does not run: written down
                     # for the tier and the Home card (6.9), until the
-                    # next install or removal
+                    # next install or removal — and only after the LAST
+                    # card rung, since a card that merely refuses int8
+                    # runs float16 fine
                     packs_mod.note_failure("gpu", str(e))
                 continue
             self._model = candidate
             self.device = dev
+            self._compute = compute
             self.timing["load_s"] = round(load_s, 2)
             self.timing["warm_s"] = round(warm_s, 2)
             log.info("local model %s ready on %s (%s) — load %.1f s, "
@@ -579,6 +676,18 @@ class LocalWhisperTranscriber:
                               **self._guards)[0])
         list(model.transcribe(audio, language=language,
                               vad_filter=True)[0])
+
+    def rewarm(self) -> float:
+        """The load-time warm-ups again, on the models already loaded —
+        for a person coming back to a machine that pushed them out of
+        memory meanwhile (wake.py has the 11.8 s this paid on 2026-10-20).
+        The detector first, as a dictation runs them. Seconds taken; a
+        failure raises, like the load's probe — the caller logs it."""
+        started = time.perf_counter()
+        if getattr(self, "_english", None) is not None:
+            self._warm_detector()
+        self._warm(self._model, self._language)
+        return time.perf_counter() - started
 
     def _warm_detector(self, detector=None) -> None:
         """Pay the first-inference cost at startup, not on the first
@@ -691,9 +800,7 @@ class LocalWhisperTranscriber:
         if self._boilerplate:
             text, _removed = cleanup_mod.strip_trailing_boilerplate(
                 text, self._boilerplate)
-        if self._cleanup:
-            text = cleanup_mod.clean(text, self._fillers)
-        return text
+        return self.clean_text(text)
 
     def _choose(self, wav_bytes: bytes, language: str | None):
         """Which model and language a recording gets -> (model, code).
@@ -747,7 +854,7 @@ class LocalWhisperTranscriber:
             return got, " ".join(s.text.strip() for s in got).strip()
 
         segs, text = decode()
-        if _LOOP_RUN.search(text):
+        if _looped(text):
             # The words a loop swallows are NOT gone — this file used
             # to say they were, and it was wrong. Measured 2026-09-05
             # on the 57 s clip whose 73-character "Xxxxx…" ate 29 s:
@@ -763,17 +870,28 @@ class LocalWhisperTranscriber:
             # temperature, so it is DETERMINISTIC and it is cheaper
             # than the decode that just failed. The ladder samples —
             # three runs of it on that clip recovered 69, 114 and 124
-            # words — so it stays the second rung, for the loop that
+            # words — so it stays the last rung, for the loop that
             # greedy decoding cannot shake either.
-            for rung in (dict(beam_size=1),
-                         dict(temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
-                                           1.0])):
+            #
+            # And in front of both, since 2026-10-14, the repetition
+            # penalty the first decode no longer carries
+            # (hallucination_guards): the loop it lets through is one
+            # WORD over and over, and on the clip where the decode
+            # without it looped ("זהו" x14) the decode with it did not.
+            # Every rung keeps it — the two below were measured with it.
+            pen = dict(repetition_penalty=LOOP_PENALTY)
+            for rung in (pen,
+                         dict(pen, beam_size=1),
+                         dict(pen, temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
+                                                1.0])):
                 retry_segs, retry = decode(**rung)
-                if retry and not _LOOP_RUN.search(retry):
+                if retry and not _looped(retry):
                     log.warning("decoder loop — recovered with %s "
                                 "(%d words for %d)",
                                 "beam 1" if "beam_size" in rung
-                                else "the temperature ladder",
+                                else "the temperature ladder"
+                                if "temperature" in rung
+                                else "the repetition penalty",
                                 len(retry.split()), len(text.split()))
                     segs, text = retry_segs, retry
                     break
@@ -865,10 +983,11 @@ class LocalWhisperTranscriber:
         """The filler cleanup a transcript gets on its way out — the same
         one, so a stretch repaired while the key is held (main.App
         ._polish_window) starts from the text the whole recording would
-        have."""
+        have. The bidi controls go whether the cleanup is on or off: they
+        are the decoder's, never something said (cleanup.BIDI_CONTROLS)."""
         if self._cleanup and text:
             return cleanup_mod.clean(text, self._fillers)
-        return text
+        return cleanup_mod.strip_bidi_controls(text)
 
     # -- the rolling transcriber (rolling.py) --
 

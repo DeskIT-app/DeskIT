@@ -4,10 +4,13 @@
 #
 # What it adds to the tree: the three launchers (launcher.c, compiled with
 # the MSVC the machine has), assets\ (assets.py), AppxManifest.xml (the
-# template with the version filled in) and CHANNEL = store. Then MakeAppx
-# packs it — and validates the manifest against the schema while it does,
-# which is the first check the package meets. Unsigned: the Store signs
-# what it accepts. .github/workflows/store.yml runs this on the tree of a
+# template with the version filled in), CHANNEL = store, and resources.pri
+# — the index through which Windows finds assets.py's targetsize and scale
+# names; without it the taskbar shows the 44 px logo on a plate of the
+# accent colour (the Store walk's item 2). Then MakeAppx packs it — and
+# validates the manifest against the schema while it does, which is the
+# first check the package meets. Unsigned: the Store signs what it
+# accepts. .github/workflows/store.yml runs this on the tree of a
 # published release's installer; a person can run it on the same tree.
 #
 # -Python is an interpreter with Pillow (the logos); the default is the
@@ -41,6 +44,8 @@ $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
 $makeappx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe" |
     Sort-Object { [version]($_.Directory.Parent.Name) } | Select-Object -Last 1
 if (-not $makeappx) { throw "makeappx.exe not found: no Windows SDK" }
+$makepri = Join-Path $makeappx.Directory.FullName "makepri.exe"
+if (-not (Test-Path $makepri)) { throw "makepri.exe is not beside $($makeappx.FullName)" }
 
 # --- 1. the launchers
 $build = Join-Path ([IO.Path]::GetTempPath()) ("deskit-launcher-" + [guid]::NewGuid().ToString("N"))
@@ -83,7 +88,33 @@ $manifest = (Get-Content (Join-Path $here "AppxManifest.xml") -Raw -Encoding utf
 [IO.File]::WriteAllText((Join-Path $Tree "AppxManifest.xml"), $manifest, (New-Object Text.UTF8Encoding $false))
 Set-Content -Path (Join-Path $Tree "CHANNEL") -Value store -NoNewline -Encoding ascii
 
-# --- 4. pack (and validate)
+# --- 4. the resource index over a copy of assets\ alone (priconfig.xml
+#     says why alone), read back to prove the names Windows will look up
+#     are in it. Through cmd, for vcvars' reason above: makepri talks on
+#     stderr too.
+$pri = Join-Path $Tree "resources.pri"
+$stage = Join-Path ([IO.Path]::GetTempPath()) ("deskit-pri-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force $stage | Out-Null
+try {
+    Copy-Item -Recurse (Join-Path $Tree "assets") (Join-Path $stage "assets")
+    & cmd.exe /c "`"$makepri`" new /pr `"$stage`" /cf `"$(Join-Path $here 'priconfig.xml')`" /mn `"$(Join-Path $Tree 'AppxManifest.xml')`" /of `"$pri`" /o 2>&1"
+    if ($LASTEXITCODE) { throw "makepri refused the index (exit $LASTEXITCODE)" }
+    $dump = Join-Path $stage "dump"
+    & cmd.exe /c "`"$makepri`" dump /if `"$pri`" /of `"$dump`" /o 2>&1" | Out-Null
+    if ($LASTEXITCODE) { throw "makepri could not read the index back (exit $LASTEXITCODE)" }
+    $index = Get-Content "$dump.xml" -Raw
+    foreach ($want in "Files/assets/Square44x44Logo.png", "Files/assets/Square150x150Logo.png",
+                      "Files/assets/StoreLogo.png",
+                      "assets\Square44x44Logo.targetsize-24_altform-unplated.png",
+                      "assets\Square44x44Logo.targetsize-24_altform-lightunplated.png",
+                      "assets\Square150x150Logo.scale-200.png") {
+        if ($index -notmatch [regex]::Escape($want)) { throw "resources.pri has no $want" }
+    }
+} finally {
+    Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+}
+
+# --- 5. pack (and validate)
 New-Item -ItemType Directory -Force $Out | Out-Null
 $msix = Join-Path (Resolve-Path $Out).Path "DeskIT-App-$four.msix"
 & $makeappx.FullName pack /d $Tree /p $msix /o

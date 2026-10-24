@@ -86,7 +86,7 @@ import time
 from . import ease
 from .glass import (Glass, HTCAPTION, HTCLIENT, HTTRANSPARENT,
                     virtual_screen, work_area)
-from .palette import DOT_STATES, NO_HALO, argb, rgb
+from .palette import DOT_STATES, LAMP_CORE, NO_HALO, argb, rgb
 
 _log = logging.getLogger("app")
 
@@ -184,6 +184,16 @@ class Dot:
             self.state = name
             self._blend = 0.0
 
+    def still(self, alarm_fill: str | None = None) -> bool:
+        """Whether the next frame would be the last one again: the
+        cross-fade done, nothing breathing, no sweep, no alarm blinking.
+        `run` does not draw such a frame — see the note there."""
+        if alarm_fill is not None or self._blend < 1.0 \
+                or self._shown != self.state or self.state == "busy":
+            return False
+        _fill, _ring, pulses = DOT_STATES.get(self.state, DOT_STATES["ready"])
+        return not pulses
+
     def placement(self) -> tuple[int, int, int, int]:
         """Where he dropped it, or the corner of the PRIMARY monitor's
         WORK AREA — above the taskbar, never under it. Clamped against
@@ -266,6 +276,16 @@ class Dot:
                             argb(52 * glow * halo, fill),
                             argb(0, fill)],
                     positions=[0.0, 0.62, 1.0])))
+            # B+'s lamp (2026-10-23, bplus.css `.lamp`): two soft rings of
+            # the lamp's own colour round the bead — .16 for the first
+            # 3 px, .06 for the next 3 — the desk's chip lamp at the dot's
+            # size. Gated with the halo, so paused still casts nothing.
+            canvas.drawCircle(cx, cy, CORE * 0.5 + 1.5, skia.Paint(
+                AntiAlias=True, Style=skia.Paint.kStroke_Style,
+                StrokeWidth=3.0, Color=argb(41 * glow * halo, fill)))
+            canvas.drawCircle(cx, cy, CORE * 0.5 + 4.5, skia.Paint(
+                AntiAlias=True, Style=skia.Paint.kStroke_Style,
+                StrokeWidth=3.0, Color=argb(15 * glow * halo, fill)))
 
         # A hairline containing ring, so the dot has an edge against a
         # white window as well as against a dark one — and, while it is
@@ -294,8 +314,19 @@ class Dot:
                 StrokeWidth=2.0, StrokeCap=skia.Paint.kRound_Cap,
                 Color=argb(210, fill)))
 
-        canvas.drawCircle(cx, cy, CORE * 0.5, skia.Paint(
-            AntiAlias=True, Color=argb(255, fill)))
+        if self.state == "ready" and alarm_fill is None and k >= 1.0:
+            # the listening lamp has a hot centre, up and left (B+'s
+            # --lamp-core); every other lamp is its colour throughout
+            canvas.drawCircle(cx, cy, CORE * 0.5, skia.Paint(
+                AntiAlias=True, Shader=skia.GradientShader.MakeRadial(
+                    center=(cx - CORE * 0.1, cy - CORE * 0.12),
+                    radius=CORE * 0.6,
+                    colors=[argb(255, LAMP_CORE), argb(255, fill),
+                            argb(255, fill)],
+                    positions=[0.0, 0.62, 1.0])))
+        else:
+            canvas.drawCircle(cx, cy, CORE * 0.5, skia.Paint(
+                AntiAlias=True, Color=argb(255, fill)))
         # a specular highlight, up and left, the way a lit bead has one
         canvas.drawCircle(cx - CORE * 0.16, cy - CORE * 0.18, CORE * 0.20,
                           skia.Paint(AntiAlias=True,
@@ -349,6 +380,9 @@ def run(status_dot) -> None:
 
     placed_at = [0, 0]
     alarming = [False]
+    # (moving, x, y) of the frame last handed to the window, or None for
+    # "draw the next one whatever it is" (see "A SETTLED DOT" below)
+    drawn = [None]
 
     def dropped() -> None:
         """The press on the disc was let go, and Windows' move loop has
@@ -387,11 +421,20 @@ def run(status_dot) -> None:
         status_dot.placed(at_x, at_y)
         _log.info("the dot was dropped at %d, %d", at_x, at_y)
 
+    # ON THE CPU, NOT THE GPU. Glass defaults to a GL surface, and for a
+    # 38 px picture that buys nothing and costs a great deal: measured
+    # 2026-10-23 on the hidden desktop, 450 frames, a frame flushed from
+    # the GPU took 3.7-4.1 ms (p99 10.7-13.4, worst 106 ms while a game
+    # held the card) and the painter plus the NVIDIA driver thread its
+    # context brings were 23-24% of a core; from the CPU rasteriser 0.19
+    # ms (worst 1 ms), 3.0% of a core. readPixels waits for the card with
+    # the GIL held, so every other thread in the app — the keyboard hook's
+    # callback among them — waited out those stalls too.
     if on_click is not None:
-        glass = Glass(*dot.placement(), hit=dot.hit, clicked=clicked,
-                      moved=dropped)
+        glass = Glass(*dot.placement(), gpu=False, hit=dot.hit,
+                      clicked=clicked, moved=dropped)
     else:
-        glass = Glass(*dot.placement())
+        glass = Glass(*dot.placement(), gpu=False)
     # The handle, for the move frame to slip its light UNDER (see
     # `under` below); None again in the finally, like `rect`.
     status_dot.hwnd = glass.hwnd
@@ -403,6 +446,12 @@ def run(status_dot) -> None:
         status_dot.rect = (glass.x, glass.y,
                            glass.x + glass.width, glass.y + glass.height)
     placed_at[0], placed_at[1] = glass.x, glass.y
+    # The z-order rescue (overlay.dig_out, the owner's "the dot disappears
+    # behind the windows"): when the next check is due, and whether the
+    # last one found the dot buried — so a burial is logged once rather
+    # than once a second.
+    next_check = [0.0]
+    buried = [False]
     status_dot._alive.set()
     start = time.perf_counter()
     try:
@@ -420,10 +469,15 @@ def run(status_dot) -> None:
                         continue
                     if item is overlay._SHOW:
                         hidden = False
+                        drawn[0] = None
                         at_x, at_y, _w, _h = dot.placement()
                         glass.move(at_x, at_y)
                         placed_at[0], placed_at[1] = at_x, at_y
                         glass.show()
+                        # SW_SHOWNOACTIVATE keeps the z-order the window
+                        # had, and a dot hidden for an hour may have been
+                        # pushed under in the meantime
+                        glass.raise_()
                         status_dot.rect = (at_x, at_y, at_x + BOX, at_y + BOX)
                         continue
                     dot.set(item)
@@ -449,6 +503,14 @@ def run(status_dot) -> None:
             dot.moving = status_dot.moving()
             if dot.moving and not was_moving:
                 glass.raise_()
+            now = time.monotonic()
+            if now >= next_check[0]:
+                next_check[0] = now + overlay.DOT_ON_TOP_S
+                over = overlay.dig_out(glass.hwnd)
+                if over and not buried[0]:
+                    _log.info("the dot was under %s — put back on top",
+                              overlay.window_owner(over))
+                buried[0] = bool(over)
             if status_dot._replace.is_set():
                 # A drop that had to be clamped, or "Back to the corner"
                 # from the dashboard. UpdateLayeredWindow moves the
@@ -480,9 +542,23 @@ def run(status_dot) -> None:
                 glass.move(at[0], at[1])
                 status_dot.rect = (at[0], at[1], at[0] + BOX, at[1] + BOX)
             alarming[0] = alarm_fill is not None
+            # A SETTLED DOT IS NOT PAINTED AGAIN. Ready and paused neither
+            # breathe nor sweep, so once a cross-fade is over every frame
+            # was the last one again — drawn, read back and handed to the
+            # compositor 45 times a second, for hours: 8.5-10% of a core
+            # for the dot thread and 7-8% for the driver thread under it
+            # on the live app (2026-10-23), the largest part of what the
+            # app spent doing nothing. The window keeps what it was last
+            # given, so a frame goes out only when the picture or the
+            # place would change; the messages still turn over every tick.
+            shown = (dot.moving, glass.x, glass.y)
+            if dot.still(alarm_fill) and drawn[0] == shown:
+                glass.pump()
+                time.sleep(FRAME_S)
+                continue
             dot.draw(glass.canvas, (time.perf_counter() - start) * 1000.0,
                      alarm_fill)
-            glass.flush()
+            drawn[0] = shown if glass.flush() else None
             glass.pump()
             time.sleep(FRAME_S)
     except Exception:

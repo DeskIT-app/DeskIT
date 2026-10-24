@@ -40,7 +40,9 @@ Everything personal lives on your PC, in `%LOCALAPPDATA%\DeskIT`:
 - pictures and clips go to your Pictures and Videos folders.
 
 Nothing leaves the PC until you switch a cloud feature on through its
-consent card. To delete: Settings > Your data, per store, or "Delete
+consent card. (The one thing DeskIT cannot hold back is what Microsoft
+collects about its own WebView2 component while the desk is open as a
+web page — section 8.) To delete: Settings > Your data, per store, or "Delete
 everything on this PC"; the uninstaller asks "Remove my data too?".
 
 ## 3. Cloud features with your own key
@@ -121,8 +123,9 @@ reports with AI tools under his own account**. Retention: reports and
 attachments 12 months; synced words, settings and history for as long
 as the account exists; idle anonymous accounts 12 months; the owner's
 monthly backup 3 months. "Delete my account" in the app deletes
-everything at once — rows, files and the account — and "Sign out"
-revokes the session everywhere. Rights: access, rectification and
+everything at once — rows, files and the account; "Sign out" ends
+the session on that PC, and "Sign out of every PC" revokes every
+session of the account. Rights: access, rectification and
 deletion through the app and by e-mail. The whole database schema is
 published at `supabase/migrations/` in the repository; no table in it
 has a column the server could read an API key from — the one table that
@@ -155,6 +158,20 @@ outbound request is shown on the Network screen (Settings > Privacy >
 EVERY CONNECTION) and mirrored to
 `logs\network.log`. The Offline switch refuses every host but
 `127.0.0.1`.
+
+The desk's web window is the one exception to that screen. The desk
+opens as a web page (the older window takes its place on a PC without
+WebView2), and it is drawn by Microsoft Edge WebView2, a part of Windows with network
+code of its own, outside `net.py`. DeskIT loads only its own files into
+it, refuses every other address, switches off the window's own services
+(SmartScreen, Edge's experimentation and update checks, Edge's sign-in
+with your Windows account) and keeps its crash reports on your PC. In
+our measurements the window opened no connection at all (`NETWORK.md`
+has the numbers). Microsoft
+collects some required diagnostic data about WebView2 whatever your
+settings say, and the optional part follows Windows' Settings > Privacy
+& security > Diagnostics & feedback. That data is Microsoft's, under
+its own privacy statement; DeskIT neither sends it nor sees it.
 
 ## 9. Security
 

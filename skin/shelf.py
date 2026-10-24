@@ -36,8 +36,8 @@ while a Whisper model wants the GPU.
 
 WHAT IT NEVER DOES: decide. A click on a row's answer becomes
 `shelf.pressed(<region name>)`; a click on Pause becomes
-`shelf.pressed("pause")`; a drag becomes `shelf.placed(x, y)`. What those
-MEAN is shelf.ShelfCard's business and main.py's.
+`shelf.pressed("pause")`. There is no drag (2026-10-04, shelf.py). What
+those MEAN is shelf.ShelfCard's business and main.py's.
 
 Reached through `skin.shelf_run(card)` — named with the `_run` suffix for
 the reason skin\\__init__.paint_wave spells out at length: a hook called
@@ -60,8 +60,6 @@ FACE_A = 202              # the face's alpha — skin\hint.py's glass weight
 BLUR = 11                 # px, the frost behind it
 TICK_S = 0.02             # the loop; a click must feel immediate
 UPTIME_S = 1.0            # how often the one line that changes is redrawn
-CLICK_PX = 4              # a release that travelled less is a click, not a
-                          # drag — overlay.NotifyCard's rule and its number
 
 
 def _to_skia(img):
@@ -90,7 +88,7 @@ def _frost(x: int, y: int, width: int, height: int):
 
 def face(canvas, width: int, height: int, scale: float, backdrop=None,
          x0: int = SHADOW, y0: int = SHADOW, shadow: bool = False,
-         tail=None) -> None:
+         tail=None, cache: dict | None = None) -> None:
     """The glass under the words: frost, face, rim, hairline — on the
     bubble's path.
 
@@ -105,12 +103,10 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None,
     """
     import skia
 
-    from . import bubble
-    from .palette import BG, CARD, LINE, FG, argb
+    from .palette import argb
 
     s = sc.clamp_scale(scale)
     radius = RADIUS * s
-    path = bubble.skia_path(width, height, radius, tail, x0, y0)
 
     if shadow:
         rect = skia.Rect.MakeXYWH(x0, y0, width, height)
@@ -126,40 +122,47 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None,
                     radius + grow, radius + grow),
                 skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
 
-    # The frost, clipped to the bubble with doAntiAlias=True. Without
-    # that flag the clip is a hard 1-bit mask and the blurred desktop would
-    # stair-case out to the corner of the image — a square edge again, made
-    # of the backdrop this time instead of the face.
-    if backdrop is not None:
-        canvas.save()
-        canvas.clipPath(path, doAntiAlias=True)
-        canvas.drawImage(_to_skia(backdrop), 0, 0)
-        canvas.restore()
+    # B+ (2026-10-23): look.glass — the frost under a navy face lit from
+    # above, its light at the top-left, the inner top light and the
+    # frosted rim — cut to the bubble. The path is rasterised by skia
+    # with antialiasing into the mask, so the tail's legs and its tip keep
+    # the smoothness he judged them by at 3-4x (2026-09-21); outside the
+    # curve every pixel stays alpha 0 all the way to UpdateLayeredWindow.
+    key = ("face", int(width), int(height), round(s, 3), int(x0), int(y0),
+           tail, id(backdrop) if backdrop is not None else None)
+    img = cache.get(key) if cache is not None else None
+    if img is None:
+        img = face_image(width, height, scale, backdrop, x0, y0, tail)
+        if cache is not None:
+            cache[key] = img
+    canvas.drawImage(_to_skia(img), 0, 0)
 
-    # The face: a hair lighter at the top the way a surface lit from above
-    # actually is, and translucent (FACE_A of 255) so the frost behind it
-    # still reads as the desktop rather than as a texture.
-    canvas.drawPath(path, skia.Paint(
-        AntiAlias=True, Dither=True,
-        Shader=skia.GradientShader.MakeLinear(
-            points=[(x0, y0), (x0, y0 + height)],
-            colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
-            positions=[0.0, 1.0])))
-    canvas.drawPath(path, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(180, LINE)))
-    # A specular hairline on the top edge only, 60% of the width, fading at
-    # both ends — the cheapest thing that says "glass". It stops well short
-    # of the corners so it never fights the curve.
-    canvas.drawLine(
-        x0 + width * 0.20, y0 + 0.5, x0 + width * 0.80, y0 + 0.5,
-        skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                   StrokeWidth=1.0,
-                   Shader=skia.GradientShader.MakeLinear(
-                       points=[(x0 + width * 0.20, y0),
-                               (x0 + width * 0.80, y0)],
-                       colors=[argb(0, FG), argb(64, FG), argb(0, FG)],
-                       positions=[0.0, 0.5, 1.0])))
+
+def face_image(width: int, height: int, scale: float, backdrop=None,
+               x0: int = SHADOW, y0: int = SHADOW, tail=None):
+    """The panel's glass as a Pillow picture the window's size: B+'s
+    look.glass in the bubble's outline. `backdrop` is the photograph of
+    what is behind the WINDOW (already its size)."""
+    import skia
+
+    import look
+    from . import bubble
+
+    s = sc.clamp_scale(scale)
+    W, H = int(width + 2 * x0), int(height + 2 * y0)
+    path = bubble.skia_path(width, height, RADIUS * s, tail, x0, y0)
+    surface = skia.Surface.MakeRasterN32Premul(W, H)
+    shape = surface.getCanvas()
+    shape.clear(0x00000000)
+    shape.drawPath(path, skia.Paint(AntiAlias=True, Color=0xFFFFFFFF))
+    pixels = surface.makeImageSnapshot().toarray(
+        colorType=skia.kRGBA_8888_ColorType)
+    from PIL import Image
+    mask = Image.fromarray(pixels[..., 3].copy(), "L")
+    frost = backdrop
+    if frost is not None and frost.size != (W, H):
+        frost = frost.resize((W, H))
+    return look.glass(mask, (x0, y0, x0 + width, y0 + height), frost)
 
 
 def run(shelf) -> None:
@@ -188,7 +191,6 @@ def run(shelf) -> None:
     frost = None
     hover = None
     cache: dict = {}
-    placed_at = (0, 0)
     pressing = False               # a click was already turned into a press
     dirty = False
     hushed = False
@@ -226,13 +228,15 @@ def run(shelf) -> None:
         """Every pixel of the window, in window coordinates.
 
         HTCLIENT for a button or an answer (the X on the head band is
-        one), HTCAPTION for the head strip (so Windows itself does the
-        drag) and HTTRANSPARENT for everything else INCLUDING THE SHADOW
+        one) and HTTRANSPARENT for everything else INCLUDING THE SHADOW
         MARGIN — which is what keeps a click aimed at whatever is
         underneath landing there. This panel opened in the top-right
         corner until 2026-09-07, where the close button of every
         maximised window is, so it was never a hypothetical; it opens
         above the dot in the bottom-right now and the rule is kept.
+        Never HTCAPTION: the head strip was a handle Windows dragged the
+        panel by until 2026-10-04, and the panel is not dragged any more
+        (shelf.py's docstring).
 
         It doubles as the hover tracker: WM_NCHITTEST arrives on every
         mouse move over the window, and leaving the panel always crosses
@@ -246,23 +250,6 @@ def run(shelf) -> None:
         if want != hover:
             hover, dirty = want, True
         return code
-
-    def on_move():
-        """A press on the head strip was let go — a drag, or a click that
-        never moved. overlay.NotifyCard.on_move's rule and its constant:
-        travelled less than CLICK_PX and it is a click on the head, which
-        this panel treats as nothing at all (the head is a handle, not a
-        button); travelled more and it is where the owner wants it."""
-        nonlocal placed_at
-        if glass is None or shown is None:
-            return
-        x, y = glass.where()
-        if abs(x - placed_at[0]) + abs(y - placed_at[1]) < CLICK_PX:
-            return
-        placed_at = (x, y)
-        shelf.placed(x + SHADOW, y + SHADOW)
-        shelf.rect = (x + SHADOW, y + SHADOW,
-                      x + glass.width - SHADOW, y + glass.height - SHADOW)
 
     def on_click(x, y):
         """A left click on an HTCLIENT pixel — a button or one of a row's
@@ -310,14 +297,14 @@ def run(shelf) -> None:
         canvas.clear(0x00000000)
         width, height = sc.measure(shown, shelf.scale)
         face(canvas, width, height, shelf.scale, frost, SHADOW, SHADOW,
-             tail=tail_now(width, height))
+             tail=tail_now(width, height), cache=cache)
         canvas.drawImage(_to_skia(picture), SHADOW, SHADOW)
         glass.flush()
         last_paint = time.monotonic()
         dirty = False
 
     def put_up(item):
-        nonlocal glass, shown, frost, placed_at, hover, pressing
+        nonlocal glass, shown, frost, hover, pressing
         s = sc.clamp_scale(shelf.scale)
         width, height = sc.measure(item, s)
         win_w, win_h = width + SHADOW * 2, height + SHADOW * 2
@@ -342,9 +329,7 @@ def run(shelf) -> None:
             x, y = shelf.origin(win_w, win_h, primary_screen(), SHADOW,
                                 virtual_screen(), work_area())
             frost = _frost(x, y, win_w, win_h)
-            glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
-                          clicked=on_click)
-            placed_at = (x, y)
+            glass = Glass(x, y, win_w, win_h, hit=on_hit, clicked=on_click)
             paint()                # painted before it is shown, so the
             glass.show()           # panel is never an empty layer
             glass.raise_()

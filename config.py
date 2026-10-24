@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import tomllib
 import dataclasses
 from dataclasses import dataclass, field
@@ -39,9 +40,10 @@ class AudioConfig:
 class GeminiConfig:
     # Free-tier quota is counted per model, so a list is a longer runway:
     # each entry is tried in order and rested when it reports its cap.
-    models: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest",
-                               "gemini-2.5-flash-lite",
-                               "gemini-flash-lite-latest")
+    # The aliases first: a new key gets 404 from both 2.5 models
+    # (defaults.toml [gemini], 2026-10-03).
+    models: tuple[str, ...] = ("gemini-flash-latest", "gemini-flash-lite-latest",
+                               "gemini-2.5-flash", "gemini-2.5-flash-lite")
     timeout_s: int = 30
 
     @property
@@ -259,9 +261,10 @@ class SetupConfig:
     wizard's Done step offers it (chapter 9); never acted on in the
     checkout.
 
-    offer_gpu_pack is the person's answer to the GPU pack step at start
-    (packs.py, plan 6.5): [Not now] writes false to settings.toml and the
-    start stops asking; Settings > Dictation keeps a one-line offer.
+    offer_gpu_pack / offer_recording_pack: whether the background
+    downloads (downloads.py, 2026-10-03) may fetch that pack. True until
+    the person removes it by hand (packs.decline writes false to
+    settings.toml); installing it by hand writes true again.
     """
     done: bool = False
     # The tour after the wizard (D36; overlay.TourCard): a STATE key,
@@ -269,6 +272,7 @@ class SetupConfig:
     tour: bool = False
     autostart: bool = False
     offer_gpu_pack: bool = True
+    offer_recording_pack: bool = True
 
 
 @dataclass(frozen=True)
@@ -341,6 +345,11 @@ class LocalConfig:
     # edge of that noise; at 8 s it is plainly worse (13.9% against 7.5%
     # WER). Cuts always land in a pause, never mid-word.
     rolling_window_s: float = 25.0
+    # Warm the models again when the person comes back after this many
+    # minutes with no key or mouse (wake.py): Windows pushes an idle model
+    # out of memory, and the first dictation then paid 7-12 s to bring it
+    # back (measured 2026-10-20). 0 = off.
+    warm_after_away_min: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -355,6 +364,9 @@ class TranslateConfig:
     max_chars: int = 5000
     ollama_model: str = "llama3.1:8b"
     ollama_url: str = "http://127.0.0.1:11434"
+    # Which cloud goes first; the other cloud, then Ollama, after it
+    # (translate.ORDER). gemini | groq | ollama.
+    prefer: str = "gemini"
     timeout_s: int = 30
     # Deliberately much larger than timeout_s. Ollama loads the model into
     # VRAM on the first request after it goes idle: measured 2026-08-12,
@@ -445,19 +457,24 @@ class LookupConfig:
     # refused. Still a ceiling: 20000 chars is minutes locally, and past
     # the Ollama runner's context window even chunks would degrade.
     max_chars: int = 20000
-    # The OPPOSITE of [translate] and [punctuate], deliberately. The free
-    # Gemini tier is 20 requests per model per day and those two keys
-    # already spend 34/39/17/18 of them on a working day; a key tapped
-    # while READING would take the rest of the pool and break the two keys
-    # whose local fallback is the weak one.
-    prefer: str = "ollama"
+    # groq | gemini | ollama: which goes first; the other cloud comes
+    # next and the local model last ("ollama" puts it first and the clouds
+    # after). Groq since 2026-10-17: 0.5-1.1 s against warm gemma3:12b's
+    # 2.5-7.1 s on the same 14 selections, the headline right where gemma
+    # wrote "ביצוע" for "commit", and a quota (~1000 a day) this key
+    # cannot dent. It was "ollama" while the only cloud was Gemini's 20
+    # requests per model per day, which F9 and F7 already spent.
+    prefer: str = "groq"
+    # The Groq model. gpt-oss-120b over qwen3.8-27b (3x quicker): qwen
+    # wrote "התחייבות" for "commit" and garbled a whole sentence.
+    groq_model: str = "openai/gpt-oss-120b"
     # "" = reuse translate.ollama_model. Its own knob because this key
     # wants the model [polish] already keeps resident, not the fallback:
     # measured, qwen2.5:7b answered "brittle" with '?");'.
     model: str = "gemma3:12b"
-    # A cold Ollama is 22-25 s to the first token. Rather than make you
-    # watch that, a cold model sends this one lookup to the cloud and
-    # warms the local one in the background.
+    # prefer = "ollama" only (the name is older than Groq): a cold Ollama
+    # is 22-25 s to the first token, so a cold model sends this one lookup
+    # to the clouds and warms the local one in the background.
     cold_to_gemini: bool = True
     # How long Ollama holds the model after a lookup. Its own default is
     # five minutes, which a reading session outlasts: measured
@@ -583,13 +600,15 @@ class CaptureConfig:
     hotkey: str = "ctrl+f11"
     # Tap: pick a region and record it. Tap again to stop.
     record_hotkey: str = "ctrl+f12"
-    # Relative names are relative to the APP folder, not to whatever
+    # Windows' own Pictures folder (paths.resolve_folder reads {pictures});
+    # other relative names are relative to the DATA folder, not to whatever
     # directory the process was started from — this app is launched from a
     # .vbs, a shortcut and a scheduled task, and all three disagree.
-    folder: str = "captures"
-    # Where screen RECORDINGS (clip *.mp4) go. Empty means the same folder
-    # as the pictures; an absolute path is used as given, like `folder`.
-    clip_folder: str = ""
+    folder: str = "{pictures}/DeskIT"
+    # Where screen RECORDINGS (clip *.mp4) go: Windows' Videos folder. Empty
+    # means the same folder as the pictures; an absolute path is used as
+    # given, like `folder`.
+    clip_folder: str = "{videos}/DeskIT"
     # Win+Shift+S's promise: the capture is pasteable immediately. false
     # still writes the file.
     copy_to_clipboard: bool = True
@@ -734,7 +753,7 @@ class CameraConfig:
     timer: int = 0
     # Same folder as the screen captures by default: one place to look for
     # pictures. The files are named "photo ..." rather than "shot ...".
-    folder: str = "captures"
+    folder: str = "{pictures}/DeskIT"
     copy_to_clipboard: bool = True
     # After the shutter, the photo opens in the SAME editor a screenshot
     # does — crop, draw, arrow, blur, Ask — laid on the screen exactly
@@ -779,6 +798,37 @@ class AwakeConfig:
     # this app, the heaviest programs), and one more the moment they
     # come back. 0 = none. See awake.vitals().
     vitals_minutes: int = 10
+    # While the screens are off, a card is pinned in the notification
+    # column that says so and carries the way back (notify_card
+    # .pinned_card). False = no card; the screens mode itself is the
+    # same either way.
+    screens_card: bool = True
+
+
+@dataclass(frozen=True)
+class RoomConfig:
+    """Room for a game — see room.py. While another program holds a lot
+    of graphics memory (or a full-screen one holds some), the local
+    language model, then the English model — and the Hebrew model only
+    with keep_speech off — step aside, each only while the machine is
+    still short; all of it comes back when the program is gone."""
+    enabled: bool = True
+    # A program holding at least this much graphics memory (the card's
+    # own plus what spilled into system memory) is a competitor.
+    competitor_gb: float = 2.5
+    # Past this fraction of the commit limit, with a competitor there,
+    # the next rung is taken. 98% is where this PC fell over.
+    commit_tight: float = 0.90
+    # A competitor with this much of its memory pushed out of the card
+    # did not fit on it: the next rung is taken.
+    spill_gb: float = 1.0
+    poll_s: float = 5.0
+    settle_s: float = 15.0
+    exit_s: float = 60.0
+    # The Hebrew model stays while a game runs: the English model and the
+    # local language model step aside, dictation goes on (the owner,
+    # 2026-10-23). False brings back the third step, the model off.
+    keep_speech: bool = True
 
 
 @dataclass(frozen=True)
@@ -1067,6 +1117,16 @@ class PolishConfig:
     # of staring at "..." — and it also caps the damage from a cold Ollama
     # (76 s on the first request after it idles, measured 2026-08-12).
     max_wait_s: float = 10.0
+    # ...and how long of that a CLOUD backend may have. max_wait_s is sized
+    # for the local model; a Groq answer is ~0.35 s of work, and anything
+    # past 2 s is its queue (usage.queue_time), not the repair. Measured
+    # 2026-10-05 on 23 real dictations sent at once to every option: Groq
+    # held the paste 1.4 s typical, 12.1 s worst, 8 of 23 over 2 s, and its
+    # "over capacity" 503 took ~5 s to come back; a 2 s cap gave 2.0 s
+    # worst and lost the repair on 2 of 23. A cloud backend that times out
+    # hands the rest of max_wait_s to the next backend (only "always" and
+    # "known" have one; under "cloud" the text is pasted as heard).
+    cloud_wait_s: float = 2.0
     # Send one throwaway request at startup so the ~5 GB is already in VRAM
     # before a dictation needs it (76 s cold vs 2.5 s warm). Costs the VRAM
     # for the whole session; set false if you would rather pay the wait.
@@ -1233,6 +1293,17 @@ class HistoryConfig:
 
 
 @dataclass(frozen=True)
+class DeskConfig:
+    """[desk]: which window the desk opens as. `web` is the React desk
+    in WebView2 (deskweb.py) and is honoured in the checkout only: the
+    release keeps the Tk desk until every place of the web one is built
+    (the owner, 2026-09-22 — one launch, never a half-moved window).
+    The launch is deskweb.LAUNCHED, one line: then the web desk is every
+    copy's and this key is a person's way back to Tk (deskweb.wanted)."""
+    web: bool = False
+
+
+@dataclass(frozen=True)
 class PrivacyConfig:
     """What may leave this PC — DISTRIBUTION_PLAN.md 5.1, D7.
 
@@ -1366,12 +1437,14 @@ class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
     awake: AwakeConfig = field(default_factory=AwakeConfig)
+    room: RoomConfig = field(default_factory=RoomConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     problems: ProblemsConfig = field(default_factory=ProblemsConfig)
     shelf: ShelfConfig = field(default_factory=ShelfConfig)
     tests: TestsConfig = field(default_factory=TestsConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
+    desk: DeskConfig = field(default_factory=DeskConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -1476,6 +1549,46 @@ def hotkey_label(field: str) -> str:
         if name == field:
             return label
     return field
+
+
+_REFUSALS = (
+    (re.compile(r"^(\w+) must differ from (\w+) \(both are '([^']*)'\) — one key cannot "
+                r"mean two things$"),
+     lambda m: f'"{hotkey_label(m[1])}" and "{hotkey_label(m[2])}" would both be '
+               f'{m[3].title()} — one key cannot mean two things'),
+    (re.compile(r"^(\w+) is on the same key as (\w+) \('([^']*)'\), which is checked "
+                r"first — one key cannot mean two things$"),
+     lambda m: f'"{hotkey_label(m[1])}" would share {m[3].title()} with '
+               f'"{hotkey_label(m[2])}", which comes first — one key cannot mean two things'),
+    (re.compile(r"^(\w+) cannot take modifiers \('([^']*)'\) — .*$", re.S),
+     lambda m: f'"{hotkey_label(m[1])}" takes one key alone — {m[2].title()} is a '
+               f'combination, and only the tap keys take those'),
+    (re.compile(r"^(\w+) cannot be 'esc' — esc discards a locked recording"
+                r"( and closes the lookup box)?$"),
+     lambda m: f'"{hotkey_label(m[1])}" cannot be Esc — Esc throws away a locked '
+               f'recording' + (" and closes the lookup box" if m[2] else "")),
+    (re.compile(r"^hotkey must not be empty$"),
+     lambda m: f'"{hotkey_label("hotkey")}" cannot be off'),
+    (re.compile(r"^(\w+_hotkey|hotkey): (.+)$", re.S),
+     lambda m: f'"{hotkey_label(m[1])}": {m[2]}'),
+)
+
+
+def plainly(message: str) -> str:
+    """A key check_hotkeys refused, said in the Keys screen's words.
+
+    check_hotkeys speaks the file's language ("lookup_hotkey must differ
+    from translate_hotkey"), which a developer editing the file needs and
+    tests hold. A person who pressed a key on the desk read "Look up (tap)"
+    on the row (the owner, 2026-10-01: the developer's name for a line is
+    not a message for the person). Anything this does not recognise comes
+    back as it was."""
+    text = str(message or "")
+    for pattern, said in _REFUSALS:
+        found = pattern.match(text)
+        if found:
+            return said(found)
+    return text
 
 
 def rebound_sentence(field: str, key: str) -> str:
@@ -1701,12 +1814,14 @@ def build(data: dict) -> Config:
     capture = data.get("capture", {})
     camera = data.get("camera", {})
     awake = data.get("awake", {})
+    room = data.get("room", {})
     notify = data.get("notify", {})
     problems = data.get("problems", {})
     shelf = data.get("shelf", {})
     tests = data.get("tests", {})
     privacy = data.get("privacy", {})
     history = data.get("history", {})
+    desk = data.get("desk", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1781,6 +1896,8 @@ def build(data: dict) -> Config:
             rolling=bool(local.get("rolling", LocalConfig.rolling)),
             rolling_window_s=float(local.get(
                 "rolling_window_s", LocalConfig.rolling_window_s)),
+            warm_after_away_min=float(local.get(
+                "warm_after_away_min", LocalConfig.warm_after_away_min)),
         ),
         feedback=FeedbackConfig(
             placeholder=str(feedback.get("placeholder",
@@ -1810,6 +1927,8 @@ def build(data: dict) -> Config:
             tour=bool(setup.get("tour", SetupConfig.tour)),
             autostart=bool(setup.get("autostart", SetupConfig.autostart)),
             offer_gpu_pack=bool(setup.get("offer_gpu_pack", SetupConfig.offer_gpu_pack)),
+            offer_recording_pack=bool(setup.get("offer_recording_pack",
+                                                SetupConfig.offer_recording_pack)),
         ),
         updates=UpdatesConfig(
             channel=(str(updates_.get("channel", UpdatesConfig.channel))
@@ -1824,6 +1943,8 @@ def build(data: dict) -> Config:
                 "ollama_model", TranslateConfig.ollama_model)).strip(),
             ollama_url=str(translate.get(
                 "ollama_url", TranslateConfig.ollama_url)).strip(),
+            prefer=str(translate.get(
+                "prefer", TranslateConfig.prefer)).strip().lower(),
             timeout_s=int(translate.get("timeout_s",
                                         TranslateConfig.timeout_s)),
             ollama_timeout_s=int(translate.get(
@@ -1858,6 +1979,8 @@ def build(data: dict) -> Config:
             max_chars=int(lookup.get("max_chars", LookupConfig.max_chars)),
             prefer=str(lookup.get(
                 "prefer", LookupConfig.prefer)).strip().lower(),
+            groq_model=str(lookup.get("groq_model",
+                                      LookupConfig.groq_model)).strip(),
             model=str(lookup.get("model", LookupConfig.model)).strip(),
             cold_to_gemini=bool(lookup.get("cold_to_gemini",
                                            LookupConfig.cold_to_gemini)),
@@ -1951,6 +2074,8 @@ def build(data: dict) -> Config:
                 "cerebras_timeout_s", PolishConfig.cerebras_timeout_s)),
             max_wait_s=float(polish.get("max_wait_s",
                                         PolishConfig.max_wait_s)),
+            cloud_wait_s=float(polish.get("cloud_wait_s",
+                                          PolishConfig.cloud_wait_s)),
             warm_up=bool(polish.get("warm_up", PolishConfig.warm_up)),
         ),
         visual_qa=VisualQAConfig(
@@ -2058,6 +2183,20 @@ def build(data: dict) -> Config:
                 "keep_screens_off_s", AwakeConfig.keep_screens_off_s)),
             vitals_minutes=int(awake.get(
                 "vitals_minutes", AwakeConfig.vitals_minutes)),
+            screens_card=bool(awake.get("screens_card",
+                                        AwakeConfig.screens_card)),
+        ),
+        room=RoomConfig(
+            enabled=bool(room.get("enabled", RoomConfig.enabled)),
+            competitor_gb=float(room.get("competitor_gb",
+                                         RoomConfig.competitor_gb)),
+            commit_tight=float(room.get("commit_tight",
+                                        RoomConfig.commit_tight)),
+            spill_gb=float(room.get("spill_gb", RoomConfig.spill_gb)),
+            poll_s=float(room.get("poll_s", RoomConfig.poll_s)),
+            settle_s=float(room.get("settle_s", RoomConfig.settle_s)),
+            exit_s=float(room.get("exit_s", RoomConfig.exit_s)),
+            keep_speech=bool(room.get("keep_speech", RoomConfig.keep_speech)),
         ),
         notify=NotifyConfig(
             enabled=bool(notify.get("enabled", NotifyConfig.enabled)),
@@ -2136,6 +2275,7 @@ def build(data: dict) -> Config:
             for name in PrivacyConfig.__dataclass_fields__}),
         history=HistoryConfig(
             keep_days=int(history.get("keep_days", HistoryConfig.keep_days))),
+        desk=DeskConfig(web=bool(desk.get("web", DeskConfig.web))),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -2152,6 +2292,19 @@ def build(data: dict) -> Config:
         raise ConfigError("awake.keep_screens_off_s must be 0-600 seconds")
     if not 0 <= cfg.awake.vitals_minutes <= 1440:
         raise ConfigError("awake.vitals_minutes must be 0-1440 (a day)")
+    if not 0.5 <= cfg.room.competitor_gb <= 64:
+        raise ConfigError("room.competitor_gb must be 0.5-64")
+    if not 0.5 <= cfg.room.commit_tight <= 0.99:
+        raise ConfigError("room.commit_tight must be 0.5-0.99 (a fraction "
+                          "of the commit limit)")
+    if not 0.1 <= cfg.room.spill_gb <= 64:
+        raise ConfigError("room.spill_gb must be 0.1-64")
+    if not 1 <= cfg.room.poll_s <= 60:
+        raise ConfigError("room.poll_s must be 1-60 seconds")
+    if not 0 <= cfg.room.settle_s <= 600:
+        raise ConfigError("room.settle_s must be 0-600 seconds")
+    if not 5 <= cfg.room.exit_s <= 3600:
+        raise ConfigError("room.exit_s must be 5-3600 seconds")
     if not 0 <= cfg.history.keep_days <= 3650:
         raise ConfigError("history.keep_days must be 0-3650 (0 = off)")
     if cfg.translate_hotkey:
@@ -2162,6 +2315,9 @@ def build(data: dict) -> Config:
     if ((cfg.punctuate_hotkey or cfg.punctuate.auto)
             and cfg.punctuate.max_chars <= 0):
         raise ConfigError("punctuate.max_chars must be positive")
+    if cfg.translate.prefer not in ("groq", "gemini", "ollama"):
+        raise ConfigError('translate.prefer must be "gemini", "groq" or '
+                          f'"ollama", got {cfg.translate.prefer!r}')
     if cfg.punctuate.prefer not in ("groq", "gemini", "ollama"):
         raise ConfigError('punctuate.prefer must be "groq", "gemini" or '
                           f'"ollama", got {cfg.punctuate.prefer!r}')
@@ -2196,9 +2352,12 @@ def build(data: dict) -> Config:
                               "translate.ollama_model must, which lookup "
                               "falls back to) — the lookup key has nothing "
                               "to ask otherwise")
-    if cfg.lookup.prefer not in ("ollama", "gemini"):
-        raise ConfigError('lookup.prefer must be "ollama" or "gemini", got '
-                          f"{cfg.lookup.prefer!r}")
+    if cfg.lookup.prefer not in ("groq", "gemini", "ollama"):
+        raise ConfigError('lookup.prefer must be "groq", "gemini" or '
+                          f'"ollama", got {cfg.lookup.prefer!r}')
+    if not cfg.lookup.groq_model:
+        raise ConfigError("lookup.groq_model must name a Groq model — "
+                          'the default is "openai/gpt-oss-120b"')
     if not (0.0 <= cfg.lookup.hebrew_share <= 1.0):
         raise ConfigError("lookup.hebrew_share must be between 0 and 1 — it "
                           "is the share of HEBREW WORDS at or above which a "
@@ -2255,6 +2414,9 @@ def build(data: dict) -> Config:
                           "seconds (Whisper's own window is 30; this app "
                           "shipped at 25, and below 20 it was measured to "
                           "cost words)")
+    if cfg.local.warm_after_away_min < 0:
+        raise ConfigError("local.warm_after_away_min must be >= 0 (minutes "
+                          "away before the model is warmed again; 0 = off)")
     if cfg.polish.min_chars < 0:
         raise ConfigError("polish.min_chars must be >= 0")
     if cfg.polish.max_wait_s <= 0:
@@ -2262,6 +2424,10 @@ def build(data: dict) -> Config:
             "polish.max_wait_s must be > 0 — it is the longest the paste may "
             'be delayed by the context pass. Use polish.when = "never" to '
             "turn the pass off instead")
+    if cfg.polish.cloud_wait_s <= 0:
+        raise ConfigError(
+            "polish.cloud_wait_s must be > 0 — it is how long a cloud repair "
+            "may hold the paste")
     if cfg.visual_qa.prefer not in ("ollama", "groq", "gemini"):
         raise ConfigError('visual_qa.prefer must be "ollama", "groq" or '
                           f'"gemini", got {cfg.visual_qa.prefer!r}')
@@ -2847,6 +3013,32 @@ def defaults_flat(defaults=None) -> dict[str, object]:
     return flatten(_read_toml(d))
 
 
+#: A key whose value another key takes with it when a person sets it.
+#: The camera's photos go "to the same folder the screen captures go to"
+#: (defaults.toml), and Settings and the wizard show ONE pictures row —
+#: which moved only the screenshots until 2026-10-03, leaving the photos
+#: behind in the old folder.
+FOLLOWERS: dict[str, tuple[str, ...]] = {"capture.folder": ("camera.folder",)}
+
+
+def with_followers(updates: dict[str, object]) -> dict[str, object]:
+    """`updates` with each follower given its leader's value, unless the
+    caller set the follower itself."""
+    out = dict(updates)
+    for leader, followers in FOLLOWERS.items():
+        if leader in updates:
+            for name in followers:
+                out.setdefault(name, updates[leader])
+    return out
+
+
+#: One writer at a time in a process: save() reads both files, merges and
+#: writes them, and two threads doing that at once — the web desk answers
+#: each place's press on a thread of its own — would each write back a copy
+#: without the other's change (the web desk's review, 2026-10-24).
+_SAVE_LOCK = threading.RLock()
+
+
 def save(updates: dict[str, object], *, defaults=None, settings=None,
          state=None, allow_consent: bool = False,
          derived: bool = False) -> None:
@@ -2866,41 +3058,43 @@ def save(updates: dict[str, object], *, defaults=None, settings=None,
     is taken out of state.json in the same breath, so the layer on top
     never hides the layer they edit.
     """
-    _refuse_consent_keys(updates, allow_consent)
-    d, s, t = _layer_paths(defaults, settings, state)
-    flat_defaults = flatten(_read_toml(d))
-    overrides = read_settings(s)
-    machine = read_state(t)
-    touched_settings = touched_state = False
-    for name, value in updates.items():
-        if derived or is_state_key(name):
-            if value is None:
-                machine.pop(name, None)
+    with _SAVE_LOCK:
+        _refuse_consent_keys(updates, allow_consent)
+        updates = with_followers(updates)
+        d, s, t = _layer_paths(defaults, settings, state)
+        flat_defaults = flatten(_read_toml(d))
+        overrides = read_settings(s)
+        machine = read_state(t)
+        touched_settings = touched_state = False
+        for name, value in updates.items():
+            if derived or is_state_key(name):
+                if value is None:
+                    machine.pop(name, None)
+                else:
+                    machine[name] = value
+                touched_state = True
+                continue
+            if name in machine:              # the probe's value yields
+                machine.pop(name)
+                touched_state = True
+            touched_settings = True
+            # True == 1 in Python, so "equals the default" also asks whether
+            # both sides are bools or neither is.
+            same = (name in flat_defaults and flat_defaults[name] == value
+                    and isinstance(value, bool) == isinstance(flat_defaults[name], bool))
+            if same:
+                overrides.pop(name, None)
             else:
-                machine[name] = value
-            touched_state = True
-            continue
-        if name in machine:              # the probe's value yields
-            machine.pop(name)
-            touched_state = True
-        touched_settings = True
-        # True == 1 in Python, so "equals the default" also asks whether
-        # both sides are bools or neither is.
-        same = (name in flat_defaults and flat_defaults[name] == value
-                and isinstance(value, bool) == isinstance(flat_defaults[name], bool))
-        if same:
-            overrides.pop(name, None)
-        else:
-            overrides[name] = value
-    merged = _merge(_merge(nest(flat_defaults), nest(overrides)),
-                    nest(machine))
-    try:
-        build(merged)
-    except ConfigError:
-        raise
-    except Exception as e:
-        raise ConfigError(f"the edited settings would not load: {e}") from e
-    if touched_settings:
-        write_settings(s, overrides)
-    if touched_state:
-        write_state(t, machine)
+                overrides[name] = value
+        merged = _merge(_merge(nest(flat_defaults), nest(overrides)),
+                        nest(machine))
+        try:
+            build(merged)
+        except ConfigError:
+            raise
+        except Exception as e:
+            raise ConfigError(f"the edited settings would not load: {e}") from e
+        if touched_settings:
+            write_settings(s, overrides)
+        if touched_state:
+            write_state(t, machine)
