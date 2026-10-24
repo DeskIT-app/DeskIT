@@ -63,11 +63,18 @@ on the next finish. Its own switch is [notify] early.
 
 WHAT IT COSTS. The files are found with os.scandir, whose entries
 carry their size and time on Windows without one more call per file:
-317 transcripts in 38 projects on this PC, every RESCAN_S. Only the
-ones written in the last ACTIVE_S are looked at every POLL_S, one stat
-each, and only bytes a file has gained since the last look are read.
-A file that was asleep at a rescan keeps the offset it had, so the
-lines it gains before the next one are read too, not skipped.
+317 transcripts in 38 projects on this PC, 9 ms a sweep. A file that
+grew in the last HOT_S is looked at every POLL_S, one stat each
+(0.08 ms); the rest of those written in the last ACTIVE_S every tenth
+poll; and only bytes a file has gained since the last look are read.
+The first cut — every active file every poll, a sweep every 2 s — cost
+5.0 s of CPU over ten live minutes, 0.8% of one core, nine tenths of
+it on files nobody was writing; hence the tiers, and with them 0.36 s
+over two live minutes, 0.3%, the toast watcher's own figure. A file that was
+asleep at a sweep keeps the offset it had, so the lines it gains
+before the next one are read too, not skipped — and a finish that is
+read late is still no worse than the hook, which then simply comes
+first and the transcript's copy is dropped.
 """
 from __future__ import annotations
 
@@ -81,9 +88,11 @@ from pathlib import Path
 
 log = logging.getLogger("app")
 
-POLL_S = 0.1                   # the active files, a stat each
-RESCAN_S = 2.0                 # every transcript, one scandir per project
-ACTIVE_S = 900.0               # written this recently = looked at every poll
+POLL_S = 0.1                   # the hot files, a stat each
+RESCAN_S = 5.0                 # every transcript, one scandir per project
+ACTIVE_S = 900.0               # written this recently = looked at, at all
+HOT_S = 120.0                  # grew this recently = looked at every poll;
+WARM_EVERY = 10                # the rest of the active, every tenth poll
 READ_MAX = 32 * 1024 * 1024    # a jump bigger than this is skipped, not read
 SENT_MAX = 256                 # message ids remembered against a second read
 VIA = "transcript"
@@ -180,20 +189,24 @@ class Tail:
 
     def __init__(self, sink, enabled: bool = True, *, root=None,
                  poll_s: float = POLL_S, rescan_s: float = RESCAN_S,
-                 active_s: float = ACTIVE_S, connected=None, window=None,
-                 link=None, clock=time.time) -> None:
+                 active_s: float = ACTIVE_S, hot_s: float = HOT_S,
+                 connected=None, window=None, link=None,
+                 clock=time.time) -> None:
         self.sink = sink
         self.enabled = bool(enabled)
         self.root = Path(root) if root is not None else projects_root()
         self.poll_s = float(poll_s)
         self.rescan_s = float(rescan_s)
         self.active_s = float(active_s)
+        self.hot_s = float(hot_s)
         self._connected = connected or _connected
         self._window = window or _window
         self._link = link or _link
         self._clock = clock
         self._offsets: dict[Path, int] = {}
         self._active: set[Path] = set()
+        self._grew: dict[Path, float] = {}   # clock() it last gained bytes
+        self._passes = 0
         self._scanned_at: float | None = None
         self._sent: OrderedDict[str, None] = OrderedDict()
         self._stop = threading.Event()
@@ -233,13 +246,19 @@ class Tail:
                 self._offsets[path] = size if first else 0
             elif size < self._offsets[path]:
                 self._offsets[path] = size    # rewritten: start again here
-            if now - mtime <= self.active_s or size > self._offsets[path]:
+            if size > self._offsets[path]:
                 self._active.add(path)
+                self._grew[path] = now
+            elif now - mtime <= self.active_s:
+                self._active.add(path)
+                self._grew[path] = max(self._grew.get(path, 0.0), mtime)
             else:
                 self._active.discard(path)
+                self._grew.pop(path, None)
         for gone in set(self._offsets) - seen:
             self._offsets.pop(gone, None)
             self._active.discard(gone)
+            self._grew.pop(gone, None)
         self._scanned_at = now
         if first:
             log.info("notify tail: reading Claude Code's transcripts under "
@@ -268,6 +287,7 @@ class Tail:
                 data = f.read(size - offset)
         except OSError:
             return []
+        self._grew[path] = self._clock()
         cut = data.rfind(b"\n")
         if cut < 0:
             return []                 # half a line: the rest is coming
@@ -283,8 +303,13 @@ class Tail:
         if self._scanned_at is None \
                 or self._clock() - self._scanned_at >= self.rescan_s:
             self.rescan()
+        now = self._clock()
+        warm = self._passes % WARM_EVERY == 0
+        self._passes += 1
         sent = 0
         for path in list(self._active):
+            if not warm and now - self._grew.get(path, 0.0) > self.hot_s:
+                continue
             for line in self._read(path):
                 finish = finish_of(line)
                 if finish is None or not self._fresh(finish["message"]):

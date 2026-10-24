@@ -27424,6 +27424,22 @@ def test_the_tail_reads_a_finish_off_the_transcript_as_the_hook_would_send_it() 
         assert sleepy.once() == 0, "not looked at until the next rescan"
         sleepy.rescan()
         assert sleepy.once() == 1 and seen[-1]["body"] == "woke up"
+        # The tiers: a file written five minutes ago is still active but
+        # not hot, so it is looked at every WARM_EVERY-th pass; once it
+        # gains bytes it is hot again and looked at every pass.
+        clock["now"] = time.time() + 300
+        tiers = notify_tail.Tail(seen.append, root=root, rescan_s=1e9,
+                                 connected=lambda: True,
+                                 window=lambda: (0, ""), link=lambda s: "",
+                                 clock=lambda: clock["now"])
+        assert tiers.once() == 0 and f1 in tiers._active
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="warm", message="m9"))
+        caught = [tiers.once() for _ in range(notify_tail.WARM_EVERY)]
+        assert caught == [0] * (notify_tail.WARM_EVERY - 1) + [1], caught
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="hot", message="m10"))
+        assert tiers.once() == 1 and seen[-1]["body"] == "hot"
         # Switched off: nothing is read at all.
         off = notify_tail.Tail(seen.append, enabled=False, root=root)
         off.start()
