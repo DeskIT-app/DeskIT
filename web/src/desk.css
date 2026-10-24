@@ -1,8 +1,8 @@
-/* The desk on top of B+ (bplus.css). The first half is Home exactly as the
-   approved picture drew it (design/2026-09-22/design/rev/home/home.html,
-   its <style>); the second is what a live window has that a picture does
-   not: a press, a hover, a row that leaves, a note, the places that are
-   still in the old desk. */
+/* The desk's frame on top of B+ (bplus.css): the font, the page, the sky,
+   the bar's live behaviour, the buttons' press and the toast — SHARED, and
+   frozen while the places are built in parallel (web/README.md). Each
+   place's own rules are in places/<place>.css, every one of them under
+   .place-<place>; the kit's in kit.css. */
 
 @font-face {
   font-family: "Rubik";
@@ -23,106 +23,6 @@
 .sky .r2{left:380px;top:470px;width:760px;height:46px;transform:rotate(-9deg)}
 .sky .lamp-light{left:-60px;top:130px;width:640px;height:440px}
 
-/* ---- the head ---- */
-.head{position:absolute;left:0;top:0;width:1112px;height:100px}
-.title{position:absolute;left:-1px;top:20px;font-family:var(--font-display);font-weight:var(--w-display);font-size:30px;
-  letter-spacing:var(--display-track);line-height:38px}
-.sub{position:absolute;left:0;top:62px;font-size:13.5px;color:var(--ink-2)}
-.head .dismiss{position:absolute;right:0;top:60px;display:flex;align-items:center;gap:10px}
-.dismiss .lnk{font-size:13px;color:var(--ink-2)}
-
-/* ---- two columns ---- */
-.main{position:absolute;left:0;top:108px;width:824px;height:500px;overflow:hidden}
-.aside{position:absolute;left:848px;top:108px;width:264px;height:478px}
-
-/* the pile: three panes of frost, the newest one a step brighter and a step taller */
-.pile{display:flex;flex-direction:column;gap:10px}
-.slip{height:88px;display:grid;grid-template-columns:36px 1fr auto;column-gap:18px;align-items:center;
-  padding:0 20px;border-radius:22px;
-  background:linear-gradient(140deg, var(--frost), transparent 42%), var(--glass-slip)}
-.slip.lead{height:114px;grid-template-columns:40px 1fr auto;
-  background:linear-gradient(140deg, var(--frost), transparent 42%), var(--glass-lead)}
-.lead .mk{width:40px;height:40px;font-size:16px}
-.tx{min-width:0}
-.eb{display:flex;align-items:baseline;gap:10px;font-size:12.5px;line-height:18px;color:var(--ink-3);white-space:nowrap;
-  overflow:hidden}
-.eb b{font-weight:var(--w-strong);font-size:14px;color:var(--ink)}
-.lead .eb b{font-size:16px}
-/* every line sits on the LEFT edge of its column; a Hebrew run keeps its own reading order (dir=rtl) */
-.s{margin-top:7px;font-size:15px;line-height:24px;text-align:left;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lead .s{margin-top:11px;font-size:18px;line-height:28px}
-.acts{display:flex;gap:10px;align-items:center;justify-self:end}
-.acts .btn{justify-content:center;padding:0 16px;min-width:88px}
-.acts .x{width:34px;height:34px;margin:0 27px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  font-size:11px;color:var(--ink-2);background:var(--glass-disc)}
-
-/* the change, in its place */
-.ctx{color:var(--ink-2)}
-.chg{display:inline-flex;flex-direction:row;align-items:center;gap:7px;vertical-align:-3px;margin:0 5px}
-.pill{height:25px;display:inline-flex;align-items:center;gap:5px;padding:0 11px;border-radius:13px;font-size:14.5px;line-height:1}
-.pill.heard{background:var(--bad-pill);color:var(--bad-ink);box-shadow:inset 0 0 0 1px var(--bad-edge)}
-.pill.prop{background:var(--prop-pill);color:var(--prop-ink);box-shadow:inset 0 0 0 1px var(--iris-edge), inset 0 1px 0 var(--btn-hi)}
-.pill.prop .ic{font-size:11px;color:var(--iris)}
-.arrow{font-size:12px;color:var(--ink-3)}
-
-/* the rest of the day */
-.day{margin-top:24px}
-.day .eyebrow{padding-left:2px;height:18px;line-height:18px}
-.lines{margin-top:4px}
-.line{height:40px;display:grid;grid-template-columns:78px 46px 1fr 72px;column-gap:16px;align-items:center;padding:0 2px;position:relative}
-.line + .line::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
-  background:linear-gradient(90deg, var(--line-faint), var(--line) 30%, var(--line) 70%, transparent)}
-.line .l{font-size:13px;font-weight:var(--w-label)}
-.line .t{font-size:12.5px;color:var(--ink-3)}
-.line .x{font-size:13px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
-.line .x.he{font-size:14.5px;color:var(--ink)}
-.line .m{font-size:12px;color:var(--ink-3);text-align:right}
-.line.empty{grid-template-columns:1fr}
-
-/* the doors: one frosted column, four compartments; the whole compartment is the way in */
-.aside{border-radius:24px;display:flex;flex-direction:column;
-  background:linear-gradient(160deg, var(--frost), transparent 45%), var(--glass-dock)}
-.door{flex:1;position:relative;display:flex;flex-direction:column;justify-content:center;padding:0 20px 0 22px}
-.door + .door::after{content:"";position:absolute;left:22px;right:20px;top:0;height:1px;
-  background:linear-gradient(90deg, transparent, var(--line) 15%, var(--line) 85%, transparent)}
-.door .top{display:flex;align-items:baseline;gap:9px}
-.door .n{font-family:var(--font-display);font-weight:var(--w-num);font-size:32px;letter-spacing:-.02em;line-height:34px}
-.door .w{font-size:14px;color:var(--ink-2)}
-.door .dic{position:absolute;right:20px;top:24px;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  font-size:13px;color:var(--ink-3);background:var(--glass-disc)}
-.door .note{margin-top:7px;font-size:12.5px;line-height:17.5px;color:var(--ink-3);max-width:206px;text-wrap:balance}
-
-/* footer */
-.foot{position:absolute;left:0;top:612px;width:1112px;height:52px;
-  display:flex;align-items:center;justify-content:space-between;padding:0 2px}
-.foot::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
-  background:linear-gradient(90deg, transparent, var(--line) 10%, var(--line) 90%, transparent)}
-.foot .l{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-2)}
-.foot .l .ic{font-size:13px;color:var(--ink-2)}
-.foot .r{font-size:12px;color:var(--ink-3);display:flex;align-items:center}
-.foot .r .sep{margin:0 9px;opacity:.7}
-.live{width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:8px;box-shadow:0 0 0 3px var(--ok-wash), 0 0 8px var(--ok-glow)}
-
-/* ---- the calm Home: nothing waits; the lamp lights the room where the pile was ---- */
-.quiet{position:absolute;left:0;top:156px;width:824px}
-.quiet .big{font-family:var(--font-display);font-weight:var(--w-display);font-size:42px;letter-spacing:-.022em;line-height:50px;margin-left:-2px}
-.quiet .sub2{font-size:15px;color:var(--ink-2);margin-top:10px}
-.quiet .state{display:inline-flex;align-items:center;gap:10px;margin-top:28px;font-size:13.5px;color:var(--ink-2);
-  height:40px;padding:0 16px 0 16px;border-radius:20px;background:var(--glass-chip);
-  box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint)}
-.quiet .state b{font-weight:var(--w-strong);color:var(--ink)}
-.quiet .state .lamp{margin-right:4px}
-.quiet .state .cap{font-size:11.5px}
-body.calm .head .title, body.calm .head .sub, body.calm .head .dismiss{display:none}
-body.calm .sky .lamp-light{display:block}
-body.calm .sky .indigo{left:-120px;top:120px;opacity:.75}
-body.calm .door.z .n, body.calm .door.z .w{color:var(--ink-3)}
-body.calm .door.z .n{opacity:.8}
-body.calm .day{margin-top:0;position:absolute;top:298px;width:824px}
-body.calm .line{height:52px}
-body.calm .line .x.he{font-size:15.5px}
-body.calm .line .x{font-size:13.5px}
-
 /* =================== what a live window needs on top of the picture */
 
 body{user-select:none;cursor:default}
@@ -135,34 +35,11 @@ body{user-select:none;cursor:default}
 .seg .item:not(.on):hover{color:var(--ink)}
 
 /* a press is seen the frame it happens */
-.btn, .acts .x, .dismiss .lnk, .door, .line{cursor:pointer}
+.btn{cursor:pointer}
 .btn{transition:filter .12s ease, transform .08s ease}
 .btn:hover{filter:brightness(1.12)}
 .btn:active, .btn.down{transform:translateY(1px);filter:brightness(.92)}
-.acts .x{transition:background .12s ease, color .12s ease}
-.acts .x:hover{background:var(--quiet-top);color:var(--ink)}
-.acts .x:active, .acts .x.down{transform:translateY(1px)}
-.dismiss .lnk:hover{color:var(--ink)}
 .bar .btn.gone{visibility:hidden;pointer-events:none}
-
-/* the doors and the day's lines are the ways in: they light under the pointer */
-.door{transition:background .15s ease;border-radius:0}
-.door:first-child{border-radius:24px 24px 0 0}
-.door:last-child{border-radius:0 0 24px 24px}
-.door:hover{background:linear-gradient(90deg, transparent, var(--quiet-bot) 30%, var(--quiet-bot) 70%, transparent)}
-.door:hover .dic{color:var(--iris);background:var(--quiet-top)}
-.line{border-radius:10px;transition:background .15s ease}
-.line:hover{background:linear-gradient(90deg, var(--quiet-bot), transparent 90%)}
-.line.empty{cursor:default}
-.line.empty:hover{background:none}
-
-/* a row that was answered leaves at once; the answer redraws the pile */
-.slip{transition:opacity .14s ease, transform .14s ease}
-.slip.leaving{opacity:0;transform:translateX(10px);pointer-events:none}
-.slip.noted{height:auto;min-height:88px;padding-top:14px;padding-bottom:14px}
-.slip.lead.noted{min-height:114px}
-.nt{margin-top:4px;font-size:12px;line-height:17px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.held{margin:12px 2px 0;font-size:12px;color:var(--ink-3)}
 
 /* one line about what just happened, and gone again */
 .toast{position:absolute;z-index:4;left:24px;bottom:62px;max-width:640px;height:38px;display:flex;align-items:center;gap:10px;
@@ -172,11 +49,3 @@ body{user-select:none;cursor:default}
 .toast.up{opacity:1;transform:none}
 .toast .ic{font-size:13px;color:var(--iris)}
 .toast:empty{display:none}
-
-/* the places that are still in the old desk */
-.away .title{top:20px}
-.awaycard{position:absolute;left:0;top:96px;width:560px;padding:24px 26px 22px;
-  background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card)}
-.awaycard .a1{font-size:16px;line-height:24px;color:var(--ink)}
-.awaycard .a2{margin-top:8px;font-size:13px;line-height:19px;color:var(--ink-2)}
-.awaycard .btn{margin-top:20px}

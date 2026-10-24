@@ -1,0 +1,124 @@
+/* Home — owned by the Home session (web/README.md). The first half is Home
+   exactly as the approved picture drew it (design/2026-09-22/design/rev/
+   home/home.html, its <style>); the second is what a live window has that
+   a picture does not: a press, a hover, a row that leaves. Every rule is
+   under .place-home (the CSS of all five places is one sheet), and the
+   class Home puts on <body> is home-calm. */
+
+/* ---- the head ---- */
+.place-home .head{position:absolute;left:0;top:0;width:1112px;height:100px}
+.place-home .sub{position:absolute;left:0;top:62px;font-size:13.5px;color:var(--ink-2)}
+.place-home .head .dismiss{position:absolute;right:0;top:60px;display:flex;align-items:center;gap:10px}
+.place-home .dismiss .lnk{font-size:13px;color:var(--ink-2)}
+
+/* ---- two columns ---- */
+.place-home .main{position:absolute;left:0;top:108px;width:824px;height:500px;overflow:hidden}
+.place-home .aside{position:absolute;left:848px;top:108px;width:264px;height:478px}
+
+/* the pile: three panes of frost, the newest one a step brighter and a step taller */
+.place-home .pile{display:flex;flex-direction:column;gap:10px}
+.place-home .slip{height:88px;display:grid;grid-template-columns:36px 1fr auto;column-gap:18px;align-items:center;
+  padding:0 20px;border-radius:22px;
+  background:linear-gradient(140deg, var(--frost), transparent 42%), var(--glass-slip)}
+.place-home .slip.lead{height:114px;grid-template-columns:40px 1fr auto;
+  background:linear-gradient(140deg, var(--frost), transparent 42%), var(--glass-lead)}
+.place-home .lead .mk{width:40px;height:40px;font-size:16px}
+.place-home .tx{min-width:0}
+.place-home .eb{display:flex;align-items:baseline;gap:10px;font-size:12.5px;line-height:18px;color:var(--ink-3);white-space:nowrap;
+  overflow:hidden}
+.place-home .eb b{font-weight:var(--w-strong);font-size:14px;color:var(--ink)}
+.place-home .lead .eb b{font-size:16px}
+/* every line sits on the LEFT edge of its column; a Hebrew run keeps its own reading order (dir=rtl) */
+.place-home .s{margin-top:7px;font-size:15px;line-height:24px;text-align:left;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-home .lead .s{margin-top:11px;font-size:18px;line-height:28px}
+.place-home .acts{display:flex;gap:10px;align-items:center;justify-self:end}
+.place-home .acts .btn{justify-content:center;padding:0 16px;min-width:88px}
+.place-home .acts .x{width:34px;height:34px;margin:0 27px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:var(--ink-2);background:var(--glass-disc)}
+
+/* the rest of the day */
+.place-home .day{margin-top:24px}
+.place-home .day .eyebrow{padding-left:2px;height:18px;line-height:18px}
+.place-home .lines{margin-top:4px}
+.place-home .line{height:40px;display:grid;grid-template-columns:78px 46px 1fr 72px;column-gap:16px;align-items:center;padding:0 2px;position:relative}
+.place-home .line + .line::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg, var(--line-faint), var(--line) 30%, var(--line) 70%, transparent)}
+.place-home .line .l{font-size:13px;font-weight:var(--w-label)}
+.place-home .line .t{font-size:12.5px;color:var(--ink-3)}
+.place-home .line .x{font-size:13px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.place-home .line .x.he{font-size:14.5px;color:var(--ink)}
+.place-home .line .m{font-size:12px;color:var(--ink-3);text-align:right}
+.place-home .line.empty{grid-template-columns:1fr}
+
+/* the doors: one frosted column, four compartments; the whole compartment is the way in */
+.place-home .aside{border-radius:24px;display:flex;flex-direction:column;
+  background:linear-gradient(160deg, var(--frost), transparent 45%), var(--glass-dock)}
+.place-home .door{flex:1;position:relative;display:flex;flex-direction:column;justify-content:center;padding:0 20px 0 22px}
+.place-home .door + .door::after{content:"";position:absolute;left:22px;right:20px;top:0;height:1px;
+  background:linear-gradient(90deg, transparent, var(--line) 15%, var(--line) 85%, transparent)}
+.place-home .door .top{display:flex;align-items:baseline;gap:9px}
+.place-home .door .n{font-family:var(--font-display);font-weight:var(--w-num);font-size:32px;letter-spacing:-.02em;line-height:34px}
+.place-home .door .w{font-size:14px;color:var(--ink-2)}
+.place-home .door .dic{position:absolute;right:20px;top:24px;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:var(--ink-3);background:var(--glass-disc)}
+.place-home .door .note{margin-top:7px;font-size:12.5px;line-height:17.5px;color:var(--ink-3);max-width:206px;text-wrap:balance}
+
+/* footer */
+.place-home .foot{position:absolute;left:0;top:612px;width:1112px;height:52px;
+  display:flex;align-items:center;justify-content:space-between;padding:0 2px}
+.place-home .foot::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg, transparent, var(--line) 10%, var(--line) 90%, transparent)}
+.place-home .foot .l{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-2)}
+.place-home .foot .l .ic{font-size:13px;color:var(--ink-2)}
+.place-home .foot .r{font-size:12px;color:var(--ink-3);display:flex;align-items:center}
+.place-home .foot .r .sep{margin:0 9px;opacity:.7}
+.place-home .live{width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:8px;box-shadow:0 0 0 3px var(--ok-wash), 0 0 8px var(--ok-glow)}
+
+/* ---- the calm Home: nothing waits; the lamp lights the room where the pile was ---- */
+.place-home .quiet{position:absolute;left:0;top:156px;width:824px}
+.place-home .quiet .big{font-family:var(--font-display);font-weight:var(--w-display);font-size:42px;letter-spacing:-.022em;line-height:50px;margin-left:-2px}
+.place-home .quiet .sub2{font-size:15px;color:var(--ink-2);margin-top:10px}
+.place-home .quiet .state{display:inline-flex;align-items:center;gap:10px;margin-top:28px;font-size:13.5px;color:var(--ink-2);
+  height:40px;padding:0 16px 0 16px;border-radius:20px;background:var(--glass-chip);
+  box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint)}
+.place-home .quiet .state b{font-weight:var(--w-strong);color:var(--ink)}
+.place-home .quiet .state .lamp{margin-right:4px}
+.place-home .quiet .state .cap{font-size:11.5px}
+body.home-calm .place-home .head .title, body.home-calm .place-home .head .sub,
+body.home-calm .place-home .head .dismiss{display:none}
+/* the sky is the frame's; Home lights it while it is calm */
+body.home-calm .sky .lamp-light{display:block}
+body.home-calm .sky .indigo{left:-120px;top:120px;opacity:.75}
+body.home-calm .place-home .door.z .n, body.home-calm .place-home .door.z .w{color:var(--ink-3)}
+body.home-calm .place-home .door.z .n{opacity:.8}
+body.home-calm .place-home .day{margin-top:0;position:absolute;top:298px;width:824px}
+body.home-calm .place-home .line{height:52px}
+body.home-calm .place-home .line .x.he{font-size:15.5px}
+body.home-calm .place-home .line .x{font-size:13.5px}
+
+/* =================== what a live window needs on top of the picture */
+
+.place-home .acts .x, .place-home .dismiss .lnk, .place-home .door, .place-home .line{cursor:pointer}
+.place-home .acts .x{transition:background .12s ease, color .12s ease}
+.place-home .acts .x:hover{background:var(--quiet-top);color:var(--ink)}
+.place-home .acts .x:active, .place-home .acts .x.down{transform:translateY(1px)}
+.place-home .dismiss .lnk:hover{color:var(--ink)}
+
+/* the doors and the day's lines are the ways in: they light under the pointer */
+.place-home .door{transition:background .15s ease;border-radius:0}
+.place-home .door:first-child{border-radius:24px 24px 0 0}
+.place-home .door:last-child{border-radius:0 0 24px 24px}
+.place-home .door:hover{background:linear-gradient(90deg, transparent, var(--quiet-bot) 30%, var(--quiet-bot) 70%, transparent)}
+.place-home .door:hover .dic{color:var(--iris);background:var(--quiet-top)}
+.place-home .line{border-radius:10px;transition:background .15s ease}
+.place-home .line:hover{background:linear-gradient(90deg, var(--quiet-bot), transparent 90%)}
+.place-home .line.empty{cursor:default}
+.place-home .line.empty:hover{background:none}
+
+/* a row that was answered leaves at once; the answer redraws the pile */
+.place-home .slip{transition:opacity .14s ease, transform .14s ease}
+.place-home .slip.leaving{opacity:0;transform:translateX(10px);pointer-events:none}
+.place-home .slip.noted{height:auto;min-height:88px;padding-top:14px;padding-bottom:14px}
+.place-home .slip.lead.noted{min-height:114px}
+.place-home .nt{margin-top:4px;font-size:12px;line-height:17px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.place-home .held{margin:12px 2px 0;font-size:12px;color:var(--ink-3)}

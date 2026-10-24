@@ -1,0 +1,25 @@
+/* The kit's own rules (kit.tsx) — SHARED, frozen while the places are
+   built in parallel. Unscoped on purpose: a place's title, the change
+   figure and the Away card read the same in every place. Moved here
+   unchanged from desk.css, where Home's picture had them. */
+
+/* a place's title */
+.title{position:absolute;left:-1px;top:20px;font-family:var(--font-display);font-weight:var(--w-display);font-size:30px;
+  letter-spacing:var(--display-track);line-height:38px}
+
+/* the change, in its place (Segs) */
+.ctx{color:var(--ink-2)}
+.chg{display:inline-flex;flex-direction:row;align-items:center;gap:7px;vertical-align:-3px;margin:0 5px}
+.pill{height:25px;display:inline-flex;align-items:center;gap:5px;padding:0 11px;border-radius:13px;font-size:14.5px;line-height:1}
+.pill.heard{background:var(--bad-pill);color:var(--bad-ink);box-shadow:inset 0 0 0 1px var(--bad-edge)}
+.pill.prop{background:var(--prop-pill);color:var(--prop-ink);box-shadow:inset 0 0 0 1px var(--iris-edge), inset 0 1px 0 var(--btn-hi)}
+.pill.prop .ic{font-size:11px;color:var(--iris)}
+.arrow{font-size:12px;color:var(--ink-3)}
+
+/* the places that are still in the old desk (Away) */
+.away .title{top:20px}
+.awaycard{position:absolute;left:0;top:96px;width:560px;padding:24px 26px 22px;
+  background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card)}
+.awaycard .a1{font-size:16px;line-height:24px;color:var(--ink)}
+.awaycard .a2{margin-top:8px;font-size:13px;line-height:19px;color:var(--ink-2)}
+.awaycard .btn{margin-top:20px}

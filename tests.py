@@ -50439,7 +50439,11 @@ def test_warm_after_away_min_parses_and_is_bounded():
 # webdesk.py is the shell (the spike of 2026-09-22), deskweb.py the desk
 # that runs in it. CI's venv has no pywebview, so these are the parts that
 # must hold without it; the window itself is photographed on the hidden
-# desktop by `deskweb.py --shot`.
+# desktop by `deskweb.py --shot`. The shared part comes first (the shell,
+# the frame, the split into places); then one section per place, in the
+# bar's order, each opened by its own wired test — five sessions build
+# the five places at once, and each adds its tests inside its own section
+# (web/README.md), so their branches merge without touching one line.
 
 
 def test_webdesk_imports_nothing_of_webview_and_guards_its_doors():
@@ -50560,6 +50564,244 @@ def _web_desk_fill(folder: Path) -> tuple[list, list]:
     return nids, sids
 
 
+def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
+    """[desk] web is off by default and honoured only in the checkout, and
+    only where the window can open (pages built, WebView2 there); the Tk
+    desk asks before it takes its own mutex, `--tk` skips the question,
+    and the page calls nothing the Api does not offer and presses
+    nothing Model._do does not handle."""
+    import re
+
+    import deskweb
+
+    base = config_mod.load(REPO / "defaults.toml")
+    assert base.desk.web is False
+    text = (REPO / "defaults.toml").read_text("utf-8")
+    assert text.count("\nweb = false") == 1
+    copy = Path(tempfile.mkdtemp(dir=_SCRATCH_HOME)) / "config.toml"
+    copy.write_text(text.replace("\nweb = false", "\nweb = true"), "utf-8")
+    assert config_mod.load(copy).desk.web is True
+    on = dataclasses.replace(base, desk=config_mod.DeskConfig(web=True))
+    with _patched(config_mod, "load_layered", lambda *a, **k: on):
+        with _patched(paths, "DEVELOPER", False), _patched(deskweb, "ready", lambda: True):
+            assert deskweb.wanted() is False
+        with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: False):
+            assert deskweb.wanted() is False
+        with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: True):
+            assert deskweb.wanted() is True
+    src = (REPO / "dashboard.py").read_text("utf-8")
+    body = src[src.index("def main() -> int:"):]
+    assert body.index('"--tk" not in argv') < body.index("deskweb.wanted()") \
+        < body.index("singleton.InstanceLock(singleton.DASHBOARD_MUTEX)")
+    # the X closes everything, as the Tk desk's does — but only after a
+    # window the person opened, never after a photograph
+    web_main = (REPO / "deskweb.py").read_text("utf-8")
+    web_main = web_main[web_main.index("def main(argv=None)"):]
+    assert web_main.index("if ns.shot:") < web_main.index("bring_up_the_keys()") \
+        < web_main.index("code = run_window(route=route, watch_show=True)") \
+        < web_main.index("singleton.request_quit()")
+    # ...and a photograph never touches his own desk: a worktree's mutex and
+    # show event are the checkout's, so the shot returns before the mutex
+    # is taken and never listens for the poke (the event is auto-reset: a
+    # shot waiting on it would swallow the one that brings his window up)
+    shot = web_main[web_main.index("if ns.shot:"):web_main.index("singleton.InstanceLock")]
+    assert "return run_window(" in shot and "watch_show" not in shot \
+        and "WEBDESK_SHOW" not in shot, shot
+    window = (REPO / "deskweb.py").read_text("utf-8")
+    window = window[window.index("def run_window("):window.index("def bring_up_the_keys(")]
+    assert "watch_show: bool = False" in window
+    assert window.index("if watch_show:") < window.index("target=_watch_show")
+    page = "\n".join(p.read_text("utf-8") for p in (REPO / "web" / "src").rglob("*.tsx"))
+    called = set(re.findall(r'call<[^>]*>\("(\w+)"', page))
+    assert called and called <= set(deskweb.CALLS), called
+    pressed = set(re.findall(r'act: "([\w.]+)"', page))
+    made = set(re.findall(r'"act": "([\w.]+)"', (REPO / "deskweb.py").read_text("utf-8")))
+    handled = (REPO / "deskweb.py").read_text("utf-8")
+    handled = handled[handled.index("    def _do(self"):handled.index("    def _run(self")]
+    for name in pressed | made:
+        assert f'"{name}"' in handled or name.startswith("review."), name
+    assert "review.accepted" in made and "review.rejected" in made
+
+
+def test_the_web_desk_has_a_file_for_every_place():
+    """Five places, five pages, four modules — the split that lets five
+    sessions build the places at once (web/README.md). Every place on
+    the bar has web/src/places/<place>.tsx exporting `default function
+    <Place>Place({ sub })`, drawn under a .place-<place> root and
+    importing its own <place>.css, whose every rule is under that root
+    (the five places are one stylesheet: Home's footer `.live` once
+    squashed the bar's places); app.tsx routes each one to its file;
+    every PLACES_MOD module is beside deskweb.py with a Place; and a page
+    asks a place call only by a name PLACES_MOD knows."""
+    import re
+
+    import deskweb
+
+    src = REPO / "web" / "src"
+    app = (src / "app.tsx").read_text("utf-8")
+    assert set(deskweb.PLACES_MOD) == {p.lower() for p in deskweb.PLACES} - {"home"}
+    keyframe = re.compile(r"^(from|to|\d+(\.\d+)?%)$")
+    for place in deskweb.PLACES:
+        low = place.lower()
+        page = (src / "places" / f"{low}.tsx").read_text("utf-8")
+        assert f"export default function {place}Place({{ sub }}: {{ sub: string }})" in page, place
+        assert f'import "./{low}.css";' in page, place
+        assert f'className="place-{low}"' in page, place
+        assert f'from "./places/{low}";' in app, place
+        css = re.sub(r"/\*.*?\*/", "", (src / "places" / f"{low}.css").read_text("utf-8"),
+                     flags=re.S)
+        for rule in re.findall(r"([^{}]+)\{", css):
+            for selector in (s.strip() for s in rule.split(",")):
+                if not selector or selector.startswith("@") or keyframe.match(selector):
+                    continue
+                assert (f".place-{low}" in selector
+                        or selector.startswith(f"body.{low}-")), (place, selector)
+    for module in deskweb.PLACES_MOD.values():
+        path = REPO / f"{module}.py"
+        assert path.is_file(), path
+        assert "\nclass Place" in path.read_text("utf-8"), path
+    pages = "\n".join(p.read_text("utf-8") for p in (src / "places").glob("*.tsx"))
+    named = set(re.findall(r'(?:placeCall|usePlace)(?:<[^>]*>)?\("(\w+)"', pages))
+    assert named <= set(deskweb.PLACES_MOD), named
+
+
+def _web_desk_place_wired(name: str) -> None:
+    """One place's road from the page to its module, the same for all
+    four (each section's first test calls it): the module imports and has
+    a Place; deskweb.Api.place builds ONE Place for the window, with the
+    window's pipe, and hands it "read" as read(**args) and "act" as
+    act(do, arg); a Place that raises answers its type and no more; a
+    name, an op or args it does not know are refused in words, before
+    any Place is built; and the module's own Place answers a read with
+    a dict that says ok — over scratch stores, never the owner's."""
+    import importlib
+
+    import deskweb
+
+    module = importlib.import_module(deskweb.PLACES_MOD[name])
+    built, calls = [], []
+
+    class Spy:
+        def __init__(self, send):
+            built.append(send)
+
+        def read(self, **args):
+            calls.append(("read", args))
+            if args.get("boom"):
+                raise ValueError("C:\\secret\\path in a traceback")
+            return {"ok": True, "args": args}
+
+        def act(self, do, arg=None):
+            calls.append(("act", do, arg))
+            return {"ok": True, "did": do}
+
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked):
+        with _patched(module, "Place", Spy):
+            api = deskweb.Api(model)
+            for refused, words in ((api.place("nowhere"), "not a desk place"),
+                                   (api.place("home"), "not a desk place"),
+                                   (api.place(name, "write"), "not a place call"),
+                                   (api.place(name, "read", [1]), "args are a dict"),
+                                   (api.place(name, "act", {"arg": 1}), "takes do and arg"),
+                                   (api.place(name, "act", {"do": "x", "more": 1}),
+                                    "takes do and arg")):
+                assert refused["ok"] is False and words in refused["error"], (name, refused)
+            assert built == [] and calls == [], (built, calls)
+            assert api.place(name, "read", {"q": "x"}) == {"ok": True, "args": {"q": "x"}}
+            assert api.place(name) == {"ok": True, "args": {}}
+            assert api.place(name, "act", {"do": "save", "arg": 2}) == {"ok": True, "did": "save"}
+            assert api.place(name, "act", {"do": "save"}) == {"ok": True, "did": "save"}
+            crashed = api.place(name, "read", {"boom": 1})
+            assert crashed == {"ok": False, "error": "ValueError"}, crashed
+            assert built == [model._send], built          # one Place, the window's pipe
+            assert calls[:4] == [("read", {"q": "x"}), ("read", {}), ("act", "save", 2),
+                                 ("act", "save", None)], calls
+            other = deskweb.Api(model)
+            other.place(name)
+            assert len(built) == 2                        # a window of its own, a Place of its own
+        answer = module.Place(model._send).read()
+        assert isinstance(answer, dict) and "ok" in answer, (name, answer)
+    assert "place" in deskweb.CALLS
+
+
+# ======================================== web desk place: Home
+# Owners: the Home session — deskweb.Model (Home's half of deskweb.py),
+# web/src/places/home.tsx, web/src/places/home.css. The Home session adds
+# its tests BELOW this section's first test.
+
+
+def test_web_desk_home_is_wired():
+    """Home is the Model's, not a place module's: Api.home and Api.act
+    answer through the window's Model and its pipe, a place call named
+    "home" is refused in words, and the page draws Home from
+    places/home.tsx — HomePlace, and the sign-in Landing the frame shows
+    instead of every place while the account lock holds."""
+    import deskweb
+
+    with _web_desk(_WEB_STATUS) as (model, _folder, asked):
+        api = deskweb.Api(model)
+        home = api.home()
+        assert home["places"] == list(deskweb.PLACES) and "Home" in home["built"], home
+        assert api.act("keys.later", 0)["home"]["bar"]["word"] == "Listening"
+        assert asked and all(command == "status" for command, _args in asked), asked
+        refused = api.place("home")
+        assert refused["ok"] is False and "not a desk place" in refused["error"], refused
+    assert "home" not in deskweb.PLACES_MOD and "Home" in deskweb.BUILT
+    page = (REPO / "web" / "src" / "places" / "home.tsx").read_text("utf-8")
+    assert "export function Landing()" in page
+    app = (REPO / "web" / "src" / "app.tsx").read_text("utf-8")
+    assert 'import HomePlace, { Landing } from "./places/home";' in app
+
+
+def test_the_web_desk_trusts_no_argument_from_the_page():
+    """The page names what its buttons answer, and the page is not trusted
+    with it. consent.on grants only a gate this desk is asking about again
+    (privacy.stale, not waved away with Not now) — never another gate,
+    which opens only through its own card, and never on an argument that
+    is not a plain name; a notification's id is a whole number or the
+    press is refused, because the app reads a malformed id as every card;
+    the old desk opens only at a place on the bar; and a press that fails
+    says so with the exception's type, never its text (a path, a
+    message)."""
+    import deskweb
+    import notify as notify_mod
+    import privacy
+
+    granted, spawned = [], []
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked),             _patched(privacy, "stale", lambda: ["cloud_text"]),             _patched(privacy, "configure", lambda cfg: None),             _patched(privacy, "grant", lambda kind, *a, **k: granted.append(kind) or {}):
+        for arg in ("cloud_audio", "account", ["cloud_text"], {"k": 1}, None, "x" * 5000):
+            note = model.act("consent.on", arg)["note"]
+            assert note == "that consent is not waiting for an answer", (arg, note)
+        model.act("consent.later", "cloud_text")
+        assert model.act("consent.on", "cloud_text")["note"]             == "that consent is not waiting for an answer"
+        assert granted == []
+        model._consent_later.clear()
+        assert model.act("consent.on", "cloud_text")["note"] == "turned on"
+        assert granted == ["cloud_text"]
+    # a notification's id: the app reads one it cannot int() as no id, and
+    # no id means EVERY card — a malformed one never reaches the pipe
+    with _web_desk(_WEB_STATUS) as (model, _folder, asked):
+        for do in ("notify.dismiss", "notify.open"):
+            for arg in (None, "", "abc", "1; x", [3], {"id": 3}, True, 1.5, "9" * 40):
+                assert model.act(do, arg)["note"] == "that message is not here", (do, arg)
+        assert not [c for c, _a in asked if c == "notify"], asked
+        model.act("notify.dismiss", 7)
+        model.act("notify.open", "8")
+        assert [a for c, a in asked if c == "notify"] == [{"do": "dismiss", "id": 7},
+                                                         {"do": "open", "id": 8}], asked
+    with _patched(deskweb.launch, "spawn", lambda args: spawned.append(args) or True):
+        for place in ("Said", "Nowhere", "--config=x", ["Keys"], None):
+            deskweb.open_old_desk(place if isinstance(place, str) else str(place))
+    assert [a[1:] for a in spawned] == [["--tk", "--place", "Said"]] + [["--tk"]] * 4, spawned
+
+    def refused(self, ids=None):
+        raise PermissionError(13, "denied", r"C:\Users\someone\secret.json")
+
+    with _web_desk(None) as (model, _folder, _asked),             _patched(notify_mod.Store, "mark_seen", refused):
+        note = model.act("notify.dismiss", 1)["note"]
+    assert note == "could not mark that seen (PermissionError)", note
+
+
 def test_the_web_desk_home_says_what_the_tk_home_says():
     """deskweb.Model.home(): the Tk desk's headline and subline words,
     the newest three of the merged pile with ONE lit button across all
@@ -50608,7 +50850,7 @@ def test_the_web_desk_buttons_answer_with_home():
     down the pipe and the row is gone from the answer at once (the Tk
     desk's _notify_gone), even before the file agrees; the bar's three
     buttons are the pipe verbs the Tk desk sends; an unknown action is
-    refused in words. The Api offers the page three names and no more."""
+    refused in words. The Api offers the page four names and no more."""
     import deskweb
     import review as review_mod
 
@@ -50630,9 +50872,9 @@ def test_the_web_desk_buttons_answer_with_home():
         assert verbs == ["toggle", "unload", "screens"], verbs
         assert ("screens", {"do": "toggle"}) in asked
         assert "not a desk action" in model.act("format c:")["note"]
-    assert deskweb.Api.CALLS == deskweb.CALLS == ("home", "act", "ping")
+    assert deskweb.Api.CALLS == deskweb.CALLS == ("home", "act", "place", "ping")
     public = sorted(n for n in dir(deskweb.Api) if not n.startswith("_"))
-    assert public == ["CALLS", "act", "home", "ping"], public
+    assert public == ["CALLS", "act", "home", "ping", "place"], public
 
 
 def test_the_web_desk_keeps_the_change_in_sight():
@@ -50665,52 +50907,81 @@ def test_the_web_desk_keeps_the_change_in_sight():
         assert row["meta"].startswith("one word to delete"), row["meta"]
 
 
-def test_the_web_desk_opens_only_in_the_checkout_and_only_when_asked():
-    """[desk] web is off by default and honoured only in the checkout, and
-    only where the window can open (pages built, WebView2 there); the Tk
-    desk asks before it takes its own mutex, `--tk` skips the question,
-    and the page calls nothing the Api does not offer and presses
-    nothing Model._do does not handle."""
-    import re
+# ======================================== web desk place: Corrections
+# Owners: the Corrections session — desk_corrections.py,
+# web/src/places/corrections.tsx, web/src/places/corrections.css. The
+# Corrections session adds its tests BELOW this section's first test.
 
+
+def test_web_desk_corrections_is_wired():
+    """Corrections reaches desk_corrections.Place through Api.place: one
+    Place per window with the window's pipe, read and act handed on,
+    the unknown refused in words (_web_desk_place_wired)."""
+    _web_desk_place_wired("corrections")
+
+
+# ======================================== web desk place: Said
+# Owners: the Said session — desk_said.py, web/src/places/said.tsx,
+# web/src/places/said.css. The Said session adds its tests BELOW this
+# section's first test.
+
+
+def test_web_desk_said_is_wired():
+    """Said reaches desk_said.Place through Api.place: one Place per
+    window with the window's pipe, read and act handed on, the unknown
+    refused in words (_web_desk_place_wired)."""
+    _web_desk_place_wired("said")
+
+
+# ======================================== web desk place: Keys
+# Owners: the Keys session — desk_keys.py, web/src/places/keys.tsx,
+# web/src/places/keys.css. The Keys session adds its tests BELOW this
+# section's first test.
+
+
+def test_web_desk_keys_is_wired():
+    """Keys reaches desk_keys.Place through Api.place: one Place per
+    window with the window's pipe, read and act handed on, the unknown
+    refused in words (_web_desk_place_wired)."""
+    _web_desk_place_wired("keys")
+
+
+# ======================================== web desk place: Settings
+# Owners: the Settings session — desk_settings.py,
+# web/src/places/settings.tsx, web/src/places/settings.css. The Settings
+# session adds its tests BELOW this section's first test.
+
+
+def test_web_desk_settings_is_wired():
+    """Settings reaches desk_settings.Place through Api.place: one Place
+    per window with the window's pipe, read and act handed on, the
+    unknown refused in words (_web_desk_place_wired)."""
+    _web_desk_place_wired("settings")
+
+
+# ======================================== web desk places: the end
+# Shared. Keeps the Settings section's last line away from the end of the
+# file, where every other branch adds its tests.
+
+
+def test_web_desk_places_keep_their_sections():
+    """The five sections above stand in the bar's order, each with its
+    owners' header and its wired test first — the real content between
+    the headers is what lets five branches add tests at once and merge
+    clean, so a merge that loses or reorders one fails here."""
     import deskweb
 
-    base = config_mod.load(REPO / "defaults.toml")
-    assert base.desk.web is False
-    text = (REPO / "defaults.toml").read_text("utf-8")
-    assert text.count("\nweb = false") == 1
-    copy = Path(tempfile.mkdtemp(dir=_SCRATCH_HOME)) / "config.toml"
-    copy.write_text(text.replace("\nweb = false", "\nweb = true"), "utf-8")
-    assert config_mod.load(copy).desk.web is True
-    on = dataclasses.replace(base, desk=config_mod.DeskConfig(web=True))
-    with _patched(config_mod, "load_layered", lambda *a, **k: on):
-        with _patched(paths, "DEVELOPER", False), _patched(deskweb, "ready", lambda: True):
-            assert deskweb.wanted() is False
-        with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: False):
-            assert deskweb.wanted() is False
-        with _patched(paths, "DEVELOPER", True), _patched(deskweb, "ready", lambda: True):
-            assert deskweb.wanted() is True
-    src = (REPO / "dashboard.py").read_text("utf-8")
-    body = src[src.index("def main() -> int:"):]
-    assert body.index('"--tk" not in argv') < body.index("deskweb.wanted()") \
-        < body.index("singleton.InstanceLock(singleton.DASHBOARD_MUTEX)")
-    # the X closes everything, as the Tk desk's does — but only after a
-    # window the person opened, never after a photograph
-    web_main = (REPO / "deskweb.py").read_text("utf-8")
-    web_main = web_main[web_main.index("def main(argv=None)"):]
-    assert web_main.index("if ns.shot:") < web_main.index("bring_up_the_keys()") \
-        < web_main.index("code = run_window(route=route)") \
-        < web_main.index("singleton.request_quit()")
-    page = "\n".join(p.read_text("utf-8") for p in (REPO / "web" / "src").glob("*.tsx"))
-    called = set(re.findall(r'call<[^>]*>\("(\w+)"', page))
-    assert called and called <= set(deskweb.CALLS), called
-    pressed = set(re.findall(r'act: "([\w.]+)"', page))
-    made = set(re.findall(r'"act": "([\w.]+)"', (REPO / "deskweb.py").read_text("utf-8")))
-    handled = (REPO / "deskweb.py").read_text("utf-8")
-    handled = handled[handled.index("    def _do(self"):handled.index("    def _run(self")]
-    for name in pressed | made:
-        assert f'"{name}"' in handled or name.startswith("review."), name
-    assert "review.accepted" in made and "review.rejected" in made
+    text = Path(__file__).read_text("utf-8")
+    at = -1
+    for place in deskweb.PLACES:
+        header = text.index(f"# ======================================== web desk place: {place}\n")
+        wired = text.index(f"\ndef test_web_desk_{place.lower()}_is_wired():", header)
+        assert header > at and text.index("\ndef test_", header) == wired, place
+        said = " ".join(text[header:wired].replace("#", " ").split())
+        assert f"The {place} session adds its tests BELOW this section's first test" in said, \
+            place
+        at = wired
+    assert text.index("# ======================================== web desk places: the end") > at
 
 
 if __name__ == "__main__":
