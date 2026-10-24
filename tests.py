@@ -27072,6 +27072,72 @@ def test_the_hook_names_the_session_the_notification_came_from() -> None:
         assert needle in module, needle
 
 
+def test_the_session_store_is_found_where_the_app_keeps_it_now() -> None:
+    """THE STORE MOVED (notify_hook.py, 2026-10-21): the desktop app's
+    sessions live under %LOCALAPPDATA%\\Claude-Data\\claude_<hash> now,
+    and from that morning every card went out without a link and the
+    arrival watcher found nothing, in silence. The roots are one list,
+    current layout first and the two old places after it; the hook's
+    link and the engine's watcher both read it; and the link is found
+    through it with no folder named."""
+    import notify
+    import notify_hook as hook
+
+    desk = "6abc45c7-8df5-460d-a90f-cbadbbbd4cb2"
+    live = "add068f2-9cd4-4904-b19c-d73859fad53e"
+    with tempfile.TemporaryDirectory() as d:
+        local, appdata = Path(d) / "Local", Path(d) / "Roaming"
+        assert hook.session_roots(local, appdata) == [], "nothing there"
+        new = local / "Claude-Data" / "claude_pzs8sxrjxfjjc" / "claude-code-sessions"
+        old = appdata / "Claude" / "claude-code-sessions"
+        boxed = (local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache"
+                 / "Roaming" / "Claude" / "claude-code-sessions")
+        for root in (boxed, old, new):
+            root.mkdir(parents=True)
+        (local / "Claude-Data" / "README.txt").write_text("not a store", "utf-8")
+        assert hook.session_roots(local, appdata) == [new, old, boxed]
+        folder = new / "acct" / "org"
+        folder.mkdir(parents=True)
+        (folder / f"local_{desk}.json").write_text(json.dumps(
+            {"sessionId": f"local_{desk}", "cliSessionId": live,
+             "priorCliSessionIds": [], "lastFocusedAt": 1792857363656}),
+            "utf-8")
+        saved = {k: os.environ.get(k) for k in ("LOCALAPPDATA", "APPDATA")}
+        os.environ["LOCALAPPDATA"], os.environ["APPDATA"] = str(local), str(appdata)
+        try:
+            assert hook.session_link(live) == f"claude://resume?session={desk}"
+            assert notify.session_roots() == [new, old, boxed], \
+                "the watcher reads the same list"
+            assert notify.focus_times()[f"local_{desk}"] == 1792857363656
+            # A file that has not changed is not parsed again — these are
+            # up to 1 MB each and the watcher asks every 2 s — and one
+            # that has is.
+            parsed: list = []
+            real = notify._focus_of
+            notify._focus_of = lambda p: (parsed.append(p), real(p))[1]
+            try:
+                assert notify.focus_times()[live] == 1792857363656
+                assert parsed == [], parsed
+                (folder / f"local_{desk}.json").write_text(json.dumps(
+                    {"sessionId": f"local_{desk}", "cliSessionId": live,
+                     "priorCliSessionIds": [], "lastFocusedAt": 1792857999999,
+                     "moved": True}), "utf-8")
+                assert notify.focus_times()[live] == 1792857999999
+                assert len(parsed) == 1, parsed
+            finally:
+                notify._focus_of = real
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    # Neither module keeps a list of its own any more.
+    source = (REPO / "notify.py").read_text(encoding="utf-8")
+    assert "PACKAGES" not in source and "SESSIONS_UNDER" not in source
+    assert "notify_hook.session_roots()" in source
+
+
 def _toast(title: str, body: str = "") -> bytes:
     """One toast's payload, the shape Windows stores: the app's own XML
     with the title and the body as <text> nodes, as bytes."""
