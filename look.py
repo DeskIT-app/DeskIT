@@ -49,6 +49,7 @@ SS = 4
 # ---------------------------------------------------------------- the inks
 # name -> (the name in skin\palette.py, the B+ literal when skin\ is gone)
 _SOURCE = {
+    "bg": ("BG", "#0b0d19"),
     "ink": ("FG", "#efedf7"),
     "dim": ("DIM", "#c0c3d8"),
     "muted": ("MUTED", "#a4a9c2"),
@@ -350,6 +351,39 @@ def plate(width: int, height: int, radius: float, inset: int,
     return img
 
 
+# The four fields of light behind the desk's glass (bplus.css `.sky`):
+# where each sits, as shares of the picture's width and height, its radius
+# as a share of the longer side, and its colour and strength.
+SKY_FIELDS = (
+    ((0.16, 0.08, 0.62), (118, 98, 246), 0.30),     # indigo, top-left
+    ((0.94, 0.90, 0.56), (44, 146, 232), 0.22),     # blue, bottom-right
+    ((0.88, 0.18, 0.40), (196, 92, 178), 0.13),     # plum, top-right
+    ((0.06, 0.96, 0.42), (40, 178, 168), 0.10),     # teal, bottom-left
+)
+
+
+def sky(size, fields=SKY_FIELDS, base=None, seed: int = 7) -> Image.Image:
+    """The night behind the glass (bplus.css `.sky` on `--ground`): soft
+    fields of light on the ground, each a radial fade blurred to nothing —
+    `closest-side` to transparent and then `blur(30px)`, which is a curve
+    and not a cone, so the falloff is (1 - t) to the 1.7th. A breath of
+    noise (one level either way) keeps a dark gradient from banding in an
+    8-bit picture, which is what the desk's grain is for. RGB."""
+    np = _numpy()
+    W, H = int(size[0]), int(size[1])
+    ground = np.array(INK["bg"] if base is None else _hex(base), np.float32)
+    out = np.broadcast_to(ground, (H, W, 3)).copy()
+    ys, xs = np.mgrid[0:H, 0:W].astype(np.float32)
+    long_side = float(max(W, H))
+    for (fx, fy, fr), rgb, strength in fields:
+        d = np.hypot(xs + 0.5 - fx * W, ys + 0.5 - fy * H) / max(1.0, fr * long_side)
+        a = (np.clip(1.0 - d, 0.0, 1.0) ** 1.7 * float(strength))[..., None]
+        out = out * (1.0 - a) + np.array(rgb, np.float32) * a
+    noise = np.random.default_rng(seed).uniform(-0.75, 0.75, (H, W, 1))
+    out = np.clip(out + noise, 0, 255).round().astype(np.uint8)
+    return Image.fromarray(out, "RGB")
+
+
 # ---------------------------------------------------------------- controls
 def _quiet_abs(img, box, radius: float | None = None, hover: bool = False,
           down: bool = False) -> None:
@@ -428,7 +462,7 @@ def _bottom(W, H, y0, y1) -> Image.Image:
     return Image.fromarray(np.repeat(v, W, axis=1).astype(np.uint8), "L")
 
 
-def _bubble_abs(img, box) -> None:
+def _bubble_abs(img, box, radius=None) -> None:
     """The chosen one of a set (bplus.css `.bubble`, the desk's selected
     place): a pill of glass, bright at its top (.16), thin in the middle
     (.06), catching light again at its foot (.09), a pool of violet light
@@ -437,7 +471,7 @@ def _bubble_abs(img, box) -> None:
     W, H = img.size
     x0, y0, x1, y1 = box
     h = y1 - y0
-    mask = rounded((W, H), box, h / 2)
+    mask = rounded((W, H), box, h / 2 if radius is None else radius)
     body = gradient_along((W, H), 180, [
         (0.00, (255, 255, 255, 41)), (0.55, (255, 255, 255, 15)),
         (1.00, (255, 255, 255, 23))], box)
@@ -629,9 +663,9 @@ def primary(img, box, hover=False, glow=True) -> None:
         L, _shift(box, ox, oy), hover, glow))
 
 
-def bubble(img, box) -> None:
+def bubble(img, box, radius=None) -> None:
     _on_patch(img, box, 2, lambda L, ox, oy: _bubble_abs(
-        L, _shift(box, ox, oy)))
+        L, _shift(box, ox, oy), radius))
 
 
 def disc(img, cx, cy, r, hover=False) -> None:
@@ -972,7 +1006,7 @@ def on_baseline(img: Image.Image, cache: dict, words: str, pt: float,
 
 
 __all__ = ["INK", "ALPHA", "c", "rounded", "circle", "flat", "ring_of",
-           "glass", "plate", "rim", "quiet", "primary", "disc", "slip",
+           "glass", "plate", "rim", "sky", "SKY_FIELDS", "quiet", "primary", "disc", "slip",
            "lamp", "mark", "keycap", "switch", "pill", "well", "fade_rule",
            "glyph", "text", "text_line", "cap_height", "x_height",
            "row_line", "on_baseline",
