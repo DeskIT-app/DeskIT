@@ -240,8 +240,10 @@ the passage of time. His words, 2026-09-23: *"תוסיף לי כזה צ'קבוק
 and hands it `api.Api` — six calls and no others (`rows`, `tick`,
 `preview`, `take`, `open_folder`, `ping`).
 
-- **The shell is the product's**: `webdesk.py` from the `web-ui` spike,
-  kept at `dev\master\webdesk.py` until that branch puts it at the root.
+- **The shell is the product's**: `webdesk.py` at the root, the file the
+  desk itself runs in (the copy at `dev\master\webdesk.py` went on
+  2026-10-24, so the master carries every flag the desk does —
+  `msOneAuthWAM` included).
   It brings the registry pre-check (pywebview falls back to MSHTML
   *silently* and writes HKCU on the way), the virtual host instead of a
   server or `file://`, our own CoreWebView2 environment with crash

@@ -1,33 +1,43 @@
-// What every place draws with and asks through — SHARED, and frozen while
-// the places are built in parallel (web/README.md): a place that wants
-// something else here keeps it in its own file until the merge.
+// What every place draws with and asks through. One copy of each piece:
+// a place that needs something two places draw takes it from here, and a
+// piece only one place draws stays in that place's file.
 //
 //   IC          the Segoe Fluent glyphs (bplus.css .ic), by name
-//   Caps        a key as keycaps: ["Ctrl", "Alt", "M"]
-//   Segs        a sentence with every change in its place: the heard
-//               pill, an arrow, the proposal pill (dashboard's Change)
-//   Away        "<Place> is still in the old desk", and the way there
+//   Caps        a key as keycaps: ["Ctrl", "Alt", "M"], or lit caps
+//   Switch      the B+ switch: a soft track when on, a hollow ring when off
+//   Seg         a track of choices with ONE bubble that slides to the lit one
+//   Change      one change: the heard pill, an arrow, the proposal pill
+//   Segs        a sentence with every change in its place
 //   placeCall   one call to a place's Python module (deskweb.Api.place)
 //   usePlace    a place's data: read on mount, polled while visible
 //   useDesk     the frame's say(note) and go(place, sub?), and its act()
 //   useHome     Home as the frame's poll last read it (the bar's, Home's)
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState,
+  type KeyboardEvent } from "react";
 import { call } from "./bridge";
 import type { Acted, Home, Seg } from "./types";
 import "./kit.css";
 
-// Segoe Fluent glyphs (bplus.css .ic). The second group are the ones the
-// approved pictures of the four places draw (design/2026-09-22).
+// Segoe Fluent glyphs (bplus.css .ic), by what they mean on the desk.
+// up / down / left / right are ARROWS (a keycap's, a change's); the
+// chevron is the menu's and Show more's; download is "a newer version".
 export const IC: Record<string, string> = {
-  bell: "", edit: "", globe: "", key: "", up: "",
-  chip: "", lock: "", history: "", keyboard: "",
-  settings: "", close: "", tick: "", left: "", right: "",
+  // the desk's own
+  bell: "", edit: "", globe: "", key: "", download: "",
+  chip: "", lock: "", history: "", keyboard: "",
+  settings: "", close: "", tick: "",
+  up: "", down: "", left: "", right: "", chevron: "",
   stop: "", moon: "", sun: "", pause: "", play: "",
-  info: "", open: "",
-  add: "", search: "", mic: "", down: "", copy: "",
-  folder: "", file: "", sync: "", undo: "", warning: "",
-  send: "", help: "", laptop: "", power: "", eye: "",
-  message: "",
+  info: "", open: "", add: "", search: "", mic: "",
+  copy: "", folder: "", file: "", sync: "", undo: "",
+  warning: "", send: "", help: "", laptop: "", power: "",
+  eye: "", message: "", link: "", phone: "",
+  // Said: what each kind of line was (history.KINDS' icons)
+  translate: "", punctuate: "", learned: "", error: "",
+  discarded: "", dic: "",
+  // Settings: the sections' discs
+  monitor: "", video: "", volume: "", contact: "",
+  book: "", camera: "",
 };
 
 // ------------------------------------------------------------ the frame's
@@ -41,9 +51,9 @@ export type Desk = {
    *  #/settings/privacy. The place that is lit already, with no sub, is
    *  left as it is — the bar's own rule (dashboard._nav_go). */
   go: (place: string, sub?: string) => void;
-  /** a button of the desk's own (deskweb.Model._do — Home's verbs, the
-   *  bar's, "old"): the answer is Home, which the frame draws at once.
-   *  A place's own buttons go through placeCall(name, "act", ...). */
+  /** a button of the desk's own (deskweb.Model._do — Home's verbs and the
+   *  bar's): the answer is Home, which the frame draws at once. A place's
+   *  own buttons go through placeCall(name, "act", ...). */
   act: (b: { act: string; arg?: unknown }) => Promise<Acted | null>;
 };
 
@@ -161,58 +171,132 @@ export function usePlace<T>(name: string, args: Record<string, unknown> = {},
 
 // ---------------------------------------------------------------- pieces
 
-export function Caps({ caps }: { caps: string[] }) {
+/** One keycap: its words, or an arrow drawn as the glyph (`arrow`: up,
+ *  down, left or right), and a class of the place's own (how it is lit). */
+export type Cap = string | { t: string; arrow?: string; cls?: string };
+
+export function Caps({ caps }: { caps: Cap[] }) {
   // every cap and every "+" a child of .keys itself, so its gap falls on
   // both sides of the "+" — wrapped in a span each, the "+" sat 3 px after
   // one cap and touching the next (the foundation's pixel review)
   return (
     <span className="keys">
-      {caps.flatMap((c, i) => [
-        ...(i ? [<span key={`+${i}`} className="plus">+</span>] : []),
-        <span key={`${c}${i}`} className="cap">{c}</span>,
-      ])}
+      {caps.flatMap((c, i) => {
+        const cap = typeof c === "string" ? { t: c } : c;
+        const glyph = cap.arrow ? IC[cap.arrow] : undefined;
+        return [
+          ...(i ? [<span key={`+${i}`} className="plus">+</span>] : []),
+          <span key={`${cap.t}${i}`} className={`cap${cap.cls ? ` ${cap.cls}` : ""}${glyph ? " gl" : ""}`}>
+            {glyph ? <i className="ic">{glyph}</i> : cap.t}
+          </span>,
+        ];
+      })}
     </span>
   );
 }
 
-/** The change in its place: contexts, the heard word on its red-edged
- *  pill, an arrow the way the line reads, the proposal on the iris pill
- *  with a tick; a deletion is the words that would go. */
+/** The B+ switch: no accent — a soft lavender-grey track when on, a
+ *  hollow ring when off. Given `onFlip` it is a control of its own (a
+ *  press, Space, Enter); without, it only shows a row's state and the row
+ *  takes the press. */
+export function Switch({ on, onFlip, busy, label }: {
+  on: boolean; onFlip?: () => void; busy?: boolean; label?: string;
+}) {
+  if (!onFlip) return <span className={`sw${on ? " on" : ""}`}><i /></span>;
+  return (
+    <span className={`sw${on ? " on" : ""}${busy ? " busy" : ""}`} role="switch"
+          aria-checked={on} aria-label={label} tabIndex={0}
+          onClick={onFlip}
+          onKeyDown={(e: KeyboardEvent) => {
+            if (e.key === " " || e.key === "Enter") {
+              e.preventDefault();
+              onFlip();
+            }
+          }}>
+      <i />
+    </span>
+  );
+}
+
+/** A track of choices with ONE bubble that slides to the lit one — the
+ *  bar's places, Said's filters, Settings' tabs. The bubble travels
+ *  instead of jumping (the first thing he named about this design), and
+ *  its first placement does not slide in from nowhere: the slide is
+ *  switched on once the bubble stands where it belongs, fonts settled. */
+export function Seg({ items, on, pick, className, tabs }: {
+  items: { key: string; name: string }[]; on: string; pick: (key: string) => void;
+  className?: string; tabs?: boolean;
+}) {
+  const track = useRef<HTMLDivElement>(null);
+  const bubble = useRef<HTMLSpanElement>(null);
+  const [sliding, setSliding] = useState(false);
+  const shape = items.map((i) => `${i.key}\u0001${i.name}`).join("\u0002");
+
+  const place = useCallback(() => {
+    const lit = track.current?.querySelector<HTMLElement>(":scope > .item.on");
+    if (!lit || !bubble.current) return;
+    bubble.current.style.left = `${lit.offsetLeft}px`;
+    bubble.current.style.width = `${lit.offsetWidth}px`;
+  }, []);
+
+  useLayoutEffect(place, [on, shape, place]);
+  useEffect(() => {
+    if (sliding || !shape) return undefined;
+    let live = true;
+    document.fonts.ready.then(() => {
+      if (!live) return;
+      place();
+      requestAnimationFrame(() => { if (live) setSliding(true); });
+    });
+    return () => { live = false; };
+  }, [sliding, shape, place]);
+
+  return (
+    <div className={`seg${className ? ` ${className}` : ""}${sliding ? " sliding" : ""}`} ref={track}
+         role={tabs ? "tablist" : undefined}>
+      <span className="bubble" ref={bubble} />
+      {items.map((it) => (
+        <div key={it.key || "·"} className={`item${it.key === on ? " on" : ""}`}
+             role={tabs ? "tab" : undefined} aria-selected={tabs ? it.key === on : undefined}
+             tabIndex={tabs ? 0 : undefined}
+             onClick={() => pick(it.key)}
+             onKeyDown={tabs ? (e) => { if (e.key === "Enter") pick(it.key); } : undefined}>
+          {it.name}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** One change: the heard word on its red-edged pill, an arrow the way the
+ *  line reads, the proposal on the iris pill with a tick. Each word sits
+ *  in a span of its own, so a place may cut a long one at its end. */
+export function Change({ heard, meant, rtl }: { heard: string; meant: string; rtl: boolean }) {
+  return (
+    <span className="chg" dir={rtl ? "rtl" : "ltr"}>
+      <span className="pill heard"><span className="w" dir="auto">{heard}</span></span>
+      <i className="ic arrow">{rtl ? IC.left : IC.right}</i>
+      <span className="pill prop"><i className="ic">{IC.tick}</i><span className="w" dir="auto">{meant}</span></span>
+    </span>
+  );
+}
+
+/** The change in its place: contexts, then every change as Change draws
+ *  it; a deletion is the words that would go, behind a cross. */
 export function Segs({ segs, rtl }: { segs: Seg[]; rtl: boolean }) {
   return (
     <>
       {segs.map((s, i) => {
         if (s.t === "ctx") return <span key={i} className="ctx">{s.s}</span>;
-        if (s.t === "drop") return <span key={i} className="chg"><span className="pill heard">{s.s}</span></span>;
-        return (
-          <span key={i} className="chg">
-            <span className="pill heard" dir="auto">{s.heard}</span>
-            <i className="ic arrow">{rtl ? IC.left : IC.right}</i>
-            <span className="pill prop"><i className="ic">{IC.tick}</i><span dir="auto">{s.meant}</span></span>
-          </span>
-        );
+        if (s.t === "drop") {
+          return (
+            <span key={i} className="chg">
+              <span className="pill heard drop"><i className="ic">{IC.close}</i><span className="w" dir="auto">{s.s}</span></span>
+            </span>
+          );
+        }
+        return <Change key={i} heard={s.heard} meant={s.meant} rtl={rtl} />;
       })}
     </>
-  );
-}
-
-/** A place that is still in the old desk: its title, one card that says
- *  so, and the button that opens the Tk desk there (deskweb "old").
- *  `plain`: the text alone, no button (the page outside the window). */
-export function Away({ place, text, plain }: { place: string; text: string; plain?: boolean }) {
-  const { act } = useDesk();
-  return (
-    <div className="away">
-      <div className="title">{place}</div>
-      <div className="card glass awaycard">
-        <div className="a1">{plain ? text : `${place} is still in the old desk.`}</div>
-        {plain ? null : <div className="a2">{text} It moves here next — one place at a time.</div>}
-        {plain ? null : (
-          <div className="btn" onClick={() => act({ act: "old", arg: place })}>
-            <i className="ic">{IC.open}</i>Open it in the old desk
-          </div>
-        )}
-      </div>
-    </div>
   );
 }

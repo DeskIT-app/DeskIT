@@ -2,8 +2,8 @@
 // CONNECTION on Settings > Privacy: every request this app made, newest
 // first, from network.log — during plain dictation the table stays empty.
 import { useState } from "react";
-import { placeCall, useDesk, usePlace } from "../../kit";
-import { GLYPHS, type Net } from "./model";
+import { IC, placeCall, useDesk, usePlace } from "../../kit";
+import type { Net } from "./model";
 
 export function NetworkScreen({ back }: { back: () => void }) {
   const { say } = useDesk();
@@ -24,7 +24,7 @@ export function NetworkScreen({ back }: { back: () => void }) {
           <div key={h} className={`chip-h${h === (data?.host ?? host) ? " on" : ""}`} onClick={() => setHost(h)}>{h}</div>
         ))}
       </div>
-      {data?.banner ? <div className="banner"><i className="ic">{GLYPHS.warning}</i>{data.banner}</div> : null}
+      {data?.banner ? <div className="banner"><i className="ic">{IC.warning}</i>{data.banner}</div> : null}
       <div className="table card glass">
         <div className="th">{(data?.columns ?? []).map((c) => <span key={c} className={`c ${c}`}>{c}</span>)}</div>
         <div className="tb">
@@ -40,7 +40,7 @@ export function NetworkScreen({ back }: { back: () => void }) {
       </div>
       <div className="foot">
         <span className="line">{data?.line ?? ""}</span>
-        <div className="btn" onClick={back}><i className="ic">{GLYPHS.left}</i>Back to Privacy</div>
+        <div className="btn" onClick={back}><i className="ic">{IC.left}</i>Back to Privacy</div>
         <div className="btn" onClick={openLog}>Open network.log</div>
         <div className="btn" onClick={() => setLoopback(!loopback)}>{data?.toggle ?? "Show loopback (phone)"}</div>
       </div>

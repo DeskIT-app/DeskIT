@@ -1,9 +1,11 @@
 # web/ — the desk's pages
 
 React + TypeScript in the approved B+ look, built into `web/dist` and shown
-by `deskweb.py` inside WebView2 (`webdesk.py` is the shell). The desk moves
-off Tk one place at a time; `[desk] web` opens it in the checkout only.
-Python builds every word; a page only draws what it is answered.
+by `deskweb.py` inside WebView2 (`webdesk.py` is the shell). All five
+places are here (2026-10-24); `[desk] web` opens it in the checkout only
+until the launch (`deskweb.LAUNCHED`), and the Tk desk stays the fallback
+where WebView2 is missing. Python builds every word; a page only draws
+what it is answered.
 
 ## Build
 
@@ -47,19 +49,19 @@ and drives the page with `desk.js(...)` and `desk.capture(png)`:
 - give `run_hidden` a `desktop=` name of your own: other sessions probe
   on this PC too.
 
-## The places, and who owns what
+## The places, and what they share
 
-| file | owner |
+| file | what it is |
 |---|---|
-| `src/places/<place>.tsx`, `src/places/<place>.css` | that place's session |
-| `desk_<place>.py` (Corrections, Said, Keys, Settings) | that place's session |
-| the `web desk place: <Place>` section of `tests.py` | that place's session — add your tests BELOW the section's first test (`test_web_desk_<place>_is_wired`) |
-| Home: `src/places/home.tsx`, `home.css`, and `deskweb.Model` | the Home session |
-| `src/kit.tsx`, `src/kit.css`, `src/app.tsx`, `src/desk.css`, `src/bplus.css`, `src/types.ts`, `src/bridge.ts`, `src/main.tsx`, `deskweb.py` outside `Model` | SHARED — frozen while the places are built in parallel |
+| `src/app.tsx` | the frame: the bar, the router, the toast, the lock's line over every place but Home, Home's 800 ms poll |
+| `src/kit.tsx` + `src/kit.css` | every piece two places draw: `IC` (the glyphs), `Caps`, `Switch`, `Seg` (a track with one sliding bubble — the bar, Said's filters, Settings' tabs), `Change` / `Segs` (the change figure), `placeCall`, `usePlace`, `useDesk`, `useHome` |
+| `src/types.ts` | what Home's answer is (`deskweb.Model.home()`) |
+| `src/bridge.ts` | the one road to Python (DeskIT's own channel) |
+| `src/places/<place>.tsx`, `.css` | one place: Home, Corrections, Said, Keys, Settings |
+| `desk_<place>.py` | that place's Python (Home's is `deskweb.Model`) |
 
-Need something in a shared file? Keep it in your own file (a glyph, a
-type, a small piece), say so in your report, and it moves to the kit at
-the merge. No session edits another's files.
+A piece two places would copy goes in the kit; a piece one place draws
+stays in that place's file. A new glyph is a name in `IC`.
 
 **A page** exports `default function <Place>Place({ sub }: { sub: string })`
 and draws under one root, `<div className="place-<place>">`. Its route is
@@ -74,8 +76,8 @@ sub `privacy`). From `../kit`:
 - `placeCall<T>("said", "act", {do, arg})` → a button; an answer
   `{ok: false, error}` rejects with `error` as the message.
 - `useDesk()` → `say(note)` (the toast), `go(place, sub?)`, and `act()`
-  for the desk's own buttons (`"old"` opens the Tk desk at a place).
-- `IC`, `Caps`, `Segs`, `Away`.
+  for the desk's own buttons (Home's verbs and the bar's).
+- `IC`, `Caps`, `Switch`, `Seg`, `Change`, `Segs`.
 
 **Its CSS** is one stylesheet with every other place's: every selector in
 `<place>.css` starts with `.place-<place>`, and a class a place puts on
@@ -90,7 +92,7 @@ does a button; both answer a dict with `"ok"`, `{"ok": False, "error":
 words}` to refuse. Everything that comes from the page — `do`,
 `arg`, `read`'s args — is untrusted: allowlist `do`, and check every
 argument before it reaches a file path, a process, a URL, a pipe verb or
-a consent (`deskweb.Model._do`'s `consent.on` and `open_old_desk` are the
+a consent (`deskweb.Model._do`'s `consent.on` and `_notify_id` are the
 pattern); a failure answers with the exception's type, never its text. Calls arrive on threads of their own — hold a lock, as
 `deskweb.Model` does. Same sources and same words as the Tk desk's
 builder for that place (each stub's docstring names it).

@@ -57,17 +57,9 @@ body.settings-on .sky .r2{left:300px;top:520px;width:820px;height:44px;transform
 .place-settings .ctls.under{margin-top:14px}
 .place-settings .ctls.under:empty{display:none}
 
-/* switch: no accent. On = a soft lavender-grey track, a white knob that sits in it. Off = a hollow ring. */
-.place-settings .sw{width:42px;height:24px;border-radius:12px;position:relative;flex:none;background:var(--sw-off);box-shadow:inset 0 0 0 1.5px var(--sw-ring);
-  cursor:pointer;transition:background .18s ease, box-shadow .18s ease}
-.place-settings .sw i{position:absolute;top:5px;left:5px;width:14px;height:14px;border-radius:50%;background:var(--knob-off);
-  transition:left .18s cubic-bezier(.22,.61,.36,1), top .18s ease, width .18s ease, height .18s ease, background .18s ease}
-.place-settings .sw.on{background:linear-gradient(180deg, var(--sw-on), var(--sw-on));box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 -1px 2px var(--shade-3)}
-.place-settings .sw.on i{top:3px;left:21px;width:18px;height:18px;background:var(--knob);box-shadow:0 1px 3px var(--shade-1), inset 0 -1px 1px var(--line)}
-.place-settings .sw:hover{filter:brightness(1.12)}
-.place-settings .sw:focus-visible, .place-settings .menu:focus-visible, .place-settings .find:focus-visible,
+/* the switch is the kit's; a focused control here says so the way it does */
+.place-settings .menu:focus-visible, .place-settings .find:focus-visible,
 .place-settings .seg .item:focus-visible{outline:none;box-shadow:0 0 0 2px var(--iris-halo), inset 0 0 0 1px var(--iris-edge)}
-.place-settings .sw.busy{opacity:.85}
 
 /* menu, field */
 .place-settings .menu{height:36px;border-radius:18px;display:flex;align-items:center;gap:10px;padding:0 14px 0 16px;font-size:13px;color:var(--ink);cursor:pointer;

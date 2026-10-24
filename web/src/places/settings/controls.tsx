@@ -4,9 +4,10 @@
 // is the place again, drawn from the truth.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { GLYPHS, type Press, type Row } from "./model";
+import { IC, Switch } from "../../kit";
+import type { Press, Row } from "./model";
 
-const ic = (name: string) => GLYPHS[name] ?? "";
+const ic = (name: string) => IC[name] ?? "";
 
 /** The pressed key of a button: what it does and on what. */
 export function keyOf(doName: string, arg?: unknown): string {
@@ -35,20 +36,7 @@ export function Sw({ on, onFlip, busy, label }: {
   on: boolean; onFlip: (v: boolean) => Promise<void> | void; busy?: boolean; label: string;
 }) {
   const [shown, hold] = useHeld(on);
-  const flip = () => hold(!shown, onFlip(!shown));
-  return (
-    <span className={`sw${shown ? " on" : ""}${busy ? " busy" : ""}`} role="switch"
-          aria-checked={shown} aria-label={label} tabIndex={0}
-          onClick={flip}
-          onKeyDown={(e) => {
-            if (e.key === " " || e.key === "Enter") {
-              e.preventDefault();
-              flip();
-            }
-          }}>
-      <i />
-    </span>
-  );
+  return <Switch on={shown} busy={busy} label={label} onFlip={() => hold(!shown, onFlip(!shown))} />;
 }
 
 /** A menu: the pill with the value on it, and its choices on a pane of
@@ -123,7 +111,7 @@ export function Menu({ value, options, onPick, width, glyph, label }: {
            onKeyDown={(e) => { if (!open && (e.key === "Enter" || e.key === " " || e.key === "ArrowDown")) { e.preventDefault(); setOpen(true); } }}>
         {glyph ? <i className="ic lead">{ic(glyph)}</i> : null}
         <span className="v">{current ? current.label : held}</span>
-        <i className="ic">{ic("down")}</i>
+        <i className="ic">{ic("chevron")}</i>
       </div>
       {open ? createPortal(
         <div className="place-settings">

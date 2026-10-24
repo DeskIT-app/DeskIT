@@ -51306,14 +51306,17 @@ def test_web_desk_home_is_wired():
     with _web_desk(_WEB_STATUS) as (model, _folder, asked):
         api = deskweb.Api(model)
         home = api.home()
-        assert home["places"] == list(deskweb.PLACES) and "Home" in home["built"], home
+        assert home["places"] == list(deskweb.PLACES) and "built" not in home, home
         assert api.act("keys.later", 0)["home"]["bar"]["word"] == "Listening"
         assert asked and all(command == "status" for command, _args in asked), asked
         refused = api.place("home")
         assert refused["ok"] is False and "not a desk place" in refused["error"], refused
-    assert "home" not in deskweb.PLACES_MOD and "Home" in deskweb.BUILT
+    assert "home" not in deskweb.PLACES_MOD and not hasattr(deskweb, "BUILT")
     page = (REPO / "web" / "src" / "places" / "home.tsx").read_text("utf-8")
     assert "export function Landing()" in page
+    # the report's switch starts ON (the owner, 2026-10-24, the approved
+    # picture) and is never sent as on when there is nothing to attach
+    assert "useState(true)" in page and "const attach = attachOn && !!view.attach;" in page
     app = (REPO / "web" / "src" / "app.tsx").read_text("utf-8")
     assert 'import HomePlace, { Landing } from "./places/home";' in app
 
@@ -51323,10 +51326,12 @@ def test_the_web_desk_trusts_no_argument_from_the_page():
     with it. consent.on grants only a gate this desk is asking about again
     (privacy.stale, not waved away with Not now) — never another gate,
     which opens only through its own card, and never on an argument that
-    is not a plain name; a notification's id is a whole number or the
-    press is refused, because the app reads a malformed id as every card;
-    the old desk opens only at a place on the bar; and a press that fails
-    says so with the exception's type, never its text (a path, a
+    is not a plain name, and Not now is kept only for a gate that is
+    asking (the page cannot grow that set); a notification's id is a
+    whole number or the press is refused, because the app reads a
+    malformed id as every card; every place is drawn here, so there is no
+    door to the old desk left for the page to name; and a press that
+    fails says so with the exception's type, never its text (a path, a
     message)."""
     import deskweb
     import notify as notify_mod
@@ -51337,8 +51342,12 @@ def test_the_web_desk_trusts_no_argument_from_the_page():
         for arg in ("cloud_audio", "account", ["cloud_text"], {"k": 1}, None, "x" * 5000):
             note = model.act("consent.on", arg)["note"]
             assert note == "that consent is not waiting for an answer", (arg, note)
+        for arg in ("cloud_audio", ["x"], "y" * 5000, None):
+            model.act("consent.later", arg)
+        assert model._consent_later == set(), model._consent_later
         model.act("consent.later", "cloud_text")
-        assert model.act("consent.on", "cloud_text")["note"]             == "that consent is not waiting for an answer"
+        assert model.act("consent.on", "cloud_text")["note"] \
+            == "that consent is not waiting for an answer"
         assert granted == []
         model._consent_later.clear()
         assert model.act("consent.on", "cloud_text")["note"] == "turned on"
@@ -51354,10 +51363,13 @@ def test_the_web_desk_trusts_no_argument_from_the_page():
         model.act("notify.open", "8")
         assert [a for c, a in asked if c == "notify"] == [{"do": "dismiss", "id": 7},
                                                          {"do": "open", "id": 8}], asked
-    with _patched(deskweb.launch, "spawn", lambda args: spawned.append(args) or True):
-        for place in ("Said", "Nowhere", "--config=x", ["Keys"], None):
-            deskweb.open_old_desk(place if isinstance(place, str) else str(place))
-    assert [a[1:] for a in spawned] == [["--tk", "--place", "Said"]] + [["--tk"]] * 4, spawned
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked), \
+            _patched(deskweb.launch, "spawn", lambda args: spawned.append(args) or True):
+        assert model.act("old", "Said")["note"] == "'old' is not a desk action"
+        for later in ("inf", float("nan"), "-inf"):
+            model.act("keys.later", later)
+        assert model._needs_key_later == 0.0, model._needs_key_later
+    assert spawned == [] and not hasattr(deskweb, "open_old_desk"), spawned
 
     def refused(self, ids=None):
         raise PermissionError(13, "denied", r"C:\Users\someone\secret.json")
@@ -52174,7 +52186,7 @@ def test_the_web_desk_corrections_page_is_the_tk_place():
     pressed = set(re.findall(r'act\("(\w+)"', page)) | set(re.findall(r'"(edit|learn)"', page))
     assert pressed == {"forget", "edit", "learn", "use"}, pressed
     assert pressed <= set(dc.ACTS)
-    assert 'import { Caps, IC, Segs, placeCall, useDesk, usePlace } from "../kit";' in page
+    assert 'import { Caps, IC, Segs, Switch, placeCall, useDesk, usePlace } from "../kit";' in page
     assert "<Segs segs={p.segs} rtl={p.rtl} />" in page
     for banned in ("dangerouslySetInnerHTML", "innerHTML", "eval(", "new Function"):
         assert banned not in page, banned
@@ -52823,12 +52835,10 @@ def test_web_desk_keys_names_a_key_the_tk_dialogs_way():
 def _keys_place(status, answers=None):
     """A desk_keys.Place over a pipe that answers `status` with `status`
     (None: nothing running) and every other verb from `answers` (a reply
-    or a function of the verb's args; ok otherwise), recording each; its
-    menu-mode watcher counts instead of looking. Returns (place, asked,
-    menu calls)."""
+    or a function of the verb's args; ok otherwise), recording each.
+    Returns (place, asked)."""
     import desk_keys
     asked: list = []
-    menus: list = []
 
     def send(command, timeout_ms=2000, **args):
         asked.append((command, args))
@@ -52837,9 +52847,7 @@ def _keys_place(status, answers=None):
         answer = (answers or {}).get(command, {"ok": True})
         return answer(**args) if callable(answer) else answer
 
-    place = desk_keys.Place(send)
-    place._menu_out = lambda: menus.append(1) or 0
-    return place, asked, menus
+    return desk_keys.Place(send), asked
 
 
 def test_web_desk_keys_listens_paused_and_always_resumes():
@@ -52861,9 +52869,9 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
         return [c for c, _a in asked if c != "status"]
 
     running = dict(_WEB_STATUS, keys={"hotkey": "right ctrl", "translate_hotkey": "f8"})
-    with _patched(desk_keys, "GRACE_S", 0.05), _patched(desk_keys, "WATCH_S", 0.01):
+    with _patched(desk_keys, "WATCH_S", 0.01):
         # a key: paused, then resumed BEFORE the rebind, and the cap it landed on
-        place, asked, menus = _keys_place(running, {"rebind": lambda field, key: {
+        place, asked = _keys_place(running, {"rebind": lambda field, key: {
             "ok": True, "message": f'"Dictate (hold)" is now {key}'}})
         got = place.act("capture.start", "hotkey")
         assert got["capture"] == {"field": "hotkey", "listening": "listening for dictate",
@@ -52875,9 +52883,8 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
         assert got["capture"] is None and got["chosen"] == "ralt"
         assert got["note"] == '"Dictate (hold)" is now right alt'
         assert _until(lambda: place._watcher is None, 3)
-        assert menus, "the menu-mode watcher ran while it listened"
         # a key nobody can bind: still listening, still paused
-        place, asked, _m = _keys_place(running)
+        place, asked = _keys_place(running)
         place.act("capture.start", "translate_hotkey")
         got = place.act("capture.key", {"vk": 0xBC, "side": "", "mods": []})
         assert got["refused"] == desk_keys.WORDS["unusable"] and got["capture"]
@@ -52889,18 +52896,18 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
         assert verbs(asked) == ["pause", "resume"]   # not listening: nothing sent
         # a pause that failed listens for nothing, and resumes nothing
         for refused in ({"ok": False, "error": "locked"}, None):
-            place, asked, _m = _keys_place(running, {"pause": refused})
+            place, asked = _keys_place(running, {"pause": refused})
             got = place.act("capture.start", "hotkey")
             assert got["capture"] is None and got["note"] == desk_keys.PAUSE_FAILED
             place.act("capture.cancel")
             assert verbs(asked) == ["pause"], asked
         # paused already: his pause is his, and stays
-        place, asked, _m = _keys_place(dict(running, paused=True))
+        place, asked = _keys_place(dict(running, paused=True))
         place.act("capture.start", "hotkey")
         place.act("capture.cancel")
         assert verbs(asked) == []
         # Turn this key off: never the dictation key; any other, after the resume
-        place, asked, _m = _keys_place(running)
+        place, asked = _keys_place(running)
         place.act("capture.start", "hotkey")
         got = place.act("capture.off")
         assert got["note"] == desk_keys.HOTKEY_ON and got["capture"], got
@@ -52908,23 +52915,26 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
         place.act("capture.off")
         assert verbs(asked) == ["pause", "resume", "rebind"], asked
         assert [a for a in asked if a[0] != "status"][-1]             == ("rebind", {"field": "translate_hotkey", "key": ""})
-        # the app's own refusal is the sentence shown
-        place, asked, _m = _keys_place(running, {"rebind": {
-            "ok": False, "error": "lookup_hotkey must differ from translate_hotkey"}})
+        # the app's own refusal is the sentence shown — in the Keys
+        # screen's words, never the file's (config.plainly)
+        place, asked = _keys_place(running, {"rebind": {
+            "ok": False, "error": "lookup_hotkey must differ from translate_hotkey (both "
+                                  "are 'ctrl+f8') — one key cannot mean two things"}})
         place.act("capture.start", "translate_hotkey")
         got = place.act("capture.key", {"vk": 0x77, "side": "", "mods": ["ctrl"]})
-        assert got["note"] == "lookup_hotkey must differ from translate_hotkey"
+        assert got["note"] == ('"Look up (tap)" and "Translate (tap)" would both be '
+                               'Ctrl+F8 — one key cannot mean two things'), got["note"]
+        assert "_hotkey" not in got["note"]
         assert verbs(asked) == ["pause", "resume", "rebind"]
         # the window closed mid-listening: the exit hook resumes, once
-        place, asked, _m = _keys_place(running)
+        place, asked = _keys_place(running)
         place.act("capture.start", "hotkey")
         desk_keys._at_exit(weakref.ref(place))
         desk_keys._at_exit(weakref.ref(place))
         assert verbs(asked) == ["pause", "resume"]
     # a page gone quiet: the lease runs out and the app is resumed
-    with _patched(desk_keys, "LEASE_S", 0.3), _patched(desk_keys, "WATCH_S", 0.01), \
-            _patched(desk_keys, "GRACE_S", 0.05):
-        place, asked, _m = _keys_place(running)
+    with _patched(desk_keys, "LEASE_S", 0.3), _patched(desk_keys, "WATCH_S", 0.01):
+        place, asked = _keys_place(running)
         place.act("capture.start", "hotkey")
         for _ in range(6):                         # renewed: it keeps listening
             time.sleep(0.1)
@@ -52938,9 +52948,8 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
     saved: list = []
     with _patched(config_mod, "load_layered", lambda *a, **k: base), \
             _patched(config_mod, "save", lambda updates, **k: saved.append(updates)), \
-            _patched(singleton, "is_running", lambda *a, **k: False), \
-            _patched(desk_keys, "GRACE_S", 0.05):
-        place, asked, _m = _keys_place(None)
+            _patched(singleton, "is_running", lambda *a, **k: False):
+        place, asked = _keys_place(None)
         place.act("capture.start", "capture_hotkey")
         got = place.act("capture.key", {"vk": 0x77, "side": "", "mods": ["ctrl", "shift"]})
         assert saved == [{"capture.capture_hotkey": "ctrl+shift+f8"}], saved
@@ -52953,26 +52962,24 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
     with _patched(config_mod, "load_layered", lambda *a, **k: base), \
             _patched(config_mod, "save", lambda *a, **k: (_ for _ in ()).throw(
                 OSError("C:\\Users\\secret\\settings.toml is locked"))), \
-            _patched(singleton, "is_running", lambda *a, **k: False), \
-            _patched(desk_keys, "GRACE_S", 0.05):
-        place, _asked, _m = _keys_place(None)
+            _patched(singleton, "is_running", lambda *a, **k: False):
+        place, _asked = _keys_place(None)
         place.act("capture.start", "record_hotkey")
         got = place.act("capture.key", {"vk": 0x76, "mods": ["ctrl"]})
         assert got["note"] == "could not save that (OSError)", got
     # an app that is there and does not answer: nothing to pause, so no
     # listening — its hook may be live; a starting one that answers is paused
     with _patched(singleton, "is_running", lambda *a, **k: True):
-        place, asked, _m = _keys_place(None)
+        place, asked = _keys_place(None)
         got = place.act("capture.start", "hotkey")
         assert got["capture"] is None and got["note"] == desk_keys.PAUSE_FAILED
         assert verbs(asked) == []
-    with _patched(desk_keys, "GRACE_S", 0.05):
-        place, asked, _m = _keys_place(dict(running, stage="starting"))
-        assert place.act("capture.start", "hotkey")["capture"]
-        place.act("capture.cancel")
-        assert verbs(asked) == ["pause", "resume"]
+    place, asked = _keys_place(dict(running, stage="starting"))
+    assert place.act("capture.start", "hotkey")["capture"]
+    place.act("capture.cancel")
+    assert verbs(asked) == ["pause", "resume"]
     # what the page names is checked before the pipe hears of it
-    place, asked, _m = _keys_place(running)
+    place, asked = _keys_place(running)
     for bad in ("../x", 5, None, "hotkey; quit", "HOTKEY"):
         got = place.act("capture.start", bad)
         assert got["capture"] is None and got["note"] == "that is not a key this place changes"
@@ -52981,22 +52988,56 @@ def test_web_desk_keys_listens_paused_and_always_resumes():
     assert verbs(asked) == []
 
 
-def test_web_desk_keys_ends_the_menu_mode_of_its_own_window_only():
-    """A bare Alt, a bare F10 and Ctrl+F10 drop the desk's WinForms form
-    into the system-menu mode (measured on the hidden desktop: the page
-    sees the key, and no call is answered until the mode ends). menu_out
-    ends it with one Esc to the window owning the menu — and only for a
-    window of THIS process, through a private user32 (AGENTS: argtypes on
-    ctypes.windll change them for every module). Nothing here is in
-    menu mode, so it ends nothing."""
-    import desk_keys
+def test_web_desk_window_never_drops_into_the_menu_mode():
+    """A bare Alt, a bare F10 and Ctrl+F10 (his ask-the-screen key) used to
+    drop the web desk's form into the system-menu mode: the page saw the
+    key, no bridge call was answered until the mode ended, and the next key
+    went to the menu (the Keys session, measured hidden, 2026-10-24).
+    webdesk.MenuGuard swallows WM_SYSCOMMAND SC_KEYMENU with no character
+    on the form itself — on a real window here, invisible, never shown:
+    Alt+Space's (lParam ' ') is the window menu and is left to Windows,
+    every other message passes through, and the subclass goes with the
+    window. A private comctl32, never ctypes.windll (AGENTS.md)."""
+    import ctypes
+    from ctypes import wintypes
 
-    assert desk_keys.menu_out() == 0
-    src = (REPO / "desk_keys.py").read_text("utf-8")
-    assert "ctypes.windll" not in src and 'ctypes.WinDLL("user32"' in src
-    body = src[src.index("def menu_out("):]
-    assert body.index("os.getpid()") < body.index("GUI_INMENUMODE") \
-        < body.index("owner.value != pid") < body.index("PostMessageW")
+    import webdesk
+
+    u = ctypes.WinDLL("user32")
+    u.CreateWindowExW.restype = wintypes.HWND
+    u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                  wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                  ctypes.c_int, wintypes.HWND, wintypes.HMENU,
+                                  wintypes.HINSTANCE, wintypes.LPVOID]
+    u.SendMessageW.restype = ctypes.c_ssize_t
+    u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    u.DestroyWindow.argtypes = [wintypes.HWND]
+    hwnd = u.CreateWindowExW(0, "STATIC", "menu guard", 0, 0, 0, 10, 10,
+                             None, None, None, None)
+    assert hwnd, "no window to guard"
+    try:
+        guard = webdesk.MenuGuard(int(hwnd))
+        g = webdesk.MenuGuard
+        assert u.SendMessageW(hwnd, g.WM_SYSCOMMAND, g.SC_KEYMENU, 0) == 0
+        assert u.SendMessageW(hwnd, g.WM_SYSCOMMAND, g.SC_KEYMENU | 0x2, 0) == 0
+        assert guard.swallowed == 2, guard.swallowed
+        buf = ctypes.create_unicode_buffer(32)
+        assert u.SendMessageW(hwnd, 0x000D, 32, ctypes.addressof(buf)) == 10   # WM_GETTEXT
+        assert buf.value == "menu guard", "a message the guard is not for did not pass"
+        assert guard.swallowed == 2
+    finally:
+        assert u.DestroyWindow(hwnd)
+    src = (REPO / "webdesk.py").read_text("utf-8")
+    body = src[src.index("class MenuGuard"):src.index("# ------------------------------------------------------------ pre-check")]
+    assert "ctypes.windll" not in body and 'ctypes.WinDLL("comctl32")' in body
+    assert "and not lparam" in body, "Alt+Space must still open the window menu"
+    assert "RemoveWindowSubclass" in body and "WM_NCDESTROY" in body
+    run = src[src.index("class DeskEdgeChrome"):]
+    assert "self._menu_guard = MenuGuard(int(form.Handle.ToInt64()))" in run, \
+        "the form is not guarded, or the guard is not kept for the window's life"
+    keys_src = (REPO / "desk_keys.py").read_text("utf-8")
+    assert "menu_out" not in keys_src and "GUI_INMENUMODE" not in keys_src, \
+        "the Keys place's own watcher is back beside the shell's guard"
 
 
 def test_web_desk_keys_page_listens_the_tk_dialogs_way():
@@ -53057,6 +53098,7 @@ def _web_settings(status=_WEB_STATUS, running=True):
     import autostart
     import cues as cues_mod
     import desk_settings
+    import deskweb
     import launch
     import notify_hook
 
@@ -53074,6 +53116,8 @@ def _web_settings(status=_WEB_STATUS, running=True):
 
     with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
             _patched(injector, "set_text", lambda text: doors.append(("clipboard", text))), \
+            _patched(deskweb, "copy_text", lambda text, secret=False: doors.append(
+                ("clipboard", text) if not secret else ("secret clipboard", text)) or True), \
             _patched(cues_mod, "play", lambda kind: doors.append(("cue", kind))), \
             _patched(singleton, "request_quit", lambda *a, **k: doors.append(("quit",)) or True), \
             _patched(singleton, "is_running", lambda *a, **k: False), \
@@ -53228,7 +53272,8 @@ def test_web_desk_settings_writes_where_the_tk_desk_writes():
         place.act("quit", None)
         assert ("quit",) in doors and ("quit", {}) not in asked
         place.act("phone.copy", None)
-        assert ("clipboard", signed_in["phone"]) in doors
+        # the link carries its token: kept out of the clipboard's history
+        assert ("secret clipboard", signed_in["phone"]) in doors
         place.act("cue.play", "ready")
         assert ("cue", "ready") in doors
     with _web_settings(running=False) as (place, asked, doors, (s, t)):
@@ -53441,8 +53486,8 @@ def test_web_desk_settings_page_presses_only_what_python_does():
     kinds = set(re.findall(r'"kind": "(\w+)"', py))
     for kind in kinds:
         assert f'case "{kind}":' in cards, kind
-    model = (src / "settings" / "model.ts").read_text("utf-8")
-    table = {name for name, glyph in re.findall(r'(\w+): "(.)"', model)
+    kit = (src.parent / "kit.tsx").read_text("utf-8")       # the glyphs are the kit's
+    table = {name for name, glyph in re.findall(r'(\w+): "(.)"', kit)
              if 0xE000 <= ord(glyph) <= 0xF8FF}
     named = {g for _t, g in desk_settings.BLOCK_TITLES.values()} | set(desk_settings.GROUP_GLYPHS.values())
     assert table and named <= table, named - table

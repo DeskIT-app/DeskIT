@@ -1,18 +1,16 @@
-// The page's one way to the Python side.
+// The page's one way to the Python side: DeskIT's own channel.
 //
-// Two roads, and the page tries them in this order:
+// webdesk.py's DeskEdgeChrome reads every web message itself: a message
+// shaped {deskit: 1, id, fn, args} is ours, it is accepted only from our
+// virtual host's origin and only for a name on Api.CALLS, and the answer
+// comes back as a web message ({deskit: 1, id, ok, value | error}, a
+// failure as its exception's type) — no eval, no global object, nothing
+// injected into the page.
 //
-// 1. DeskIT's own channel. webdesk.py's DeskEdgeChrome reads every web
-//    message itself: a message shaped {deskit: 1, id, fn, args} is ours,
-//    it is accepted only from our virtual host's origin and only for a
-//    name on Api.CALLS, and the answer comes back as a web message
-//    ({deskit: 1, id, ok, value | error}) — no eval, no global object,
-//    nothing injected into the page.
-// 2. pywebview's js_api (window.pywebview.api.*), which pywebview builds
-//    by injecting a script that calls `new Function`. It comes up even
-//    under index.html's strict CSP (ExecuteScriptAsync is not governed by
-//    it — measured 2026-09-22), and webdesk passes its calls on only for
-//    a name in CALLS. It is kept as a probe; the desk's pages use call().
+// pywebview's own road (window.pywebview.api.*) is closed: the shell hands
+// pywebview no api (js_api=None) and drops every pywebview-shaped message,
+// because that road answered a call that raised with its message and the
+// whole traceback (the foundation's review, 2026-10-23).
 
 type Reply = { deskit: 1; id: number; ok: boolean; value?: unknown; error?: string };
 
@@ -24,7 +22,6 @@ interface WebViewChannel {
 declare global {
   interface Window {
     chrome?: { webview?: WebViewChannel };
-    pywebview?: { api?: Record<string, (...args: unknown[]) => Promise<unknown>> };
   }
 }
 
@@ -67,12 +64,6 @@ export function call<T = unknown>(fn: string, args: Record<string, unknown> = {}
     });
     ch.postMessage({ deskit: 1, id, fn, args });
   });
-}
-
-/** Whether pywebview managed to build window.pywebview.api under the CSP. */
-export function pywebviewApi(): string[] {
-  const api = window.pywebview?.api;
-  return api ? Object.keys(api).sort() : [];
 }
 
 export function inDesk(): boolean {
