@@ -4942,6 +4942,54 @@ print('ok')
     assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
 
 
+def test_the_real_dot_window_grows_while_it_alarms() -> None:
+    """The dead-microphone alarm, asked of the REAL window (2026-10-25):
+    it grows about the middle of the screen and comes home at its own
+    size. The first version passed every test without a window and the
+    real one died on its first resize — a GPU-backed Glass refuses to
+    resize — so the window is the thing asked here. A subprocess, for
+    the reason the test above gives."""
+    import subprocess
+    if not _glass_dot_here():
+        return
+    here = Path(__file__).resolve().parent
+    script = r"""
+import ctypes, time, overlay
+d = overlay.StatusDot(x=520, y=340)
+d.on_click = lambda: None
+d.start(); time.sleep(1.0)
+u = ctypes.WinDLL('user32')
+class R(ctypes.Structure):
+    _fields_ = [('l',ctypes.c_int),('t',ctypes.c_int),
+                ('r',ctypes.c_int),('b',ctypes.c_int)]
+def rect():
+    rc = R(); u.GetWindowRect(ctypes.c_void_p(d.hwnd), ctypes.byref(rc))
+    return rc.l, rc.t, rc.r - rc.l, rc.b - rc.t
+assert rect() == (520, 340, 38, 38), rect()
+d.alarm(True)
+time.sleep(overlay.DOT_ALARM_GROW_S + 0.5)
+assert d.hwnd, 'the dot window died while it alarmed'
+x, y, w, h = rect()
+assert w == h == 38 * overlay.DOT_ALARM_SCALE, ('it did not grow', w, h)
+work = overlay._work_area()
+mid = (work[0] + work[2] // 2, work[1] + work[3] // 2)
+assert abs(x + w // 2 - mid[0]) <= 1 and abs(y + h // 2 - mid[1]) <= 1, (
+    'not grown about the middle of the screen', (x, y, w, h), mid)
+assert d.rect == (x, y, x + w, y + h), ('the dot does not say where it is',
+                                        d.rect)
+d.alarm(False)
+time.sleep(overlay.DOT_ALARM_BACK_S + 0.4)
+assert rect() == (520, 340, 38, 38), ('not home at its own size', rect())
+d.stop()
+print('ok')
+"""
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=90)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "ok" in out.stdout, out.stdout
+
+
 def test_the_dot_still_moves_with_the_skin_folder_gone() -> None:
     """skin\\'s promise for the dot, and it is not only about pixels.
 
