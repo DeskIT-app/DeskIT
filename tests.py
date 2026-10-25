@@ -19543,8 +19543,8 @@ def test_every_skin_window_is_click_through_and_never_focusable() -> None:
     text = (Path(__file__).resolve().parent / "skin" / "dot.py").read_text(
         "utf-8")
     assert "if on_click is not None:\n        glass = Glass(*dot.placement(), " \
-           "hit=dot.hit" in text, "the dot takes the mouse unconditionally"
-    assert "else:\n        glass = Glass(*dot.placement())" in text
+           "gpu=False, hit=dot.hit" in text, "the dot takes the mouse unconditionally"
+    assert "else:\n        glass = Glass(*dot.placement(), gpu=False)" in text
     # SW_SHOWNOACTIVATE, not deiconify: AGENTS.md measured Tk taking the
     # foreground the instant it realises a window, and the fix there is to
     # take it BACK. A plain popup shown this way never takes it at all.
