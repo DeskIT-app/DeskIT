@@ -37,6 +37,7 @@ def local_kwargs(cfg, hotwords=None) -> dict:
                 beam_size=cfg.local.beam_size,
                 compute_type=cfg.local.compute_type,
                 cpu_threads=cfg.local.cpu_threads,
+                real_length=cfg.local.real_length,
                 boilerplate=boilerplate)
 
 

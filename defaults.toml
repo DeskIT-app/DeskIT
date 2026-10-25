@@ -1881,6 +1881,18 @@ compute_type = "auto"        # auto | float16 | int8_float16 | int8
 # library decides; the probe writes the core count on a machine without
 # a card.
 cpu_threads = 0
+# Encode the Hebrew model at the recording's own length instead of Whisper's
+# 30 s window. On a processor that window IS the wait: night10 int8 on 4
+# threads took 7.2 s for a 0-5 s clip whatever its length. ONLY FOR A MODEL
+# TRAINED FOR IT — untrained, night10 lost words (+23% / +37% words wrong on
+# fleurs_dev / reversim_dev); night14b, trained for it, scored 1,137 / 818
+# against night10's full-window 1,133 / 808 and decoded 0-5 s in 1.2 s, 5-10 s
+# in 1.75 s, 10-20 s in 3.1 s on the same 4 threads (2026-10-25,
+# notes\DeskIT-light-plan-2026-10-22.md §8). cpu = only when the model runs on
+# the processor; always = on a card too (35% less decode there, not decided
+# yet). The shipped model is not trained for it, hence off. The English
+# detector is never shortened.
+real_length = "off"           # off | cpu | always
 # The speech model comes up with the app (the owner, 2026-09-20: "no
 # problem with the model loading by itself — make that the default, and
 # a way to turn it off in Settings"). Off, the app starts without it —

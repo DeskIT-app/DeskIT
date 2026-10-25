@@ -306,6 +306,79 @@ def _looped(text: str) -> bool:
     return bool(_LOOP_RUN.search(text)) or _word_loop(text)
 
 
+# --- the real length (2026-10-25) -------------------------------------------
+# Whisper's encoder is always handed 30 s: faster-whisper's pad_or_trim pads
+# every window to 3,000 mel frames, so a 3 s sentence costs the encoder what
+# 30 s does. On a card that is hidden; on a processor it IS the wait — night10
+# int8 on 4 threads decoded a 0-5 s FLEURS clip in 7.18 s median whatever its
+# length. Handed only the clip's own frames, an untrained model loses words
+# (night10: +23% / +37% words wrong on fleurs_dev / reversim_dev), and a model
+# trained for it does not: night14b (FUTO's audio-context fine-tuning of
+# night10, DeskIT-training\runs\night14b) scored 1,137 / 818 against night10's
+# full-window 1,133 / 808, and decodes 0-5 s in 1.22 s, 5-10 s in 1.75 s,
+# 10-20 s in 3.07 s on the same 4 threads (notes\DeskIT-light-plan-2026-10-22.md
+# §8). So the window is shortened here, inside the one call that encodes it,
+# and everything around it — VAD, the guards, the loop retry, hotwords, word
+# timestamps, the rolling windows and _trim — is faster-whisper's own code,
+# untouched. ONLY FOR A MODEL TRAINED FOR IT: [local] real_length decides.
+
+#: Whisper's window, in mel frames (10 ms each).
+FULL_FRAMES = 3000
+#: Frames of silence after the clip's own, before rounding up to a hundred:
+#: what night14b was scored with (eval_dynctx.py, +100; the training drew
+#: +0-300).
+MARGIN_FRAMES = 100
+
+
+def real_length_frames(content: int) -> int:
+    """The window a clip of `content` frames is encoded in: its own frames
+    and the margin, rounded up to a hundred, never more than 30 s."""
+    return min(FULL_FRAMES,
+               int(math.ceil((max(0, content) + MARGIN_FRAMES) / 100.0)) * 100)
+
+
+def _content_frames(features) -> int:
+    """How many frames of a padded window are the recording's: everything
+    up to the last frame that is not all zeros. pad_or_trim pads with exact
+    zeros, and a real frame cannot be one — the extractor's floor is
+    (log10 mel + 4) / 4 clamped to 8 below the loudest, so silence is a
+    negative number, never 0.0 in every band."""
+    import numpy as np
+    active = np.any(features != 0, axis=-2)
+    while active.ndim > 1:
+        active = active.any(axis=0)
+    hits = np.flatnonzero(active)
+    return int(hits[-1]) + 1 if hits.size else 0
+
+
+def _at_real_length(encode):
+    """faster-whisper's WhisperModel.encode, handed each window cut back to
+    real_length_frames of its content instead of the 3,000 it was padded
+    to. A window of a full 30 s, or anything that is not a padded numpy
+    window, goes through as it came."""
+    import numpy as np
+
+    def encode_at_real_length(features):
+        if isinstance(features, np.ndarray) \
+                and features.shape[-1] == FULL_FRAMES:
+            want = real_length_frames(_content_frames(features))
+            if want < FULL_FRAMES:
+                features = features[..., :want]
+        return encode(features)
+
+    return encode_at_real_length
+
+
+#: [local] real_length: off | cpu | always.
+REAL_LENGTH_MODES = ("off", "cpu", "always")
+
+
+def real_length_on(mode: str, device: str) -> bool:
+    """Whether a model on `device` is decoded at the real length: "cpu"
+    only on the processor (the CPU tier), "always" on a card too."""
+    return mode == "always" or (mode == "cpu" and device == "cpu")
+
+
 class LocalWhisperTranscriber:
     name = "local"
 
@@ -323,6 +396,10 @@ class LocalWhisperTranscriber:
     #: Room for a game asked the detector to stand aside (english_aside).
     _english_aside = False
     _english_thread: threading.Thread | None = None
+    #: The Hebrew model is encoded at the clip's own length, not 30 s
+    #: (real_length_on). The English detector never is: it was not
+    #: trained for it.
+    at_real_length = False
     #: Where the seconds went, for the log and the wizard: the ivrit
     #: load, its warm-up, the English load and ITS warm-up — each alone,
     #: so a slow start can be read instead of guessed at.
@@ -497,14 +574,18 @@ class LocalWhisperTranscriber:
                  boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE,
                  hotwords=None, beam_size: int = 5,
                  compute_type: str = "auto", cpu_threads: int = 0,
-                 english_later: bool = False):
+                 english_later: bool = False, real_length: str = "off"):
         """`english_later`: load the English detector on a thread of its
         own AFTER this returns, so the app is usable the moment the
         Hebrew model is — measured 2026-09-19, the detector's load is
         4.8-6.6 s of a 13 s construction on the RTX, and every start
         paid it behind the splash. False (the default) loads it here,
         as always: the wizard's test sentence and --benchmark want the
-        whole backend before they time anything."""
+        whole backend before they time anything.
+
+        `real_length` ([local] real_length, REAL_LENGTH_MODES): the
+        Hebrew model encoded at the clip's own length on the device the
+        ladder settles on, when real_length_on says so."""
         self.timing = {}
         self.last_timing = {}
         self._english_thread = None
@@ -605,6 +686,11 @@ class LocalWhisperTranscriber:
             try:
                 candidate = WhisperModel(source, device=dev,
                                          compute_type=compute, **threads)
+                shorter = real_length_on(real_length, dev)
+                if shorter:
+                    # before the warm-up, so the probe runs the encode
+                    # every dictation will
+                    candidate.encode = _at_real_length(candidate.encode)
                 load_s = time.perf_counter() - started
                 # Constructing on "cuda" succeeds even when the CUDA math
                 # libraries are missing — the failure only surfaces on the
@@ -629,10 +715,12 @@ class LocalWhisperTranscriber:
             self._model = candidate
             self.device = dev
             self._compute = compute
+            self.at_real_length = shorter
             self.timing["load_s"] = round(load_s, 2)
             self.timing["warm_s"] = round(warm_s, 2)
-            log.info("local model %s ready on %s (%s) — load %.1f s, "
-                     "warm-up %.1f s", model, dev, compute, load_s, warm_s)
+            log.info("local model %s ready on %s (%s%s) — load %.1f s, "
+                     "warm-up %.1f s", model, dev, compute,
+                     ", real length" if shorter else "", load_s, warm_s)
             break
         else:
             raise TranscriptionError(

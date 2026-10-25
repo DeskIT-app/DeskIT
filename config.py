@@ -294,6 +294,10 @@ class LocalConfig:
     # always was); the probe writes int8_float16 for a small card (6.3)
     compute_type: str = "auto"
     cpu_threads: int = 0     # 0 = the library's own choice
+    # off | cpu | always: the Hebrew model encoded at the clip's own length
+    # instead of Whisper's 30 s (local_whisper, "the real length") — only
+    # for a model trained for it, night14b; an untrained one loses words
+    real_length: str = "off"
     # the model with the app (true), or Start on the desk loads it
     load_at_start: bool = True
     # Whisper transcribes only; Gemini also cleans. Without this, the local
@@ -1887,6 +1891,8 @@ def build(data: dict) -> Config:
             compute_type=str(local.get("compute_type",
                                        LocalConfig.compute_type)).strip().lower() or "auto",
             cpu_threads=max(0, int(local.get("cpu_threads", LocalConfig.cpu_threads))),
+            real_length=str(local.get("real_length",
+                                      LocalConfig.real_length)).strip().lower() or "off",
             drop_trailing_boilerplate=bool(local.get(
                 "drop_trailing_boilerplate",
                 LocalConfig.drop_trailing_boilerplate)),
@@ -2662,6 +2668,9 @@ def build(data: dict) -> Config:
     if cfg.local.device not in ("auto", "cuda", "cpu"):
         raise ConfigError('local.device must be "auto", "cuda" or "cpu", '
                           f"got {cfg.local.device!r}")
+    if cfg.local.real_length not in ("off", "cpu", "always"):
+        raise ConfigError('local.real_length must be "off", "cpu" or '
+                          f'"always", got {cfg.local.real_length!r}')
     if not cfg.local.language:
         raise ConfigError("local.language must be pinned (the ivrit-ai "
                           "fine-tune's language autodetect is unreliable)")
