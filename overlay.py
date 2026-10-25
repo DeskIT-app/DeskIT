@@ -573,7 +573,22 @@ DOT_CLICK_PX = 4
 # middle of the window he is typing in is not ignorable. The blink is a
 # hard on/off at DOT_ALARM_BLINK_HZ — distinct from "locked"'s slow
 # breath, which is the same red and means nothing is wrong.
+#
+# AND IT GROWS WHILE IT WAITS (2026-10-25, his words: "שהנקודה תגדל עם
+# הזמן... תלך גם למרכז ותגדל. ואחרי תחזור"). A 10 px disc in the
+# middle of the screen was still a 10 px disc: he had seen the alarm and
+# still read it as coming half a minute late. So the dot swells from its
+# own size to DOT_ALARM_SCALE times it over DOT_ALARM_GROW_S, fastest at
+# first — about 2.6 times by the time it arrives — and when sound comes,
+# or the recording ends, it shrinks and travels home over
+# DOT_ALARM_BACK_S instead of jumping there. Only the glass painter grows
+# (the window is resized while it travels); the Tk fallback travels at
+# its own size. The blink stays at 2.5 Hz, under the 3-a-second line the
+# photosensitivity guidance draws, and the disc at full size is 50 px.
 DOT_ALARM_TRAVEL_S = 1.4       # corner → centre, eased
+DOT_ALARM_GROW_S = 6.0         # its own size → DOT_ALARM_SCALE, easing out
+DOT_ALARM_SCALE = 5.0
+DOT_ALARM_BACK_S = 0.6         # centre → corner, when the alarm ends
 DOT_ALARM_BLINK_HZ = 2.5
 DOT_ALARM_FILL = "#ff2e1f"     # brighter than "recording", so the two read
 DOT_ALARM_DIM = "#5a1a14"      # apart even when the blink is on its "off"
@@ -581,16 +596,31 @@ DOT_ALARM_DIM = "#5a1a14"      # apart even when the blink is on its "off"
 
 def dot_alarm_spot(rest: tuple[int, int], box: int,
                    work: tuple[int, int, int, int],
-                   progress: float) -> tuple[int, int]:
-    """Where an alarming dot is, `progress` of the way (0..1, eased) from
-    its resting spot to the centre of the work area. Pure, and shared by
-    both painters so the two paths travel the same line."""
+                   progress: float, size: int | None = None
+                   ) -> tuple[int, int]:
+    """Where an alarming dot's window is, `progress` of the way (0..1,
+    eased) from its resting spot to the centre of the work area. `rest`
+    is the top-left of the `box`-sided window at rest; the answer is the
+    top-left of a window `size` on a side (`box` when not given) whose
+    CENTRE is on that line, so a dot that grows grows about its middle.
+    Pure, and shared by both painters so the two paths travel the same
+    line."""
     k = max(0.0, min(1.0, float(progress)))
     k = k * k * (3.0 - 2.0 * k)                 # smoothstep
-    cx = (work[0] + work[2]) / 2.0 - box / 2.0
-    cy = (work[1] + work[3]) / 2.0 - box / 2.0
-    return (int(round(rest[0] + (cx - rest[0]) * k)),
-            int(round(rest[1] + (cy - rest[1]) * k)))
+    size = box if size is None else size
+    rx, ry = rest[0] + box / 2.0, rest[1] + box / 2.0
+    cx = (work[0] + work[2]) / 2.0
+    cy = (work[1] + work[3]) / 2.0
+    return (int(round(rx + (cx - rx) * k - size / 2.0)),
+            int(round(ry + (cy - ry) * k - size / 2.0)))
+
+
+def dot_alarm_scale(seconds: float) -> float:
+    """How many times its own size an alarming dot is, `seconds` into the
+    alarm: 1 at the start, DOT_ALARM_SCALE from DOT_ALARM_GROW_S on,
+    eased out so most of the growing happens while it travels."""
+    u = max(0.0, min(1.0, float(seconds) / DOT_ALARM_GROW_S))
+    return 1.0 + (DOT_ALARM_SCALE - 1.0) * (1.0 - (1.0 - u) ** 2)
 
 
 def _work_area():
@@ -914,6 +944,10 @@ class StatusDot:
         # alarm". One float, written from the PortAudio callback and read
         # by the painter's next frame — see alarm().
         self._alarm_since = 0.0
+        # An alarm that ended and a dot still on its way home: (when it
+        # ended, how far it had travelled, how big it was), or None. One
+        # tuple, swapped whole, for the same reason.
+        self._alarm_back: tuple[float, float, float] | None = None
         # "the position changed under you — go there". Set by placed()
         # and to_corner(); the painter clears it and moves the window.
         self._replace = threading.Event()
@@ -983,43 +1017,75 @@ class StatusDot:
 
     def alarm(self, on: bool) -> None:
         """Start or stop the alarm: red blink, travel to the centre of the
-        screen, back to the corner when it ends (DOT_ALARM_*).
+        screen growing as it goes, and shrink back to the corner when it
+        ends (DOT_ALARM_*).
 
         Safe from the PortAudio callback, which is where recorder.py
-        calls it from: one float written, nothing waited for. Idempotent
-        in both directions — a second `on` does not restart the travel,
-        and `off` with no alarm running is nothing.
+        calls it from: a float or a tuple written, nothing waited for.
+        Idempotent in both directions — a second `on` does not restart
+        the travel, and `off` with no alarm running is nothing.
         """
         if on:
             if not self._alarm_since:
+                self._alarm_back = None
                 self._alarm_since = time.monotonic()
         else:
+            since = self._alarm_since
+            if since:
+                now = time.monotonic()
+                self._alarm_back = (
+                    now, min(1.0, (now - since) / DOT_ALARM_TRAVEL_S),
+                    dot_alarm_scale(now - since))
             self._alarm_since = 0.0
 
     def alarming(self) -> float | None:
         """None when there is no alarm; otherwise how far along the travel
         is, 0..1 — a clock the painter reads, so the picture is a function
         of time and not of how many frames it happened to draw."""
-        if not self._alarm_since:
+        since = self._alarm_since
+        if not since:
             return None
-        return min(1.0, (time.monotonic() - self._alarm_since)
-                   / DOT_ALARM_TRAVEL_S)
+        return min(1.0, (time.monotonic() - since) / DOT_ALARM_TRAVEL_S)
+
+    def alarm_busy(self) -> bool:
+        """Whether the dot is anywhere but at rest: alarming, or still on
+        its way home from an alarm. The painters ask this before they ask
+        for a frame, so a dot at rest costs nothing."""
+        if self._alarm_since:
+            return True
+        back = self._alarm_back
+        return (back is not None
+                and time.monotonic() - back[0] < DOT_ALARM_BACK_S)
 
     def alarm_frame(self, rest: tuple[int, int], box: int,
                     work: tuple[int, int, int, int]
-                    ) -> tuple[tuple[int, int], str | None]:
-        """One frame of the dot's position and alarm colour: where the
-        window goes, and the fill to paint if the alarm is on (None when
-        it is not, and the state's own colour applies). The blink is
-        computed from the clock, so both painters blink in step with
-        each other and with themselves after a dropped frame."""
-        k = self.alarming()
-        if k is None:
-            return rest, None
-        at = dot_alarm_spot(rest, box, work, k)
-        phase = (time.monotonic() - self._alarm_since) * DOT_ALARM_BLINK_HZ
-        return at, (DOT_ALARM_FILL if int(phase * 2) % 2 == 0
+                    ) -> tuple[tuple[int, int], int, str | None]:
+        """One frame of the alarm: where the window goes, how big it is
+        (`box` at rest), and the fill to paint if the alarm is on (None
+        when it is not, and the state's own colour applies — on the way
+        home too). The blink and the size are computed from the clock, so
+        both painters blink in step with each other and with themselves
+        after a dropped frame."""
+        now = time.monotonic()
+        since = self._alarm_since
+        if since:
+            size = 2 * int(round(box * dot_alarm_scale(now - since) / 2.0))
+            k = min(1.0, (now - since) / DOT_ALARM_TRAVEL_S)
+            phase = (now - since) * DOT_ALARM_BLINK_HZ
+            return (dot_alarm_spot(rest, box, work, k, size), size,
+                    DOT_ALARM_FILL if int(phase * 2) % 2 == 0
                     else DOT_ALARM_DIM)
+        back = self._alarm_back
+        if back is None:
+            return rest, box, None
+        ended, k0, s0 = back
+        u = (now - ended) / DOT_ALARM_BACK_S
+        if u >= 1.0:
+            return rest, box, None
+        e = u * u * (3.0 - 2.0 * u)                 # smoothstep
+        size = 2 * int(round(box * (s0 + (1.0 - s0) * e) / 2.0))
+        return (dot_alarm_spot(rest, box, work, k0 * (1.0 - e), size), size,
+                None)
 
     def placed(self, x: int, y: int) -> None:
         """Remember where a drag left it, and write it down.
@@ -1256,17 +1322,19 @@ class StatusDot:
                 k = 0.55 + 0.45 * (0.5 + 0.5 * math.cos(state["phase"]))
                 fill = _mix(fill, _CHROMA, k)
             # The dead-microphone alarm: the window itself travels toward
-            # the middle of the work area and the fill blinks. Off, the
-            # window is put back where it rests — once, on the frame the
-            # alarm ends, which is what `alarm["was"]` remembers.
-            alarm_fill = None
-            if self.alarming() is not None or alarm["was"]:
-                at, alarm_fill = self.alarm_frame(where(), box, work)
+            # the middle of the work area and the fill blinks — at its own
+            # size here; only the glass painter grows. Off, the window goes
+            # back where it rests, and the frame after it gets there is
+            # one more move to the same place, which is what `alarm["was"]`
+            # remembers.
+            busy = self.alarm_busy()
+            if busy or alarm["was"]:
+                at, _size, alarm_fill = self.alarm_frame(where(), box, work)
                 root.geometry(f"+{at[0]}+{at[1]}")
                 self.rect = (at[0], at[1], at[0] + box, at[1] + box)
                 if alarm_fill is not None:
                     fill = alarm_fill
-            alarm["was"] = alarm_fill is not None
+            alarm["was"] = busy
             canvas.itemconfig(dot, fill=fill)
             # WHILE IT IS WAITING TO BE DRAGGED, the containing ring goes
             # white. The control window has hidden itself by then, so the

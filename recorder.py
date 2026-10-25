@@ -39,6 +39,18 @@ OVERFLOWED = "overflowed"
 # times the loudest floor and a fifth of the quietest speech.
 SILENT_PEAK = 0.02
 SILENT_AFTER_S = 10.0
+# ...AND A MUTED HEADSET IS NOT QUIET, IT IS ZERO, which can be told far
+# sooner. On 2026-10-25 four dictations went into the Arctis muted on its
+# earcup — 7.7, 1.7, 3.5 and 1.5 s, each shorter than SILENT_AFTER_S, so
+# none of them alarmed and each just pasted nothing — and the owner, who
+# had seen the alarm, said ten seconds felt like half a minute. Measured
+# that evening: the muted Arctis gave 0 non-zero samples of 72,000
+# through WASAPI and one converter step through MME, while the first two
+# seconds of every live recording in recent\ (41 of them) peaked at 471
+# steps or more. So nothing above DEAD_PEAK for DEAD_AFTER_S fires the
+# same on_silent, once, the same way.
+DEAD_PEAK = 2.0 / 32768.0
+DEAD_AFTER_S = 2.0
 
 # A DEAD STREAM, which is not a dead microphone. The alarm above counts
 # SAMPLES inside the PortAudio callback, so it can only fire while
@@ -553,9 +565,11 @@ class Recorder:
                 # The dead-microphone alarm, once; the all-clear, once.
                 # Decided on the sample count, not the clock, so a test
                 # can drive it by feeding buffers.
-                if (not self._silent_told and self._peak < SILENT_PEAK
-                        and self._samples >= SILENT_AFTER_S
-                        * self.sample_rate):
+                if not self._silent_told and (
+                        (self._peak < SILENT_PEAK and self._samples
+                         >= SILENT_AFTER_S * self.sample_rate)
+                        or (self._peak <= DEAD_PEAK and self._samples
+                            >= DEAD_AFTER_S * self.sample_rate)):
                     self._silent_told = True
                     notify = self.on_silent
                 elif (self._silent_told and not self._sound_told
