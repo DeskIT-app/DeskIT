@@ -218,6 +218,21 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night14 RESULT (2026-10-25) — night10 on the real length WORKS.** Cut on
+  the 24th at 01:59 by a Windows Update restart (step 7,450), run again on
+  the 25th in his 00:00-16:00 window: night14a = the surviving step-7,000
+  adapter, night14b = resumed to the end of the epoch (34,016 steps, loss
+  1.0 → 0.036; `train_acft.py --init-adapter --start-step`). Short window,
+  words wrong on fleurs_dev / reversim_dev: night14b **1,137 / 818** against
+  night10's full window 1,133 / 808 (+0.4% / +1.2%; untrained 1,389 / 1,110).
+  The app's standard full-window decode of night14b, six sets: 6,358 against
+  night10's 6,454 (−1.5%, inside the spread), English and speed the same.
+  CPU int8, 4 threads, 60 FLEURS dev clips, median: 0-5 s 1.22 s, 5-10 s
+  1.75, 10-20 s 3.07 (night10 full window 7.2 / 7.5 / 7.8; zipformer 0.15 /
+  0.22 / 0.38); on the GPU the short window is 35% faster (0.023 against
+  0.035 of the audio). So a CPU tier can keep night10's quality and English;
+  the app side (ct2 generate on a short window, as `eval_dynctx.py`) is not
+  built. night14b could also replace night10 on the GPU path as it is.
 - **night14 (armed for 2026-10-24 00:00-09:15, `night_teacher14.ps1`) — night10
   on the REAL length of a recording, his choice "both, in stages".** The
   lighter-app work with DeskIT - 1 (plan in notes\DeskIT-light-plan-2026-10-22.md)
