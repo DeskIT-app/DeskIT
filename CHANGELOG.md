@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.7
+
+A muted microphone is noticed in two seconds now, and the dot makes sure I see it. With my headset's microphone muted, the dot only warned me after ten seconds of silence, so four short dictations in a row typed nothing and I could not tell why; and when the warning did come, a small red dot in the middle of the screen was easy to miss. Now, when the microphone sends nothing at all — which is what a muted headset sends, and what a working microphone never does, even in a quiet room — the dot turns red after two seconds, moves to the middle of the screen and keeps growing there, up to five times its size. The moment my voice comes through, or the dictation ends, it shrinks back to its corner. A microphone that is on but hears nothing loud enough still gets the old ten seconds.
+
 ## 1.0.6
 
 DeskIT is on its way to the Microsoft Store. A copy from the Store is signed by Microsoft, so Windows will stop warning that it does not recognise the app — the warning everyone sees today on the first run of the installer from this page. This version changes nothing for a copy installed from here; it is the version the Store package is made from. The package is built from this release's own installer, so the Store copy is the same files as this one, file for file, plus a small launcher that starts it. Inside the Store package three things work the way Windows wants them to there: "Start with Windows" goes through Windows' own list of startup apps, Connect Claude Code goes through a command the package adds, and the app's windows sit under its tile in the Start menu. One difference a Store user should know before installing: Windows keeps a Store app's files in a folder of its own and removes them with the app, so uninstalling the Store copy removes what it has learned too — unless the sync with your account is on.
