@@ -36925,6 +36925,120 @@ def test_the_ladder_honours_the_number_format():
     assert config_mod.LocalConfig().compute_type == "auto" and config_mod.LocalConfig().cpu_threads == 0
 
 
+def test_the_real_length_cuts_the_padded_window_back_to_the_clip():
+    """local_whisper, the real length (2026-10-25): a window faster-whisper
+    padded to 3,000 frames reaches the encoder as its own frames + 100,
+    rounded up to a hundred — what night14b was scored with — and a full
+    window, or one that is not padded, goes through untouched. The zero
+    padding is found on the REAL extractor's output: a frame of silence is
+    never all zeros, so a quiet stretch inside a clip is never cut."""
+    import numpy as np
+    import transcribers.local_whisper as lw
+    from faster_whisper.audio import pad_or_trim
+    from faster_whisper.feature_extractor import FeatureExtractor
+
+    assert [lw.real_length_frames(n) for n in (0, 1, 100, 101, 437, 2899, 2900, 2999)] \
+        == [100, 200, 200, 300, 600, 3000, 3000, 3000]
+
+    extractor = FeatureExtractor(feature_size=128)
+    rate = 16000
+    t = np.arange(int(2.3 * rate)) / rate
+    tone = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    # a second of digital silence INSIDE the clip, and one at its end
+    clip = np.concatenate([tone, np.zeros(rate, np.float32), tone,
+                           np.zeros(rate, np.float32)])
+    for audio in (clip, np.zeros(rate, np.float32)):
+        feats = extractor(audio)
+        own = feats.shape[-1]
+        padded = pad_or_trim(feats)
+        assert padded.shape[-1] == 3000 and lw._content_frames(padded) == own
+        assert lw._content_frames(padded[None]) == own        # a batch of one
+
+    seen: list = []
+    encode = lw._at_real_length(lambda f: seen.append(f) or "encoded")
+    feats = pad_or_trim(extractor(clip))
+    assert encode(feats) == "encoded"
+    assert seen[-1].shape == (128, lw.real_length_frames(extractor(clip).shape[-1]))
+    assert not seen[-1][:, -100:].any()                      # the margin is silence
+    full = np.ones((128, 3000), np.float32)
+    encode(full)
+    assert seen[-1] is full                                   # 30 s of speech: as it came
+    short = np.ones((128, 500), np.float32)
+    encode(short)
+    assert seen[-1] is short                                  # never padded: as it came
+
+
+def test_the_real_length_is_the_cpu_tiers_and_never_the_english_models():
+    """[local] real_length: off (the default — the shipped model is not
+    trained for it) never shortens; cpu shortens the Hebrew model only on
+    the processor, whichever rung of the ladder got it there; always on a
+    card too. The English detector keeps Whisper's 30 s in every mode.
+    The key travels from the file through local_kwargs, and a word that is
+    not a mode is refused."""
+    import tempfile
+    import transcribers.local_whisper as lw
+    from transcribers import local_kwargs
+
+    class _FakeModel:
+        def __init__(self, model, device, compute_type, **kw):
+            self.device = device
+            if device == "cuda" and failing:
+                raise RuntimeError("no card here")
+
+        def encode(self, features):
+            return features
+
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+    def shortened(model) -> bool:
+        return "encode" in vars(model)
+
+    import faster_whisper
+    with _patched(faster_whisper, "WhisperModel", _FakeModel), \
+            _patched(lw, "_register_cuda_dlls", lambda: None):
+        failing = False
+        for mode, device, want in (("off", "cpu", False), ("cpu", "cpu", True),
+                                   ("cpu", "cuda", False), ("always", "cuda", True),
+                                   ("always", "cpu", True)):
+            t = lw.LocalWhisperTranscriber("m", "he", device=device, real_length=mode)
+            assert t.at_real_length is want and shortened(t._model) is want, (mode, device)
+            assert not shortened(t._load("e")), (mode, device)    # the English model
+        # a card that will not run lands on the processor: cpu mode follows it there
+        failing = True
+        t = lw.LocalWhisperTranscriber("m", "he", device="auto", real_length="cpu")
+        assert t.device == "cpu" and t.at_real_length and shortened(t._model)
+
+    assert config_mod.LocalConfig().real_length == "off"
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.toml"
+        p.write_text("backend = 'local'\n[local]\nreal_length = 'CPU'\n", "utf-8")
+        assert local_kwargs(config_mod.load(p))["real_length"] == "cpu"
+        p.write_text("backend = 'local'\n[local]\nreal_length = 'yes'\n", "utf-8")
+        try:
+            config_mod.load(p)
+        except config_mod.ConfigError as e:
+            assert "real_length" in str(e)
+        else:
+            raise AssertionError("expected ConfigError on real_length = 'yes'")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert local_kwargs(cfg)["real_length"] == "off"
+
+
+def test_faster_whisper_still_encodes_the_padded_window_through_self_encode():
+    """The real length rides on one line of faster-whisper 1.2.1: each
+    window is padded by pad_or_trim and then handed to self.encode, which
+    an instance attribute can stand in for. An upgrade that moves either
+    would leave the CPU tier at 30 s without a word — so it fails here."""
+    import inspect
+    from faster_whisper.transcribe import WhisperModel
+
+    source = inspect.getsource(WhisperModel.generate_segments)
+    pad = source.index("segment = pad_or_trim(segment)")
+    assert source.index("encoder_output = self.encode(segment)") > pad
+    assert "WhisperModel.encode(" not in inspect.getsource(WhisperModel)
+
+
 # ------------------------------------------- the load, timed and warmed
 #
 # 2026-09-19, the installed copy on the RTX: the wizard's sentence page said
