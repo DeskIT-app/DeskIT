@@ -67,8 +67,9 @@ import hotkey as hotkey_mod
 from hotkey import (HookThread, PTTStateMachine, parse_binding,
                     parse_chord, vk_for)
 from launch import open_dashboard
-from recorder import (EMPTY_NO_AUDIO, EMPTY_OVERFLOWED, Recorder,
-                      SILENT_AFTER_S, SILENT_PEAK)
+from recorder import (DEAD_AFTER_S, DEAD_PEAK, EMPTY_NO_AUDIO,
+                      EMPTY_OVERFLOWED, Recorder, SILENT_AFTER_S,
+                      SILENT_PEAK)
 from spool import Spool
 from transcribers import RateLimitError, TranscriptionError, get_transcriber
 from transcribers.base import ModelMissing, TooLongForCloud
@@ -4815,16 +4816,24 @@ class App:
 
     def _on_silent(self) -> None:  # PortAudio callback thread
         """Ten seconds in and the microphone has heard nothing above
-        recorder.SILENT_PEAK: a headset on mute, or unplugged. The dot
-        blinks red and slides to the middle of the screen — where he is
-        looking — and the recording goes on; the alarm is information,
-        not a decision (report 20260910-190110, in his words: "רק שתתריע
-        לי על זה שאני אדע"). Once per recording; the recorder sees to
-        that. Nothing here blocks: alarm() writes one float."""
+        recorder.SILENT_PEAK — or two seconds in and it has sent pure
+        zeros (recorder.DEAD_PEAK): a headset on mute, or unplugged. The
+        dot blinks red, slides to the middle of the screen — where he is
+        looking — and grows while it waits, and the recording goes on;
+        the alarm is information, not a decision (report 20260910-190110,
+        in his words: "רק שתתריע לי על זה שאני אדע"). Once per recording;
+        the recorder sees to that. Nothing here blocks: alarm() writes
+        one float."""
         self.dot.alarm(True)
-        log.warning("no sound for %.0f s into this recording (peak %.4f "
-                    "< %.2f) — is the microphone muted or unplugged?",
-                    SILENT_AFTER_S, self.recorder.peak(), SILENT_PEAK)
+        peak = self.recorder.peak()
+        if peak <= DEAD_PEAK:
+            log.warning("pure silence for %.0f s into this recording (peak "
+                        "%.5f) — is the microphone muted or unplugged?",
+                        DEAD_AFTER_S, peak)
+        else:
+            log.warning("no sound for %.0f s into this recording (peak %.4f "
+                        "< %.2f) — is the microphone muted or unplugged?",
+                        SILENT_AFTER_S, peak, SILENT_PEAK)
 
     def _on_sound(self) -> None:  # PortAudio callback thread
         """Sound arrived after the alarm: the dot goes back to its corner.
