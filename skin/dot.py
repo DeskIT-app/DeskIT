@@ -173,6 +173,10 @@ class Dot:
         # nothing here decides either.
         self.x, self.y = int(x), int(y)
         self.moving = False
+        # How many times BOX the window is: 1, except while the dead-
+        # microphone alarm grows it (overlay.dot_alarm_scale). `run` sets
+        # it; the picture and the button are both drawn at BOX and scaled.
+        self.scale = 1.0
         self.state = "ready"
         self._shown = "ready"
         self._blend = 1.0     # 0..1 across a state change, for a cross-fade
@@ -215,15 +219,27 @@ class Dot:
         that opens the shelf, which is the whole of "a drag must not fire
         the click".
         """
-        c = BOX / 2.0
-        if math.hypot(float(x) - c, float(y) - c) <= HIT_R:
+        c = BOX * self.scale / 2.0
+        if math.hypot(float(x) - c, float(y) - c) <= HIT_R * self.scale:
             return HTCAPTION if self.moving else HTCLIENT
         return HTTRANSPARENT
 
     def draw(self, canvas, clock_ms: float,
              alarm_fill: str | None = None) -> None:
-        skia = self._skia
         canvas.clear(0x00000000)
+        # Everything below is drawn at BOX and scaled with the window, so
+        # a grown dot is the same picture larger — the halo still reaches
+        # alpha 0 inside its edge.
+        canvas.save()
+        canvas.scale(self.scale, self.scale)
+        try:
+            self._draw(canvas, clock_ms, alarm_fill)
+        finally:
+            canvas.restore()
+
+    def _draw(self, canvas, clock_ms: float,
+              alarm_fill: str | None = None) -> None:
+        skia = self._skia
         cx = cy = BOX / 2.0
 
         self._blend = min(1.0, self._blend + 0.10)
@@ -380,7 +396,7 @@ def run(status_dot) -> None:
 
     placed_at = [0, 0]
     alarming = [False]
-    # (moving, x, y) of the frame last handed to the window, or None for
+    # (moving, x, y, width) of the frame last handed to the window, or None for
     # "draw the next one whatever it is" (see "A SETTLED DOT" below)
     drawn = [None]
 
@@ -531,17 +547,22 @@ def run(status_dot) -> None:
                 placed_at[0], placed_at[1] = at_x, at_y
                 status_dot.rect = (at_x, at_y, at_x + BOX, at_y + BOX)
             # The dead-microphone alarm travels the window toward the
-            # middle of the work area and blinks; the frame the alarm
-            # ends, the window goes back to where it rests (`alarming`
-            # remembers that there was one to put back).
+            # middle of the work area, grows it and blinks; when it ends
+            # the window shrinks home, and the frame after it gets there
+            # puts it at rest once more (`alarming` remembers there was
+            # one to put back).
             alarm_fill = None
-            if status_dot.alarming() is not None or alarming[0]:
+            busy = status_dot.alarm_busy()
+            if busy or alarming[0]:
                 rest_x, rest_y, _w, _h = dot.placement()
-                at, alarm_fill = status_dot.alarm_frame(
+                at, size, alarm_fill = status_dot.alarm_frame(
                     (rest_x, rest_y), BOX, work_area())
+                if size != glass.width:
+                    glass.resize(size, size)
+                    dot.scale = size / BOX
                 glass.move(at[0], at[1])
-                status_dot.rect = (at[0], at[1], at[0] + BOX, at[1] + BOX)
-            alarming[0] = alarm_fill is not None
+                status_dot.rect = (at[0], at[1], at[0] + size, at[1] + size)
+            alarming[0] = busy
             # A SETTLED DOT IS NOT PAINTED AGAIN. Ready and paused neither
             # breathe nor sweep, so once a cross-fade is over every frame
             # was the last one again — drawn, read back and handed to the
@@ -551,7 +572,8 @@ def run(status_dot) -> None:
             # app spent doing nothing. The window keeps what it was last
             # given, so a frame goes out only when the picture or the
             # place would change; the messages still turn over every tick.
-            shown = (dot.moving, glass.x, glass.y)
+            # the size too: a resized window is a blank one until drawn
+            shown = (dot.moving, glass.x, glass.y, glass.width)
             if dot.still(alarm_fill) and drawn[0] == shown:
                 glass.pump()
                 time.sleep(FRAME_S)

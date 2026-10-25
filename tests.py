@@ -3962,10 +3962,33 @@ def test_a_dead_microphone_is_told_once_and_the_all_clear_once() -> None:
     assert not r.silent()
 
     told.clear()
-    r.begin()                              # fully silent, short
+    r.begin()                              # quiet, short
     for _ in range(3):
-        r._callback(np.zeros(16000, dtype=np.int16), 16000, None, None)
+        r._callback(quiet, len(quiet), None, None)
     assert told == [] and r.silent(), "too short to alarm, still silent"
+
+    # A muted headset is not quiet, it is ZERO — and that is told after
+    # DEAD_AFTER_S (2026-10-25: four muted dictations, each under ten
+    # seconds, none of them alarmed). One converter step of dither, as
+    # MME hands a muted Arctis over, is still zero; three are a live room.
+    for buffer in (np.zeros(8000, dtype=np.int16),
+                   np.full(8000, 1, dtype=np.int16)):
+        told.clear()
+        r.begin()
+        for _ in range(3):                 # 1.5 s
+            r._callback(buffer, len(buffer), None, None)
+        assert told == [], "a second and a half of zeros: not yet"
+        r._callback(buffer, len(buffer), None, None)
+        assert told == ["silent"], told
+        r._callback(loud, len(loud), None, None)
+        assert told == ["silent", "sound"], told
+    told.clear()
+    r.begin()
+    hiss = np.full(8000, 3, dtype=np.int16)
+    for _ in range(8):                     # four seconds of a live floor
+        r._callback(hiss, len(hiss), None, None)
+    assert told == [], "a live microphone's floor is not a muted one"
+    assert rec.DEAD_AFTER_S < rec.SILENT_AFTER_S
 
 
 def test_the_dot_alarm_travels_to_the_centre_and_comes_back() -> None:
@@ -3980,22 +4003,44 @@ def test_the_dot_alarm_travels_to_the_centre_and_comes_back() -> None:
     assert rest[0] > half[0] > centre[0] and rest[1] > half[1] > centre[1]
 
     dot = overlay_mod.StatusDot.off()
-    assert dot.alarming() is None
-    assert dot.alarm_frame(rest, box, work) == (rest, None), "no alarm: rest"
+    assert dot.alarming() is None and not dot.alarm_busy()
+    assert dot.alarm_frame(rest, box, work) == (rest, box, None), "at rest"
     dot.alarm(True)
     since = dot._alarm_since
-    assert since > 0 and dot.alarming() is not None
+    assert since > 0 and dot.alarming() is not None and dot.alarm_busy()
     dot.alarm(True)
     assert dot._alarm_since == since, "a second alarm does not restart it"
-    at, fill = dot.alarm_frame(rest, box, work)
+    at, size, fill = dot.alarm_frame(rest, box, work)
     assert fill in (overlay_mod.DOT_ALARM_FILL, overlay_mod.DOT_ALARM_DIM)
-    dot._alarm_since = time.monotonic() - overlay_mod.DOT_ALARM_TRAVEL_S * 2
+    assert box <= size < box * 1.2, "it starts at its own size"
+    dot._alarm_since = time.monotonic() - overlay_mod.DOT_ALARM_GROW_S * 2
     assert dot.alarming() == 1.0
-    assert dot.alarm_frame(rest, box, work)[0] == centre, "arrived"
+    at, size, _fill = dot.alarm_frame(rest, box, work)
+    assert size == box * overlay_mod.DOT_ALARM_SCALE, size
+    # arrived, and grown about the centre: its middle is the screen's
+    assert (at[0] + size / 2, at[1] + size / 2) == (960, 540), (at, size)
     dot.alarm(False)
-    assert dot.alarming() is None
-    assert dot.alarm_frame(rest, box, work) == (rest, None), "back home"
+    assert dot.alarming() is None and dot.alarm_busy(), "on its way home"
+    at, size, fill = dot.alarm_frame(rest, box, work)
+    assert fill is None, "the way home is in the state's own colour"
+    assert box < size <= box * overlay_mod.DOT_ALARM_SCALE
+    ended, k0, s0 = dot._alarm_back
+    dot._alarm_back = (ended - overlay_mod.DOT_ALARM_BACK_S / 2, k0, s0)
+    half_at, half_size, _f = dot.alarm_frame(rest, box, work)
+    assert box < half_size < size and half_at[0] > at[0], (half_at, at)
+    dot._alarm_back = (ended - overlay_mod.DOT_ALARM_BACK_S, k0, s0)
+    assert not dot.alarm_busy()
+    assert dot.alarm_frame(rest, box, work) == (rest, box, None), "home"
     dot.alarm(False)                        # idempotent
+    assert not dot.alarm_busy()
+
+    # the growing, alone: its own size at the start, eased out, capped
+    scale = overlay_mod.dot_alarm_scale
+    assert scale(0.0) == 1.0
+    assert scale(overlay_mod.DOT_ALARM_GROW_S) == overlay_mod.DOT_ALARM_SCALE
+    assert scale(99.0) == overlay_mod.DOT_ALARM_SCALE
+    arrived = scale(overlay_mod.DOT_ALARM_TRAVEL_S)
+    assert 2.0 < arrived < 3.5, "most of it happens on the way"
 
 
 def test_real_config_has_a_reachable_latch_key() -> None:
@@ -5169,6 +5214,43 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
                 f"the {state} halo no longer reads at 14 px")
 
 
+def test_a_grown_dot_is_the_same_dot_larger() -> None:
+    """The dead-microphone alarm grows the dot's window up to
+    overlay.DOT_ALARM_SCALE times BOX (2026-10-25). The picture is drawn
+    at BOX and scaled, so the rule above still holds at every size —
+    alpha 0 along the whole border — the disc is that many times wider,
+    and the button grows with it."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        import skia
+        from skin import dot as skin_dot
+        from skin.glass import HTCLIENT, HTTRANSPARENT
+    except Exception:
+        return
+    import overlay as overlay_mod
+    B = skin_dot.BOX
+    for scale in (1.0, 2.6, overlay_mod.DOT_ALARM_SCALE):
+        side = 2 * int(round(B * scale / 2.0))
+        d = skin_dot.Dot()
+        d.scale = side / B
+        surface = skia.Surface(side, side)
+        for frame in range(6):
+            d.draw(surface.getCanvas(), frame * 22.0,
+                   overlay_mod.DOT_ALARM_FILL)
+        alpha = surface.makeImageSnapshot().toarray(
+            colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
+        border = [int(alpha[0].max()), int(alpha[side - 1].max()),
+                  int(alpha[:, 0].max()), int(alpha[:, side - 1].max())]
+        assert border == [0, 0, 0, 0], (scale, border)
+        mid = side // 2
+        disc = skin_dot.CORE / 2.0 * d.scale
+        assert alpha[mid, int(mid + disc * 0.5)] == 255, (scale, "the disc")
+        assert d.hit(mid, mid + disc) == HTCLIENT, scale
+        assert d.hit(0, 0) == HTTRANSPARENT, scale
+
+
 def test_a_settled_dot_is_not_painted_again() -> None:
     """The dot repainted itself 45 times a second whatever it showed: on
     the live app (2026-10-23) 8.5-10% of a core for its thread and 7-8%
@@ -5237,6 +5319,7 @@ def test_a_settled_dot_is_not_painted_again() -> None:
 
         def moving(self): return False
         def alarming(self): return None
+        def alarm_busy(self): return False
         def end_move(self): pass
 
     def painted() -> int:
