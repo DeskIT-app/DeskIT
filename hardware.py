@@ -73,6 +73,9 @@ DERIVED: dict[str, dict[str, object]] = {
         "local.beam_size": 2, "review.enabled": False, "study.enabled": False,
         # no English detector: 1.6 GB more RAM and a second full pass
         "local.english_model": "",
+        # NOT local.real_length: the model a stranger gets is not trained
+        # for it (night10 untrained: +23-37% words wrong); it goes beside
+        # a model that is, named by hand (night14b, 2026-10-25)
         # the repair pass off (config refuses max_wait_s = 0 and an empty
         # model name; "never" is its own switch), the small models named
         # for the day Ollama turns up
