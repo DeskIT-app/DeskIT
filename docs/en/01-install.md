@@ -63,11 +63,13 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
 
 What DeskIT downloads by itself on the first start, in full — the bar at the top of the
 first-run wizard, **Downloading app parts**, opens this table. Every file is checked against
-the SHA-256 DeskIT ships with; nothing is packed inside the installer.
+the SHA-256 DeskIT ships with; nothing is packed inside the installer. Every model comes from
+DeskIT's own release on GitHub ([models-1](https://github.com/DeskIT-app/DeskIT/releases/tag/models-1)),
+a copy of the model named below, credited in `THIRD-PARTY-NOTICES.txt`.
 
 | Part | What it is | Size | Licence |
 |---|---|---|---|
-| Hebrew speech | The Hebrew speech model, [ivrit-ai/whisper-large-v3-turbo-ct2](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) — without it there is no dictation | 1.62 GB | Apache-2.0 |
+| Hebrew speech | The Hebrew speech model, [ivrit-ai/whisper-large-v3-turbo-ct2](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) — without it there is no dictation. On a PC with no NVIDIA card, the same model trained further by DeskIT to hear a short sentence at its own length, so it answers in a second or two instead of seven | 1.62 GB | Apache-2.0 |
 | English detection | A second, general model, [deepdml/faster-whisper-large-v3-turbo-ct2](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2), that notices when you spoke English and transcribes it as English. Offered on an NVIDIA card with 6 GB of video memory | 1.62 GB | MIT |
 | Faster with your NVIDIA card | NVIDIA's own CUDA libraries (cuBLAS, cuDNN, NVRTC) from PyPI. Offered on an NVIDIA card with 4 GB and a driver from 545.84; without them the card runs like a CPU | 1.37 GB | [NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html), [cuDNN SLA](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/eula.html) |
 | Screen recording | PyAV with FFmpeg, for the record key, the photo key and the phone's audio | 28 MB | [PyAV (BSD-3)](https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt), [FFmpeg — this build is GPL: x264, x265](https://ffmpeg.org/legal.html) |

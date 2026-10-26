@@ -55,7 +55,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Source: https://github.com/openai/whisper
-Not shipped: the weights are downloaded by the user from Hugging Face.
+Not shipped: the weights of the three models below are downloaded at
+first run from DeskIT's own release (models-1), each file checked
+against the SHA-256 in models.lock.
 
 --------------------------------------------------------------------------------
 ivrit-ai/whisper-large-v3-turbo-ct2 — the Hebrew model
@@ -69,8 +71,10 @@ Model card: https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2
 Courtesy citation: Marmor, Y., Misgav, K., Lifshitz, Y. — "ivrit.ai: A
 Comprehensive Dataset of Hebrew Speech for AI Research and Development",
 arXiv:2307.08720.
-Not shipped: downloaded by the user at first run, at the commit pinned
-in models.lock, and verified by SHA-256.
+Not shipped: downloaded at first run from DeskIT's own release
+(https://github.com/DeskIT-app/DeskIT/releases/tag/models-1), an
+unmodified copy of the repository at commit 72ad623a pinned in
+models.lock, and verified by SHA-256.
 
 --------------------------------------------------------------------------------
 deepdml/faster-whisper-large-v3-turbo-ct2 — the English detector
@@ -78,6 +82,41 @@ deepdml/faster-whisper-large-v3-turbo-ct2 — the English detector
 Licence: MIT (the model card's licence tag); the MIT text is the one
 under Whisper above. Model card:
 https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2
+Not shipped: downloaded at first run, on a PC with an NVIDIA card, from
+DeskIT's own release (models-1), an unmodified copy of the repository
+at commit 4df90f75 pinned in models.lock, and verified by SHA-256.
+
+--------------------------------------------------------------------------------
+DeskIT-app/ivrit-turbo-real-length-ct2 — the Hebrew model on a PC without
+an NVIDIA card (a modified version of ivrit.ai's whisper-large-v3-turbo)
+--------------------------------------------------------------------------------
+Based on: ivrit-ai/whisper-large-v3-turbo, Copyright (c) ivrit.ai,
+Apache License 2.0 (the full text is the LICENSE file beside this one);
+itself a fine-tune of OpenAI's Whisper large-v3-turbo (MIT, above).
+Model card: https://huggingface.co/ivrit-ai/whisper-large-v3-turbo
+Changes (Apache-2.0 section 4(b)): modified by DeskIT (Yoav Shimron),
+October 2026 — trained further so that it can be encoded at a
+recording's own length instead of Whisper's 30-second window
+(audio-context fine-tuning, the method of FUTO's whisper-acft), one
+epoch with a LoRA adapter merged back into the weights, then converted
+for CTranslate2 (float16). The weights in models-1 are this modified
+version, not ivrit.ai's.
+Training data: ivrit.ai's crowd-transcribe-v5
+(https://huggingface.co/datasets/ivrit-ai/crowd-transcribe-v5) and
+knesset-committees (https://huggingface.co/datasets/ivrit-ai/knesset-committees),
+by ivrit.ai, under the ivrit.ai licence (v2, 2024-10-01):
+Creative Commons Attribution 4.0 International
+(https://creativecommons.org/licenses/by/4.0/) with ivrit.ai's terms
+that the data may be used only to train AI models or for academic
+research, and never for deep-fakes (https://www.ivrit.ai/en/the-license/).
+The datasets themselves are not distributed; the clips used were
+filtered and cut by DeskIT (knesset-committees: segments whose protocol
+text misses or adds at most one spoken word, joined into clips of up to
+28 s).
+Not shipped: downloaded at first run from DeskIT's own release
+(https://github.com/DeskIT-app/DeskIT/releases/tag/models-1) at the
+revision pinned in models.lock (night15-2026-10-26), and verified by
+SHA-256.
 Not shipped: an optional download, pinned in models.lock.
 
 --------------------------------------------------------------------------------

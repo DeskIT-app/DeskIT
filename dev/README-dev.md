@@ -4326,8 +4326,10 @@ for `מבשרים`, all of which the local model got right.
     **Pause** — a pause keeps the part and the next start continues it
     with a Range request (checked live against the Hub's CDN). Every
     file is hashed against `models.lock` (repo, pinned commit, sizes,
-    SHA-256 — `python models.py --lock` rewrites it from the Hub's own
-    metadata, `--verify REPO` hashes a folder) and only then is
+    SHA-256, and since 2026-10-26 each file's URL in DeskIT's own
+    release `models-1` — `dev\models_release.py lock` rewrites it from
+    the files, `upload` fills the release on merge day, `python
+    models.py --verify REPO` hashes a folder) and only then is
     `.complete` written. Declined or offline, the app still starts:
     every key that needs no model works, a dictation says so and keeps
     the recording in `pending\` for a later `--drain`. `main.py

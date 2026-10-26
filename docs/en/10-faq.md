@@ -23,12 +23,13 @@ turn Smart App Control off — Windows lets you do that once.
 Home shows the model's row with its button; a download resumes on the next start from where
 it stopped. If it never finishes, **Settings > Dictation > Delete and re-download** removes the
 partial folder — DeskIT never loads a partial model. A managed or filtered network may block
-huggingface.co; the **Network** place shows the refused host. This is the top issue of every
+github.com; the **Network** place shows the refused host. This is the top issue of every
 comparable app, which is why the download asks first, shows bytes, and resumes.
 
 **I have no NVIDIA card — does it work?**
-Yes, on the processor: transcription takes about as long as you spoke. Two ways to make it
-faster: a free Groq key with cloud transcription under **Settings > Privacy** (your audio
+Yes, on the processor, with a Hebrew model trained to hear a short sentence at its own length:
+a 5-second sentence is text in about a second, a 20-second one in about three. Two ways to make
+it faster still: a free Groq key with cloud transcription under **Settings > Privacy** (your audio
 leaves this PC to Groq under your key, and the consent card says so), or an NVIDIA card. AMD
 and Intel GPUs are planned.
 

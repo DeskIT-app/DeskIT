@@ -224,8 +224,12 @@ def _feed_url(channel: str) -> str | None:
     None when there is no release (a repository before its first tag)."""
     if channel == "beta":
         releases = _get_json(f"{API}?per_page=5")
+        # an app's pre-release is v-tagged; the speech models' release
+        # (models-1, models.RELEASE) is a pre-release too and never one
         candidates = [r for r in releases if isinstance(r, dict)
-                      and r.get("prerelease")] if isinstance(releases, list) else []
+                      and r.get("prerelease")
+                      and str(r.get("tag_name") or "").startswith("v")] \
+            if isinstance(releases, list) else []
         release = candidates[0] if candidates else None
     else:
         try:

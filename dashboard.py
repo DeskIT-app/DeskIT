@@ -3166,10 +3166,11 @@ class Dashboard:
             if "model" in parts:
                 model = "downloading"     # the row above says it; no second Download
         if not paths.PORTABLE and model in ("absent", "incomplete", "stale"):
-            size = ""
+            size, whence = "", "github.com"
             try:
                 e = models_mod.entry(config_mod.load_layered().local.model)
                 size = f" ({models_mod.human(e.bytes)})" if e else ""
+                whence = e.host if e else whence
             except Exception:             # noqa: BLE001
                 pass
             said = {"absent": f"The Hebrew model is not on this PC yet{size} — "
@@ -3182,7 +3183,7 @@ class Dashboard:
                 "at": now, "kind": "hardware", "mark": "engine",
                 "mark_colour": ui.AMBER, "eyebrow": "This computer",
                 "eyebrow_right": False, "text": said,
-                "note": "Downloaded once, from huggingface.co, into the app's folder.",
+                "note": f"Downloaded once, from {whence}, into the app's folder.",
                 "buttons": [("Download" if model == "absent" else "Continue", "gold",
                              lambda: self._hardware_step("--download-model"))],
             })

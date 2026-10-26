@@ -1891,7 +1891,11 @@ cpu_threads = 0
 # notes\DeskIT-light-plan-2026-10-22.md §8). cpu = only when the model runs on
 # the processor; always = on a card too (35% less decode there, not decided
 # yet). The shipped model is not trained for it, hence off. The English
-# detector is never shortened.
+# detector is never shortened. A PC without a card gets "cpu" from the probe
+# together with the model that IS trained for it — night15, ivrit.ai's turbo
+# trained for the real length on shippable data only: 7,368 words wrong on
+# six public sets against this model's 7,346 at 30 s, 1.07 / 1.66 / 2.89 s
+# for 0-5 / 5-10 / 10-20 s on 4 threads (hardware.CPU_MODEL, 2026-10-26).
 real_length = "off"           # off | cpu | always
 # The speech model comes up with the app (the owner, 2026-09-20: "no
 # problem with the model loading by itself — make that the default, and

@@ -37464,26 +37464,31 @@ class _Hub:
 
 def test_models_lock_is_the_shipped_list():
     """The lock beside the code names the two models defaults.toml
-    names, each at a full commit sha, each file one faster-whisper loads,
-    with a size and a 64-hex SHA-256; the size line says 1.62 GB from
-    huggingface.co and the folder before anything is fetched."""
+    names, each at a full commit sha, and the processor's model the cpu
+    tier names; each file one faster-whisper loads, with a size and a
+    64-hex SHA-256, fetched from DeskIT's own release; the size line says
+    1.62 GB from github.com and the folder before anything is fetched."""
+    import hardware
     import models
 
     lock = models.read_lock()
     defaults = config_mod.LocalConfig()
-    for repo in (defaults.model, defaults.english_model):
+    for repo in (defaults.model, defaults.english_model, hardware.CPU_MODEL):
         assert repo in lock, f"{repo} is not in models.lock"
         e = lock[repo]
-        assert re.fullmatch(r"[0-9a-f]{40}", e.revision), e.revision
+        if repo != hardware.CPU_MODEL:
+            assert re.fullmatch(r"[0-9a-f]{40}", e.revision), e.revision
         assert set(e.files) <= set(models.WANTED) and "model.bin" in e.files, list(e.files)
         for name, (size, sha) in e.files.items():
             assert size > 0 and re.fullmatch(r"[0-9a-f]{64}", sha), (name, size, sha)
         assert e.bytes == sum(s for s, _ in e.files.values()) > 1_600_000_000
         assert e.license in ("apache-2.0", "mit"), e.license
-        assert e.url("model.bin") == f"https://huggingface.co/{repo}/resolve/{e.revision}/model.bin"
+        assert e.url("model.bin") == (f"https://github.com/DeskIT-app/DeskIT/releases/download/"
+                                      f"models-1/{repo.replace('/', '.')}.model.bin")
+        assert e.host == "github.com" and e.credit, (e.host, e.credit)
     e = lock[defaults.model]
     line = models.size_line(e)
-    assert line.startswith("1.62 GB from huggingface.co into ") and line.endswith(
+    assert line.startswith("1.62 GB from github.com into ") and line.endswith(
         paths.short(paths.MODELS_DIR / "ivrit-ai--whisper-large-v3-turbo-ct2")), line
     assert paths.short(Path(os.environ.get("LOCALAPPDATA", r"C:\x")) / "DeskIT" / "models") \
         == r"%LOCALAPPDATA%\DeskIT\models"
@@ -37492,6 +37497,308 @@ def test_models_lock_is_the_shipped_list():
     assert models.human(2_710_337) == "3 MB" and models.human(1405) == "1.4 kB" and models.human(357) == "357 B"
     assert models.entry("nobody/nothing") is None
     assert models.read_lock(Path(tempfile.gettempdir()) / "no-such-models.lock") == {}
+
+
+def test_models_come_from_deskits_own_release():
+    """The owner, 2026-10-26: every model comes from our home. Every file
+    of the shipped lock is an asset of DeskIT's own release (models-1): a
+    URL under models.HOME, a name no other file of the release shares,
+    under GitHub's 2 GiB, and every entry carries its licence and its
+    credit — which THIRD-PARTY-NOTICES' hand-written half repeats, with
+    the two datasets the processor's model was trained on. The lock takes
+    no other URL: a foreign host, a look-alike path or a query drops the
+    entry. An entry with no URL is the Hub's, as before; at_home and the
+    write/read round trip keep every size, hash, revision and credit."""
+    import hashlib
+
+    import models
+
+    assert models.RELEASE == "models-1"
+    assert models.HOME == "https://github.com/DeskIT-app/DeskIT/releases/download/"
+    assert models.ASSET_MAX == 2 * 1024 ** 3
+    lock = models.read_lock()
+    names = []
+    notices = (REPO / "dev" / "notices-extra.txt").read_text("utf-8")
+    for repo, e in lock.items():
+        assert e.license and e.credit, repo
+        assert repo in notices, f"{repo} is not credited in dev/notices-extra.txt"
+        for name, (size, _sha) in e.files.items():
+            assert e.url(name) == f"{models.HOME}{models.RELEASE}/{models.asset_name(repo, name)}"
+            assert size < models.ASSET_MAX, (repo, name, size)
+            names.append(models.asset_name(repo, name))
+    assert len(names) == len(set(names)), "two files would share one asset name"
+    # GitHub renames an asset whose name it does not like, and the lock's
+    # URL for it would then 404: letters, digits, single - _ . only
+    assert all(models.asset_safe(n) for n in names), [n for n in names if not models.asset_safe(n)]
+    assert models.asset_safe("ivrit-ai.whisper-large-v3-turbo-ct2.preprocessor_config.json")
+    for bad in ("ivrit-ai--whisper.model.bin", "a b.bin", ".model.bin", "model.bin.",
+                "x/y.bin", "a..b", "מודל.bin"):
+        assert not models.asset_safe(bad), bad
+    for must in ("crowd-transcribe-v5", "knesset-committees", "Creative Commons Attribution 4.0",
+                 "Changes (Apache-2.0 section 4(b))", "models-1"):
+        assert must in notices, must
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    try:
+        body = b"weights"
+        files = {"model.bin": (len(body), hashlib.sha256(body).hexdigest())}
+        hub = models.Entry("org/hub-born", "a" * 40, files, "mit", credit="by org")
+        assert hub.url("model.bin") == f"https://huggingface.co/org/hub-born/resolve/{'a' * 40}/model.bin"
+        assert hub.host == "huggingface.co"
+        home = models.at_home(models.Entry("org/home-born", "b" * 40, files, "apache-2.0",
+                                           credit="made here"))
+        assert home.files == files and home.revision == "b" * 40 and home.credit == "made here"
+        assert home.url("model.bin") == models.HOME + "models-1/org.home-born.model.bin"
+        assert home.host == "github.com"
+        assert models.at_home(home, "models-2").url("model.bin").endswith(
+            "/models-2/org.home-born.model.bin")
+        refused = [models.Entry(f"org/bad-{i}", "c" * 40, files, "mit", {"model.bin": url})
+                   for i, url in enumerate((
+                       "https://evil.example.com/model.bin",
+                       "https://github.com/someone-else/DeskIT/releases/download/models-1/x",
+                       "http://github.com/DeskIT-app/DeskIT/releases/download/models-1/x",
+                       models.HOME + "models-1/../v1.0.6/DeskIT-Setup-1.0.6.exe",
+                       models.HOME + "models-1/x.model.bin?token=1"))]
+        path = tmp / "models.lock"
+        models.write_lock([hub, home, *refused], path)
+        raw = json.loads(path.read_text("utf-8"))["models"]
+        assert raw["org/home-born"]["credit"] == "made here"
+        assert raw["org/home-born"]["files"]["model.bin"]["url"] == home.url("model.bin")
+        assert "url" not in raw["org/hub-born"]["files"]["model.bin"]
+        back = models.read_lock(path)
+        assert set(back) == {"org/hub-born", "org/home-born"}, set(back)
+        assert back["org/home-born"] == home and back["org/hub-born"] == hub
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+class _Release:
+    """DeskIT's release as a model's download meets it: github.com answers
+    /releases/download/ with a 302 to a signed, short-lived link on
+    release-assets.githubusercontent.com (its query carries sp/sv/se/sig
+    — none of the names net.py refuses), and that host honours a Range.
+    `bodies` is what each asset holds; every request is kept."""
+
+    def __init__(self, bodies: dict[str, bytes]):
+        self.bodies = bodies
+        self.asked: list[tuple[str, dict]] = []
+
+    def __call__(self, method, url, headers, body, timeout_s):
+        self.asked.append((url, dict(headers)))
+        asset = url.split("?")[0].rsplit("/", 1)[-1]
+        if url.startswith("https://github.com/"):
+            return _FakeRaw(b"", status=302, headers={"Location": (
+                "https://release-assets.githubusercontent.com/github-production-release-asset/"
+                f"1/{asset}?sp=r&sv=2018-11-09&sr=b&se=2026-10-26T12%3A00%3A00Z&sig=abc")})
+        data = self.bodies[asset]
+        rng = headers.get("Range")
+        if rng:
+            start = int(rng.split("=")[1].rstrip("-"))
+            return _FakeRaw(data[start:], status=206,
+                            headers={"Content-Range": f"bytes {start}-{len(data) - 1}/{len(data)}"})
+        return _FakeRaw(data, status=200)
+
+
+def test_a_model_comes_down_from_the_release_and_is_used_only_when_it_matches():
+    """The same download as the Hub's, from DeskIT's release: the 302 to
+    GitHub's asset host followed by hand, a pause that keeps the part, the
+    rest asked for with a Range, every file hashed against the lock, then
+    .complete — every hop a row under model-download on github.com and
+    release-assets.githubusercontent.com, no token in any header. And an
+    asset that is not the lock's file — the right size, other bytes, a
+    release replaced under the app — is deleted and named, .complete is
+    never written, and the loader is never handed the folder."""
+    import hashlib
+
+    import models
+    import net as net_mod
+    from transcribers.base import ModelMissing
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    try:
+        big = bytes(range(256)) * 1200                      # 300 kB
+        bodies = {"config.json": b'{"model_type": "whisper"}', "model.bin": big}
+        files = {n: (len(b), hashlib.sha256(b).hexdigest()) for n, b in bodies.items()}
+        e = models.at_home(models.Entry("test-org/ours-ct2", "night-test", files, "apache-2.0",
+                                        credit="made here"))
+        models.write_lock([e], tmp / "models.lock")
+        release = _Release({models.asset_name(e.repo, n): b for n, b in bodies.items()})
+        cancel = threading.Event()
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
+                _patched(net_mod, "_connect", release), \
+                _patched(net_mod, "DOWNLOAD_CHUNK", 64 * 1024):
+            def pause_early(done, total):
+                if done >= len(bodies["config.json"]) + 64 * 1024:
+                    cancel.set()
+            try:
+                models.download(e, progress=pause_early, cancel=cancel)
+            except models.DownloadError as err:
+                assert err.reason == "cancelled", err
+            else:
+                raise AssertionError("the pause was not honoured")
+            assert models.state(e.repo) == "incomplete"
+            release.asked.clear()
+            assert models.download(e) == e.folder
+            ranged = [h for _u, h in release.asked if "Range" in h]
+            assert ranged and all(h["Range"] == f"bytes={64 * 1024}-" for h in ranged), release.asked
+            assert release.asked[0][0] == e.url("model.bin")
+            assert not any(k.lower() == "authorization" for _u, h in release.asked for k in h)
+            assert (e.folder / "model.bin").read_bytes() == big
+            assert json.loads((e.folder / models.COMPLETE).read_text("utf-8"))["revision"] == "night-test"
+            assert models.state(e.repo) == "ready" and models.source(e.repo) == str(e.folder)
+            rows = [r for r in net_mod.rows() if r.purpose == "model-download"]
+            assert {r.host for r in rows} >= {"github.com", "release-assets.githubusercontent.com"}, rows
+            assert {r.status for r in rows} >= {302, 206}, rows
+            # the release now serves other bytes at the same size
+            models.remove(e.repo)
+            release.bodies[models.asset_name(e.repo, "model.bin")] = bytes(reversed(big))
+            try:
+                models.download(e)
+            except models.VerifyError as err:
+                assert err.files == ("model.bin",), err.files
+            else:
+                raise AssertionError("a file that is not the lock's was kept")
+            assert not (e.folder / "model.bin").exists() and not (e.folder / models.COMPLETE).exists()
+            try:
+                models.source(e.repo)
+            except ModelMissing as err:
+                assert err.state == "incomplete", err.state
+            else:
+                raise AssertionError("the loader was handed a folder that failed its hash")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_cpu_tier_gets_the_model_trained_for_the_real_length():
+    """A PC that stays on the processor gets night15 — ivrit.ai's turbo
+    trained for the clip's own length (hardware.CPU_MODEL) — with
+    [local] real_length = "cpu", from the probe, into the machine layer.
+    The model is in the shipped lock (or the tier would name a model the
+    app may not download), and the card tiers name neither key. A PC whose
+    card is only waiting for NVIDIA's libraries keeps the card's model
+    from the start, so its first start does not fetch 1.6 GB it drops
+    minutes later; a pack that failed or that the person turned down is
+    not coming. A model the person named themselves takes the length with
+    it; a portable copy keeps the Hub's model; a tier that changes takes
+    both away."""
+    import hardware
+    import models
+    from transcribers import local_whisper as lw
+
+    cpu = hardware.DERIVED["cpu"]
+    assert cpu["local.model"] == hardware.CPU_MODEL and cpu["local.real_length"] == "cpu"
+    assert hardware.CPU_MODEL in models.read_lock(), "the cpu tier names a model the lock lacks"
+    for tier in ("gpu", "gpu-small"):
+        assert not set(hardware.PROCESSOR_ONLY) & set(hardware.DERIVED[tier]), tier
+    assert set(hardware.PROCESSOR_ONLY) <= hardware.DERIVED_KEYS
+    assert lw.real_length_on("cpu", "cpu") and not lw.real_length_on("cpu", "cuda")
+    default = config_mod.LocalConfig().model
+    no_card = _facts(cuda_devices=0, vram_mb=0, driver="", driver_ok=False, gpu_pack="missing")
+    coming = _facts(gpu_pack="missing")
+    assert hardware.card_coming(coming) and not hardware.card_coming(no_card)
+    assert not hardware.card_coming(_facts(gpu_pack="failed:cudnn"))
+    assert not hardware.card_coming(_facts(gpu_pack="missing", vram_mb=3900))
+    assert not hardware.card_coming(_facts(gpu_pack="missing", driver_ok=False))
+    assert not hardware.card_coming(None)
+
+    d, s, t = _layer_files()
+
+    def local():
+        return config_mod.load_layered(settings=s, state=t).local
+
+    def state() -> dict:
+        return json.loads(t.read_text("utf-8")) if t.exists() else {}
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+                _patched(paths, "DEVELOPER", False), _patched(paths, "PORTABLE", False):
+            written = hardware.apply("cpu", facts=no_card)
+            assert written["local.model"] == hardware.CPU_MODEL, written
+            assert local().model == hardware.CPU_MODEL and local().real_length == "cpu"
+            assert local().device == "cpu" and local().compute_type == "int8"
+            # a card that is coming: the card's model, the cpu tier otherwise
+            written = hardware.apply("cpu", facts=coming)
+            assert written["local.model"] is None and written["local.real_length"] is None
+            assert "local.model" not in state() and "local.real_length" not in state()
+            assert local().model == default and local().real_length == "off"
+            assert local().device == "cpu"
+            assert hardware.apply("cpu", facts=_facts(gpu_pack="failed:cudnn"))["local.model"] \
+                == hardware.CPU_MODEL
+            config_mod.save({"setup.offer_gpu_pack": False}, settings=s, state=t)
+            assert not hardware.card_coming(coming)
+            assert hardware.apply("cpu", facts=coming)["local.model"] == hardware.CPU_MODEL
+            config_mod.save({"setup.offer_gpu_pack": True}, settings=s, state=t)
+            assert hardware.card_coming(coming)
+            # the tier changes to a card: both keys go with the cpu tier
+            hardware.apply("cpu", facts=no_card)
+            hardware.apply("gpu", previous="cpu", facts=_facts(gpu_pack="ok"))
+            assert "local.model" not in state() and "local.real_length" not in state()
+            assert local().model == default and local().real_length == "off"
+            # a model of their own: never shortened by the tier
+            config_mod.save({"local.model": "someone/their-own-ct2"}, settings=s, state=t)
+            written = hardware.apply("cpu", previous="gpu", facts=no_card)
+            assert "local.model" not in written and written["local.real_length"] is None
+            assert local().model == "someone/their-own-ct2" and local().real_length == "off"
+            s.write_text("", "utf-8")
+            t.write_text("{}", "utf-8")
+            with _patched(paths, "PORTABLE", True):
+                hardware.apply("cpu", facts=no_card)
+                assert local().model == default and local().device == "cpu"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_pc_without_a_card_downloads_the_processors_model():
+    """downloads.wanted on an installed copy of the cpu tier: the Hebrew
+    part is the processor's model, from the lock, and no detector — and
+    with a card on its way it is the card's model, the one download."""
+    import downloads
+    import hardware
+    import models
+
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+                _patched(paths, "DEVELOPER", False), _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", d / "models"):
+            no_card = _facts(cuda_devices=0, vram_mb=0, driver="", driver_ok=False,
+                             gpu_pack="missing")
+            hardware.apply("cpu", facts=no_card)
+            cfg = config_mod.load_layered(settings=s, state=t)
+            out = downloads.wanted(cfg, no_card)
+            assert out["model"].repo == hardware.CPU_MODEL, out
+            assert out["model"] == models.entry(hardware.CPU_MODEL)
+            assert "detector" not in out and "pack" not in out, out
+            coming = _facts(gpu_pack="missing")
+            hardware.apply("cpu", facts=coming)
+            cfg = config_mod.load_layered(settings=s, state=t)
+            assert downloads.wanted(cfg, coming)["model"].repo == config_mod.LocalConfig().model
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_models_release_is_never_taken_for_an_app_release():
+    """models-1 is a pre-release that is never latest — and a pre-release
+    is what the beta update channel looks for, so the channel takes only a
+    v-tagged one; winget.yml and store.yml package only a v-tagged
+    release, whatever GitHub calls it."""
+    import updates
+
+    feed = "https://github.com/DeskIT-app/DeskIT/releases/download/v1.2.0-beta.1/latest.json"
+    releases = [
+        {"tag_name": "models-1", "prerelease": True,
+         "assets": [{"name": "latest.json", "browser_download_url": "https://github.com/x/latest.json"}]},
+        {"tag_name": "v1.2.0-beta.1", "prerelease": True,
+         "assets": [{"name": "latest.json", "browser_download_url": feed}]},
+    ]
+    with _patched(updates, "_get_json", lambda url: releases):
+        assert updates._feed_url("beta") == feed
+    with _patched(updates, "_get_json", lambda url: releases[:1]):
+        assert updates._feed_url("beta") is None
+    for name in ("winget.yml", "store.yml"):
+        yml = (REPO / ".github" / "workflows" / name).read_text("utf-8")
+        assert "startsWith(github.event.release.tag_name, 'v')" in yml, name
 
 
 def test_models_state_and_source_on_an_installed_copy():
@@ -37514,6 +37821,7 @@ def test_models_state_and_source_on_an_installed_copy():
                 models.source(e.repo)
             except ModelMissing as err:
                 assert err.state == "absent" and err.repo == e.repo
+                # an entry with no URLs is still the Hub's, said as such
                 assert "not downloaded yet" in str(err) and "12 B from huggingface.co" in str(err), str(err)
                 assert isinstance(err, TranscriptionError) and err.retry_after == float("inf")
             else:
