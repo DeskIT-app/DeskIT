@@ -10,11 +10,27 @@ installed copy the transcriber now only LOADS; this module is the one
 thing that fetches, and what it fetches is written down.
 
 `models.lock`, beside the code and shipped with it, names each repo the
-app may download: the pinned commit, every file with its size and
-SHA-256, the licence. The owner writes it (`python models.py --lock`)
-from the Hub's own metadata and the files; everyone else reads it. A
-revision that changes is a new lock in a new release, never a quiet
-re-download, and a repo that is not in it is not downloaded at all.
+app may download: the pinned commit, every file with its size, its
+SHA-256 and the one URL it comes from, the licence and the credit. The
+owner writes it (`dev\models_release.py lock`) from the files
+themselves; everyone else reads it. A revision that changes is a new
+lock in a new release, never a quiet re-download, and a repo that is not
+in it is not downloaded at all.
+
+WHERE A MODEL COMES FROM (the owner, 2026-10-26: "every model the app
+downloads should come from our home"). A file's URL in the lock is an
+asset of DeskIT's own GitHub release — `HOME` + `RELEASE` + an asset
+named for the repo's folder and the file (`asset_name`) — whatever the
+model's origin: ivrit.ai's model and the English detector are copies
+of their Hugging Face repositories at the commit pinned here, credited
+per their licences in the lock and in THIRD-PARTY-NOTICES.txt; the
+processor's model (`hardware.CPU_MODEL`, night15) was trained here and
+has no other home. An entry without URLs is still read the old way,
+from the Hub at its pinned commit — the same check, the same
+`.complete`. Either way the URL is only where the bytes are asked for:
+what makes a file usable is its size and SHA-256 matching the lock, and
+nothing is used before every file has. GitHub serves a release asset
+under 2 GiB (`ASSET_MAX`); a test holds every file of the lock to it.
 
 The download is `net.download()`, file by file — not huggingface_hub's
 `snapshot_download`, for one measured reason: hub 1.27 writes every
@@ -22,11 +38,13 @@ file to a temp name unique to the process and deletes it on any failure
 (`_download_to_tmp_and_move`, its PR #4228), so a 1.6 GB file that
 dropped at 90% started from zero at the next attempt, and the
 "resumable" D13 promised was not there to lean on. net.download() keeps
-`<name>.part`, asks the CDN for the rest with a Range header on the
-next attempt (checked live: `206 Partial Content` from the Hub's CDN,
-2026-09-17), follows the Hub's redirect by hand so every hop meets the
-allowlist and leaves a row in network.log under `model-download`, and
-never sends a token — the app has none and the repos need none.
+`<name>.part`, asks for the rest with a Range header on the next attempt
+(checked live: `206 Partial Content` from the Hub's CDN, 2026-09-17),
+follows the redirect by hand — github.com answers a release asset with
+one to release-assets.githubusercontent.com, the Hub with one to its
+CDN — so every hop meets the allowlist and leaves a row in network.log
+under `model-download`, and never sends a token — the app has none and
+neither home needs one.
 
 When every file is down, every file is hashed against the lock, and
 only then `.complete` is written with the revision inside. `source()`
@@ -73,6 +91,16 @@ log = logging.getLogger("app")
 
 PURPOSE = "model-download"
 HUB = "https://huggingface.co"
+#: DeskIT's own home for the models: assets of a release of the app's
+#: repository, which is public. Nothing but this prefix and the Hub's is
+#: accepted as a URL in the lock (read_lock).
+HOME = "https://github.com/DeskIT-app/DeskIT/releases/download/"
+#: The release that holds the models the lock names — a pre-release that
+#: is never "latest" (so the updater, winget.yml and store.yml never take
+#: it for an app release), made and filled by dev\models_release.py.
+RELEASE = "models-1"
+#: GitHub's limit on one release asset: under 2 GiB.
+ASSET_MAX = 2 * 1024 ** 3
 #: What faster-whisper loads from a model folder (its own allow list);
 #: the lock names exactly these, so nothing else is ever fetched.
 WANTED = ("config.json", "preprocessor_config.json", "model.bin",
@@ -110,6 +138,10 @@ class Entry:
     #: name -> (size, sha256), in the lock's order
     files: dict[str, tuple[int, str]] = field(default_factory=dict)
     license: str = ""
+    #: name -> the one URL that file is fetched from; empty = the Hub
+    urls: dict[str, str] = field(default_factory=dict)
+    #: who made it and on what, as its licence asks to be said
+    credit: str = ""
 
     @property
     def bytes(self) -> int:
@@ -119,14 +151,43 @@ class Entry:
     def folder(self) -> Path:
         return folder_for(self.repo)
 
+    @property
+    def host(self) -> str:
+        """Where the bytes come from, as the size line says it."""
+        import urllib.parse
+        return urllib.parse.urlsplit(self.url(next(iter(self.files), "model.bin"))).hostname or ""
+
     def url(self, name: str) -> str:
-        return f"{HUB}/{self.repo}/resolve/{self.revision}/{name}"
+        return self.urls.get(name) or f"{HUB}/{self.repo}/resolve/{self.revision}/{name}"
 
 
 def folder_for(repo: str) -> Path:
     """`models\\ivrit-ai--whisper-large-v3-turbo-ct2`: the Hub's own
     `--` for the slash, one folder per repo, readable in Explorer."""
     return paths.MODELS_DIR / repo.replace("/", "--")
+
+
+def asset_name(repo: str, name: str) -> str:
+    """The release asset one file of `repo` is published as: a release is
+    one flat list of names, so the repo's folder name goes in front —
+    `ivrit-ai--whisper-large-v3-turbo-ct2.model.bin`."""
+    return f"{repo.replace('/', '--')}.{name}"
+
+
+def at_home(e: Entry, release: str = RELEASE) -> Entry:
+    """`e` with every file fetched from DeskIT's own release `release`
+    instead of the Hub — the same files, sizes, hashes and revision."""
+    urls = {name: f"{HOME}{release}/{asset_name(e.repo, name)}" for name in e.files}
+    return Entry(e.repo, e.revision, dict(e.files), e.license, urls, e.credit)
+
+
+def _allowed_url(url: str) -> bool:
+    """A URL the lock may name: an asset of DeskIT's own releases, or a
+    file of a Hub repository — https, no step back up the path, and
+    nothing after it."""
+    if "?" in url or "#" in url or "/.." in url:
+        return False
+    return url.startswith(HOME) or url.startswith(HUB + "/")
 
 
 def read_lock(path: Path | None = None) -> dict[str, Entry]:
@@ -144,9 +205,14 @@ def read_lock(path: Path | None = None) -> dict[str, Entry]:
         try:
             files = {name: (int(f["size"]), str(f["sha256"]).lower())
                      for name, f in raw["files"].items()}
+            urls = {name: str(f["url"]) for name, f in raw["files"].items() if f.get("url")}
+            wrong = [u for u in urls.values() if not _allowed_url(u)]
+            if wrong:
+                raise ValueError(f"a URL outside DeskIT's releases and the Hub: {wrong[0]}")
             out[repo] = Entry(repo, str(raw["revision"]), files,
-                              str(raw.get("license") or ""))
-        except (KeyError, TypeError, ValueError) as e:
+                              str(raw.get("license") or ""), urls,
+                              str(raw.get("credit") or ""))
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
             log.warning("models.lock: the entry for %s is malformed (%s)", repo, e)
     return out
 
@@ -157,16 +223,24 @@ def entry(repo: str, path: Path | None = None) -> Entry | None:
 
 def write_lock(entries: list[Entry], path: Path | None = None) -> Path:
     path = paths.MODELS_LOCK if path is None else path
+    def one(e: Entry, name: str, size: int, sha: str) -> dict:
+        row: dict = {"size": size, "sha256": sha}
+        if name in e.urls:
+            row["url"] = e.urls[name]
+        return row
+
     data = {
         "_": "The models an installed copy may download (models.py, plan 6.4): "
-             "repo, pinned commit, each file's size and SHA-256. Written by "
-             "`python models.py --lock`, never by hand.",
+             "repo, pinned revision, each file's size, SHA-256 and URL, the "
+             "licence and the credit. Written by `dev\\models_release.py lock`, "
+             "never by hand.",
         "models": {
             e.repo: {
                 "revision": e.revision,
                 "license": e.license,
+                **({"credit": e.credit} if e.credit else {}),
                 "bytes": e.bytes,
-                "files": {name: {"size": size, "sha256": sha}
+                "files": {name: one(e, name, size, sha)
                           for name, (size, sha) in e.files.items()},
             }
             for e in entries
@@ -178,7 +252,7 @@ def write_lock(entries: list[Entry], path: Path | None = None) -> Path:
 
 def size_line(e: Entry) -> str:
     """The sentence the step shows BEFORE anything is fetched."""
-    return f"{human(e.bytes)} from huggingface.co into {paths.short(e.folder)}"
+    return f"{human(e.bytes)} from {e.host} into {paths.short(e.folder)}"
 
 
 # --------------------------------------------------------------- the state
@@ -217,7 +291,7 @@ def ready(repo: str, path: Path | None = None) -> bool:
 
 _WHY = {
     "unknown": "{repo} is not in models.lock — DeskIT downloads only the models it ships a lock for",
-    "absent": "the Hebrew model is not downloaded yet ({size} from huggingface.co)",
+    "absent": "the Hebrew model is not downloaded yet ({size} from {host})",
     "incomplete": "the Hebrew model's download did not finish — start DeskIT again to continue it",
     "stale": "the Hebrew model on disk is from an older release — start DeskIT again to update it",
 }
@@ -230,7 +304,8 @@ def require(repo: str, path: Path | None = None) -> Path:
     if word == "ready":
         return folder_for(repo)
     e = entry(repo, path)
-    why = _WHY[word].format(repo=repo, size=human(e.bytes) if e else "?")
+    why = _WHY[word].format(repo=repo, size=human(e.bytes) if e else "?",
+                            host=e.host if e else "?")
     raise ModelMissing(repo, word, why)
 
 
@@ -388,7 +463,7 @@ def adopt(e: Entry) -> str:
 TEXT = {
     "title": "הורדת המודל העברי",
     "body": ("דסק-איט מתמלל על המחשב הזה, בלי ענן, עם מודל עברי שיורד פעם אחת. "
-             "ההורדה היא {size} מהאתר huggingface.co לתיקייה של דסק-איט. "
+             "ההורדה היא {size} מהאתר {host} לתיקייה של דסק-איט. "
              "אפשר לעצור באמצע: בפעם הבאה ההורדה תימשך מאותה נקודה."),
     "offline": ("אין חיבור לאינטרנט. דסק-איט צריך להוריד את המודל פעם אחת — "
                 "נשאל שוב בהפעלה הבאה, וההורדה תימשך מאותה נקודה."),
@@ -416,7 +491,7 @@ def step(e: Entry, downloader=None, words: dict | None = None) -> steps.Step:
     words = words or TEXT
     work = downloader or download
     return steps.Step(
-        title=words["title"], body=words["body"].format(size=human(e.bytes)),
+        title=words["title"], body=words["body"].format(size=human(e.bytes), host=e.host),
         size_line=size_line(e), total=e.bytes,
         work=lambda **kw: work(e, **kw),
         said={"offline": words["offline"], "done": words["done"]},
@@ -451,57 +526,15 @@ def offer(repo: str, downloader=None) -> str:
     return steps.show(step(e, downloader))
 
 
-# ------------------------------------------------------------- the owner
-
-def lock_entry(repo: str, revision: str | None = None) -> Entry:
-    """The owner's half: the Hub's metadata for `repo` at `revision`
-    (main when None). An LFS file's SHA-256 is what the Hub records for
-    it; a small file (a few MB at most) is fetched through
-    huggingface_hub into the owner's cache and hashed here. The
-    revision written is the commit's full sha, never a branch name."""
-    from huggingface_hub import HfApi, hf_hub_download
-
-    info = HfApi().model_info(repo, revision=revision, files_metadata=True)
-    files: dict[str, tuple[int, str]] = {}
-    for sibling in sorted(info.siblings or [], key=lambda s: s.rfilename):
-        name = sibling.rfilename
-        if name not in WANTED:
-            continue
-        if sibling.lfs is not None:
-            files[name] = (int(sibling.lfs.size or sibling.size or 0), str(sibling.lfs.sha256).lower())
-        else:
-            local = Path(hf_hub_download(repo, name, revision=info.sha))
-            files[name] = (local.stat().st_size, sha256_of(local))
-    licence = ""
-    try:
-        licence = str((info.card_data or {}).get("license") or "")
-    except Exception:                                        # noqa: BLE001
-        pass
-    return Entry(repo, str(info.sha), files, licence)
-
-
 def _main(argv: list[str]) -> int:
     import argparse
 
+    # The lock itself is the owner's to write, and the owner's tools live
+    # in dev\ (dev\models_release.py lock); these two only read it.
     parser = argparse.ArgumentParser(description="DeskIT's model lock and model folder.")
-    parser.add_argument("--lock", nargs="*", metavar="REPO",
-                        help="write models.lock from the Hub's metadata for these "
-                             "repos (default: the two in defaults.toml)")
     parser.add_argument("--verify", metavar="REPO", help="hash the folder against the lock")
     parser.add_argument("--state", metavar="REPO", help="print the state word")
     args = parser.parse_args(argv)
-    if args.lock is not None:
-        repos = args.lock
-        if not repos:
-            import config as config_mod
-            cfg = config_mod.load_layered()
-            repos = [r for r in (cfg.local.model, cfg.local.english_model) if r]
-        entries = [lock_entry(r) for r in repos]
-        path = write_lock(entries)
-        for e in entries:
-            print(f"{e.repo} @ {e.revision[:12]}: {len(e.files)} files, {human(e.bytes)}, {e.license or '?'}")
-        print(f"wrote {path}")
-        return 0
     if args.verify:
         e = entry(args.verify)
         if e is None:

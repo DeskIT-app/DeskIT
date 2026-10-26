@@ -223,8 +223,9 @@ DEFAULTS_FILE = APP_DIR / "defaults.toml"
 #: the build copies it beside the code (chapter 11). version.py reads it.
 VERSION_FILE = APP_DIR / "VERSION"
 #: The models an installed copy may download: repo, pinned commit, every
-#: file with its size and SHA-256 (chapter 6.4, D13). Written by the
-#: owner (`models.py --lock`), shipped beside the code, read by models.py.
+#: file with its size, SHA-256 and URL (chapter 6.4, D13). Written by the
+#: owner (`dev\models_release.py lock`), shipped beside the code, read by
+#: models.py.
 MODELS_LOCK = APP_DIR / "models.lock"
 #: The wheels an installed copy may download per pack (chapter 6.5):
 #: version, file, PyPI URL, size, SHA-256, licence links. `packs.py

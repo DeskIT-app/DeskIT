@@ -58,11 +58,13 @@ your PC**. לוחצים **More info** ואז **Run anyway**.
 
 מה שדסק-איט מוריד לבד בהפעלה הראשונה, במלואו — הפס בראש אשף ההפעלה הראשונה, **Downloading app
 parts**, פותח את הטבלה הזאת. כל קובץ נבדק מול ה־SHA-256 שדסק-איט מגיע איתו; שום דבר לא ארוז
-בתוך המתקין.
+בתוך המתקין. כל מודל יורד מהגרסה של דסק-איט עצמו ב־GitHub
+([models-1](https://github.com/DeskIT-app/DeskIT/releases/tag/models-1)), עותק של המודל שבטבלה,
+עם הקרדיט ב־`THIRD-PARTY-NOTICES.txt`.
 
 | חלק | מה זה | גודל | רישיון |
 |---|---|---|---|
-| דיבור בעברית | מודל הדיבור העברי, [ivrit-ai/whisper-large-v3-turbo-ct2](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) — בלעדיו אין הכתבה | 1.62 ג׳יגה | Apache-2.0 |
+| דיבור בעברית | מודל הדיבור העברי, [ivrit-ai/whisper-large-v3-turbo-ct2](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) — בלעדיו אין הכתבה. במחשב בלי כרטיס אנבידיה, אותו מודל שדסק-איט אימן עוד כדי לשמוע משפט קצר באורך שלו, כך שהוא עונה בשנייה-שתיים במקום שבע | 1.62 ג׳יגה | Apache-2.0 |
 | זיהוי אנגלית | מודל שני, כללי, [deepdml/faster-whisper-large-v3-turbo-ct2](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2), שמזהה כשדיברת אנגלית ומתמלל אותה כאנגלית. מוצע בכרטיס אנבידיה עם 6 ג׳יגה זיכרון וידאו | 1.62 ג׳יגה | MIT |
 | מהיר יותר עם כרטיס ה־NVIDIA שלך | ספריות ה־CUDA של אנבידיה עצמה (cuBLAS, cuDNN, NVRTC) מ־PyPI. מוצע בכרטיס אנבידיה עם 4 ג׳יגה ודרייבר מ־545.84; בלעדיהן הכרטיס עובד כמו מעבד | 1.37 ג׳יגה | [NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html), [cuDNN SLA](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/eula.html) |
 | הקלטת מסך | PyAV עם FFmpeg, למקש ההקלטה, מקש הצילום והאודיו מהטלפון | 28 מגה | [PyAV (BSD-3)](https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt), [FFmpeg — הגרסה הזאת GPL: x264, x265](https://ffmpeg.org/legal.html) |

@@ -766,10 +766,11 @@ class Model:
             except Exception:             # noqa: BLE001
                 pack = "unknown"
             if model in ("absent", "incomplete", "stale") and not downloading:
-                size = ""
+                size, whence = "", "github.com"
                 try:
                     e = models_mod.entry(model_name)
                     size = f" ({models_mod.human(e.bytes)})" if e else ""
+                    whence = e.host if e else whence
                 except Exception:         # noqa: BLE001
                     pass
                 said = {"absent": f"The Hebrew model is not on this PC yet{size} — "
@@ -782,7 +783,7 @@ class Model:
                     "id": "model", "kind": "hardware", "at": now, "tone": "warn",
                     "glyph": "chip", "title": "This computer", "meta": "", "text": said,
                     "rtl": False,
-                    "note": "Downloaded once, from huggingface.co, into the app's folder.",
+                    "note": f"Downloaded once, from {whence}, into the app's folder.",
                     "buttons": [{"label": "Download" if model == "absent" else "Continue",
                                  "tone": "primary", "act": "hardware.model"}]})
             if pack.startswith("failed:"):

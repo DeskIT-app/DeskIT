@@ -296,7 +296,8 @@ class LocalConfig:
     cpu_threads: int = 0     # 0 = the library's own choice
     # off | cpu | always: the Hebrew model encoded at the clip's own length
     # instead of Whisper's 30 s (local_whisper, "the real length") — only
-    # for a model trained for it, night14b; an untrained one loses words
+    # for a model trained for it (night15, hardware.CPU_MODEL, which the
+    # cpu tier writes with "cpu"); an untrained one loses words
     real_length: str = "off"
     # the model with the app (true), or Start on the desk loads it
     load_at_start: bool = True

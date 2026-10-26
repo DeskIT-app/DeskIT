@@ -49,6 +49,18 @@ DRIVER_FLOOR = (545, 84)
 GPU_MB, GPU_SMALL_MB = 6 * 1024, 4 * 1024
 TIERS = ("gpu", "gpu-small", "cpu")
 
+#: The Hebrew model of the processor's tier: ivrit.ai's whisper-large-v3-turbo
+#: — the model every card gets — trained further for the clip's own length
+#: (FUTO's audio-context fine-tuning, on crowd-transcribe-v5 and
+#: knesset-committees only; DeskIT-training runs\night15, 2026-10-26). At the
+#: real length it scored 7,368 words wrong on six public sets against the
+#: shipped model's 7,346 at 30 s (+0.3%), with no loss on short mixed
+#: Hebrew-English clips, and on 4 threads int8 it decodes 0-5 / 5-10 / 10-20 s
+#: in 1.07 / 1.66 / 2.89 s against 6.4-7.6 s for the shipped model at 30 s
+#: (notes\DeskIT-light-plan-2026-10-22.md §8). Downloaded from DeskIT's own
+#: release like every model (models.py); it has no other home.
+CPU_MODEL = "DeskIT-app/ivrit-turbo-real-length-ct2"
+
 #: 6.3, the columns that differ from the shipped defaults. A key absent
 #: from a tier keeps defaults.toml's value (which is tier 1's, D6/D34).
 DERIVED: dict[str, dict[str, object]] = {
@@ -73,9 +85,11 @@ DERIVED: dict[str, dict[str, object]] = {
         "local.beam_size": 2, "review.enabled": False, "study.enabled": False,
         # no English detector: 1.6 GB more RAM and a second full pass
         "local.english_model": "",
-        # NOT local.real_length: the model a stranger gets is not trained
-        # for it (night10 untrained: +23-37% words wrong); it goes beside
-        # a model that is, named by hand (night14b, 2026-10-25)
+        # the model trained for the clip's own length, and that length:
+        # the 30 s window is the whole wait on a processor (CPU_MODEL).
+        # Never the shipped model at the real length — untrained, it
+        # loses words (night10: +23-37% words wrong). PROCESSOR_ONLY.
+        "local.model": CPU_MODEL, "local.real_length": "cpu",
         # the repair pass off (config refuses max_wait_s = 0 and an empty
         # model name; "never" is its own switch), the small models named
         # for the day Ollama turns up
@@ -87,6 +101,15 @@ DERIVED: dict[str, dict[str, object]] = {
 #: The keys any tier may have written — cleared when the tier changes,
 #: so a machine that lost its card is not left with float16.
 DERIVED_KEYS = frozenset(k for keys in DERIVED.values() for k in keys)
+#: The cpu tier's keys that are for a PC that STAYS on the processor. The
+#: first start of every PC with a card is a cpu tier too, until NVIDIA's
+#: libraries land (tier_for, packs.py) — minutes later, in the same
+#: background queue; with these keys it would fetch the processor's model
+#: (1.6 GB) for those minutes and then the card's 1.6 GB on top. So a
+#: card that is coming keeps the card's model from the start
+#: (card_coming), and a portable copy, whose models come from the Hugging
+#: Face cache (D4) where the processor's model has no home, keeps it too.
+PROCESSOR_ONLY = ("local.model", "local.real_length")
 
 
 # ------------------------------------------------------------- the facts
@@ -276,15 +299,45 @@ def record(facts: dict) -> None:
         log.info("hardware: the facts were not written (%s)", e)
 
 
-def apply(tier: str, previous: str | None = None) -> dict[str, object]:
+def card_coming(facts: dict | None) -> bool:
+    """Is this cpu tier only waiting for NVIDIA's libraries? A card the
+    probe saw, a driver new enough, the memory a gpu tier needs, and the
+    pack not there yet — what every first start with a card is until
+    packs.py lands it. A pack that is there and does not run (`failed:`)
+    is not coming, nor is one the person turned down."""
+    facts = facts or {}
+    if int(facts.get("cuda_devices") or 0) < 1 or not facts.get("driver_ok"):
+        return False
+    vram = int(facts.get("vram_mb") or 0)
+    if vram and vram < GPU_SMALL_MB:
+        return False
+    if str(facts.get("gpu_pack") or "") not in ("missing", "unknown"):
+        return False
+    try:
+        offered = config_mod.read_settings(paths.SETTINGS_FILE).get("setup.offer_gpu_pack")
+    except Exception:                                    # noqa: BLE001
+        offered = None
+    return offered is not False
+
+
+def apply(tier: str, previous: str | None = None,
+          facts: dict | None = None) -> dict[str, object]:
     """The tier's derived defaults into the machine layer (state.json),
     only for keys settings.toml does not set. When the tier changed, every
-    derived key of the old tier goes first. The checkout applies nothing.
-    Returns what was written."""
+    derived key of the old tier goes first. The cpu tier's PROCESSOR_ONLY
+    keys are taken out instead of written while a card is coming (`facts`,
+    card_coming), on a portable copy, or when settings.toml names a model.
+    The checkout applies nothing. Returns what was written (None = taken
+    out)."""
     if paths.DEVELOPER or tier not in DERIVED:
         return {}
     chosen = set(config_mod.read_settings(paths.SETTINGS_FILE))
-    wanted = {k: v for k, v in DERIVED[tier].items() if k not in chosen}
+    keys = dict(DERIVED[tier])
+    # the model and its length go together: a model the person named
+    # themselves is not one this tier knows was trained for the length
+    if tier == "cpu" and (paths.PORTABLE or card_coming(facts) or "local.model" in chosen):
+        keys.update({k: None for k in PROCESSOR_ONLY})
+    wanted = {k: v for k, v in keys.items() if k not in chosen}
     try:
         if previous is not None and previous != tier:
             config_mod.save({k: None for k in DERIVED_KEYS}, derived=True)
@@ -395,7 +448,7 @@ def run_at_start(say=None) -> dict:
     previous = before.get("tier")
     changed = previous is not None and previous != facts["tier"]
     record(facts)
-    written = apply(facts["tier"], previous)
+    written = apply(facts["tier"], previous, facts)
     log.info("hardware: %s — %d CUDA device(s), %s MB VRAM, driver %s, %d cores, "
              "%d MB RAM, gpu pack %s%s", facts["tier"], facts["cuda_devices"],
              facts["vram_mb"] or "?", facts["driver"] or "-", facts["cores"],

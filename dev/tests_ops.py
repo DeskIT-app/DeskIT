@@ -1672,6 +1672,86 @@ def test_every_master_row_has_an_id_a_screen_and_a_tone_the_window_can_draw():
                 assert ":" in row.id, row.id
 
 
+def test_the_models_release_plans_by_default_and_uploads_only_a_prerelease():
+    """dev\\models_release.py, the merge-day half of "every model from our
+    home": `lock` writes models.lock from the files, every file pointed at
+    the release; `plan` (the default) checks the files against it and
+    asks GitHub nothing; a file whose bytes are not the lock's stops it;
+    `upload` makes the release a PRE-RELEASE that is never latest (so the
+    updater, winget.yml and store.yml never take it for an app release),
+    uploads each file under its asset name, sends nothing twice, and
+    `check` then finds every asset at its size. SOURCES covers every
+    model of the shipped lock. GitHub is a fake here: nothing leaves."""
+    import json
+    import subprocess
+
+    import models
+    import models_release as mr
+
+    assert set(models.read_lock()) == set(mr.SOURCES), "a shipped model has no source"
+    calls: list[tuple] = []
+    gh_state = {"made": False, "assets": {}}
+
+    def fake_gh(*args, check=True):
+        calls.append(args)
+        out, code = "", 0
+        if args[:2] == ("release", "view"):
+            if gh_state["made"]:
+                out = json.dumps({"tagName": "models-1", "isPrerelease": True, "isDraft": False,
+                                  "assets": [{"name": n, "size": s}
+                                             for n, s in gh_state["assets"].items()]})
+            else:
+                code = 1
+        elif args[:2] == ("release", "create"):
+            gh_state["made"] = True
+        elif args[:2] == ("release", "upload"):
+            staged = Path(args[3])
+            gh_state["assets"][staged.name] = staged.stat().st_size
+        return subprocess.CompletedProcess(args, code, out, "")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "ct2"
+        folder.mkdir()
+        (folder / "model.bin").write_bytes(b"w" * 10)
+        (folder / "config.json").write_bytes(b"{}")
+        ours = mr.Source(revision="test-1", license="apache-2.0", credit="made here", folder=folder)
+        with _tests._patched(mr, "SOURCES", {"test/ours-ct2": ours}), \
+                _tests._patched(paths, "MODELS_LOCK", Path(tmp) / "models.lock"), \
+                _tests._patched(mr, "gh", fake_gh):
+            assert mr.main(["lock"]) == 0
+            e = models.read_lock()["test/ours-ct2"]
+            assert e.url("model.bin") == models.HOME + "models-1/test--ours-ct2.model.bin"
+            assert e.credit == "made here" and e.revision == "test-1"
+            assert mr.main([]) == 0 and calls == [], "plan asked GitHub something"
+            notes = mr.release_notes(models.read_lock(), "models-1")
+            assert "made here" in notes and "not an app release" in notes
+            (folder / "model.bin").write_bytes(b"x" * 10)        # same size, other bytes
+            try:
+                mr.main(["plan"])
+            except SystemExit as err:
+                assert "SHA-256" in str(err), err
+            else:
+                raise AssertionError("a file that is not the lock's was planned")
+            try:
+                mr.main(["upload"])
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("an upload went ahead over a file that is not the lock's")
+            assert calls == [], "the refused upload asked GitHub something"
+            (folder / "model.bin").write_bytes(b"w" * 10)
+            assert mr.main(["upload"]) == 0
+            made = [c for c in calls if c[:2] == ("release", "create")]
+            assert len(made) == 1 and "--prerelease" in made[0] and "--latest=false" in made[0], made
+            assert "--target" in made[0] and "main" in made[0]
+            sent = [Path(c[3]).name for c in calls if c[:2] == ("release", "upload")]
+            assert sorted(sent) == ["test--ours-ct2.config.json", "test--ours-ct2.model.bin"], sent
+            calls.clear()
+            assert mr.main(["upload"]) == 0
+            assert not [c for c in calls if c[:2] in (("release", "upload"), ("release", "create"))]
+            assert mr.main(["check"]) == 0
+
+
 if __name__ == "__main__":
     if not paths.DEVELOPER:
         print("the ops suite is the owner's: it runs only in the checkout "

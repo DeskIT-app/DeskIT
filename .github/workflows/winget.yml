@@ -15,7 +15,9 @@ on:
 
 jobs:
   submit:
-    if: ${{ !github.event.release.prerelease }}
+    # an app release only: v-tagged and not a pre-release (models-1, the
+    # speech models' release, is neither)
+    if: ${{ !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v') }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
