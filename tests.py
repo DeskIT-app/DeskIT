@@ -37484,7 +37484,7 @@ def test_models_lock_is_the_shipped_list():
         assert e.bytes == sum(s for s, _ in e.files.values()) > 1_600_000_000
         assert e.license in ("apache-2.0", "mit"), e.license
         assert e.url("model.bin") == (f"https://github.com/DeskIT-app/DeskIT/releases/download/"
-                                      f"models-1/{repo.replace('/', '--')}.model.bin")
+                                      f"models-1/{repo.replace('/', '.')}.model.bin")
         assert e.host == "github.com" and e.credit, (e.host, e.credit)
     e = lock[defaults.model]
     line = models.size_line(e)
@@ -37527,6 +37527,13 @@ def test_models_come_from_deskits_own_release():
             assert size < models.ASSET_MAX, (repo, name, size)
             names.append(models.asset_name(repo, name))
     assert len(names) == len(set(names)), "two files would share one asset name"
+    # GitHub renames an asset whose name it does not like, and the lock's
+    # URL for it would then 404: letters, digits, single - _ . only
+    assert all(models.asset_safe(n) for n in names), [n for n in names if not models.asset_safe(n)]
+    assert models.asset_safe("ivrit-ai.whisper-large-v3-turbo-ct2.preprocessor_config.json")
+    for bad in ("ivrit-ai--whisper.model.bin", "a b.bin", ".model.bin", "model.bin.",
+                "x/y.bin", "a..b", "מודל.bin"):
+        assert not models.asset_safe(bad), bad
     for must in ("crowd-transcribe-v5", "knesset-committees", "Creative Commons Attribution 4.0",
                  "Changes (Apache-2.0 section 4(b))", "models-1"):
         assert must in notices, must
@@ -37541,10 +37548,10 @@ def test_models_come_from_deskits_own_release():
         home = models.at_home(models.Entry("org/home-born", "b" * 40, files, "apache-2.0",
                                            credit="made here"))
         assert home.files == files and home.revision == "b" * 40 and home.credit == "made here"
-        assert home.url("model.bin") == models.HOME + "models-1/org--home-born.model.bin"
+        assert home.url("model.bin") == models.HOME + "models-1/org.home-born.model.bin"
         assert home.host == "github.com"
         assert models.at_home(home, "models-2").url("model.bin").endswith(
-            "/models-2/org--home-born.model.bin")
+            "/models-2/org.home-born.model.bin")
         refused = [models.Entry(f"org/bad-{i}", "c" * 40, files, "mit", {"model.bin": url})
                    for i, url in enumerate((
                        "https://evil.example.com/model.bin",

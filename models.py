@@ -20,7 +20,7 @@ in it is not downloaded at all.
 WHERE A MODEL COMES FROM (the owner, 2026-10-26: "every model the app
 downloads should come from our home"). A file's URL in the lock is an
 asset of DeskIT's own GitHub release — `HOME` + `RELEASE` + an asset
-named for the repo's folder and the file (`asset_name`) — whatever the
+named for the repo and the file (`asset_name`) — whatever the
 model's origin: ivrit.ai's model and the English detector are copies
 of their Hugging Face repositories at the commit pinned here, credited
 per their licences in the lock and in THIRD-PARTY-NOTICES.txt; the
@@ -39,7 +39,11 @@ file to a temp name unique to the process and deletes it on any failure
 dropped at 90% started from zero at the next attempt, and the
 "resumable" D13 promised was not there to lean on. net.download() keeps
 `<name>.part`, asks for the rest with a Range header on the next attempt
-(checked live: `206 Partial Content` from the Hub's CDN, 2026-09-17),
+(checked live: `206 Partial Content` from the Hub's CDN, 2026-09-17,
+and from GitHub's asset host on 2026-10-26 — v1.0.6's installer through
+net.py: github.com 302, release-assets.githubusercontent.com 206 with
+`bytes 1000000-62105837/62105838`, the signed link's query naming none
+of net.QUERY_NEVER),
 follows the redirect by hand — github.com answers a release asset with
 one to release-assets.githubusercontent.com, the Hub with one to its
 CDN — so every hop meets the allowlist and leaves a row in network.log
@@ -169,9 +173,19 @@ def folder_for(repo: str) -> Path:
 
 def asset_name(repo: str, name: str) -> str:
     """The release asset one file of `repo` is published as: a release is
-    one flat list of names, so the repo's folder name goes in front —
-    `ivrit-ai--whisper-large-v3-turbo-ct2.model.bin`."""
-    return f"{repo.replace('/', '--')}.{name}"
+    one flat list of names, so the repo goes in front, its slash a dot —
+    `ivrit-ai.whisper-large-v3-turbo-ct2.model.bin`. Letters, digits and
+    single `-` `_` `.` only: GitHub renames an asset whose name carries
+    anything else, and a renamed asset is a URL in the lock that 404s
+    (asset_safe; a test holds every name of the lock to it)."""
+    return f"{repo.replace('/', '.')}.{name}"
+
+
+def asset_safe(name: str) -> bool:
+    """A name GitHub keeps as it is: letters, digits, `-` `_` `.`, never
+    two of those in a row and never one at either end."""
+    import re
+    return re.fullmatch(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*", name) is not None
 
 
 def at_home(e: Entry, release: str = RELEASE) -> Entry:

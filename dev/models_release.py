@@ -256,6 +256,9 @@ def cmd_plan(args, overrides: dict[str, Path]) -> list[tuple[Path, str]]:
             if e.url(name) != want:
                 problems.append(f"{repo} {name}: the lock's URL is {e.url(name)}, "
                                 f"not this release's {want}")
+            if not models.asset_safe(models.asset_name(repo, name)):
+                problems.append(f"{repo} {name}: GitHub would rename the asset "
+                                f"{models.asset_name(repo, name)}")
             assets.append((folder / name, models.asset_name(repo, name)))
         problems += [f"{repo} {p}" for p in check_files(e, folder)]
         print(f"{repo}: {len(e.files)} files, {models.human(e.bytes)} from {folder}")

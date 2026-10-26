@@ -1720,7 +1720,7 @@ def test_the_models_release_plans_by_default_and_uploads_only_a_prerelease():
                 _tests._patched(mr, "gh", fake_gh):
             assert mr.main(["lock"]) == 0
             e = models.read_lock()["test/ours-ct2"]
-            assert e.url("model.bin") == models.HOME + "models-1/test--ours-ct2.model.bin"
+            assert e.url("model.bin") == models.HOME + "models-1/test.ours-ct2.model.bin"
             assert e.credit == "made here" and e.revision == "test-1"
             assert mr.main([]) == 0 and calls == [], "plan asked GitHub something"
             notes = mr.release_notes(models.read_lock(), "models-1")
@@ -1745,7 +1745,7 @@ def test_the_models_release_plans_by_default_and_uploads_only_a_prerelease():
             assert len(made) == 1 and "--prerelease" in made[0] and "--latest=false" in made[0], made
             assert "--target" in made[0] and "main" in made[0]
             sent = [Path(c[3]).name for c in calls if c[:2] == ("release", "upload")]
-            assert sorted(sent) == ["test--ours-ct2.config.json", "test--ours-ct2.model.bin"], sent
+            assert sorted(sent) == ["test.ours-ct2.config.json", "test.ours-ct2.model.bin"], sent
             calls.clear()
             assert mr.main(["upload"]) == 0
             assert not [c for c in calls if c[:2] in (("release", "upload"), ("release", "create"))]
