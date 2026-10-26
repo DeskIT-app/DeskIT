@@ -218,6 +218,31 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night15 RESULT (2026-10-26) — the model everyone gets, on the real
+  length, with data that may ship.** His answer to the light plan: "train the
+  model everyone gets". `train_acft.py` on ivrit-ai/whisper-large-v3-turbo
+  itself (it is the teacher at 3,000 frames and the base), crowd-transcribe-v5
+  + knesset-committees only (205k clips, 292 h, no Reversim, nothing of
+  night10), 31,675 steps in 506 min, his 22:00-15:00 window. Through the
+  app's own decode at the real length (`eval_applen.py`), six sets: **7,368
+  against today's full window 7,346 (+0.3%)** — only d1 moved (+17, and in
+  both decodes, so the training and not the length). No short-clip loss on
+  Reversim: 5-10 s clips 908 / 643 against today's 911 / 647 (night14b's
+  real length lost +13 there). The short window in the bare loop: 1,133 /
+  1,303 on fleurs_dev / reversim_dev (untrained 1,408 / 1,495, full 1,114 /
+  1,309). CPU int8, 4 threads, median: 0-5 s 1.07 s, 5-10 s 1.66, 10-20 s
+  2.89 (night10's full window 7.2 / 7.5 / 7.8). The light plan's margin hint
+  (more frames after the speech, or a floor under the window) changed
+  nothing on night14b (`runs\margin\report.txt`). Not switched anywhere;
+  shipping it is his call through the light plan.
+- **night16 (written, waits for his window) — Claude as the teacher of
+  audio with NO human transcript.** The ivrit.ai tech podcasts no night has
+  seen (Geekonomy, startups, בזמן שעבדתם, השור והדוב; 9,987 clips, 42 h)
+  heard by night14b, then corrected by Claude Sonnet through the Batch API
+  with audio-v2's own transcript beside it: **$14.21** (cap $40), 9,979 kept,
+  3,661 changed. night16 = night10's recipe exactly + those clips twice
+  (`night_teacher16.ps1`); `-Labels older` is the control (the same clips,
+  audio-v2's text), run only if night16 wins.
 - **night14 RESULT (2026-10-25) — night10 on the real length WORKS.** Cut on
   the 24th at 01:59 by a Windows Update restart (step 7,450), run again on
   the 25th in his 00:00-16:00 window: night14a = the surviving step-7,000
