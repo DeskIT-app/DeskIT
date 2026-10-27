@@ -1736,9 +1736,13 @@ timeout_s = 30
 model = "ivrit-ai/whisper-large-v3-turbo-ct2"
 language = "he"               # MUST stay pinned — the fine-tune broke language autodetect
 device = "auto"               # auto | cuda | cpu — auto tries the GPU, falls back to CPU
-# The number format the model runs in. auto = float16 on a card, int8 on
-# the processor — what the ladder always did. The hardware probe writes
-# int8_float16 for a card with 4-6 GB (it fits, a little slower); a
+# The number format the model runs in, and the English model with it.
+# auto = int8_float16 on a card (float16 if the card refuses int8), int8 on
+# the processor. Since 2026-10-23 (it was float16 before): measured on the
+# six public sets, night10 int8_float16 6,351 words wrong against float16's
+# 6,362, every set inside the run-to-run spread; one model 1,214 MB of
+# graphics memory against 2,238; ~12% more decode time, ~0.04 s on a short
+# dictation. The hardware probe writes int8_float16 for every card; a
 # value here is yours and the probe leaves it alone.
 compute_type = "auto"        # auto | float16 | int8_float16 | int8
 # Processor threads for the model when it runs on the CPU. 0 = the

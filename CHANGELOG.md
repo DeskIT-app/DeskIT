@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.7
+
+DeskIT takes half the graphics memory it used to. Its two speech models, the Hebrew one and the English one, now run in a lighter number format on the graphics card: about 2.2 GB instead of 4.5 GB, and that much less of the computer's memory with it. I asked for it so DeskIT weighs less on my computer and fits on smaller graphics cards. On six public Hebrew test sets it writes the same words as before, and on my computer a dictation still arrives in about 0.6 seconds. A graphics card with 4 to 6 GB now keeps the English model too, instead of dropping it to make room.
+
 ## 1.0.6
 
 DeskIT is on its way to the Microsoft Store. A copy from the Store is signed by Microsoft, so Windows will stop warning that it does not recognise the app — the warning everyone sees today on the first run of the installer from this page. This version changes nothing for a copy installed from here; it is the version the Store package is made from. The package is built from this release's own installer, so the Store copy is the same files as this one, file for file, plus a small launcher that starts it. Inside the Store package three things work the way Windows wants them to there: "Start with Windows" goes through Windows' own list of startup apps, Connect Claude Code goes through a command the package adds, and the app's windows sit under its tile in the Start menu. One difference a Store user should know before installing: Windows keeps a Store app's files in a folder of its own and removes them with the app, so uninstalling the Store copy removes what it has learned too — unless the sync with your account is on.

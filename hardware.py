@@ -52,14 +52,17 @@ TIERS = ("gpu", "gpu-small", "cpu")
 #: 6.3, the columns that differ from the shipped defaults. A key absent
 #: from a tier keeps defaults.toml's value (which is tier 1's, D6/D34).
 DERIVED: dict[str, dict[str, object]] = {
+    # int8_float16 on every card since 2026-10-23: the same words as
+    # float16 on the six public sets, half the graphics memory (one turbo
+    # 1,214 MB against 2,238), so a 4-6 GB card keeps the English model
+    # too — two of them are ~2.3 GB (notes\DeskIT-light-plan-2026-10-22.md)
     "gpu": {
-        "local.device": "cuda", "local.compute_type": "float16",
+        "local.device": "cuda", "local.compute_type": "int8_float16",
         "local.cpu_threads": 0, "local.beam_size": 5,
     },
     "gpu-small": {
         "local.device": "cuda", "local.compute_type": "int8_float16",
         "local.cpu_threads": 0, "local.beam_size": 5,
-        "local.english_model": "",
         "polish.max_wait_s": 6.0, "polish.ollama_model": "gemma3:4b",
         "lookup.model": "gemma3:4b", "lookup.keep_alive": "10m",
         "visual_qa.ollama_model": "gemma3:4b", "visual_qa.ollama_timeout_s": 60,

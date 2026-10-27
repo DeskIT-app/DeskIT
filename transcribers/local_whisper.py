@@ -294,8 +294,15 @@ class LocalWhisperTranscriber:
         once by the caller, never a download."""
         source = models_mod.source(model_name)
         from faster_whisper import WhisperModel
-        compute = "float16" if self.device == "cuda" else "int8"
-        log.info("loading English model %s on %s...", model_name, self.device)
+        # the Hebrew model's number format, whatever the ladder settled
+        # on: until 2026-10-23 this was float16 on a card whatever the
+        # setting said, 1 GB of the app's graphics memory for nothing
+        # (the detector at int8_float16: +1.4% words wrong over the six
+        # public sets as a Hebrew witness, each set inside the spread)
+        compute = getattr(self, "_compute", None) or \
+            ("float16" if self.device == "cuda" else "int8")
+        log.info("loading English model %s on %s (%s)...", model_name,
+                 self.device, compute)
         return WhisperModel(source, device=self.device,
                             compute_type=compute)
 
@@ -493,21 +500,30 @@ class LocalWhisperTranscriber:
         self.last_windows: list = []
         self._guards = hallucination_guards(guard_hallucinations)
 
-        # The ladder as it always was, unless the probe (hardware.py, plan
-        # 6.3) or the person named a number format: then that format on
-        # the device asked for, and int8 on the processor underneath.
+        # The ladder, unless the probe (hardware.py, plan 6.3) or the
+        # person named a number format: then that format on the device
+        # asked for, and int8 on the processor underneath. On a card it
+        # tries int8_float16 first since 2026-10-23: the same words as
+        # float16 on all six public sets (night10, 6,351 against 6,362
+        # words wrong, every set inside the run-to-run spread), half the
+        # graphics memory (one model 1,214 MB against 2,238 with CUDA's
+        # context, measured), ~12% more decode time — ~0.04 s on a short
+        # dictation. A card that cannot do int8 refuses it at once and
+        # gets float16. notes\DeskIT-light-plan-2026-10-22.md has the table.
         if compute_type and compute_type != "auto":
             first = "cpu" if device == "cpu" else "cuda"
             attempts = [(first, compute_type)]
+            if first == "cuda" and compute_type == "int8_float16":
+                attempts.append(("cuda", "float16"))
             if first != "cpu":
                 attempts.append(("cpu", "int8"))
         else:
-            attempts = ([("cuda", "float16"), ("cpu", "int8")]
-                        if device == "auto" else
-                        [(device, "float16" if device == "cuda" else "int8")])
+            card = [("cuda", "int8_float16"), ("cuda", "float16")]
+            attempts = (card + [("cpu", "int8")] if device == "auto" else
+                        card if device == "cuda" else [(device, "int8")])
         threads = {"cpu_threads": int(cpu_threads)} if cpu_threads else {}
         last: Exception | None = None
-        for dev, compute in attempts:
+        for i, (dev, compute) in enumerate(attempts):
             started = time.perf_counter()
             try:
                 candidate = WhisperModel(source, device=dev,
@@ -524,14 +540,18 @@ class LocalWhisperTranscriber:
                 log.info("local model cannot use %s (%s) — %s", dev, compute,
                          str(e).splitlines()[0][:120])
                 if dev == "cuda" and not paths.PORTABLE \
+                        and not any(d == "cuda" for d, _ in attempts[i + 1:]) \
                         and packs_mod.state("gpu") in ("ok", "stale"):
                     # the pack is there and does not run: written down
                     # for the tier and the Home card (6.9), until the
-                    # next install or removal
+                    # next install or removal — and only after the LAST
+                    # card rung, since a card that merely refuses int8
+                    # runs float16 fine
                     packs_mod.note_failure("gpu", str(e))
                 continue
             self._model = candidate
             self.device = dev
+            self._compute = compute
             self.timing["load_s"] = round(load_s, 2)
             self.timing["warm_s"] = round(warm_s, 2)
             log.info("local model %s ready on %s (%s) — load %.1f s, "
