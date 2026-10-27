@@ -45,6 +45,81 @@ trained on (56 min, 234 English words); WhatsApp = ivrit.ai's eval-whatsapp
 | **today's, pen 1.0** | **1,109** | 1,309 | **665** | **499** | **2,638** | 1,228 |
 | **night4, pen 1.0** | 1,122 | **792** | 833 | 592 | 2,668 | **757** |
 | today's, pen 1.05 | 1,130 | 1,284 | 700 | 518 | | |
+| night6 (all data, Reversim twice) | 1,217 | 832 | 1,127 | 731 | 2,691 | 885 |
+
+**The decode on branch `no-repetition-penalty`** (pen 1.0, a looping clip
+decoded again with 1.15 — computed from the decodes above, which are
+deterministic; the loops coming back are why the FLEURS test, night4's
+Reversim test and night6's d1 are lower than in the pen 1.0 rows):
+
+| model | FLEURS dev | Reversim dev | WhatsApp | d1 | FLEURS test | Reversim test |
+|---|---|---|---|---|---|---|
+| today's | 1,109 | 1,309 | **665** | **499** | 2,536 | 1,228 |
+| night4 | 1,122 | 792 | 833 | 592 | 2,565 | **738** |
+| night6 | 1,096 | 783 | 818 | 574 | 2,530 | 776 |
+| night7 (night6 + verbatim labels) | **1,093** | 824 | 788 | 547 | 2,542 | 741 |
+| night8 (night7, clips still missing 2+ heard words left out) | 1,100 | 851 | 767 | 539 | 2,541 | 741 |
+| night9 (night8 again) | 1,097 | 863 | 763 | 549 | **2,501** | 740 |
+| **night10** (night8 + top 4 encoder layers) | 1,117 | 805 | 693 | **492** | 2,548 | 707 |
+| night11 (night8 + top 6 encoder layers) | 1,132 | **782** | 707 | 512 | 2,552 | 685 |
+| night12 (night10 + 40 h Knesset committees) | 1,107 | 795 | 681 | 513 | 2,521 | **683** |
+
+**night6 (2026-10-14)**: all 251 h of crowd-transcribe + Reversim twice,
+5.7 h. Against night4 it is level — a little better on plain Hebrew (FLEURS
+dev −26, FLEURS test −35), a little worse on the Reversim test (+38), the
+rest inside the spread. It is the first trained model that is not worse
+than today's on plain Hebrew (−13 and −6), and it is ~40% better on Hebrew
+with English; but it is still 23% worse on WhatsApp and 15% on d1, and the
+reason is still the dropped words (WhatsApp: 128 dropped vs today's 82).
+More data did not cure finding 8 — the labels have to.
+
+**night7 (2026-10-15)**: night6 with the verbatim labels, scored by its own
+runner in the branch's decode (night6's row above was re-measured by the same
+runner and came back to the word, so the computed rows hold). The cure works
+and is half done: words DROPPED against today's model on WhatsApp 128 -> 105
+(today 82), on d1 182 -> 148 (today 122) — the excess halved on both. The
+totals moved the same way (WhatsApp −30, d1 −27, Reversim test −35) but each
+inside its spread; Reversim dev +41 is the one cost, and its references are
+the same edited text, so putting spoken words back is partly scored as
+insertions there. Still +123 / +48 against today's on WhatsApp / d1.
+The restoration only put words back mid-clip where nothing else changed;
+30% of the clips still lack 2+ heard words.
+
+**night8 (2026-10-16) — finding 8 closed.** Words dropped on WhatsApp 79
+(today's 82; night6 128, night7 105), on d1 136 (today's 122). The English
+held (Reversim test 247 of 330 English words right, today's 118). What is left
+on WhatsApp is mostly the style the app wants: 121 of night8's 767 are an
+English term in Latin letters where the reference spells it in Hebrew
+("google" for "גוגל", "token" for "טוקנים"); without those, night8 646 against
+today's 662 there, and on d1 523 against 487 (inside the ~45 spread). It is
+the first trained model level with today's on plain Hebrew and on everyday
+speech and ~40% better on Hebrew with English. **His call, 2026-10-17: into
+his Dev copy for days of real dictation** (`local.model` in settings.toml =
+`DeskIT-training\runs\night8\ct2`; one line back to
+`ivrit-ai/whisper-large-v3-turbo-ct2` undoes it), **and night9 = night8
+repeated** (`night_teacher9.ps1`, 2026-10-18 03:15) — the plan's two runs.
+
+**night9 (2026-10-18): night8 reproduces.** Within 12 words of night8 on
+five sets, 40 better on the FLEURS test: the recipe is stable, its spread
+small. **His first word from the Dev copy (2026-10-18, a few dictations):**
+"the sentence comes out more correct as a whole but less exact to what I
+said — it leaves out a word here and there; the old one gave messier
+sentences closer to my speech; I think it is a little better." Checked on
+his 31 dictations since night8 went live, both models decoding the same
+way, neither taken as truth: night8 left out 7 words the old model wrote
+(כאילו x2, בעצם, בסדר, הוא, a repeated word) and wrote 6 it left out — a
+small, real lean toward dropping discourse words on HIS speech, which the
+public sets showed as gone. And one thing to watch: decoded WHOLE, his
+30.7 s answer ended in "ותודה רבה" x44 under night8 (even with the old
+penalty: "תודה רבה לך, אדוני היושב-ראש") — the Knesset tail after the end
+of speech. The live paste of that recording was clean (rolling windows, and
+the app's boilerplate strip), 0 decoder loops in app.log over the 31; but
+the training clips end 0.1 s after the last word, so the model rarely sees
+silence after speech — a candidate for a later night (clips with a second
+of trailing silence). **Before any trained model ships to other people:**
+Reversim's episodes are "© רברס עם פלטפורמה", downloaded for private use on
+this PC (DeskIT-training\README.txt) — a model trained on them is his
+decision, with that in front of him.
 
 The decode is deterministic (temperature pinned), so a variant of ONE model
 differs by its setting alone; two TRAINED runs (night4/night5) differ by 5-8
@@ -77,10 +152,17 @@ words on the two dev sets that look like the tests and by ~45 on WhatsApp/d1.
    token already written, and Hebrew repeats its small words and prefixes
    legitimately: "את זה" → "לזה", "רעיון" → "חיאיון". It went in on 2026-08-13
    against one 222-ה loop and was "measured byte-identical on clean audio"
-   (short clips); no loop appeared in 262 min without it. **This is a product
-   change — his decision** (`transcribers/local_whisper.py`
-   `hallucination_guards`, a branch, his Dev copy for days of dictation). The
-   night scripts import the app's guards, so once it lands every eval follows.
+   (short clips). Without it the decoder looped on 2 of 1,912 clips with
+   today's model and 3 with each trained one, always one word over and over
+   ("ושבע" x68 and "של" x22 on the FLEURS test, "זהו" x14 on Reversim, "רבה"
+   x44 on d1). **His go, 2026-10-14 morning: branch `no-repetition-penalty`**
+   — the first decode at 1.0, and a loop (a letter run OR a word loop) retried
+   first with 1.15, then greedy, then the ladder. On the two looping clips
+   the 1.15 decode is the one that comes back, so the app's expected numbers
+   are the pen 1.0 rows with those two clips at their old values. The night
+   scripts import the app's guards from the checkout, so from the day the
+   branch is in the checkout every eval measures 1.0 — the rows above taken
+   at 1.15 are then comparable only to each other.
 8. **Every trained night is WORSE than today's model on the two sets that look
    like dictation** — WhatsApp and d1 — and the two night tests could not show
    it. Cause, measured (`label_length_check.py`): Reversim's transcripts are
@@ -134,10 +216,196 @@ then pen 1.0 with both tests).
 ### Stage 1 — squeeze the recipe (free, ~6-8 nights, one change a night)
 
 Each night changes ONE thing against the best recipe so far, judged on dev:
-- **tonight (night6, armed)**: all 251 h of crowd-transcribe (rehearsal at
-  scale) + Reversim twice. (Reversim twice also doubles the lesson of finding
-  8; WhatsApp and d1 will say.)
-- **night7 candidate, prepared, NOT armed — the labels made verbatim**:
+- **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
+  scale) + Reversim twice — level with night4, see §1.
+- **night15 RESULT (2026-10-26) — the model everyone gets, on the real
+  length, with data that may ship.** His answer to the light plan: "train the
+  model everyone gets". `train_acft.py` on ivrit-ai/whisper-large-v3-turbo
+  itself (it is the teacher at 3,000 frames and the base), crowd-transcribe-v5
+  + knesset-committees only (205k clips, 292 h, no Reversim, nothing of
+  night10), 31,675 steps in 506 min, his 22:00-15:00 window. Through the
+  app's own decode at the real length (`eval_applen.py`), six sets: **7,368
+  against today's full window 7,346 (+0.3%)** — only d1 moved (+17, and in
+  both decodes, so the training and not the length). No short-clip loss on
+  Reversim: 5-10 s clips 908 / 643 against today's 911 / 647 (night14b's
+  real length lost +13 there). The short window in the bare loop: 1,133 /
+  1,303 on fleurs_dev / reversim_dev (untrained 1,408 / 1,495, full 1,114 /
+  1,309). CPU int8, 4 threads, median: 0-5 s 1.07 s, 5-10 s 1.66, 10-20 s
+  2.89 (night10's full window 7.2 / 7.5 / 7.8). The light plan's margin hint
+  (more frames after the speech, or a floor under the window) changed
+  nothing on night14b (`runs\margin\report.txt`). Not switched anywhere;
+  shipping it is his call through the light plan.
+- **night16 RESULT (2026-10-27) — the teacher pays: six sets 6,307 against
+  night10's 6,362 (−55, past the ~40 of two identical runs).** WhatsApp −11,
+  FLEURS test −30, Reversim test −13; misheard 3,173 against 3,198 (−25).
+  So the away week (10-28 → 11-04, `scripts\week.ps1`, `runs\week\`) labels
+  228 h more podcasts the same way (cap $78 of the $81.87 left) and trains on
+  them: night18 (data that may ship + the teacher) and its real length
+  night18r first, then night17 (night10's mix + all of it), night16o (the
+  control) and night17r.
+- **night16 — Claude as the teacher of audio with NO human transcript.** The ivrit.ai tech podcasts no night has
+  seen (Geekonomy, startups, בזמן שעבדתם, השור והדוב; 9,987 clips, 42 h)
+  heard by night14b, then corrected by Claude Sonnet through the Batch API
+  with audio-v2's own transcript beside it: **$14.21** (cap $40), 9,979 kept,
+  3,661 changed. night16 = night10's recipe exactly + those clips twice
+  (`night_teacher16.ps1`); `-Labels older` is the control (the same clips,
+  audio-v2's text), run only if night16 wins.
+- **night14 RESULT (2026-10-25) — night10 on the real length WORKS.** Cut on
+  the 24th at 01:59 by a Windows Update restart (step 7,450), run again on
+  the 25th in his 00:00-16:00 window: night14a = the surviving step-7,000
+  adapter, night14b = resumed to the end of the epoch (34,016 steps, loss
+  1.0 → 0.036; `train_acft.py --init-adapter --start-step`). Short window,
+  words wrong on fleurs_dev / reversim_dev: night14b **1,137 / 818** against
+  night10's full window 1,133 / 808 (+0.4% / +1.2%; untrained 1,389 / 1,110).
+  The app's standard full-window decode of night14b, six sets: 6,358 against
+  night10's 6,454 (−1.5%, inside the spread), English and speed the same.
+  CPU int8, 4 threads, 60 FLEURS dev clips, median: 0-5 s 1.22 s, 5-10 s
+  1.75, 10-20 s 3.07 (night10 full window 7.2 / 7.5 / 7.8; zipformer 0.15 /
+  0.22 / 0.38); on the GPU the short window is 35% faster (0.023 against
+  0.035 of the audio). So a CPU tier can keep night10's quality and English;
+  the app side (ct2 generate on a short window, as `eval_dynctx.py`) is not
+  built. night14b could also replace night10 on the GPU path as it is.
+- **night14 (armed for 2026-10-24 00:00-09:15, `night_teacher14.ps1`) — night10
+  on the REAL length of a recording, his choice "both, in stages".** The
+  lighter-app work with DeskIT - 1 (plan in notes\DeskIT-light-plan-2026-10-22.md)
+  found: night10 at int8_float16 inside the noise on all six sets (1,214 MB of
+  graphics memory against 2,238 at float16 — his yes to switching both
+  models, DeskIT - 1's branch); the cloud's generic turbo +50% on Hebrew
+  (Groq is not the road); night10 cannot do English (34% WER pinned to en,
+  its language guess says Hebrew for everything — the second model stays for
+  that); zipformer2-66m on the CPU about level with today's model on speech
+  and the fallback weak-PC tier. And the speed road: on the CPU (int8) the
+  encoder alone costs 2.1 s for 500 frames against 17.3 s for 3,000, but an
+  untrained short window costs 23-37% more errors (night10-dynctx 1,389 /
+  1,110 against its full window 1,133 / 808). So night14 = FUTO's audio-context
+  fine-tuning (`train_acft.py`): night10 at the full window teaches night10 +
+  a LoRA on every layer at the clip's own window (+0-300 frames), MSE on all
+  decoder layers' states under the true transcript. Bar: dynctx inside the
+  spread of fullctx, CPU time near the untrained short window's.
+- **night13r RESULT (2026-10-23) — phone-sounding audio did not move the
+  hearing either.** The training ran whole this time (`grow_commit.py` took
+  the commit limit 43.9 → 53.1 GB before it; 13,161 steps, 446 min). Against
+  night10, words wrong: FLEURS dev −20, Reversim dev −11, WhatsApp **+31**,
+  d1 +31, FLEURS test −38, Reversim test +1 — 6,454 over the six sets, the
+  same number as night10's to the word. Hearing errors 3,198 → 3,179, WhatsApp
+  380 → 396; English 572/916 (night10 582). On the phone-sounding FLEURS dev
+  1,708 → 1,688 (today's 1,696): it learned the simulated channel back to
+  where the base was, and nothing on the real phone set. With night12 (new
+  speakers) and night11 (more encoder) this closes the training road for the
+  hearing on this card: the writing gains are kept by night10, the hearing
+  sits where every good Hebrew model on the leaderboard sits. caspi8k:
+  WhatsApp ran out of memory, d1 looped (89.7% words wrong, RTF 2.5) and ran
+  past his window to 11:27 (no step may outlive the window again — the
+  runner kills at it now); Caspi is closed.
+- **night13 RESULT (2026-10-22) — the training died, the candidates lost.**
+  The phone-audio training ran normally (2.1 s a step, 7.4 GiB) and died at
+  step ~230 for want of HOST commit: event 2004 named the trainer 13.9 GB,
+  DeskIT 6.3 GB, vmmem 4.3 GB, the commit at its 43.9 GB limit (the pagefile
+  is system-managed and grows on demand, slower than a trainer asks; on this
+  PC what sits on the card is charged to commit too). Re-armed as night13r
+  (`night_teacher13r.ps1`, his window until 10:00): `grow_commit.py` grows the
+  pagefile in untouched steps first, one retry on a memory death, the CUDA
+  allocator told to give back what it is not using. The candidates, words
+  wrong on fleurs_dev / reversim_dev / whatsapp / d1 (night10: 1,117 / 805 /
+  693 / 492): soup1012 1,112 / 809 / 696 / 493 — the same as night10;
+  turbo0403 1,223 / 1,401 / **650** / 537 — WhatsApp better than any model,
+  everything else worse; night10dec (night10 without its encoder adapters)
+  1,104 / 1,179 / 665 / 504 — so the encoder adapters DID learn: −374 on
+  Reversim dev, and they cost +28 on WhatsApp, +13 on FLEURS: podcast sound
+  learned, phone sound a little worse — the gap night13 aims at. Caspi
+  1,638 / 1,515 on the short-clip sets (+47% / +88% against night10, twice
+  the decode time, RTF 0.064); its d1 / WhatsApp (9,001 / 6,100) were cut
+  short by `eval_qwen.py`'s 1,024-token cap, re-run as caspi8k in night13r.
+  Caspi is not the road; nor, therefore, our own Qwen3-ASR model for now.
+- **night13 (armed for 2026-10-22 00:00, `night_teacher13.ps1`) — his ask
+  after night12: "research directions we have not tried; trying only teaches
+  us".** Three searches (2026-10-21): (1) no newer ivrit model exists (our
+  2025.05.13 weights are their latest Whisper); on ivrit's own leaderboard the
+  SUBSTITUTIONS (our "misheard") are flat across every good model, cloud ones
+  included (Soniox −6% on WhatsApp) — we may be nearer the floor than it
+  looked; the one claim of a real gain is OzLabs/Caspi-1.7B (Qwen3-ASR-1.7B on
+  the same ivrit data, d1 4.2 / WhatsApp 6.0 self-reported, CC-BY-NC: research
+  only). (2) Training: none of our audio sounds like a phone, and codec/noise/
+  echo simulation is what the literature measures moving a channel (MP3-23k
+  13.6 → 10.6 WER, clean 10.5 → 10.0, Narayanan 2018). (3) Decode time: both
+  models' 5-best + a corrector choosing only at disagreement slots + Whisper's
+  own `align()` score as a veto (Apple's correction-first decoding −27-32%) —
+  a product idea, not tried yet. So night13 = night10's recipe + ONE change:
+  60% of the clips from a phone-sounding copy (`make_phone_aug.py`: Opus 8-24
+  kbps or an 8 kHz µ-law line, OpenSLR-28 noise 5-20 dB, room echo; checked on
+  14 clips: the base goes 9.6% → 13.5%, hard but intelligible), scored on the
+  six sets and a phone-sounding FLEURS dev (`make_phone_dev.py`). Then, on
+  four sets: soup1012 (night10+night12 averaged, `soup.py`), turbo0403 (ivrit's
+  2025.04.03 weights, better on the leaderboard's WhatsApp), night10dec
+  (night10 without its encoder adapters: did they learn anything?) and Caspi
+  (`eval_qwen.py`, qwen_venv). Waits for 15 quiet minutes in app.log to start
+  and 5 before each scoring block; nothing starts after 09:45.
+- **night12 RESULT (2026-10-21) — new audio with human text did not move the
+  hearing.** Against night10: FLEURS dev −10, Reversim dev −10 (both just past
+  the spread), WhatsApp −12, d1 +21, FLEURS test −27, Reversim test −24 (all
+  inside it); 6,454 → 6,388 words over the six sets (−1%). The hearing errors
+  (`error_kinds.py` "misheard") 3,198 → 3,202 — WhatsApp 380 → 414; English
+  582/916 and speed unchanged. And the trap it was watched for showed once:
+  d1 ended a stretch with "תודה רבה לך, אדוני." (`knesset_phrase_check.py`: 2
+  phrases, 0 for night10). 40 h of new speakers with human text is ~9% of the
+  mix against the base's 4,700 h of Knesset ×3; a LoRA on the top four
+  encoder layers cannot move the hearing with that. night10 stays; night13's
+  merged Knesset (`build_knesset_merged.py`) and the Claude teacher are not
+  worth running on this evidence.
+- **night12 (armed for 2026-10-21 00:30, `night_teacher12.ps1`) — the first
+  Stage 2 night, his choice**: night10's exact recipe plus ONE new source,
+  ~40 h of ivrit-ai/knesset-committees (`build_knesset_data.py` →
+  `data\train_knesset`; ivrit.ai licence, training allowed — unlike Reversim,
+  this part could ship). The protocols are edited, not verbatim — finding 8's
+  trap again — so a segment is kept only when, against the Whisper transcript
+  the dataset ships, its text drops NO heard word and adds at most one, with
+  a median alignment score ≥ 0.7 and both edge words ≥ 0.5. Measured first:
+  the night8-style test (≤ 1 missing, by word middles) kept 36% of the
+  segments of a session but let edge words through — the forced alignment
+  stretches a written word over an unwritten one ("רשמנו", p 0.12, over
+  "וכך הלאה"), 3 of 6 clips decoded on the CPU lacked a spoken word at an
+  edge; counting every heard word that TOUCHES a segment fixed it, 10 of 10
+  clean, ~7 min kept per session. Scored on the six sets and on Knesset
+  phrases nobody said (`knesset_phrase_check.py`: 0 for today's, night10
+  and night11).
+- **night11 (done 2026-10-20, `night_teacher11.ps1`) — no better than
+  night10.** night10 with the top SIX encoder layers (26-31); with Ollama
+  unloaded first it did not run out of memory (no fallback), the epoch in
+  506 min. Against night10: Reversim dev −23 (past the spread) and the
+  Reversim test −22 (inside it) — the training domain; FLEURS dev +15 (past
+  the spread) — read speech; WhatsApp +14, d1 +20, FLEURS test +4, all inside
+  the spread. English words right 586 of 916 over the six sets (night10 582,
+  today's 334); decode time the same (0.035 of the audio, today's 0.038).
+  Two more hearing layers fit the podcasts a little more and buy nothing
+  for speech that sounds like dictation, so the layer count is not the road:
+  night10 stays in his Dev copy, and the next gain has to come from data the
+  base has not heard (Stage 2).
+- **night10 (done 2026-10-19) — the best model so far.** The full epoch in
+  447 min, peak 8.5 GiB. Against night8/9 the hearing part paid: WhatsApp
+  −70/−74, d1 −47/−57, Reversim dev −46/−58, Reversim test −33, all past the
+  spread; FLEURS dev +17/+20 and the FLEURS test +7/+47 the one cost. Against
+  today's: d1 492 vs 499, WhatsApp 693 vs 665 but 644 vs 662 without the
+  Latin-style words (49 of its 693, against night8's 121), FLEURS level
+  (+8, +12), Reversim −40%; English words right 262 of 330 (today's 118);
+  dropped words on WhatsApp 83 (today's 82); decode time the same as night8,
+  a little under today's. **His call, 2026-10-19: into his Dev copy**
+  (`local.model` = `runs\night10\ct2`), and night11 = more layers.
+- **night10 (armed for 2026-10-19 00:30, `night_teacher10.ps1`)**: night8 with
+  the add-on also on the encoder — the TOP FOUR layers (28-31). Measured
+  first: the whole encoder ran out of memory beside the app (13.6 GiB) and
+  with gradient checkpointing took 8.6 s a step (~31 h an epoch); the top 8
+  ran out at batch 8 and took 3.3 s a step at 4x4; the top 4 at batch 8 is
+  2.15 s a step and 7.3 GiB — ~7.9 h, hence the earlier start. Compared
+  with night8 AND night9.
+- **night9 (done 2026-10-18)**: night8 again — reproduces (§1).
+- **night8 (done 2026-10-16, `night_teacher8.ps1`; §1)**: night7 with
+  ONE change — the Reversim clips whose verbatim label still lacks 2+ heard
+  words left out, both copies (`build_night8_data.py`,
+  `train_lora_night8.py`): 13,124 of 18,739 clips kept, 34.9 h, 62% of the
+  English words. If WhatsApp and d1 reach today's model while Reversim holds,
+  finding 8 is closed; if the English drops, the middle road is "at most two
+  missing" (81% of clips, 74% of the English).
+- **night7 (done 2026-10-15) — the labels made verbatim**:
   night4's recipe with `runs\teacher\labels_verbatim.jsonl`
   (`build_verbatim_labels.py`): the Hebrew words today's model heard and the
   label lacks, put back where nothing else changes there — 6,357 words in 22%
@@ -172,6 +440,31 @@ The base has not seen these:
   API ~$0.85 per 1,000 clips (measured), so 30,000 clips (~80 h) ~$26,
   60,000 ~$51 — asked as a separate yes, with the cap enforced in code as
   on 2026-10-10.
+  **Measured 2026-10-20 before any such spend** (`teacher_measure.py`,
+  $3.93 of a $5 cap, key `teacher/anthropic`): on our sets with a human
+  reference, Claude saw night10's and today's transcripts (never the
+  reference) and wrote what it thought was said — exactly the audio-v2 job.
+  Words wrong, night10 → teacher: WhatsApp 693 → 628 (Sonnet, −9.4%) / 627
+  (Opus, −9.5%); d1 492 → 468 / 463 (−4.9% / −5.9%); Reversim dev 805 → 871
+  with Sonnet, all of it words B heard that the EDITED reference lacks
+  (finding 8), not a loss. The hearing errors alone (`error_kinds.py`
+  "misheard"): WhatsApp 380 → 332 / 316, d1 222 → 203 / 200 — 9-17%. Opus ≈
+  Sonnet at twice the price. Under the 15% bar set before the run, so not
+  spent: labels 90% our own model's would mostly teach it itself. Revisit
+  only if new audio with HUMAN text (night12, the Knesset) is shown to move
+  the hearing errors at all. The audio-v2 facts (2026-10-20 survey): ~22,000
+  h of opus at 14.9 MB/h, transcripts by the 2025.04.03 checkpoint of our own
+  base (so as labels they teach nothing), Geekonomy ~1,700 h of which the
+  base heard ~5% via crowd-transcribe; eval-d1 is ONE Mindset episode that is
+  in audio-v2 — never train on it.
+- **What training has and has not moved** (`error_kinds.py`, 2026-10-20, six
+  sets): night10 against today's — words added 1,453 → 836, English as Latin
+  837 → 500, dropped 875 → 792, but MISHEARD 3,170 → 3,198: every night so far
+  taught the writing, none the hearing. Half of all errors are hearing
+  errors in spontaneous speech (ישירות→ישיבות, חתול→חתום, שלהם→שלהן). The
+  base's own data was crowd-transcribe (which we rehearse) and 4,700 h of
+  Knesset PLENUMS three times over — so new audio with human text is the
+  test, and knesset-committees is the only large such source after the base.
 - a **name-style pass** on all training text (foreign place and person names
   in Hebrew letters, tech terms in Latin) — aimed at the FLEURS style gap;
   cheap, only clips with names; estimated before asking.
@@ -200,8 +493,8 @@ on FLEURS at ~1.5 s that nobody waits for.
    evening: all five open.
 2. Say yes or no to each Claude spend when it is asked, with its estimate.
 3. Keep DeskIT running at night (it is what keeps the PC awake).
-4. (2026-10-14) Decide the repetition penalty in the app (finding 7): off, 1.05,
-   or leave it — a product change, through a branch and his Dev copy.
+4. (2026-10-14) The repetition penalty (finding 7): decided — off on the first
+   decode, kept for loops; branch `no-repetition-penalty`, his Dev copy next.
 5. (2026-10-14) Decide night7 (verbatim labels, Stage 1) after night6's numbers.
 
 ## 5. Ruled out, and why
