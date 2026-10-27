@@ -235,8 +235,15 @@ Each night changes ONE thing against the best recipe so far, judged on dev:
   (more frames after the speech, or a floor under the window) changed
   nothing on night14b (`runs\margin\report.txt`). Not switched anywhere;
   shipping it is his call through the light plan.
-- **night16 (written, waits for his window) — Claude as the teacher of
-  audio with NO human transcript.** The ivrit.ai tech podcasts no night has
+- **night16 RESULT (2026-10-27) — the teacher pays: six sets 6,307 against
+  night10's 6,362 (−55, past the ~40 of two identical runs).** WhatsApp −11,
+  FLEURS test −30, Reversim test −13; misheard 3,173 against 3,198 (−25).
+  So the away week (10-28 → 11-04, `scripts\week.ps1`, `runs\week\`) labels
+  228 h more podcasts the same way (cap $78 of the $81.87 left) and trains on
+  them: night18 (data that may ship + the teacher) and its real length
+  night18r first, then night17 (night10's mix + all of it), night16o (the
+  control) and night17r.
+- **night16 — Claude as the teacher of audio with NO human transcript.** The ivrit.ai tech podcasts no night has
   seen (Geekonomy, startups, בזמן שעבדתם, השור והדוב; 9,987 clips, 42 h)
   heard by night14b, then corrected by Claude Sonnet through the Batch API
   with audio-v2's own transcript beside it: **$14.21** (cap $40), 9,979 kept,
