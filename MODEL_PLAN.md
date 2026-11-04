@@ -243,6 +243,51 @@ Each night changes ONE thing against the best recipe so far, judged on dev:
   them: night18 (data that may ship + the teacher) and its real length
   night18r first, then night17 (night10's mix + all of it), night16o (the
   control) and night17r.
+- **THE AWAY WEEK RESULT (2026-10-28 → 11-01, `runs\week\week.report.txt`,
+  the daily notes in `runs\week\daily\`) — the hearing moved at last, and the
+  recipe that may ship is ~10% under today's, nearly all of it on tech talk.**
+  Every job finished on its
+  first try; 228 h of podcasts labelled for **$77.73** of the $78 cap (53,928
+  clips kept, 20,744 changed). Six sets, words wrong, lower is better:
+
+  | model | what | standard decode | the app's real length |
+  |---|---|---|---|
+  | today | what ships | 7,346 | |
+  | night15 / night15b | ships + real length, no teacher | 7,419 / 7,391 | 7,368 / 7,346 |
+  | night18 / night18b | data that may ship + the teacher | 6,618 / 6,591 | |
+  | night18r / night18br | the same at the real length | 6,714 / 6,714 | 6,646 / 6,633 |
+  | night10 | Reversim mix | 6,362 | |
+  | night16 / night16o | + 42 h: Claude's labels / the old labels | 6,307 / 6,381 | |
+  | **night17** | **Reversim mix + all 270 h labelled: the best** | **6,253** | |
+  | night17r | the same at the real length | 6,326 | 6,294 |
+
+  What it settled. (1) **misheard moved at last**: 3,198 on night10 → 3,092 on
+  night17, 3,097 on night18b (today 3,170; no night before night16 had moved
+  it). (2) **The labels did it, not the audio**: night16o, the same clips
+  with audio-v2's own text, is 74 words behind night16 and level with night10.
+  (3) **The recipe that may ship repeats**: 6,618 / 6,591, and 6,646 / 6,633 at
+  the real length — 706 under today on the mean. (4) **Most of that is the two
+  Reversim sets**: −689 there, −53 on the other four (4,756 against 4,809) at
+  the standard decode, −33 at the real length. It is not a leak: the two sets
+  share no 8-word run with either labelled podcast set (0 of 9,976; the only
+  three episodes with the word in their name are another show's, about the
+  Reversim conference, 291 clips), and the error kinds say why: Latin 837 →
+  ~610, added 1,453 → ~1,070 — tech talk in Hebrew and English, which is his
+  and his users' dictation; on plain Hebrew it is a small gain. (5) The real
+  length costs ~0.5% through the app's decode on the same data (6,605 → 6,640);
+  only d1 moves near the spread (night18 491 → 530 / 515, today 499). (6)
+  night15b = night15: the real length with no teacher stays level with today.
+  **Open.** The CPU column of this week read 3.7-3.95 s on 10-20 s clips
+  against night15's 2.89, and night15b reads 3.74 with night15's recipe and
+  structure, so that gap is the machine and not the models: re-time them side
+  by side before quoting either. **Before any of it ships, two of his calls:**
+  night17 carries Reversim (© — private use), night18 does not; and night18's
+  labels are Claude's, while Anthropic's Commercial Terms D.4(a) (effective
+  2025-06-17) bar accessing the Services "to build a competing product or
+  service, including to train competing AI models", leave "competing"
+  undefined, and do not speak of speech models. The Usage Policy and Service
+  Specific Terms are not read yet. night15, without Claude's labels, is what
+  PR 31 ships meanwhile.
 - **night16 — Claude as the teacher of audio with NO human transcript.** The ivrit.ai tech podcasts no night has
   seen (Geekonomy, startups, בזמן שעבדתם, השור והדוב; 9,987 clips, 42 h)
   heard by night14b, then corrected by Claude Sonnet through the Batch API
