@@ -10,9 +10,10 @@ import android.widget.TextView
 
 /**
  * The account's faces, each one a function of what it shows and nothing else,
- * so the pictures he judges are these very widgets and not a drawing of them.
- * AccountActivity and the account card on Settings put them on screen; the
- * debug build's ProtoActivity shows them with made-up data.
+ * so the pictures he approved on 2026-11-06 are these very widgets and not a
+ * drawing of them. AccountActivity and the account card on Settings put them on
+ * screen; the debug build's ProtoActivity shows them with made-up data, for the
+ * next round of pictures.
  *
  * His rule, 2026-11-06: keep what a person must have to act and drop the rest.
  * A code screen is the code and one short line. A question is the question and

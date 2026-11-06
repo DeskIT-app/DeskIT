@@ -94,7 +94,11 @@ class Refuse(Exception):
 
 
 class _Door(http.server.BaseHTTPRequestHandler):
+    # As a real server does: connections stay open, and an idle one is dropped
+    # without a word. A phone holding it in its pool finds out at its next
+    # request, and that is the case the app has to get through.
     protocol_version = "HTTP/1.1"
+    timeout = 2.0
 
     def log_message(self, *a):
         pass
@@ -109,11 +113,6 @@ class _Door(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8" if html is not None
                          else "application/json")
         self.send_header("Content-Length", str(len(body)))
-        # One request per connection: a browser or a client holding a
-        # keep-alive socket would otherwise go on talking to the fake of the
-        # flow before, whose thread is still serving it.
-        self.send_header("Connection", "close")
-        self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 

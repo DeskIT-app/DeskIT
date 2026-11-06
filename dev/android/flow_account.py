@@ -86,6 +86,10 @@ def browser_opens(acct: fake_pc.FakeAccount, seen: int) -> bool:
     end = time.time() + 30
     while time.time() < end:
         if len(acct.authorized) > seen:
+            # Android 8's Chrome reloads its last tab as it comes to the front,
+            # an earlier flow's page and an earlier sign-in's challenge, and then
+            # opens ours. The newest asking is ours, so let them both arrive.
+            time.sleep(2)
             return True
         choice = drive.find("^Chrome$")
         if choice is not None:

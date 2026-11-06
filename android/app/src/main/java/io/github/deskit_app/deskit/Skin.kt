@@ -50,7 +50,6 @@ object Skin {
     val CARD = Color.parseColor("#1A1E35")
     val CARD_HI = Color.parseColor("#242944")
     val LINE = Color.parseColor("#30365A")
-    val LINE_HI = Color.parseColor("#454C78")
 
     // ---- text ----
     val FG = Color.parseColor("#EFEDF7")
@@ -62,8 +61,6 @@ object Skin {
     val ACCENT = Color.parseColor("#A597FF")
     val ACCENT_HI = Color.parseColor("#B9AEFF")
     val ACCENT_LO = Color.parseColor("#9486EE")
-    val ACCENT_SOFT = Color.parseColor("#262650")
-    val ACCENT_EDGE = Color.parseColor("#5D5A9E")
     val ACCENT_TEXT = Color.parseColor("#C2B9FF")
     val ACCENT_ON = Color.parseColor("#140F33")
 
@@ -78,7 +75,6 @@ object Skin {
     val GLASS_LEAD = rgba(40, 46, 82, .56f)
     val GLASS_SHEET = rgba(30, 35, 62, .94f)
     val WELL = rgba(6, 8, 18, .42f)
-    val TRACK = rgba(10, 13, 24, .55f)
 
     /** The status lamp, the desk's four meanings. */
     val LISTENING = COOL

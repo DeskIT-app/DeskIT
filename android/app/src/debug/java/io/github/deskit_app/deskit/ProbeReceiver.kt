@@ -20,6 +20,21 @@ class ProbeReceiver : BroadcastReceiver() {
 
     override fun onReceive(c: Context, intent: Intent) {
         val done = goAsync()
+        val posts = intent.getIntExtra("posts", 0)
+        if (posts > 0) {
+            // Many real POSTs in a row: a transport failure a flow meets once in
+            // a hundred requests shows up here, by class, in the log.
+            thread {
+                val gap = intent.getLongExtra("gap", 0)
+                repeat(posts) {
+                    Account.broadcast(c, "stress", org.json.JSONObject().put("i", it))
+                    if (gap > 0) Thread.sleep(gap)
+                }
+                Log.i("DeskIT", "probe: posts done")
+                done.finish()
+            }
+            return
+        }
         // What the keyboard pays at its first start in a process: run this right
         // after a kill, or it reads the cache.
         val t0 = System.nanoTime()

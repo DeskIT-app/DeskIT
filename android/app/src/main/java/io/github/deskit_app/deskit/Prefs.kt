@@ -7,7 +7,7 @@ import android.content.Context
  *
  * Nothing is baked in: a fresh install knows no PC at all — the address
  * and the token are empty until the person pastes the line their own PC
- * shows, and Home says "Not set up yet" until then. There used to be a
+ * shows, and Home says "Not connected yet" until then. There used to be a
  * default address here (the owner's own machine, from the days the APK
  * only ever reached his own phone); it went with the package rename of
  * 2026-09-19 (DISTRIBUTION_PLAN.md 12.6), and D22's QR pairing replaces

@@ -28,10 +28,10 @@ import kotlin.concurrent.thread
 /**
  * What opens from the icon: a small home, not a form.
  *
- * Top to bottom — the state of the link to the PC as a lamp and a line;
- * a gold pill when the PC holds a newer build; the three set-up steps
- * only while one is still red; the second reading's proposals while any
- * wait; and the last things you said from this phone, a tap to copy.
+ * Top to bottom — a pill when the PC holds a newer build; the state of the
+ * link to the PC as a lamp and a word; only the set-up steps that are left;
+ * the second reading's proposals while any wait; and the last things you
+ * said from this phone, a tap to copy.
  * Everything that is a setting is behind the one Settings button. It is
  * the desktop's Home, cut for a pocket: a summary, and doors.
  */

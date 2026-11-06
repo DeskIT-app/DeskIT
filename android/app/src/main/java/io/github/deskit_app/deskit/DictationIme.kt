@@ -55,10 +55,10 @@ import kotlin.concurrent.thread
  * The face is in English deliberately. It sits directly under a Hebrew
  * text field, and two scripts in one glance is harder to read, not easier.
  *
- * THE LOOK IS THE DESKTOP'S (Skin.kt): LAMPLIGHT's colours and Rubik, on
+ * THE LOOK IS THE DESKTOP'S (Skin.kt): B+'s colours and Rubik, flat, on
  * shapes cut for a thumb. The microphone is a pill holding the desktop's
  * status dot as a lamp — listening blue, recording red, locked red and
- * breathing, transcribing gold, grey with no halo when the PC cannot be
+ * breathing, transcribing amber, grey with no halo when the PC cannot be
  * reached — so the corner of the desk and the bottom of the phone say the
  * same thing in the same colour.
  */
@@ -431,7 +431,7 @@ class DictationIme : InputMethodService() {
         setTextColor(if (primary) Skin.ACCENT_ON else keyText)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
         isFocusable = true
-        // The action key is the ONE gold thing on this surface — the
+        // The action key is the ONE lit thing on this surface — the
         // primary action, the same rule every desktop surface keeps.
         background = if (primary) Skin.primaryFace(this@DictationIme, 14)
                      else Skin.secondaryFace(this@DictationIme, 14)

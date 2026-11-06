@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -217,6 +218,9 @@ object Account {
             return Reply(status, stream?.bufferedReader()?.use { it.readText() } ?: "",
                          conn.getHeaderFieldDate("Date", 0L) / 1000)
         } catch (e: IOException) {
+            // The class and the path, never a query: a query can hold a code.
+            Log.w("DeskIT", "account: $method ${path.substringBefore('?')}: " +
+                "${e.javaClass.simpleName}: ${e.message?.take(120)}")
             throw Failed("Can't reach your account. Check the connection.", offline = true)
         } finally {
             conn?.disconnect()
@@ -336,17 +340,9 @@ object Account {
         }
         val verifier = Sealed.getText(c, PKCE)
             ?: throw Failed("That sign-in has ended. Try again.")
-        val body = JSONObject().put("auth_code", code).put("code_verifier", verifier).toString()
-        val r = try {
-            call(c, "POST", "/auth/v1/token?grant_type=pkce", body, null)
-        } catch (e: Failed) {
-            if (!e.offline) throw e
-            // A phone just back from the browser can take a moment to have its
-            // network again, and failing here costs the whole sign-in. One more
-            // try: a code the server did not see is still good.
-            Thread.sleep(1500)
-            call(c, "POST", "/auth/v1/token?grant_type=pkce", body, null)
-        }
+        val r = call(c, "POST", "/auth/v1/token?grant_type=pkce",
+                     JSONObject().put("auth_code", code).put("code_verifier", verifier).toString(),
+                     null)
         val data = r.obj()
         if (r.status != 200 || data == null || data.optString("access_token", "").isEmpty()) {
             throw Failed("The sign-in code was refused (${r.said()}).")
