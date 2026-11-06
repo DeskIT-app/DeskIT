@@ -194,6 +194,23 @@ object Sealed {
         file(c, name).delete()
     }
 
+    /**
+     * The sealing key itself goes, for a phone leaving its account: everything
+     * it sealed has gone already. The next seal makes a new key under what the
+     * phone is by then, so one that gained a screen lock after its key was made
+     * comes back with an unlocked-only key and not the old one.
+     */
+    @Synchronized
+    fun dropKey() {
+        try {
+            drop()
+        } catch (e: GeneralSecurityException) {
+            Log.w("DeskIT", "the sealing key stays: ${e.javaClass.simpleName}")
+        } catch (e: IOException) {
+            Log.w("DeskIT", "the sealing key stays: ${e.javaClass.simpleName}")
+        }
+    }
+
     /** Text forms, for the JSON blobs almost everything here is. */
     fun putText(c: Context, name: String, text: String) =
         put(c, name, text.toByteArray(Charsets.UTF_8))

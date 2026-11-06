@@ -734,8 +734,49 @@ def flow_pin_added_later():
         to_settings()
         drive.wait("HOME-PC", 20)
         check("and the account carries on", True)
+        if int(drive.shell("getprop", "ro.build.version.sdk").strip()) < 28:
+            return
+
+        # the way out: leave and come back, and every key is made under the lock
+        drive.tap_scrolling("^Sign out$")
+        drive.wait("^Sign out of this phone\\?$", 10)
+        drive.tap_scrolling("^Sign out$")
+        check("signed out", until(lambda: not acct.sessions, 15))
+        back()
+        to_account_page()
+        sign_in(acct, from_home=False)
+        drive.wait(CODE, 30)
+        same_code()
+        acct.approve(acct.requests()[-1]["id"])
+        drive.wait("This phone is ready", 25)
+        lock_screen()
+        time.sleep(2)
+        now = probe()
+        print("      back in, locked:", now, flush=True)
+        check("after leaving and coming back, a locked phone opens nothing", "sealed=notnow" in now, now)
+        check("and signs nothing", "signs=refused" in now, now)
+        unlock(pin)
     finally:
         drive.shell("locksettings", "clear", "--old", pin, check=False)
+        acct.stop()
+
+
+def flow_another_account():
+    """The wrong Google account, noticed on the code screen."""
+    acct = fresh()
+    try:
+        sign_in(acct)
+        drive.wait(CODE, 30)
+        check("the screen names the account it is on", drive.find(acct.email) is not None)
+        first = acct.requests()[0]
+        drive.tap("^Use another account$", 10)
+        drive.wait("^Sign in$", 20)
+        check("the request goes", until(lambda: not acct.requests(), 10))
+        check("the session goes", until(lambda: not acct.sessions, 10))
+        sign_in(acct, from_home=False)
+        drive.wait(CODE, 30)
+        check("the next sign-in asks afresh", acct.requests()[0]["id"] != first["id"])
+    finally:
         acct.stop()
 
 

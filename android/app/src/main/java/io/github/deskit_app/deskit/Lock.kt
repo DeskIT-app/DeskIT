@@ -1022,6 +1022,7 @@ object Lock {
         }
         Account.endSession(c)
         wipe(c)
+        Sealed.dropKey()
         File(c.filesDir, SPOOL).deleteRecursively()
         return told
     }
