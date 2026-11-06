@@ -128,6 +128,9 @@ CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".mp4")
 #: the app's worker to carry the copy up before it says "on its way".
 REPORT_WHERE = "Home"
 REPORT_SEND_WAIT_S = 12.0
+#: Home's row on a further PC (dashboard._waiting_phone says the same).
+PHONE_ASK = ("It joined your account on your other PC. Allow it, and at home it dictates "
+             "straight to this PC. Windows will ask you once.")
 #: What the screenshot is shown as on the preview (problems.THUMB_MAX).
 REPORT_THUMB_PX = 220
 #: The plain words for each piece of the copy that travels — the Tk
@@ -305,13 +308,10 @@ def change_segments(text: str, changes: list) -> tuple[list[dict], int]:
     return segs, len(kept)
 
 
-def _without_phone(reply):
-    """status() carries the phone link and its token; the page never
-    needs them and a page is not where a secret goes (webdesk.py)."""
-    if isinstance(reply, dict):
-        reply = dict(reply)
-        reply.pop("phone", None)
-    return reply
+def _phone_on(reply) -> bool:
+    """The footer's "phone live": the phone's door is open."""
+    info = (reply or {}).get("phone")
+    return bool(isinstance(info, dict) and info.get("on"))
 
 
 def copy_text(text: str, secret: bool = False) -> bool:
@@ -450,8 +450,8 @@ class Model:
             # Within a second of a press the app may not have caught up,
             # and a status from before the press would flip the button
             # back for one frame (dashboard._refresh).
-            self.phone_live = bool((reply or {}).get("phone"))
-            self.status = _without_phone(reply or {})
+            self.phone_live = _phone_on(reply)
+            self.status = reply or {}
             self.running = bool(reply) and self.status.get("stage") == "running"
         stamp = history.stamp()
         if stamp != self._log_stamp:
@@ -908,6 +908,20 @@ class Model:
                       "act": "lock.recovery_new"}]))
         return rows
 
+    def _phone_rows(self) -> list[dict]:
+        """A further PC of the account: one row, and the door binds on Allow,
+        so Windows' dialog follows a press (dashboard._waiting_phone)."""
+        info = (self.status or {}).get("phone")
+        if not isinstance(info, dict) or not info.get("ask"):
+            return []
+        name = str((info.get("phones") or [{}])[0].get("name") or "Your phone")
+        return [{"id": "phone:allow", "kind": "phone", "at": self._stamp() + 1, "tone": "q",
+                 "glyph": "phone", "title": name, "meta": "",
+                 "text": "Your phone can use this PC too", "rtl": False,
+                 "note": PHONE_ASK,
+                 "buttons": [{"label": "Allow", "tone": "primary", "act": "phone.allow"},
+                             {"label": "Not now", "tone": "quiet", "act": "phone.notnow"}]}]
+
     def _lock_changed_rows(self, lock: dict, now: float, row) -> list[dict]:
         """dashboard._lock_changed_rows: the account's lock changed
         somewhere else. [It was me] asks to join the new lock; [It wasn't
@@ -997,7 +1011,7 @@ class Model:
     def pile(self) -> list[dict]:
         self._now = time.time()
         items: list[dict] = []
-        for part in (self._consent_rows, self._lock_rows, self._update_rows,
+        for part in (self._consent_rows, self._lock_rows, self._phone_rows, self._update_rows,
                      self._needs_key_rows, self._hardware_rows, self._notify_rows,
                      self._review_rows):
             try:
@@ -1739,8 +1753,8 @@ class Model:
         if isinstance(reply, dict) and reply.get("ok"):
             fresh = self._send("status", timeout_ms=1200)
             if isinstance(fresh, dict):
-                self.phone_live = bool(fresh.get("phone"))
-                self.status = _without_phone(fresh)
+                self.phone_live = _phone_on(fresh)
+                self.status = fresh
                 self.running = self.status.get("stage") == "running"
         return reply
 
@@ -1768,6 +1782,10 @@ class Model:
         return None
 
     def _do(self, do: str, arg) -> str:
+        if do in ("phone.allow", "phone.notnow"):
+            if do not in self._offered(self._phone_rows):
+                return "that question is not waiting"
+            return self._said(self._ask("phone", do=do.split(".", 1)[1]), "")
         if do in ("notify.dismiss", "notify.open"):
             ident = self._notify_id(arg)
             if ident is None:

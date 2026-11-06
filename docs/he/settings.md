@@ -110,11 +110,11 @@ title: הגדרות
 
 ## Phone
 
-### Dictating From The Phone
+### The Phone
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
 |---|---|---|---|
-| `server.enabled` — Dictate from the phone | The phone keyboard sends its recordings here, over your own private network. | off | on / off |
+| `server.enabled` — Dictate from the phone | Your phone sends what you say to this PC, and the words come back to it. | on | on / off |
 
 ## Account
 

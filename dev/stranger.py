@@ -308,7 +308,7 @@ def main(argv: list[str]) -> int:
     pid = start(home, env)
     print(f"the stranger's copy is up: pid {pid}, home {home}")
     print("no .env, no key, no model until the wizard downloads one; the kernel names"
-          " carry .test, the phone port is 8758")
+          " carry .test, and a busy port falls through to the next free one")
     print("its hotkeys are the dev copy's hotkeys: both answer while both run")
     print(f"to end it: python dev\\stranger.py --stop" + (f" --home \"{home}\"" if home != DEFAULT_HOME.resolve() else ""))
     return 0

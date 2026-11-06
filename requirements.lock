@@ -651,6 +651,10 @@ pyyaml==6.0.3 \
     #   -c constraints.txt
     #   ctranslate2
     #   huggingface-hub
+segno==1.6.6 \
+    --hash=sha256:28c7d081ed0cf935e0411293a465efd4d500704072cdb039778a2ab8736190c7 \
+    --hash=sha256:e60933afc4b52137d323a4434c8340e0ce1e58cec71439e46680d4db188f11b3
+    # via -r requirements.txt
 sounddevice==0.5.5 \
     --hash=sha256:05eb9fd6c54c38d67741441c19164c0dae8ce80453af2d8c4ad2e7823d15b722 \
     --hash=sha256:1234cc9b4c9df97b6cbe748146ae0ec64dd7d6e44739e8e42eaa5b595313a103 \

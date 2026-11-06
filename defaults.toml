@@ -1529,15 +1529,22 @@ offline = false                # true refuses EVERY connection except this
 # posts the audio here, so you keep the Hebrew fine-tune instead of falling
 # back to whatever the phone's keyboard offers. Runs inside this app and
 # borrows the model that is already loaded.
-# Reachability is Tailscale's job — see the README. host = "" binds to the
-# Tailscale address when it is up (and 127.0.0.1 when it is not), so this
-# never answers the home LAN.
-enabled = false
-host = ""
-port = 8756
+# Two doors. One stays on this PC (port, plain HTTP, a bearer) for the Claude
+# hook and anything else running here, and it stays open while the Claude
+# hook is connected even with this switch off. The other (phone_port) is the
+# one a phone reaches straight over the network you are both on. It takes
+# only a certificate listed, sealed, in your own account, drops anybody else
+# in the handshake, and opens only once a phone joined your account and this
+# PC said yes. No phone in the account, nothing listens beyond this PC.
+enabled = true
+host = ""                      # "" = 127.0.0.1. Nothing else is honoured:
+                               # the door a phone uses is the other one.
+port = 8756                    # tried first; a busy port falls through
+                               # (20 tries) and state.json says where it
+                               # landed, which is where the hook looks.
 phone_port = 8766              # the phone door asks for this one first; a
-                               # busy port falls through and state.json
-                               # remembers where it landed.
+                               # busy port falls through the same way, and
+                               # this PC's row in the account carries it.
 review_scope = "phone"         # phone | all. What GET /review answers: all
                                # keeps desk proposals answerable from the sofa.
 phone_allowed = false          # this PC's one yes to its phone door; state.

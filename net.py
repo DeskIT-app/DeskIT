@@ -1040,8 +1040,6 @@ class Door:
         self._slots = threading.BoundedSemaphore(DOOR_HANDSHAKES)
         self._drops: dict[str, float] = {}
         self._closing = False
-        #: fingerprint -> time.time() of its last connection, for the desk
-        self.seen: dict[str, float] = {}
         self._listener.settimeout(0.5)     # a close on Windows may not wake accept
         self._thread = threading.Thread(target=self._accept, daemon=True, name="phone-door")
         self._thread.start()
@@ -1080,10 +1078,9 @@ class Door:
                 phone = self._known.get(fingerprint)
                 if phone is not None:
                     self._open.setdefault(fingerprint, set()).add(tls)
-                    self.seen[fingerprint] = time.time()
             if phone is None:
                 raise ValueError("not a listed certificate")
-        except (OSError, ValueError) as e:                   # ssl.SSLError is an OSError
+        except Exception as e:                               # noqa: BLE001 — ssl's and ours
             log.debug("door: %s dropped (%s)", address[0], type(e).__name__)
             self._shut(tls if tls is not None else raw)
             self._dropped(address)

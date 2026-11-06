@@ -360,6 +360,10 @@ class Routes:
         warning = result[2] if len(result) > 2 else None
         log.info("phone: %.1f s -> %d chars via %s", seconds, len(text),
                  backend)
+        if phone is not None:
+            import phone as phone_mod
+
+            phone_mod.saw(phone.fingerprint, dictated=True)
         payload = {"text": text, "seconds": round(seconds, 2),
                    "backend": backend}
         if warning:
@@ -790,7 +794,6 @@ class PhoneServer:
                              review_scope=cfg.server.review_scope)
         self._srv: _Server | None = None
         self._thread: threading.Thread | None = None
-        self.url: str | None = None
         #: The port it holds, None while it is shut.
         self.port: int | None = None
 
@@ -826,26 +829,9 @@ class PhoneServer:
                                         daemon=True, name="phone-server")
         self._thread.start()
         log.info("phone endpoint on %s:%d", host, self.port)
-        name = tailscale_name()
-        if name:
-            # The line the keyboard's Settings accepts whole (address and
-            # token, Prefs.parsePasted); the web page it once opened is
-            # gone (12.11).
-            self.url = f"https://{name}/#t={token}"
-            # The host only (D8): the link with the token is on the
-            # dashboard's Phone page, never in app.log.
-            log.info("phone address: https://%s/ — the line with the token "
-                     "for the keyboard's Settings is on the dashboard's "
-                     "Phone page", name)
-            log.info("(needs `tailscale serve --bg %d` once — without it "
-                     "there is no certificate, and the keyboard refuses "
-                     "plain http)", self.port)
-        else:
-            self.url = f"http://{host}:{self.port}/#t={token}"
-
     def stop(self) -> None:
         srv, thread = self._srv, self._thread
-        self._srv = self._thread = self.url = self.port = None
+        self._srv = self._thread = self.port = None
         if srv is not None:
             srv.shutdown()
             srv.server_close()
@@ -862,6 +848,7 @@ class PhoneDoor:
         self.cfg = cfg
         self.routes = routes
         self._door = None
+        self._list: dict = {}
 
     @property
     def running(self) -> bool:
@@ -871,12 +858,10 @@ class PhoneDoor:
     def port(self) -> int | None:
         return self._door.port if self._door is not None else None
 
-    @property
-    def seen(self) -> dict:
-        """fingerprint -> when it last came in, on this run."""
-        return dict(self._door.seen) if self._door is not None else {}
-
     def _serve(self, sock, address, peer) -> None:
+        import phone as phone_mod
+
+        phone_mod.saw(peer.fingerprint)
         _PhoneHandler(sock, address, self, peer)
 
     def _open(self, anchors: dict, first: int):
@@ -896,8 +881,11 @@ class PhoneDoor:
         import net
         import phone as phone_mod
 
+        names = {mark: phone.get("name") for mark, phone in anchors.items()}
         if self._door is not None:
-            self._door.admit(anchors)
+            if names != self._list:
+                self._door.admit(anchors)
+                self._list = names
             return self._door.port
         phone_mod.identity()
         first = _asked(self.cfg.server.phone_port)
@@ -907,17 +895,13 @@ class PhoneDoor:
             log.warning("phone door: %s; a new identity for this PC", e)
             phone_mod.rotate()
             self._door = self._open(anchors, first)
+        self._list = names
         log.info("phone door open on port %d for %d phone(s)", self._door.port, len(anchors))
         return self._door.port
 
-    def admit(self, anchors: dict) -> None:
-        """These phones and no others; whoever left the list loses what it
-        has open."""
-        if self._door is not None:
-            self._door.admit(anchors)
-
     def stop(self) -> None:
         door, self._door = self._door, None
+        self._list = {}
         if door is not None:
             door.stop()
             log.info("phone door closed")

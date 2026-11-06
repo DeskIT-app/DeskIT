@@ -387,24 +387,14 @@ class Api:
         if self._allow is not None and verb not in self._allow:
             return {"ok": False, "error": f"{verb!r} is not allowed from this desk"}
         import control
-        reply = control.send(verb, timeout_ms=self._timeout_ms, **dict(args or {}))
-        return _without_phone(reply) if verb == "status" else reply
+        return control.send(verb, timeout_ms=self._timeout_ms, **dict(args or {}))
 
     def status(self):
         import control
-        return _without_phone(control.send("status", timeout_ms=self._timeout_ms))
+        return control.send("status", timeout_ms=self._timeout_ms)
 
     def ping(self):
         return {"ok": True}
-
-
-def _without_phone(reply):
-    """status() carries the phone link and its token; the page never
-    needs them and a page is not where a secret goes."""
-    if isinstance(reply, dict):
-        reply = dict(reply)
-        reply.pop("phone", None)
-    return reply
 
 
 # -------------------------------------------------------------- the desk

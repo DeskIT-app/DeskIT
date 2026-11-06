@@ -252,11 +252,6 @@ DEV_SUFFIX: str = ".dev" if DEVELOPER else ".test" if STRANGER else ""
 #: Nothing for the stranger's copy: the stranger sees no tag.
 DEV_TAG: str = "Dev" if DEVELOPER else ""
 
-#: The port the phone endpoint tries first; the release keeps the number
-#: the phone app has always known, the checkout sits one above it, the
-#: stranger's copy one above that — the three may all be listening.
-DEFAULT_PORT: int = 8757 if DEVELOPER else 8758 if STRANGER else 8756
-
 def _package_family() -> str:
     """The MSIX package family this process runs inside — the Store copy
     (DISTRIBUTION_PLAN.md 10.7) and every process it starts — or "".

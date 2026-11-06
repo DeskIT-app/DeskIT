@@ -52,7 +52,11 @@ export type Section = Head & (
   | { kind: "line"; line: string; small?: string; tone?: Tone; buttons: Btn[]; ready?: boolean }
   | { kind: "switch"; on: boolean; do: string; label: string; help: string; tone?: Tone; buttons?: Btn[] }
   | { kind: "sounds"; test: string; cues: { kind: string; label: string }[] }
-  | { kind: "phone"; url: string; none: string; said: string }
+  | { kind: "devices"; rows: { id: string; glyph: string; name: string; meta: string;
+      forget: boolean; asking: boolean }[]; ask: string; say: string }
+  | { kind: "keyboard"; qr: string; n: number; line: string; said: string }
+  | { kind: "trouble"; line: string; said: string; button: string;
+      details: { k: string; v: string }[] }
   | { kind: "lines"; line: string; tone: Tone; sub?: string; code?: string; buttons: Btn[];
       typing?: boolean; placeholder?: string; signed_in?: boolean }
   | { kind: "keys"; rows: KeyRow[]; loading?: boolean }

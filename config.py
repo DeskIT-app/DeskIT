@@ -1245,17 +1245,18 @@ PROBLEMS_KEEP_RESOLVED_MAX = 2000
 
 @dataclass(frozen=True)
 class ServerConfig:
-    """The phone endpoint: dictate from the phone, transcribe on this GPU.
+    """The two doors, server.py: dictate from the phone, transcribe on
+    this GPU.
 
-    Off by default — it opens a socket, and that should be a decision.
+    On by default since the phone plan (2026-11-06): the phone door waits
+    for a phone by itself, so this switch no longer has to be what keeps
+    it shut. Each PC keeps its own no (sync.LOCAL_SECTIONS).
     """
-    enabled: bool = False
-    # "" = 127.0.0.1. Loopback is not a limitation, it is the design:
-    # `tailscale serve` proxies to localhost and terminates TLS, so nothing
-    # listens where a stranger — or the home LAN — could reach it, and the
-    # phone still gets the certificate its browser demands for microphone
-    # access. Binding the Tailscale address instead would make the server
-    # invisible to `tailscale serve`.
+    enabled: bool = True
+    # "" = 127.0.0.1, and the loopback door refuses anything else: it is
+    # plain HTTP with a bearer, for this PC's own programs. The door a phone
+    # reaches from the house's network is the other one, behind a client
+    # certificate, and no setting points this one at the LAN.
     host: str = ""
     port: int = 8756
     # The phone door (server.PhoneDoor): the port it asks for first. Where

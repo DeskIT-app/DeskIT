@@ -21,11 +21,18 @@ from nowhere else; net.serve_tls is handed the passphrase by NAME and asks
 the store for it inside load_cert_chain's callback, so the value never
 reaches server.py or main.py.
 
-``publish(key)`` writes this PC's ``link`` row when anything in it changed.
-``anchors()`` opens the phones' rows and leaves out the forgotten. The sealed
+``publish(key, ...)`` writes this PC's ``link`` row when anything in it
+changed. ``anchors()`` opens the phones' rows and leaves out the forgotten.
+``refresh(key)`` reads them from the account. The sealed
 rows are kept in ``secrets\\phone_rows.json``, because a PC restarted with the
 house's internet down must still open its door (§3's "Home: nobody" rests on
 this), and opening them needs only the account key, which is local.
+
+NOTHING HERE KNOWS A NETWORK. This is a product for whoever downloads it, on
+any router and any network: the addresses come from the machine's own
+adapters at the moment they are asked for, the port from wherever the door
+landed, and the firewall's profile from what Windows says about the network
+it is on. No address, subnet, port or profile is written into this file.
 
 RULES, the ones vault.py keeps. A key or a passphrase is made here, written
 and forgotten: never logged, never put in a status, a report or a message.
@@ -36,12 +43,14 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import functools
 import hashlib
 import json
 import logging
 import os
 import re
 import secrets as _secrets
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -462,8 +471,88 @@ def refresh(key: bytes) -> list[str]:
                   if _phone_cert(r["link"]) is not None]
         fresh = [i for i in phones if i not in known]
         _write_rows({"uid": uid, "rows": keep, "forgotten": sorted(gone),
-                     "known": sorted(known | set(phones)), "at": int(time.time())})
+                     "known": sorted(known | set(phones)), "at": int(time.time()),
+                     "seen": (kept.get("seen") or {}) if same else {}})
         return fresh
+
+
+#: (the rows file's stamp, the session's id) -> view(), so the status poll
+#: pays a stat and not an AES-GCM per row, every 800 ms.
+_view_kept: tuple | None = None
+
+
+def _stamp() -> tuple:
+    try:
+        st = rows_path().stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return 0, 0
+
+
+def view() -> dict:
+    """{"phones": [...], "pcs": [...]}: the devices of the account that open
+    and are not forgotten, for the desk, off the kept rows with no network.
+    Each is {"id", "name", "cert"}, and a phone has "reached" and "dictated"
+    too, 0 until it has. This PC is not among them."""
+    global _view_kept
+    import sb
+    import vault
+
+    with _lock:
+        uid = _uid()
+        mark = (_stamp(), uid)
+        if _view_kept is not None and _view_kept[0] == mark:
+            return _view_kept[1]
+        out: dict[str, list] = {"phones": [], "pcs": []}
+        kept = _read_rows()
+        key = vault.key(uid) if uid and str(kept.get("uid") or "") == uid else None
+        if key is not None:
+            gone = _forgotten(kept)
+            seen = kept.get("seen") or {}
+            mine = sb.device_id()
+            for row in _open_rows(key, uid, kept.get("rows") or [], gone):
+                link, ident = row["link"], str(row["id"])
+                name = str(row.get("name") or "")
+                der = _phone_cert(link)
+                if der is not None:
+                    cert = fingerprint(der)
+                    if cert not in gone:
+                        one = seen.get(cert) or {}
+                        out["phones"].append({"id": ident, "name": name, "cert": cert,
+                                              "reached": int(one.get("reached") or 0),
+                                              "dictated": int(one.get("dictated") or 0)})
+                elif link.get("kind") == "pc" and ident != mine:
+                    out["pcs"].append({"id": ident, "name": name,
+                                       "cert": str(link.get("cert") or "")})
+        _view_kept = (mark, out)
+        return out
+
+
+#: How often a phone that only knocks rewrites the file. A dictation always
+#: does: the desk's "dictated here today" reads it.
+SEEN_WRITE_S = 60
+
+
+def saw(cert: str, *, dictated: bool = False) -> None:
+    """A phone came through the door, or dictated: Settings > Phone says so,
+    and "hasn't reached this PC yet" is the one hint a person has that the
+    firewall stands between them, because a PC cannot test its own door."""
+    now = int(time.time())
+    with _lock:
+        kept = _read_rows()
+        if not kept:
+            return
+        seen = kept.setdefault("seen", {})
+        one = seen.setdefault(cert, {})
+        if not dictated and now - int(one.get("reached") or 0) < SEEN_WRITE_S:
+            return
+        one["reached"] = now
+        if dictated:
+            one["dictated"] = now
+        try:
+            _write_rows(kept)
+        except OSError as e:                # a line on a card must not cost a dictation
+            log.debug("phone: what a phone did was not kept (%s)", type(e).__name__)
 
 
 def drop_rows() -> None:
@@ -502,18 +591,21 @@ def publish(key: bytes, *, port: int, listening: bool, words_sync: bool) -> bool
 
 # ------------------------------------------------------------ the addresses
 #
-# Every private IPv4 of an adapter that is up, the default route's first, and
+# Every IPv4 of a real adapter that is up, the default route's first, and
 # never Tailscale's 100.x or a virtual adapter's: the phone tries them all at
 # once and keeps the one that answers, so a wrong one costs little, and it
-# still is an address nobody can reach. A private handle on iphlpapi, for the
-# reason the CNG one is private.
+# still is an address nobody can reach. Private on nearly every network, and
+# not filtered to that: some campus and hotel networks, and a PC straight on
+# a modem, hand out routable ones, and the row is sealed either way. A
+# private handle on iphlpapi, for the reason the CNG one is private.
 
 _AF_INET = 2
 _GAA_SKIP = 0x2 | 0x4 | 0x8            # no anycast, multicast or DNS lists
 _ERROR_BUFFER_OVERFLOW = 111
 _IF_UP = 1
-_IF_LOOPBACK = 24
-_IF_TUNNEL = 131
+#: Loopback, tunnels, PPP dial-ups, and what Windows itself calls virtual
+#: (Tailscale's and WireGuard's adapters among them).
+_IF_NOT_A_NETWORK = (24, 131, 23, 53)
 #: Windows gives these no type of their own: a Hyper-V or WSL switch is plain
 #: Ethernet to it, so the adapter's own words are all there is to go on.
 _VIRTUAL = re.compile(r"tailscale|hyper-v|vethernet|wsl|virtualbox|vmware|wireguard|wintun"
@@ -539,12 +631,14 @@ class _Adapter(ctypes.Structure):
                 ("OperStatus", ctypes.c_int)]
 
 
-def _is_private(ip: str) -> bool:
+def _reachable(ip: str) -> bool:
+    """An address another device could dial: not loopback, not "this
+    host", not the link-local one Windows gives itself with no network."""
     try:
         a, b = [int(x) for x in ip.split(".")[:2]]
     except ValueError:
         return False
-    return a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+    return not (a in (0, 127) or (a == 169 and b == 254))
 
 
 def pick_addresses(adapters: list[dict], default_index: int | None) -> list[str]:
@@ -554,21 +648,21 @@ def pick_addresses(adapters: list[dict], default_index: int | None) -> list[str]
     usable = []
     for a in adapters:
         words = f"{a.get('name') or ''} {a.get('description') or ''}"
-        if not a.get("up") or a.get("type") in (_IF_LOOPBACK, _IF_TUNNEL) or _VIRTUAL.search(words):
+        if not a.get("up") or a.get("type") in _IF_NOT_A_NETWORK or _VIRTUAL.search(words):
             continue
         usable.append(a)
     usable.sort(key=lambda a: (a.get("index") != default_index, a.get("index") or 0))
     out: list[str] = []
     for a in usable:
         for ip in a.get("ipv4") or []:
-            if _is_private(ip) and ip not in out:
+            if _reachable(ip) and ip not in out:
                 out.append(ip)
     return out[:MAX_ADDRS]
 
 
 def _adapters() -> tuple[list[dict], int | None]:
     """What Windows says: the adapters, and the index of the default route's
-    (asked about 8.8.8.8, and nothing is sent)."""
+    (asked about a public address, and nothing is sent)."""
     ip = ctypes.WinDLL("iphlpapi")
     size = ctypes.c_ulong(16 * 1024)
     buf = ctypes.create_string_buffer(size.value)
@@ -599,11 +693,225 @@ def _adapters() -> tuple[list[dict], int | None]:
     return found, default
 
 
-def addresses() -> list[str]:
-    """This PC's private addresses, the default route's first. Never raises:
-    a row with no address is a phone that waits, not a failed start."""
+_addrs_kept: tuple[float, list[str]] = (0.0, [])
+
+
+def addresses(max_age: float = 0.0) -> list[str]:
+    """This PC's addresses as Windows says them now, the default
+    route's first; ``max_age`` lets a status poll use an answer that young
+    (the call is 4.7 ms). Never raises: a row with no address is a phone
+    that waits, not a failed start."""
+    global _addrs_kept
+    if max_age and time.monotonic() - _addrs_kept[0] < max_age:
+        return list(_addrs_kept[1])
     try:
-        return pick_addresses(*_adapters())
+        found = pick_addresses(*_adapters())
     except (OSError, ValueError, AttributeError) as e:
         log.info("phone: the addresses could not be read (%s)", e)
         return []
+    _addrs_kept = (time.monotonic(), found)
+    return list(found)
+
+
+# -------------------------------------------------------------- the firewall
+#
+# A PC cannot test this itself: a connection to its own address never crosses
+# its firewall, so only the phone can tell. And Windows answers the first
+# listen with a dialog whose Cancel writes a BLOCK rule, which outranks any
+# allow rule, and whose choices depend on the network's profile and on who is
+# signed in. So Settings > Phone carries one button that says yes properly:
+# one elevated cmd.exe that deletes this program's block rules and allows
+# this program on this port, on the profile of the network the PC is on.
+#
+# An administrator presses Yes. A standard user meets Windows' own prompt for
+# an administrator's password, and with none to give the answer is plain
+# words on the card: nothing here can go round that, and nothing should. It
+# works on any profile because the profile is read at the press, and when it
+# cannot be read the rule says any.
+
+#: The rule's name in Windows Firewall. A copy's own, so two copies on one PC
+#: replace their own rule and nobody else's.
+RULE_NAME = f"DeskIT{f' {paths.DEV_TAG}' if paths.DEV_TAG else ''} phone"
+_FIREWALL_RULES = (r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters"
+                   r"\FirewallPolicy\FirewallRules")
+#: Only a name that cannot leave its quotes in an elevated cmd.exe is spelled
+#: out; anything else is reached by its program instead.
+_PLAIN_RULE = re.compile(r"[\w .()\-]+")
+_NO_WINDOW = 0x08000000
+_SEE_MASK_NOCLOSEPROCESS = 0x40
+_SEE_MASK_FLAG_NO_UI = 0x400
+_ERROR_CANCELLED = 1223
+_INFINITE = 0xFFFFFFFF
+
+
+def program() -> str:
+    """The running image's own path, which is the program a firewall sees:
+    under a venv that is the base interpreter, because the venv's pythonw is
+    a launcher that starts it, and a rule on the launcher does nothing."""
+    buf = ctypes.create_unicode_buffer(32768)
+    n = ctypes.WinDLL("kernel32").GetModuleFileNameW(None, buf, len(buf))
+    return buf.value[:n] if n else ""
+
+
+def network_profiles() -> str:
+    """The profile words netsh takes for the networks this PC is on now
+    (``public``, ``private``, ``domain``, comma-joined), or ``any`` when
+    Windows will not say. Windows calls a new network Public unless told
+    otherwise, so most people are there."""
+    try:
+        said = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "(Get-NetConnectionProfile).NetworkCategory"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=15,
+            check=False, creationflags=_NO_WINDOW).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return "any"
+    words = {"public": "public", "private": "private", "domainauthenticated": "domain"}
+    found = sorted({words[w] for w in said.lower().split() if w in words})
+    return ",".join(found) or "any"
+
+
+def block_rules(exe: str) -> list[str] | None:
+    """The names of the inbound rules that block ``exe``, read from the
+    registry, which is plain words on a Hebrew Windows too where netsh's
+    output is not. None when it cannot be read."""
+    import winreg
+
+    want = os.path.normcase(os.path.normpath(exe))
+    names: list[str] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _FIREWALL_RULES) as hive:
+            i = 0
+            while True:
+                try:
+                    _name, value, _kind = winreg.EnumValue(hive, i)
+                except OSError:
+                    break
+                i += 1
+                parts = dict(p.split("=", 1) for p in str(value).split("|") if "=" in p)
+                app = os.path.expandvars(parts.get("App") or "")
+                if (parts.get("Action") == "Block" and parts.get("Dir") == "In" and app
+                        and os.path.normcase(os.path.normpath(app)) == want):
+                    names.append(parts.get("Name") or "")
+    except OSError:
+        return None
+    return names
+
+
+def firewall_line(netsh: str, exe: str, port: int, profiles: str,
+                  blocks: list[str] | None) -> str:
+    """The whole line the elevated cmd.exe runs. Pure, so a test can read it.
+
+    netsh's delete has no ``action=`` filter, so a block rule is deleted by
+    its name; a name that is not plain, or a registry that could not be read,
+    takes every inbound rule of this program with it, which the allow below
+    replaces. Our own rule goes first, so pressing twice leaves one."""
+    fw = f'"{netsh}" advfirewall firewall'
+    prog = f'program="{exe}"'
+    steps = [f'{fw} delete rule name="{RULE_NAME}" dir=in']
+    names = [] if blocks is None else [n for n in dict.fromkeys(blocks) if n]
+    if blocks is None or not all(_PLAIN_RULE.fullmatch(n) for n in names):
+        steps.append(f'{fw} delete rule name=all dir=in {prog}')
+    else:
+        steps += [f'{fw} delete rule name="{n}" dir=in {prog}' for n in names]
+    steps.append(f'{fw} add rule name="{RULE_NAME}" dir=in action=allow {prog} '
+                 f'protocol=TCP localport={int(port)} profile={profiles}')
+    return " & ".join(steps)
+
+
+class _ExecuteInfo(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_ulong), ("fMask", ctypes.c_ulong), ("hwnd", ctypes.c_void_p),
+                ("lpVerb", ctypes.c_wchar_p), ("lpFile", ctypes.c_wchar_p),
+                ("lpParameters", ctypes.c_wchar_p), ("lpDirectory", ctypes.c_wchar_p),
+                ("nShow", ctypes.c_int), ("hInstApp", ctypes.c_void_p),
+                ("lpIDList", ctypes.c_void_p), ("lpClass", ctypes.c_wchar_p),
+                ("hkeyClass", ctypes.c_void_p), ("dwHotKey", ctypes.c_ulong),
+                ("hIcon", ctypes.c_void_p), ("hProcess", ctypes.c_void_p)]
+
+
+def _elevated(system: str, line: str) -> str:
+    """One elevated, windowless cmd.exe; done, declined or failed. Absolute
+    paths and system32 as its folder: an elevated cmd.exe looks in its own
+    folder first, and that folder must not be one a person can write to."""
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32")
+    k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    info = _ExecuteInfo()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = _SEE_MASK_NOCLOSEPROCESS | _SEE_MASK_FLAG_NO_UI
+    info.lpVerb = "runas"
+    info.lpFile = os.path.join(system, "cmd.exe")
+    info.lpParameters = f'/s /c "{line}"'
+    info.lpDirectory = system
+    info.nShow = 0
+    if not shell.ShellExecuteExW(ctypes.byref(info)):
+        error = ctypes.get_last_error()
+        return "declined" if error == _ERROR_CANCELLED else "failed"
+    if not info.hProcess:
+        return "failed"
+    try:
+        k32.WaitForSingleObject(info.hProcess, _INFINITE)
+        code = ctypes.c_ulong(1)
+        k32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
+        return "done" if code.value == 0 else "failed"
+    finally:
+        k32.CloseHandle(info.hProcess)
+
+
+def open_firewall(exe: str, port: int) -> str:
+    """The phone can't connect? Called from the desk, on the press, because
+    the prompt comes up in front of whoever owns the foreground, and a
+    windowless process would only flash in the taskbar. Waits for the
+    person's answer: ``done``, ``declined`` or ``failed``."""
+    buf = ctypes.create_unicode_buffer(260)
+    n = ctypes.WinDLL("kernel32").GetSystemDirectoryW(buf, len(buf))
+    system = buf.value[:n]
+    if not (system and exe and port):
+        return "failed"
+    line = firewall_line(os.path.join(system, "netsh.exe"), exe, port, network_profiles(),
+                         block_rules(exe))
+    log.info("phone: asking Windows to let this program through on port %d", port)
+    return _elevated(system, line)
+
+
+# ------------------------------------------------------------------ the QR
+
+def download_url() -> str:
+    """Where the keyboard comes from: the newest release's page, which
+    exists whatever a release holds. It is only an address and holds no
+    secret; a person's own account does the rest."""
+    import updates
+
+    return f"https://github.com/{updates.REPO}/releases/latest"
+
+
+def qr_rows(text: str) -> list[list] | None:
+    """A QR of ``text`` as rows of truths; None without segno, when a card
+    says the address in words instead."""
+    try:
+        import segno
+    except ImportError:
+        return None
+    return [list(r) for r in segno.make(text, error="m", boost_error=False).matrix]
+
+
+@functools.lru_cache(maxsize=4)
+def qr(text: str) -> tuple[str, int] | None:
+    """A QR of ``text`` as one SVG path and its side in modules."""
+    rows = qr_rows(text)
+    if rows is None:
+        return None
+    path: list[str] = []
+    for y, row in enumerate(rows):
+        x = 0
+        while x < len(row):
+            if not row[x]:
+                x += 1
+                continue
+            start = x
+            while x < len(row) and row[x]:
+                x += 1
+            path.append(f"M{start} {y}h{x - start}v1h-{x - start}z")
+    return "".join(path), len(rows)

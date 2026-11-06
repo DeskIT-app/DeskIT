@@ -1699,7 +1699,7 @@ class Dashboard:
                 files.append(None)
         status = self.status or {}
         return (tuple(files), self.running, status.get("model"),
-                status.get("phone"), repr(status.get("downloads")))
+                repr(status.get("phone")), repr(status.get("downloads")))
 
     @staticmethod
     def _vocab_cap():
@@ -2986,6 +2986,7 @@ class Dashboard:
         items: list[dict] = []
         items += self._waiting_consent()
         items += self._waiting_lock()
+        items += self._waiting_phone()
         items += self._waiting_update()
         items += self._waiting_keys()
         items += self._waiting_hardware()
@@ -4131,7 +4132,7 @@ class Dashboard:
 
         bits = []
         phone = (self.status or {}).get("phone")
-        bits.append("phone live" if phone else "phone off")
+        bits.append("phone live" if isinstance(phone, dict) and phone.get("on") else "phone off")
         bits.append(f"DeskIT {paths.DEV_TAG} {version.VERSION}".replace("  ", " "))
         if getattr(self, "branch", ""):
             bits.append(f"running {self.branch}")
@@ -6793,7 +6794,7 @@ class Dashboard:
                               "voice"),
         settings_mod.MESSAGES: ("MESSAGES FROM OTHER PROGRAMS", "claude",
                                 "sounds"),
-        settings_mod.PHONE: ("phone", "DICTATING FROM THE PHONE"),
+        settings_mod.PHONE: ("THE PHONE", "devices", "keyboard", "trouble"),
         settings_mod.ACCOUNT: ("account", "WHAT THE ACCOUNT MAY DO", "lock"),
         settings_mod.PRIVACY: ("keys", "WHAT MAY LEAVE THIS PC",
                                "connections", "said_file", "KEPT ON THIS PC"),
@@ -7496,34 +7497,135 @@ class Dashboard:
         else:
             self._note("the dot did not move")
 
-    def _phone_block(self, scroller) -> None:
-        """The endpoint the Android keyboard talks to. 39 dictations and
-        228 notification relays came through it in ten days, announced at
-        every startup, with no screen of its own until now."""
-        card = ui.Card(scroller.inner, CW, 132, bg=ui.BG, pad=18)
+    def _devices_block(self, scroller) -> None:
+        """Your devices (desk_settings.device_rows, the web desk's words):
+        Forget asks in its own row."""
+        import desk_settings
+
+        rows = desk_settings.device_rows(self.status, getattr(self, "_phone_asking", ""))
+        if len(rows) < 2:
+            return
+        card = ui.Card(scroller.inner, CW, 36 + 46 * len(rows), bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
-        tk.Label(body, text="T H E   P H O N E", bg=ui.CARD, fg=ui.FAINT,
+        tk.Label(body, text="Y O U R   D E V I C E S", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).place(x=0, y=0)
-        url = (self.status or {}).get("phone", "")
-        self.parts["phone_url"] = tk.Label(
-            body, text=url or "DeskIT is not running, or the switch below "
-                              "is off",
-            bg=ui.CARD, fg=ui.FG if url else ui.DIM,
-            font=(ui.UI, 12 if url else 10))
-        self.parts["phone_url"].place(x=0, y=24)
-        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=CW - 200, justify="left",
-                 text="Put the DeskIT keyboard on your phone, give it this "
-                      "address once, and the phone dictates into this "
-                      "computer over your own private network. It is also "
-                      "how a message from another program reaches this "
-                      "desk."
-                 ).place(x=0, y=54)
-        ui.Button(body, "Copy link", self._copy_phone, h=32, quiet=True,
-                  w=widgets.button_width("Copy link", icon=True),
-                  icon=ui.ICON["link"]).place(x=CW - 36, y=20, anchor="ne")
+        for i, row in enumerate(rows):
+            y = 24 + i * 46
+            tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                     text=f"Forget {row['name']}?" if row["asking"] else row["name"]
+                     ).place(x=0, y=y)
+            tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     text=desk_settings.FORGET_ASK if row["asking"] else row["meta"]
+                     ).place(x=0, y=y + 20)
+            if row["asking"]:
+                ui.Button(body, "Keep", self._phone_keep, h=32, quiet=True,
+                          w=widgets.button_width("Keep")).place(x=CW - 36, y=y, anchor="ne")
+                ui.Button(body, "Forget", lambda i=row["id"]: self._phone_forget(i), h=32,
+                          w=widgets.button_width("Forget")).place(x=CW - 120, y=y, anchor="ne")
+            elif row["forget"]:
+                ui.Button(body, "Forget", lambda i=row["id"]: self._phone_ask(i), h=32,
+                          quiet=True, w=widgets.button_width("Forget")
+                          ).place(x=CW - 36, y=y, anchor="ne")
         scroller.bind_wheel(card)
+
+    def _phone_ask(self, ident: str) -> None:
+        self._phone_asking = ident
+        self._fill_settings()
+
+    def _phone_keep(self) -> None:
+        self._phone_asking = ""
+        self._fill_settings()
+
+    def _phone_forget(self, ident: str) -> None:
+        self._phone_asking = ""
+        self._ask("phone", then=lambda r: self._announce(r, "forgetting"), do="forget", id=ident)
+        self._fill_settings()
+
+    def _keyboard_block(self, scroller) -> None:
+        """The QR of the keyboard's download, or, on an anonymous account,
+        Sign in with Google first (desk_settings.keyboard_card)."""
+        import desk_settings
+        import phone as phone_mod
+
+        said = desk_settings.keyboard_card(self.status)
+        card = ui.Card(scroller.inner, CW, 150, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        x = 0
+        if said["kind"] == "keyboard" and said["n"]:
+            photo = self._qr_photo(body, phone_mod.qr_rows(phone_mod.download_url()))
+            if photo is not None:
+                self.parts["phone_qr"] = photo
+                tk.Label(body, image=photo, bg=ui.CARD, bd=0).place(x=0, y=0)
+                x = photo.width() + 20
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), wraplength=CW - 80 - x,
+                 justify="left", text=said["line"]).place(x=x, y=4)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 80 - x,
+                 justify="left", text=said.get("said") or said.get("small") or ""
+                 ).place(x=x, y=30)
+        if said["kind"] == "line":
+            ui.Button(body, "Sign in with Google", lambda: self._account_do("google", "opening the browser"), h=32,
+                      w=widgets.button_width("Sign in with Google")).place(x=0, y=74)
+        scroller.bind_wheel(card)
+
+    @staticmethod
+    def _qr_photo(master, rows):
+        """A QR as a picture on this window's own interpreter (master=, the
+        PhotoImage trap in AGENTS.md)."""
+        if not rows:
+            return None
+        from PIL import Image, ImageTk
+
+        n = len(rows)
+        margin = 3
+        img = Image.new("L", (n + 2 * margin, n + 2 * margin), 255)
+        for y, row in enumerate(rows):
+            for x, dark in enumerate(row):
+                if dark:
+                    img.putpixel((x + margin, y + margin), 0)
+        side = img.width * 3
+        return ImageTk.PhotoImage(img.resize((side, side), Image.NEAREST), master=master)
+
+    def _trouble_block(self, scroller) -> None:
+        """The phone can't connect? (desk_settings.trouble_card)."""
+        import desk_settings
+
+        said = desk_settings.trouble_card(self.status)
+        if said is None:
+            return
+        card = ui.Card(scroller.inner, CW, 104 + 22 * len(said["details"]), bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), text=said["line"]).place(x=0, y=0)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 240,
+                 justify="left", text=said["said"]).place(x=0, y=24)
+        ui.Button(body, said["button"], self._phone_firewall, h=32, quiet=True,
+                  w=widgets.button_width(said["button"])).place(x=CW - 36, y=0, anchor="ne")
+        lines = "\n".join(f"{d['k']}:  {d['v']}" for d in said["details"])
+        more = tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), justify="left",
+                        wraplength=CW - 80, text=lines)
+
+        def flip() -> None:
+            if more.winfo_ismapped():
+                more.place_forget()
+            else:
+                more.place(x=0, y=76)
+        ui.Button(body, "Details", flip, h=26, quiet=True,
+                  w=widgets.button_width("Details")).place(x=0, y=46)
+        scroller.bind_wheel(card)
+
+    def _phone_firewall(self) -> None:
+        """Waits for the person's answer to Windows, so on a thread of its
+        own, and the sentence comes back to this one."""
+        import desk_settings
+
+        status = self.status
+
+        def work() -> None:
+            said = desk_settings.let_it_through(status)
+            self._events.put(lambda: self._note(said))
+        threading.Thread(target=work, daemon=True, name="phone-firewall").start()
 
     # --------------------------------------------------- your cloud keys
 
@@ -7886,6 +7988,27 @@ class Dashboard:
                 later = self._consent_later = set()
             later.add(kind)
         self._redraw_pile()
+
+    def _waiting_phone(self) -> list[dict]:
+        """A further PC of the account: "Your phone can use this PC too", and
+        the door binds on Allow, so Windows' dialog follows a press. A row
+        on Home and not a card, the owner's rule for every question."""
+        info = (self.status or {}).get("phone")
+        if not isinstance(info, dict) or not info.get("ask"):
+            return []
+        name = (info.get("phones") or [{}])[0].get("name") or "Your phone"
+
+        def press(verb: str) -> None:
+            self._busy_until = time.monotonic() + 2
+            self._ask("phone", then=lambda r: self._announce(r, ""), do=verb)
+
+        return [{"at": time.time() + 1, "kind": "phone", "mark": "keys", "mark_colour": ui.AMBER,
+                 "eyebrow": name, "eyebrow_right": False,
+                 "text": "Your phone can use this PC too",
+                 "note": "It joined your account on your other PC. Allow it, and at home it "
+                         "dictates straight to this PC. Windows will ask you once.",
+                 "buttons": [("Allow", "gold", lambda: press("allow")),
+                             ("Not now", "quiet", lambda: press("notnow"))]}]
 
     def _waiting_lock(self) -> list[dict]:
         """The lock on the pile (the owner, 2026-09-21, meeting the
@@ -9461,16 +9584,6 @@ class Dashboard:
         # Nothing in the log to copy: ask the app for whatever it is
         # holding, which is the only copy that exists if the write failed.
         self._ask("copy_last", then=lambda r: self._announce(r, "copied"))
-
-    def _copy_phone(self) -> None:
-        url = (self.status or {}).get("phone", "")
-        if not url:
-            self._note("no phone link — [server] enabled = false, or it is "
-                       "not running")
-            return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(url)
-        self._note("phone link copied to the clipboard")
 
     # ------------------------------------------------------ rebinding keys
 
