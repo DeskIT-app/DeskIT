@@ -12,7 +12,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.concurrent.thread
@@ -36,17 +35,7 @@ class ReviewActivity : Activity() {
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
-        col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
-            val p = Skin.dp(this@ReviewActivity, 22)
-            setPadding(p, Skin.dp(this@ReviewActivity, 28), p, p)
-        }
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(Skin.BG)
-            addView(col, ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT)
-        })
+        col = Skin.page(this)
         showLoading()
         load(intent.getStringExtra(Notify.EXTRA_ID))
     }
@@ -61,8 +50,7 @@ class ReviewActivity : Activity() {
 
     private fun showLoading() {
         col.removeAllViews()
-        col.addView(Skin.eyebrow(this, getString(R.string.second_reading)))
-        col.addView(Skin.gap(this, 16))
+        col.addView(Skin.header(this, getString(R.string.did_you_mean)) { finish() })
         col.addView(Skin.text(this, getString(R.string.checking), 16f, Skin.DIM))
     }
 
@@ -82,86 +70,54 @@ class ReviewActivity : Activity() {
     }
 
     private fun showEmpty(why: String) {
+        Skin.settle(col)
         col.removeAllViews()
-        col.addView(Skin.eyebrow(this, getString(R.string.second_reading)))
-        col.addView(Skin.gap(this, 16))
-        col.addView(Skin.text(this, why, 17f, Skin.DIM))
-        col.addView(Skin.gap(this, 24))
-        col.addView(Skin.button(this, getString(R.string.close)) { finish() })
+        col.addView(Skin.header(this, getString(R.string.did_you_mean)) { finish() })
+        col.addView(Skin.text(this, why, 16f, Skin.DIM))
     }
 
     private fun show(p: Transcriber.Proposal) {
+        Skin.settle(col)
         col.removeAllViews()
-        val head = LinearLayout(this).apply {
+        col.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-        }
-        head.addView(Skin.backButton(this) { finish() })
-        head.addView(Skin.eyebrow(this, getString(R.string.second_reading)).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(Skin.header(this@ReviewActivity, getString(R.string.did_you_mean)) { finish() }
+                .apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+            if (items.size > 1) addView(Skin.text(this@ReviewActivity, "${at + 1} / ${items.size}",
+                                                  13f, Skin.MUTED))
         })
-        if (items.size > 1) head.addView(
-            Skin.text(this, "${at + 1} / ${items.size}", 12f, Skin.FAINT))
-        col.addView(head)
-        col.addView(Skin.gap(this, 6))
-        col.addView(Skin.text(this, getString(
-            if (p.fromPhone) R.string.from_the_phone else R.string.from_the_desk,
-            p.whenText.substringAfter(' ').take(5)), 13f, Skin.FAINT))
-        col.addView(Skin.gap(this, 18))
-
         val rtl = p.changes.firstOrNull()?.rtl ?: true
-
-        // What was pasted, the doubted words struck.
-        val card = Skin.card(this)
-        card.addView(Skin.text(this, getString(R.string.you_said), 11f, Skin.FAINT,
-                               heavy = true).apply { letterSpacing = 0.12f })
-        card.addView(Skin.gap(this, 8))
-        card.addView(Skin.text(this, struck(p), 17f, Skin.DIM).apply {
-            textDirection = if (rtl) View.TEXT_DIRECTION_RTL else View.TEXT_DIRECTION_LTR
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            gravity = if (rtl) Gravity.END else Gravity.START
-            setLineSpacing(0f, 1.25f)
-        })
-        card.addView(Skin.rule(this))
-        card.addView(Skin.text(this, getString(R.string.did_you_mean), 11f, Skin.FAINT,
-                               heavy = true).apply { letterSpacing = 0.12f })
-        card.addView(Skin.gap(this, 8))
-        card.addView(Skin.text(this, lit(p), 20f, Skin.FG).apply {
-            textDirection = if (rtl) View.TEXT_DIRECTION_RTL else View.TEXT_DIRECTION_LTR
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            gravity = if (rtl) Gravity.END else Gravity.START
-            setLineSpacing(0f, 1.25f)
-        })
-        val why = p.changes.mapNotNull { it.why.ifBlank { null } }.distinct()
-        if (why.isNotEmpty()) {
-            card.addView(Skin.gap(this, 12))
-            card.addView(Skin.text(this, why.joinToString(" · "), 14f, Skin.DIM).apply {
-                textDirection = View.TEXT_DIRECTION_ANY_RTL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        fun sentence(text: CharSequence, sp: Float, colour: Int) =
+            Skin.text(this, text, sp, colour).apply {
+                textDirection = if (rtl) View.TEXT_DIRECTION_RTL else View.TEXT_DIRECTION_LTR
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 gravity = if (rtl) Gravity.END else Gravity.START
-            })
-        }
+                setLineSpacing(0f, 1.25f)
+            }
+        val card = Skin.card(this)
+        card.addView(sentence(struck(p), 16f, Skin.MUTED))
+        card.addView(Skin.rule(this))
+        card.addView(sentence(lit(p), 20f, Skin.FG))
         col.addView(card)
-
-        col.addView(Skin.gap(this, 6))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+        }
         row.addView(Skin.button(this, getString(R.string.no)) { decide(p, "rejected") }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
                 .apply { marginEnd = Skin.dp(this@ReviewActivity, 10) }
         })
         row.addView(Skin.button(this, getString(R.string.keep), primary = true) {
             decide(p, "accepted")
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
         })
         col.addView(row)
-        col.addView(Skin.gap(this, 14))
-        col.addView(Skin.text(this, getString(R.string.later_hint), 13f, Skin.FAINT).apply {
-            gravity = Gravity.CENTER
-        })
     }
 
     /** The pasted sentence with each `before` struck through. */

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A page arriving: it rises a little and fades in over the sky. -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/fast_out_slow_in"
+    android:duration="240">
+    <alpha android:fromAlpha="0" android:toAlpha="1" />
+    <translate android:fromYDelta="3%" android:toYDelta="0%" />
+</set>

@@ -38,12 +38,10 @@ class LookupActivity : Activity() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
-            background = Skin.face(this@LookupActivity, Skin.CARD, Skin.LINE_HI, 24)
+            background = Glass(this@LookupActivity, Skin.GLASS_SHEET, 24)
             val p = Skin.dp(this@LookupActivity, 22)
             setPadding(p, p, p, p)
         }
-        col.addView(Skin.eyebrow(this, getString(R.string.lookup_title)))
-        col.addView(Skin.gap(this, 10))
         col.addView(Skin.text(this, selected, 14f, Skin.DIM).apply {
             maxLines = 3
             ellipsize = android.text.TextUtils.TruncateAt.END

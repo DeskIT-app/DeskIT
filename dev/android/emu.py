@@ -24,8 +24,11 @@ OUT = Path(os.environ.get("DESKIT_EMU_OUT", HERE))
 # This checkout's own build, so a worktree installs its own; DESKIT_APK to pick another.
 APK = Path(os.environ.get("DESKIT_APK")
            or HERE.parents[1] / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk")
-AVD = "deskit"
-IMAGE = "system-images;android-34;google_apis;x86_64"
+# DESKIT_API=26 for the oldest phone the app runs on; the image comes from
+# sdkmanager into dev-tools. One emulator at a time.
+API = os.environ.get("DESKIT_API", "34")
+AVD = "deskit" if API == "34" else f"deskit{API}"
+IMAGE = f"system-images;android-{API};google_apis;x86_64"
 ADB = SDK / "platform-tools" / "adb.exe"
 EMU = SDK / "emulator" / "emulator.exe"
 AVDMGR = SDK / "cmdline-tools" / "latest" / "bin" / "avdmanager.bat"
@@ -101,6 +104,12 @@ def boot():
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
     adb("shell", "svc", "power", "stayon", "true")
     adb("shell", "input", "keyevent", "82")
+    # A browser's own first-run wall stands in front of the page on a fresh
+    # image, and it is not what these checks are about.
+    adb("shell", "am", "set-debug-app", "--persistent", "com.android.chrome", check=False)
+    adb("shell", "sh", "-c",
+        "'echo _ --disable-fre --no-default-browser-check --no-first-run "
+        "> /data/local/tmp/chrome-command-line'", check=False)
 
 
 def install():

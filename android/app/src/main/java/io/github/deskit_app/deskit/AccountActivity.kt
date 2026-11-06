@@ -5,11 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import kotlin.concurrent.thread
 
 /**
@@ -27,6 +23,7 @@ class AccountActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
     private var onScreen = false
     private var looking = false
+    private var queued: (() -> Lock.State)? = null
     private var drawn = ""
     /** A word that came with us, from the browser's way back. */
     private var word = ""
@@ -35,25 +32,8 @@ class AccountActivity : Activity() {
         super.onCreate(saved)
         screens = AccountScreens(this)
         word = intent?.getStringExtra(AuthActivity.EXTRA_WORD).orEmpty()
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
-            val p = Skin.dp(this@AccountActivity, 20)
-            setPadding(p, Skin.dp(this@AccountActivity, 24), p, Skin.dp(this@AccountActivity, 32))
-        }
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(Skin.BG)
-            isVerticalScrollBarEnabled = false
-            addView(col, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        })
-        col.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, Skin.dp(this@AccountActivity, 18))
-            addView(Skin.backButton(this@AccountActivity) { finish() })
-            addView(Skin.text(this@AccountActivity, getString(R.string.your_account), 26f,
-                              Skin.FG, heavy = true))
-        })
+        val col = Skin.page(this)
+        col.addView(Skin.header(this, getString(R.string.your_account)) { finish() })
         box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(box)
     }
@@ -77,27 +57,43 @@ class AccountActivity : Activity() {
         ui.removeCallbacksAndMessages(null)
     }
 
-    /** One look, on a thread: the pass can take a request or two and a code. */
+    /**
+     * One look, on a thread: the pass can take a request or two and a code. A
+     * press that lands while a poll is out waits its turn behind it and is
+     * never dropped: a poll can come again, a person's press does not.
+     */
     private fun look(work: (() -> Lock.State)? = null) {
-        if (looking) return
+        if (looking) {
+            if (work != null) queued = work
+            return
+        }
         looking = true
         thread {
             val st = work?.invoke() ?: Lock.look(this) { early -> runOnUiThread { show(early) } }
-            val pcs = if (st is Lock.State.Ready) names() else emptyList()
+            if (st is Lock.State.Ready) readRows()
             runOnUiThread {
                 looking = false
-                show(st, pcs)
+                val next = queued
+                queued = null
+                if (next != null) {
+                    look(next)
+                    return@runOnUiThread
+                }
+                show(st)
                 if (onScreen && waits(st)) ui.postDelayed({ if (onScreen) look() }, Lock.POLL_MS)
             }
         }
     }
 
-    private fun names(): List<String> = try {
-        Lock.devices(this).filter { it.isPc }.map { it.name }
-    } catch (e: Account.Failed) {
-        emptyList()
-    } catch (e: Sealed.NotNow) {
-        emptyList()
+    /** The account's rows, cached for the road to the PC. No answer is no harm. */
+    private fun readRows() {
+        try {
+            Lock.devices(this)
+        } catch (e: Account.Failed) {
+            // the next look reads them
+        } catch (e: Sealed.NotNow) {
+            // the same
+        }
     }
 
     private fun waits(st: Lock.State): Boolean = when (st) {
@@ -107,28 +103,30 @@ class AccountActivity : Activity() {
     }
 
     /** Only when something changed: a poll must not take the focus off a button. */
-    private fun show(st: Lock.State, pcs: List<String> = emptyList()) {
+    private fun show(st: Lock.State) {
         val key = when (st) {
             is Lock.State.SignedOut -> "out:${st.words}:$word"
             is Lock.State.Preparing -> "preparing"
-            is Lock.State.Waiting -> "waiting:${st.code}:${st.word}"
+            is Lock.State.Waiting -> "waiting:${st.code}:${st.word}:${st.pressed}"
             is Lock.State.NoLock -> "nolock"
             is Lock.State.Declined -> "declined"
-            is Lock.State.Ready -> "ready:$pcs"
+            is Lock.State.Ready -> "ready"
             is Lock.State.Changed -> "changed:${st.refused}"
             is Lock.State.NotNow -> "notnow:${st.words}"
             is Lock.State.Trouble -> "trouble:${st.words}"
         }
         if (key == drawn) return
+        if (drawn.isNotEmpty()) Skin.settle(box)
         drawn = key
         box.removeAllViews()
         box.addView(when (st) {
             is Lock.State.SignedOut -> screens.signIn(word.ifEmpty { st.words }) { signIn() }
-            is Lock.State.Preparing -> screens.preparing(st.email)
-            is Lock.State.Waiting -> screens.waiting(st.code, st.email, st.word) { leave() }
-            is Lock.State.NoLock -> screens.noLock(st.email, "") { leave() }
+            is Lock.State.Preparing -> screens.preparing()
+            is Lock.State.Waiting -> screens.waiting(st.code, st.email, st.word, st.pressed,
+                                                     { same(st) }, { leave() })
+            is Lock.State.NoLock -> screens.noLock(st.email) { leave() }
             is Lock.State.Declined -> screens.declined(st.email, { ask() }, { leave() })
-            is Lock.State.Ready -> screens.ready(pcs) { finish() }
+            is Lock.State.Ready -> screens.ready { finish() }
             is Lock.State.Changed ->
                 if (st.refused) screens.refused()
                 else screens.changed({ answer(false) }, { answer(true) })
@@ -156,6 +154,12 @@ class AccountActivity : Activity() {
 
     private fun ask() {
         look { Lock.askAgain(this) { early -> runOnUiThread { show(early) } } }
+    }
+
+    /** The screen answers the press at once; the pass catches up behind it. */
+    private fun same(st: Lock.State.Waiting) {
+        show(Lock.State.Waiting(st.code, st.email, st.word, true))
+        look { Lock.sameCode(this) { early -> runOnUiThread { show(early) } } }
     }
 
     /** "Use another account": this phone holds nothing of the account yet. */

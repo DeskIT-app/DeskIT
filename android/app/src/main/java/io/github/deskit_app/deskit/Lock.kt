@@ -29,6 +29,12 @@ import java.util.UUID
  * `handed`, checked against the lock the code was made with, and kept; the row
  * goes after that, not before, because a delete that fails must not cost the key.
  *
+ * **Both sides press, the way Bluetooth pairs.** `handed` is a column the server
+ * can write, and a key that matches the lock it named passes every check a phone
+ * can make, with no PC anywhere. So [sameCode] is the gate: until the person has
+ * pressed Same code on the screen that shows the code, what arrived in `handed`
+ * is neither opened nor kept. The press may come before or after the Approve.
+ *
  * **It survives the process.** A PC keeps the join's private half in memory; a
  * phone is killed while its owner walks to the PC. The private half, the request
  * and the code are sealed for the request's fifteen minutes, so the same code is
@@ -98,8 +104,9 @@ object Lock {
         /** The account has no lock. A phone never makes one: a PC does. */
         class NoLock(val email: String) : State()
 
-        /** This phone asked; both screens show [code]. */
-        class Waiting(val code: String, val email: String, val word: String) : State()
+        /** This phone asked; both screens show [code]. [pressed]: Same code, here. */
+        class Waiting(val code: String, val email: String, val word: String,
+                      val pressed: Boolean) : State()
 
         /** The PC said Not now. This phone asks again only when told to. */
         class Declined(val email: String) : State()
@@ -277,13 +284,14 @@ object Lock {
     // ---- the request ----
 
     private class Request(val uid: String, val id: String, val code: String, val lockId: String,
-                          val expires: Long, val private: ByteArray, val point: ByteArray)
+                          val expires: Long, val private: ByteArray, val point: ByteArray,
+                          val pressed: Boolean = false)
 
     private fun saveRequest(c: Context, r: Request) {
         Sealed.putText(c, REQUEST, JSONObject()
             .put("uid", r.uid).put("id", r.id).put("code", r.code).put("lock_id", r.lockId)
             .put("expires", r.expires).put("private", Crypt.b64(r.private))
-            .put("point", Crypt.b64(r.point)).toString())
+            .put("point", Crypt.b64(r.point)).put("pressed", r.pressed).toString())
     }
 
     private fun loadRequest(c: Context): Request? {
@@ -293,7 +301,8 @@ object Lock {
             val decode = Base64.getDecoder()
             Request(o.getString("uid"), o.getString("id"), o.getString("code"),
                     o.getString("lock_id"), o.getLong("expires"),
-                    decode.decode(o.getString("private")), decode.decode(o.getString("point")))
+                    decode.decode(o.getString("private")), decode.decode(o.getString("point")),
+                    o.optBoolean("pressed", false))
         } catch (e: JSONException) {
             null
         } catch (e: IllegalArgumentException) {
@@ -345,7 +354,7 @@ object Lock {
         }
         Account.broadcast(c, "pairing", JSONObject().put("device", device).put("id", id)
             .put("code", code).put("name", name))
-        return State.Waiting(code, s.email, removedWord(c))
+        return State.Waiting(code, s.email, removedWord(c), false)
     }
 
     private fun removedWord(c: Context): String =
@@ -385,15 +394,17 @@ object Lock {
                 req = null
             } else {
                 val handed = rows.getJSONObject(0).text("handed")
-                if (handed.isNotEmpty()) {
+                if (handed.isNotEmpty() && req.pressed) {
                     val got = taken(c, req, handed, remote, was)
                     if (got != null) return got
                     req = null
-                } else if (nowS() >= req.expires) {
+                } else if (handed.isEmpty() && nowS() >= req.expires) {
                     dropRequest(c)
                     req = null
                 } else {
-                    return State.Waiting(req.code, s.email, removedWord(c))
+                    // Something handed over before the press stays where it
+                    // is, unopened: a server can write that column by itself.
+                    return State.Waiting(req.code, s.email, removedWord(c), req.pressed)
                 }
             }
         }
@@ -518,7 +529,9 @@ object Lock {
                                  isRefused(c, server))
         }
         val req = loadRequest(c)?.takeIf { it.uid == s.uid }
-        if (req != null && nowS() < req.expires) return State.Waiting(req.code, s.email, word)
+        if (req != null && nowS() < req.expires) {
+            return State.Waiting(req.code, s.email, word, req.pressed)
+        }
         return State.Trouble(s.email, word)
     }
 
@@ -549,6 +562,24 @@ object Lock {
     fun lastEmail(c: Context): String = sp(c).getString(PREF_EMAIL, "").orEmpty()
 
     fun holdsKey(c: Context): Boolean = sp(c).getString(PREF_STATE, "") == HAVE
+
+    /**
+     * Same code: the person compared the two screens. Kept with the request, so
+     * a kill right after it loses nothing, and then the pass takes what is there.
+     */
+    @Synchronized
+    fun sameCode(c: Context, progress: (State) -> Unit = {}): State {
+        try {
+            val req = loadRequest(c)
+            if (req != null) {
+                saveRequest(c, Request(req.uid, req.id, req.code, req.lockId, req.expires,
+                                       req.private, req.point, pressed = true))
+            }
+        } catch (e: Sealed.NotNow) {
+            return State.NotNow(Sealed.words(c, e))
+        }
+        return look(c, progress)
+    }
 
     /** Ask Not now's question again: Declined's button. */
     @Synchronized

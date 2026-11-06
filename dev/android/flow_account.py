@@ -65,10 +65,9 @@ def fresh() -> fake_pc.FakeAccount:
 
 def to_account_page() -> None:
     drive.home()
-    drive.wait("Set up|SET UP", 10)
     # the account is the first step, whatever its words are
-    drive.tap(r"^(Sign in with Google|Approve this phone on your PC|Open DeskIT on your PC"
-              r"|Your account's lock changed|Your PC said Not now)$", 15)
+    drive.tap(r"^(Sign in with Google|Approve this phone|Open DeskIT on your PC"
+              r"|Your account's lock changed|Your PC said Not now)$", 20)
 
 
 def to_settings() -> None:
@@ -94,15 +93,20 @@ def sign_in(acct: fake_pc.FakeAccount, *, from_home: bool = True) -> None:
                 "-d", f"deskit://auth?code={code}")
 
 
+def same_code() -> None:
+    """The phone's half of the join: one press on the code screen."""
+    drive.tap("^Same code$", 15)
+    drive.wait("Press Approve on your PC|This phone is ready", 10)
+
+
 def join(acct: fake_pc.FakeAccount) -> dict:
-    """Signed in and approved: the phone's row, opened."""
+    """Signed in, both sides pressed: the phone's row."""
     sign_in(acct)
     code = drive.wait(CODE, 30)["text"]
     req = acct.requests()[-1]
+    same_code()
     acct.approve(req["id"])
     drive.wait("This phone is ready", 20)
-    # the page names the account's PCs, read from their sealed rows
-    drive.wait("Your PCs: HOME-PC", 10)
     drive.tap("^Done$")
     assert until(lambda: bool(acct.phones()), 10)
     return dict(acct.phones()[0], code=code)
@@ -168,14 +172,15 @@ def flow_join():
         time.sleep(4)
         check("polling makes no twin either", [r["id"] for r in acct.requests()] == [req["id"]])
 
+        same_code()
+        drive.wait("Press Approve on your PC", 15)
         drive.kill()
         acct.approve(req["id"])                  # approved while the phone was dead
         drive.home()
-        drive.wait("^Signed in$", 25)
-        check("the answer still opens after the process was killed, on Home's own look", True)
+        check("pressed and killed, the answer opens on Home's own look", until(
+            lambda: bool(acct.phones()), 25))
         check("the request's row is gone", until(
             lambda: not [r for r in acct.tables["pairings"] if r["id"] == req["id"]], 10))
-        check("a phone row is written", until(lambda: bool(acct.phones()), 10))
         check("a phone row exists", len(acct.phones()) == 1)
         row = acct.phones()[0]
         link = acct.open_link(row)
@@ -188,8 +193,8 @@ def flow_join():
         session = next(iter(acct.sessions.values()))
         check("the row names its session", row["session_id"] == session["id"])
         check("the device is the one that asked", row["id"] == req["device_id"])
-        check("the others are told the row changed",
-              any("devices" in (e.get("stores") or []) for e in acct.events("changed")))
+        check("the others are told the row changed", until(
+            lambda: any("devices" in (e.get("stores") or []) for e in acct.events("changed")), 10))
         raw = drive.as_app("cat", "no_backup/sealed/account_key.bin", check=False)
         check("the key is sealed on disk", '"key"' not in raw and len(raw) > 40)
     finally:
@@ -203,6 +208,7 @@ def flow_wrong_key():
         code = drive.wait(CODE, 30)["text"]
         req = acct.requests()[0]
         import os
+        same_code()
         acct.approve(req["id"], key=os.urandom(32))    # a key of another lock
         check("the first request is dropped", until(
             lambda: not [r for r in acct.tables["pairings"] if r["id"] == req["id"]], 20))
@@ -228,13 +234,19 @@ def flow_dishonest_server():
         check("a lock the PC does not hold gives another code on the PC's Home",
               code != acct.code_of(req), code)
         check("the phone's code is the one for the lie", code == acct.code_of(req, lie))
-        # KNOWN LIMIT, written down so nobody takes it for covered: nobody pressed
-        # Approve here. `handed` is a column the server can write, and a key that
-        # matches the lock it named passes every check a phone can make.
+        # `handed` is a column the server can write, and a key that matches the
+        # lock it named passes every check a phone can make. The press is what
+        # stands in the way: the two screens differ, so nobody presses.
         acct.approve(req["id"], key=own)
-        drive.wait("This phone is ready", 20)
-        print("      KNOWN LIMIT: a server's own key, handed over with no Approve, is taken",
-              flush=True)
+        time.sleep(7)                            # two polls of the page
+        check("a forged hand-over is not kept without the press", "account_key.bin" not in sealed_files())
+        check("the phone stays on the code", drive.find(CODE) is not None
+              and drive.find("^Same code$") is not None)
+        check("and writes no row", not acct.phones())
+        drive.kill()
+        to_account_page()
+        drive.wait(CODE, 20)
+        check("killed and reopened, nothing was taken either", "account_key.bin" not in sealed_files())
     finally:
         acct.stop()
 
@@ -278,7 +290,7 @@ def flow_approve():
         join(acct)
         ask = acct.pc_asks("NEW-PC")
         to_settings()
-        drive.wait("NEW-PC asks to join your account", 20)
+        drive.wait("NEW-PC asks to join", 20)
         shown = drive.wait(CODE, 20)["text"]
         check("the code on the phone is the one the asking PC shows",
               shown == ask["full_code"], f"{shown} against {ask['full_code']}")
@@ -343,7 +355,8 @@ def flow_forget():
         to_settings()
         drive.wait("OFFICE-PC", 20)
         check("a device the server added does not appear", drive.find("SERVERS-OWN-PC") is None)
-        check("this phone is on the list, with no Forget of its own", drive.find("^This phone$") is not None)
+        check("this phone is on the list, with no Forget of its own",
+              drive.find("^This phone$") is not None)
         cert = acct.pc_link()["cert"]
         drive.tap("^Forget$")
         drive.wait(r"^Forget (HOME-PC|OFFICE-PC)\?$", 10)
@@ -390,12 +403,13 @@ def flow_forgotten():
         check("the session ending alone wipes nothing", "account_key.bin" in files, files)
         sign_in(acct, from_home=False)
         drive.wait(CODE, 30)
-        drive.wait("removed from your account", 5)
+        drive.wait("This phone was removed", 5)
         check("it says it was removed", True)
         files = sealed_files()
         check("it wiped the key", "account_key.bin" not in files, files)
         req = acct.requests()[0]
         check("it asks as a new device", req["device_id"] != row["id"])
+        same_code()
         acct.approve(req["id"])
         drive.wait("This phone is ready", 20)
         check("a new Approve brings it back", True)
@@ -423,7 +437,7 @@ def flow_sign_out():
         to_settings()
         drive.wait("^Sign out$", 20)
         drive.tap_scrolling("^Sign out$")
-        drive.wait("2 recordings haven't reached your PC yet", 10)
+        drive.wait("2 recordings that haven't reached your PC will be deleted", 10)
         check("the recordings are named first", True)
         drive.tap("^Stay signed in$")
         drive.gone("2 recordings", 10)
@@ -460,7 +474,7 @@ def flow_lock_changed():
         acct.change_lock()
         calls = len(acct.calls)
         to_account_page()
-        drive.wait("The lock of your account changed", 20)
+        drive.wait("Your account's lock changed", 20)
         check("it asks, with the PC's two answers", drive.find("^It wasn't me$") is not None
               and drive.find("^It was me$") is not None)
         check("nothing sealed is read while it asks", not any(
@@ -468,12 +482,12 @@ def flow_lock_changed():
         check("its key is still here", "account_key.bin" in sealed_files())
 
         drive.tap("^It wasn't me$")
-        drive.wait("Not you", 15)
+        drive.wait("Paused on this phone", 15)
         check("It wasn't me moves nothing", "account_key.bin" in sealed_files())
         check("and points to Sign out of every PC", drive.find("Sign out of every PC") is not None)
         drive.kill()
         to_account_page()
-        drive.wait("Not you", 20)
+        drive.wait("Paused on this phone", 20)
         check("a restart does not ask again", drive.find("^It was me$") is None)
 
         # it was somebody else, and the PC put its lock back
@@ -489,10 +503,11 @@ def flow_lock_changed():
         acct.change_lock()
         drive.kill()
         to_account_page()
-        drive.wait("The lock of your account changed", 20)
+        drive.wait("Your account's lock changed", 20)
         drive.tap("^It was me$")
         code = drive.wait(CODE, 30)["text"]
         req = acct.requests()[0]
+        same_code()
         check("It was me asks to join the new lock", code == acct.code_of(req))
         check("its key moved aside, not away", "account_key_aside.bin" in sealed_files())
         check("the device stays the device", req["device_id"] == row["id"])
@@ -612,6 +627,10 @@ def flow_locked_phone():
     """A stolen, locked phone cannot use the key: run, not assumed. And what a
     phone does when its owner takes the screen lock away afterwards."""
     pin = "1234"
+    sdk = int(drive.shell("getprop", "ro.build.version.sdk").strip())
+    # Android 9 is the first with unlocked-only keys: before it the phone must
+    # simply work, and the plan says so ("where the phone has it").
+    strict = sdk >= 28
     acct = fresh()
     try:
         drive.shell("locksettings", "set-pin", pin)
@@ -622,8 +641,9 @@ def flow_locked_phone():
         time.sleep(2)
         now = probe()
         print("      locked:  ", now, flush=True)
-        check("locked, the sealed store does not open", "sealed=notnow" in now, now)
-        check("locked, the client key does not sign", "signs=refused" in now, now)
+        if strict:
+            check("locked, the sealed store does not open", "sealed=notnow" in now, now)
+            check("locked, the client key does not sign", "signs=refused" in now, now)
         check("the phone knows it is locked, and nothing was wiped",
               "locked=true" in now and "account_key.bin" in sealed_files())
         unlock(pin)
@@ -641,6 +661,10 @@ def flow_locked_phone():
         now = probe()
         print("      PIN removed:", now, flush=True)
         check("with the PIN removed the phone does not call itself locked", "locked=false" in now, now)
+        if not strict:
+            check("with no unlocked-only key, taking the PIN away changes nothing",
+                  "sealed=opened" in now, now)
+            return
         check("what was sealed under the lock is gone with it, and says so as nothing",
               "sealed=none" in now, now)
         drive.kill()
@@ -650,6 +674,7 @@ def flow_locked_phone():
         sign_in(acct, from_home=False)
         drive.wait(CODE, 30)
         req = acct.requests()[-1]
+        same_code()
         acct.approve(req["id"])
         drive.wait("This phone is ready", 25)
         check("with the screen lock gone, the phone gets back in by signing in and an Approve", True)
@@ -687,6 +712,44 @@ def flow_pin_added_later():
         check("and the account carries on", True)
     finally:
         drive.shell("locksettings", "clear", "--old", pin, check=False)
+        acct.stop()
+
+
+def flow_same_code():
+    """One press on each side, in either order."""
+    acct = fresh()
+    try:
+        sign_in(acct)
+        drive.wait(CODE, 30)
+        req = acct.requests()[0]
+        check("the code screen has one button", drive.find("^Same code$") is not None)
+
+        # the Approve first, the press after
+        acct.approve(req["id"])
+        time.sleep(7)
+        check("an Approve alone is not enough", "account_key.bin" not in sealed_files())
+        same_code()
+        drive.wait("This phone is ready", 20)
+        check("the press after the Approve takes the key", "account_key.bin" in sealed_files())
+    finally:
+        acct.stop()
+    acct = fresh()
+    try:
+        sign_in(acct)
+        drive.wait(CODE, 30)
+        req = acct.requests()[0]
+
+        # the press first, the Approve after, with a kill in between
+        same_code()
+        drive.wait("Press Approve on your PC", 15)
+        drive.kill()
+        to_account_page()
+        drive.wait("Press Approve on your PC", 20)
+        check("the press survives a killed process", drive.find("^Same code$") is None)
+        acct.approve(req["id"])
+        drive.wait("This phone is ready", 20)
+        check("the Approve after the press takes the key", "account_key.bin" in sealed_files())
+    finally:
         acct.stop()
 
 

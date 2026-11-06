@@ -2,7 +2,6 @@ package io.github.deskit_app.deskit
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,7 +13,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import kotlin.concurrent.thread
@@ -22,12 +20,11 @@ import kotlin.concurrent.thread
 /**
  * Everything that is a setting, on one page behind the home's one button.
  *
- * Where the PC is and the token that proves we may talk to it (paste the
- * whole "https://host/#t=token" line and both fields fill); whether to hop
- * back to the everyday keyboard after the text lands; the keys' order,
- * back to the designed one; the keyboard's own system page; and the
- * update check, which only opens the browser when the PC really has a
- * newer build.
+ * The account: who, the devices, a device asking to join, the way out. Then
+ * whether to hop back to the everyday keyboard after the text lands, the keys'
+ * order, the keyboard's own system page, and the update check, which only
+ * opens the browser when the PC really has a newer build. The old road, a
+ * pasted address and token, sits behind Other ways until stage 6 takes it out.
  *
  * The microphone permission is asked from the home screen, not here — an
  * InputMethodService cannot show a runtime permission dialog, so some
@@ -44,40 +41,81 @@ class SettingsActivity : Activity() {
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
-            val p = Skin.dp(this@SettingsActivity, 20)
-            setPadding(p, Skin.dp(this@SettingsActivity, 24), p, Skin.dp(this@SettingsActivity, 32))
-        }
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(Skin.BG)
-            isVerticalScrollBarEnabled = false
-            addView(col, ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT)
-        })
-
-        // A way back that is on the page, not only on the phone's own bar.
-        val head = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 6))
-        }
-        head.addView(Skin.backButton(this) { finish() })
-        head.addView(Skin.text(this, getString(R.string.settings), 26f, Skin.FG, heavy = true))
-        col.addView(head)
-        col.addView(Skin.text(this, getString(R.string.setup_intro), 14f, Skin.DIM).apply {
-            setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 20))
-            setLineSpacing(0f, 1.25f)
-        })
+        val col = Skin.page(this)
+        col.addView(Skin.header(this, getString(R.string.settings)) { finish() })
 
         accountBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(accountBox)
 
-        // ---- the PC ----
-        val pc = Skin.card(this)
-        pc.addView(Skin.eyebrow(this, getString(R.string.the_pc)))
-        pc.addView(Skin.gap(this, 12))
+        // ---- the keyboard ----
+        val kb = Skin.card(this)
+        val sw = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        sw.addView(Skin.text(this, getString(R.string.switch_back_label), 15f, Skin.FG).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = Skin.dp(this@SettingsActivity, 12) }
+        })
+        switchBack = Switch(this).apply {
+            isChecked = Prefs.switchBack(this@SettingsActivity)
+            Skin.switchLook(this@SettingsActivity, this)
+            setOnCheckedChangeListener { _, on ->
+                Prefs.save(this@SettingsActivity, Prefs.url(this@SettingsActivity),
+                           Prefs.token(this@SettingsActivity), on)
+            }
+        }
+        sw.addView(switchBack)
+        kb.addView(sw)
+        kb.addView(Skin.rule(this))
+        kb.addView(Skin.text(this, getString(R.string.arrange_help), 14f, Skin.DIM).apply {
+            setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 12))
+        })
+        val keysRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+        }
+        keysRow.addView(Skin.button(this, getString(R.string.reset_keys)) {
+            Prefs.saveKeyOrder(this, Prefs.DEFAULT_ORDER)
+            android.widget.Toast.makeText(this, getString(R.string.keys_reset),
+                                          android.widget.Toast.LENGTH_SHORT).show()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+                .apply { marginEnd = Skin.dp(this@SettingsActivity, 10) }
+        })
+        keysRow.addView(Skin.button(this, getString(R.string.system_keyboards)) {
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        })
+        kb.addView(keysRow)
+        col.addView(kb)
+
+        // ---- the app ----
+        val app = Skin.card(this)
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) { "?" }
+        val versionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        versionRow.addView(Skin.text(this, getString(R.string.version_line, version), 15f, Skin.FG)
+            .apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+        versionRow.addView(Skin.smallButton(this, getString(R.string.check_update)) { checkForUpdate() })
+        app.addView(versionRow)
+        // The answer lands under the button that asked.
+        updateResult = Skin.text(this, "", 14f, Skin.DIM).apply {
+            setPadding(0, Skin.dp(this@SettingsActivity, 8), 0, 0)
+            visibility = View.GONE
+        }
+        app.addView(updateResult)
+        col.addView(app)
+
+        // ---- the old road: behind one word until stage 6 ----
+        val pc = Skin.card(this).apply { visibility = View.GONE }
         pc.addView(label(getString(R.string.paste_url_label)))
         urlField = field(Prefs.url(this), getString(R.string.url_hint))
         pc.addView(urlField)
@@ -90,75 +128,16 @@ class SettingsActivity : Activity() {
             saveAndTest()
         })
         result = Skin.text(this, "", 14f, Skin.DIM).apply {
-            setPadding(0, Skin.dp(this@SettingsActivity, 12), 0, 0)
+            setPadding(0, Skin.dp(this@SettingsActivity, 8), 0, 0)
             visibility = View.GONE
         }
         pc.addView(result)
+        val otherWays = Skin.link(this, getString(R.string.other_ways)) {
+            Skin.settle(col)
+            pc.visibility = if (pc.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+        col.addView(otherWays)
         col.addView(pc)
-
-        // ---- the keyboard ----
-        val kb = Skin.card(this)
-        kb.addView(Skin.eyebrow(this, getString(R.string.the_keyboard)))
-        kb.addView(Skin.gap(this, 8))
-        val sw = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, Skin.dp(this@SettingsActivity, 8), 0, Skin.dp(this@SettingsActivity, 8))
-        }
-        sw.addView(Skin.text(this, getString(R.string.switch_back_label), 15f, Skin.FG).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                .apply { marginEnd = Skin.dp(this@SettingsActivity, 12) }
-        })
-        switchBack = Switch(this).apply {
-            isChecked = Prefs.switchBack(this@SettingsActivity)
-            thumbTintList = Skin.tint(Skin.FG)
-            trackTintList = Skin.tint(Skin.LINE_HI)
-            setOnCheckedChangeListener { _, on ->
-                Prefs.save(this@SettingsActivity, Prefs.url(this@SettingsActivity),
-                           Prefs.token(this@SettingsActivity), on)
-            }
-        }
-        sw.addView(switchBack)
-        kb.addView(sw)
-        kb.addView(Skin.rule(this))
-        kb.addView(Skin.text(this, getString(R.string.arrange_help), 13f, Skin.DIM).apply {
-            setLineSpacing(0f, 1.25f)
-            setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 12))
-        })
-        val keysRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        keysRow.addView(Skin.button(this, getString(R.string.reset_keys)) {
-            Prefs.saveKeyOrder(this, Prefs.DEFAULT_ORDER)
-            android.widget.Toast.makeText(this, getString(R.string.keys_reset),
-                                          android.widget.Toast.LENGTH_SHORT).show()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                .apply { marginEnd = Skin.dp(this@SettingsActivity, 10) }
-        })
-        keysRow.addView(Skin.button(this, getString(R.string.system_keyboards)) {
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        kb.addView(keysRow)
-        col.addView(kb)
-
-        // ---- the app ----
-        val app = Skin.card(this)
-        app.addView(Skin.eyebrow(this, getString(R.string.the_app)))
-        app.addView(Skin.gap(this, 8))
-        val version = try {
-            packageManager.getPackageInfo(packageName, 0).versionName
-        } catch (e: Exception) { "?" }
-        app.addView(Skin.text(this, getString(R.string.version_line, version), 14f, Skin.DIM)
-            .apply { setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 12)) })
-        app.addView(Skin.button(this, getString(R.string.check_update)) { checkForUpdate() })
-        // The answer lands under the button that asked, not under Save.
-        updateResult = Skin.text(this, "", 14f, Skin.DIM).apply {
-            setPadding(0, Skin.dp(this@SettingsActivity, 12), 0, 0)
-            visibility = View.GONE
-        }
-        app.addView(updateResult)
-        col.addView(app)
 
         // Paste the whole "https://host/#t=token" line and both fields fill.
         urlField.setOnFocusChangeListener { _, focused -> if (!focused) splitPastedUrl() }
@@ -228,33 +207,42 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private fun rowOf(d: Lock.Device): AccountScreens.Row = AccountScreens.Row(
-        d.id, d.name, getString(if (d.isPc) R.string.kind_pc else R.string.kind_phone),
-        if (d.seen > 0) seenWords(d) else "", d.mine, d.linked)
+    private fun rowOf(d: Lock.Device): AccountScreens.Row {
+        val kind = getString(if (d.isPc) R.string.kind_pc else R.string.kind_phone)
+        val line = when {
+            d.mine -> getString(R.string.this_phone)
+            d.seen > 0 && d.linked -> getString(R.string.device_seen, kind, seenWords(d))
+            else -> kind
+        }
+        return AccountScreens.Row(d.id, d.name, d.isPc, line)
+    }
+
+    private var drawnKey = ""
 
     private fun drawAccount() {
-        accountBox.removeAllViews()
         val st = drawnState ?: return
+        val key = when (st) {
+            is Lock.State.Ready -> "ready:$askingForget:$askingSignOut:$drawnWord:" +
+                drawnDevices.map { it.id + it.seen } + drawnAsking.map { it.id + it.code }
+            else -> st.javaClass.simpleName
+        }
+        if (key == drawnKey) return
+        if (drawnKey.isNotEmpty()) Skin.settle(accountBox)
+        drawnKey = key
+        accountBox.removeAllViews()
         val a = AccountScreens(this)
         if (st !is Lock.State.Ready) {
-            val line = when (st) {
-                is Lock.State.SignedOut -> R.string.sign_in_line
-                is Lock.State.Changed -> R.string.step_changed
-                is Lock.State.NoLock -> R.string.no_lock_title
-                is Lock.State.Declined -> R.string.declined_title
-                else -> R.string.approve_title
-            }
+            val out = st is Lock.State.SignedOut
             accountBox.addView(Skin.card(this).apply {
-                addView(Skin.eyebrow(this@SettingsActivity, getString(R.string.your_account)))
-                addView(Skin.gap(this@SettingsActivity, 10))
-                addView(Skin.text(this@SettingsActivity, getString(line), 15f, Skin.FG).apply {
-                    setLineSpacing(0f, 1.25f)
-                    setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 14))
-                })
+                if (!out) addView(Skin.title(this@SettingsActivity, getString(when (st) {
+                    is Lock.State.Changed -> R.string.step_changed
+                    is Lock.State.NoLock -> R.string.no_lock_title
+                    is Lock.State.Declined -> R.string.declined_title
+                    else -> R.string.step_approve
+                }), 18f).apply { setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 14)) })
                 addView(Skin.button(this@SettingsActivity,
-                    getString(if (st is Lock.State.SignedOut) R.string.sign_in_google
-                              else R.string.continue_),
-                    primary = st is Lock.State.SignedOut) { openAccount() })
+                    getString(if (out) R.string.sign_in_google else R.string.continue_),
+                    primary = out) { openAccount() })
             })
             return
         }
@@ -325,7 +313,7 @@ class SettingsActivity : Activity() {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         setTextColor(Skin.FG)
         setHintTextColor(Skin.FAINT)
-        background = Skin.face(this@SettingsActivity, Skin.PANE, Skin.LINE, 14)
+        background = Skin.well(this@SettingsActivity)
         val px = Skin.dp(this@SettingsActivity, 14); val py = Skin.dp(this@SettingsActivity, 12)
         setPadding(px, py, px, py)
         inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI

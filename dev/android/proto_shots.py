@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import drive  # noqa: E402
 
-SCREENS = ["signin", "signin_gone", "preparing", "waiting", "removed", "nolock", "declined",
+SCREENS = ["signin", "signin_gone", "preparing", "waiting", "pressed", "removed", "nolock", "declined",
            "ready", "devices", "forget", "asking", "twins", "changed", "refused", "signout"]
 
 

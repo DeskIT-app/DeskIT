@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- palette.py's ladder, for the theme. Skin.kt holds the same
-         values for everything drawn in code. The launcher icon's ground
-         is a picture now (mipmap/ic_launcher_background, make_logo.py). -->
-    <color name="bg">#14110C</color>
-    <color name="card">#24201A</color>
-    <color name="card_hi">#2E2921</color>
-    <color name="fg">#F1ECE2</color>
-    <color name="dim">#B2A896</color>
-    <color name="accent">#E3A63C</color>
+    <!-- skin\palette.py's ladder, for the theme. Skin.kt holds the same values
+         for everything drawn in code. -->
+    <color name="ground">#080A14</color>
+    <color name="card">#1A1E35</color>
+    <color name="card_hi">#242944</color>
+    <color name="fg">#EFEDF7</color>
+    <color name="dim">#C0C3D8</color>
+    <color name="accent">#A597FF</color>
 </resources>

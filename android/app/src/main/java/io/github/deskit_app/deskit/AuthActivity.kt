@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
-import android.widget.LinearLayout
 import kotlin.concurrent.thread
 
 /**
@@ -18,12 +17,11 @@ class AuthActivity : Activity() {
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
-        setContentView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Skin.BG)
+        Skin.page(this).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, Skin.dp(this@AuthActivity, 120), 0, 0)
             addView(Skin.text(this@AuthActivity, getString(R.string.signing_in), 16f, Skin.DIM))
-        })
+        }
         back(intent?.data)
     }
 

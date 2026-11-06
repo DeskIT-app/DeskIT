@@ -59,7 +59,7 @@
         <activity
             android:name=".ReviewActivity"
             android:exported="false"
-            android:label="@string/second_reading"
+            android:label="@string/did_you_mean"
             android:launchMode="singleTop" />
 
         <!-- The desktop's F8 key: "DeskIT" in the text-selection menu of
