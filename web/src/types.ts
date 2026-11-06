@@ -55,6 +55,8 @@ export type Bar = {
   run: string;
   stop: boolean;
   screens: string;
+  screens_up: boolean;
+  hears: boolean;
   dev: string;
 };
 

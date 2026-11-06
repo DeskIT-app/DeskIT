@@ -478,7 +478,7 @@ class Model:
         return ("ready" if starting and s.get("silent_s", 0) > 45 else
                 "starting" if starting else
                 "stopped" if not s else
-                "off" if model == "off" else
+                "off" if model == "off" and not s.get("paused") else
                 "loading" if model in ("loading", "unloading") else
                 s.get("activity") or "ready")
 
@@ -489,17 +489,26 @@ class Model:
         model = s.get("model") or "on"
         uptime = s.get("uptime_s")
         awake = (s.get("awake") or {}) if self.running else {}
-        run = ("Start" if not s or model == "off" else
-               "Loading…" if model in ("loading", "unloading") else
-               "Resume" if s.get("paused") else "Pause")
+        # A pause outranks the model's word: the keys are dead while it
+        # stands, model or no model, and this is the button that lifts it.
+        run = ("Start" if not s else
+               "Resume" if s.get("paused") else
+               "Start" if model == "off" else
+               "Loading…" if model in ("loading", "unloading") else "Pause")
         return {
             "lamp": lamp, "word": word,
             "meta": f"up {human_time(uptime)}" if uptime else "not running",
             "run": run,
-            # Stop only while there is a model to stop; Screens off with
-            # it (dashboard._paint_bar_buttons, his rule of 2026-09-07)
+            # Stop only while there is a model to stop (his rule of
+            # 2026-09-07). Screens off asks for no model, so it stays for
+            # as long as the app answers (dashboard._paint_bar_buttons,
+            # his word of 2026-11-06).
             "stop": bool(s) and model not in ("off", "unloading"),
             "screens": "Screens on" if awake.get("dark") else "Screens off",
+            "screens_up": self.running,
+            # whether a hold key would be heard right now: Home says
+            # "hold ... and speak" only then
+            "hears": bool(s) and model == "on" and not s.get("paused"),
             "dev": "DEV" if paths.DEVELOPER else "",
         }
 
@@ -1110,10 +1119,11 @@ class Model:
         else:
             sentence = "The machine sleeps on its own timer."
         model = self.status.get("model") or "on"
-        if self.running and model != "on":
+        if self.running and model != "on" and not self.status.get("paused"):
             sentence = ("The model is off — every key that needs no model works; "
                         "Start loads it again." if model == "off" else
-                        "The model is loading — about 25 seconds.")
+                        "The model is loading — every key that needs no model "
+                        "already works.")
         facts = [f"DeskIT {paths.DEV_TAG} {version.VERSION}".replace("  ", " ")]
         if version.BRANCH:
             facts.append(f"running {version.BRANCH}")
@@ -1930,9 +1940,13 @@ class Model:
             if singleton.is_running():
                 return "it is already running"
             self._busy_until = time.monotonic() + 2
-            return ("starting — the model takes about 25 seconds to load"
+            return ("starting — the keys in a moment, the model in about 25 seconds"
                     if launch.start_app() else "could not launch main.py — see app.log")
         model = self.status.get("model") or "on"
+        if self.status.get("paused"):
+            reply = self._ask("toggle")
+            return self._said(reply, "paused" if (reply or {}).get("paused")
+                              else "listening again")
         if model in ("loading", "unloading"):
             return "the model is on its way — a moment"
         if model == "off":
