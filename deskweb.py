@@ -877,10 +877,7 @@ class Model:
         if lock.get("state") == "waiting":
             code = lock.get("code") or "…"
             note = ("Open the desk on your other PC, or open DeskIT on your phone. If it shows "
-                    "this code, press Approve there and Same code here, in either order. Until "
-                    "then this PC has your words and settings; what you said and your cloud "
-                    "keys stay locked. No other device at hand? Type the recovery key DeskIT "
-                    "made for you.")
+                    "this code, press Approve there and Same code here, in either order.")
             if lock.get("same"):
                 note = ("Now press Approve there: the desk on your other PC, or DeskIT on your "
                         "phone. Until then what you said and your cloud keys stay locked.")

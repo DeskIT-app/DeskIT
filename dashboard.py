@@ -7961,9 +7961,7 @@ class Dashboard:
                          if same else
                          "Open the desk on your other PC, or open DeskIT on your phone. If it "
                          "shows this code, press Approve there and Same code here, in either "
-                         "order. Until then this PC has your words and settings; what you said "
-                         "and your cloud keys stay locked. No other device at hand? Type the "
-                         "recovery key DeskIT made for you."),
+                         "order."),
                 "buttons": buttons,
             })
         elif lock.get("state") == "have" and lock.get("recovery") is False \

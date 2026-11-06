@@ -47500,7 +47500,8 @@ def test_a_waiting_pc_says_a_phone_can_approve_it():
         text, note = got[0]["text"], got[0]["note"]
         assert "another device of yours" in text and "H7QM3-K2P9X" in text, (desk, text)
         assert "or open DeskIT on your phone" in note, (desk, note)
-        assert "Home there" not in text and "No other PC" not in note, (desk, text, note)
+        assert "Home there" not in text and "PC to approve" not in text, (desk, text, note)
+        assert len(note) <= 150, f"{desk}: Home shows two lines of a note: {note}"
     assert [b[0] for b in rows["tk"][0]["buttons"]] == ["Same code", "Type the recovery key"]
     assert [b["label"] for b in rows["web"][0]["buttons"]] == ["Same code", "Type the recovery key"]
     assert "another device of yours" in model._banner()["text"]
