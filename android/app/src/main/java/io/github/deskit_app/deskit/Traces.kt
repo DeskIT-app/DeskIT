@@ -5,6 +5,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 
 /**
@@ -40,13 +42,23 @@ object Traces {
     var wipes = 0
         private set
 
-    /** Quick, on any thread, and safe to run twice. */
+    /**
+     * Quick, on any thread, and safe to run twice. The clipboard goes to the main
+     * thread: Android 8 refuses a thread with no Looper the service itself ("Can't
+     * create handler", measured on API 26 on 2026-11-06), and nearly every wipe runs
+     * on one. It is owed from the first moment, so that a process that dies before
+     * the look has left a note of it.
+     */
     @Synchronized
     fun wipe(c: Context) {
         wipes++
         Prefs.forget(c)
         (c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancelAll()
-        Prefs.clipOwed(c, !clearClip(c) && Build.VERSION.SDK_INT >= 29)
+        Prefs.clipOwed(c, true)
+        val app = c.applicationContext
+        Handler(Looper.getMainLooper()).post {
+            if (clearClip(app) || Build.VERSION.SDK_INT < 29) Prefs.clipOwed(app, false)
+        }
     }
 
     /**
@@ -61,9 +73,10 @@ object Traces {
     }
 
     /**
-     * False when there was no answer. Android 10 and up answer only the app with
-     * the focus or the keyboard in use, and the same null means an empty clipboard.
-     * What anyone else copied is not ours to touch, so an unknown clip stays.
+     * On the main thread. False when there was no answer. Android 10 and up answer
+     * only the app with the focus or the keyboard in use, and the same null means an
+     * empty clipboard. What anyone else copied is not ours to touch, so an unknown
+     * clip stays.
      */
     private fun clearClip(c: Context): Boolean = try {
         val board = c.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
