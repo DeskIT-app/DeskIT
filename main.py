@@ -62,6 +62,7 @@ import server as server_mod
 import singleton
 import overlay as overlay_mod
 import vocab as vocab_mod
+import wake as wake_mod
 from config import ConfigError
 import hotkey as hotkey_mod
 from hotkey import (HookThread, PTTStateMachine, parse_binding,
@@ -502,6 +503,14 @@ class App:
         # dot, the cards and every feature that needs no model keep
         # running, and the hold keys are refused with MODEL_OFF_WORDS.
         self._model_state = "on" if self._model_wanted else "off"
+        # wake.py: the models warmed again when the person comes back to
+        # the machine, so a model Windows pushed out of memory meanwhile
+        # costs that wait then and not on the first dictation (11.8 s on
+        # 2026-10-20). _model_used_at is when a decode last ran, on the
+        # monotonic clock — the load's own warm-up counts as one.
+        self._model_used_at = time.monotonic()
+        self._waker = wake_mod.Waker(60 * float(getattr(
+            getattr(cfg, "local", None), "warm_after_away_min", 0) or 0))
         self._refused_at = 0.0
         if not self._model_wanted:
             self.machine.set_dictation_off(True)
@@ -1927,6 +1936,9 @@ class App:
         else:
             self._say("listening again")
             log.info("resumed — hold '%s' and speak", self.cfg.hotkey)
+            waker = getattr(self, "_waker", None)
+            if waker is not None:
+                waker.resumed(time.monotonic())
 
     def set_paused(self, paused: bool, auto: bool = False) -> bool:
         if not paused and self.locked():
@@ -1974,6 +1986,52 @@ class App:
         if getattr(self, "_lock_held", False) and not self.locked():
             self._lock_held = False
             self.machine.set_paused(False)
+
+    def _watch_return(self) -> None:
+        """wake.py's poll: the person back at the machine (or the pause
+        lifted) and the model idle all that time — warm it now, while
+        nobody is waiting on it. The card's free memory is asked only
+        when everything else already says yes."""
+        while not self._stopping.wait(wake_mod.POLL_S):
+            try:
+                reason = self._waker.look(
+                    time.monotonic(), awake_mod.last_input(),
+                    self._model_used_at, self.machine.paused,
+                    free=self._card_free)
+                if reason:
+                    self._rewarm(reason)
+            except Exception:                                # noqa: BLE001
+                log.debug("wake: the poll failed", exc_info=True)
+
+    @staticmethod
+    def _card_free() -> int | None:
+        reading = awake_mod.gpu_memory()
+        return None if reading is None else reading[1] - reading[0]
+
+    def _rewarm(self, reason: str) -> None:
+        """The load-time warm-ups again (local_whisper.rewarm), under the
+        model lock. Skipped, not waited for, when a decode holds the lock
+        — that decode is the warm-up — and when there is no local model
+        on (off, loading, the cloud, a recording on its way)."""
+        backend = getattr(self, "transcriber", None)
+        if self._model_state != "on" or not hasattr(backend, "rewarm") \
+                or self.machine.state != hotkey_mod.IDLE:
+            return
+        if not self._model_lock.acquire(blocking=False):
+            return
+        try:
+            took = backend.rewarm()
+            self._model_used_at = time.monotonic()
+        except Exception as e:                               # noqa: BLE001
+            log.info("could not warm the model %s (%s) — the next "
+                     "dictation pays it instead", reason, e)
+            return
+        finally:
+            self._model_lock.release()
+        log.info("model warmed %s: %.1f s%s", reason, took,
+                 " — it had been pushed out of memory; the next dictation "
+                 "would have waited this long" if took >= wake_mod.SLOW_S
+                 else "")
 
     def _watch_fullscreen(self) -> None:
         """Pause while a game owns the screen; resume when it lets go.
@@ -2329,6 +2387,9 @@ class App:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
             self._watcher.start()
+        if self._waker.away_s > 0:
+            threading.Thread(target=self._watch_return, daemon=True,
+                             name="wake").start()
         if self.cfg.polish.when != "never" and self.cfg.polish.warm_up:
             # In the background and after the hotkey is live: dictation must
             # not wait on a language model it may never need, but the model
@@ -3479,6 +3540,7 @@ class App:
                 # The one choke point every decode passes through, the
                 # phone endpoint's included (see _transcribe).
                 with self._model_lock:
+                    self._model_used_at = time.monotonic()
                     window = backend.decode_window(wav, lead_s, keep_s)
                 if polish and window.text:
                     threading.Thread(target=self._polish_window,
@@ -5010,6 +5072,7 @@ class App:
         fallback under it — was not there and gets the whole recording.
         """
         with self._model_lock:
+            self._model_used_at = time.monotonic()
             try:
                 if head is not None and hasattr(self.transcriber,
                                                 "transcribe_with_head"):

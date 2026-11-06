@@ -1830,6 +1830,21 @@ rolling_window_s = 25.0          # how much settled audio a stretch waits for
                                  # is done by the release; longer = each stretch
                                  # is read with more of its own context. Below
                                  # 20 it was measured to cost words
+#
+# WARM AGAIN ON THE WAY BACK (wake.py, 2026-10-20). An idle model does not stay
+# where it was loaded: the night's training took 15.1 of the card's 15.9 GB and
+# Windows moved these models off it; they stayed off all day (the card read 2.6
+# GB, 5.7 before the night) until a dictation asked — and that dictation waited
+# 11.8 s before the first word was decoded. Over 342 dictations (10-09..10-20)
+# the two slow first ones, 7.2 s and 12.2 s, each came minutes after the screens
+# came on. So the warm-up the load runs is run again when input comes back after
+# this many minutes without any, unless the model ran meanwhile (the phone), the
+# keys are paused, or the card has under 3 GB free (someone else is using it —
+# asked again every minute). Lifting the pause warms it too: a game is the other
+# thing that pushes it off the card. Warm, the warm-up took 0.51-0.52 s (four
+# runs on the real models, 2026-10-20).
+warm_after_away_min = 20.0       # minutes with no key or mouse before the
+                                 # model is warmed again on the way back; 0 = off
 
 [review]
 # FAST VERSION ONLY. The second reading (review.py): the moment a
