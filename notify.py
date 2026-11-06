@@ -99,6 +99,22 @@ missing key, a shut cloud-text gate, a late answer and an error all
 mean the old card, and `text` itself is never stored. Claude's own
 turn is not slowed by a millisecond — the hook runs after it.
 
+THE SAME FINISH TOLD TWICE (2026-10-24). A Claude Code finish now
+reaches this door by two roads: notify_tail.py reads it off the
+session's transcript the moment it is written, and the Stop hook still
+knocks with it — on most turns about three seconds later (the
+measurements are in notify_tail.py). The first to arrive is the card;
+the second is recognised as the same finish and folded in, never shown
+twice and never summarised twice. "The same" is exact: same source,
+`done`, same session, and the hook's 300-character body equal to the
+one that session's NEWEST finish arrived with (`raw` once the sentence
+has replaced it) inside TWIN_S. The transcript's copy says so with
+`via = "transcript"` (kept on the item); the hook's half that it
+lacks — the window the hook walked up to and the session link — is
+written onto the card when the hook comes, and notify.log says by how
+much the transcript was ahead. A hook whose finish was never read off
+a transcript lands exactly as it always did.
+
 Two records are kept beside the app: notify.log (one line per arrival,
 reminder and dismissal, awake.log's shape) and notify.json (the last
 100 items, review.json's shape, read-only for the dashboard).
@@ -184,6 +200,9 @@ EXCERPT_GAP = "\n[...]\n"
 SUMMARY_MAX = 200              # the sentence, as drawn: one body line or two
 _FENCE = re.compile(r"^`{3,}\w*$")   # a code fence a model wraps its answer in
 SUMMARY_WAIT_S = 1.0           # the ceiling when the config says nothing
+VIA = "transcript"             # notify_tail.VIA: a finish read off its file
+TWIN_S = 120                   # how far back the same finish told twice is
+                               # looked for; the hook trails by seconds
 SUMMARY_MODEL = "qwen/qwen3.8-27b"
 SUMMARY_LANGUAGES = {"he": "Hebrew", "en": "English"}
 SUMMARY_PROMPT = (
@@ -311,6 +330,14 @@ def text_of(payload) -> str:
     text = _text(payload.get("text"))
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return _CONTROLS.sub("", text).strip()[:TEXT_MAX]
+
+
+def via_of(payload) -> str:
+    """VIA for a finish notify_tail.py read off a transcript, "" for
+    everything else — the one value this field may hold."""
+    if isinstance(payload, dict) and payload.get("via") == VIA:
+        return VIA
+    return ""
 
 
 def excerpt(text: str, head: int = EXCERPT_HEAD,
@@ -450,6 +477,8 @@ class Store:
             item["hwnd"] = _window(fields.get("hwnd"))
             item["link"] = _link(fields.get("link"))
             item["seen"] = False
+            if fields.get("via") == VIA:
+                item["via"] = VIA
             items.append(item)
             if len(items) > self.keep:
                 del items[:len(items) - self.keep]
@@ -473,6 +502,28 @@ class Store:
             if changed:
                 self._save(data)
             return changed
+
+    def fold(self, ident: int, fields: dict) -> dict | None:
+        """The hook's half of a finish the transcript told first: its
+        window (and that window's title) and its session link, each only
+        where the hook has one, and the item marked `folded` so a second
+        hook is not folded into it again. None when the item is gone."""
+        with self._lock:
+            data = self._load()
+            for item in data["items"]:
+                if int(item.get("id", 0)) != int(ident):
+                    continue
+                hwnd = _window(fields.get("hwnd"))
+                if hwnd:
+                    item["hwnd"] = hwnd
+                    item["app"] = str(fields.get("app") or item.get("app", ""))
+                link = _link(fields.get("link"))
+                if link:
+                    item["link"] = link
+                item["folded"] = True
+                self._save(data)
+                return dict(item)
+            return None
 
     def summarize(self, ident: int, sentence: str) -> dict | None:
         """The one sentence becomes the body, the body it replaces is
@@ -1046,6 +1097,9 @@ class Engine:
         self.arrive_on = bool(getattr(cfg, "dismiss_on_arrival", True))
         self._watch_stop: threading.Event | None = None
         self._watch_thread: threading.Thread | None = None
+        # id -> clock() of a finish read off its transcript, until the
+        # hook folds into it: how far ahead the transcript was, for the log.
+        self._early_at: dict[int, float] = {}
 
     # -- in --
 
@@ -1059,6 +1113,7 @@ class Engine:
         quiet_s say about a finish that arrives on its own."""
         fields = clean(payload)
         text = text_of(payload)
+        via = via_of(payload)
         source, kind = fields["source"], fields["kind"]
         if not self.enabled:
             self._log(f"RECEIVED from {source} ({kind}) | title "
@@ -1066,13 +1121,23 @@ class Engine:
             return {"ok": False, "error": "notifications are off "
                                           "([notify] enabled = false)"}
         with self._lock:
-            item = self.store.add(fields)
+            if not urgent:
+                twin = self._same_finish(fields)
+                if twin is not None and (via or (
+                        twin.get("via") == VIA and not twin.get("folded"))):
+                    return self._told_twice(twin, fields, via)
+            item = self.store.add(dict(fields, via=via))
+            if via:
+                self._early_at[int(item["id"])] = self._clock()
+                while len(self._early_at) > KEEP:
+                    self._early_at.pop(next(iter(self._early_at)))
             unread = self.store.unread()
             self._log(f"RECEIVED #{item['id']} from {source} ({kind}) | "
                       f"project {item['project']} | title {item['title']!r}"
                       f" | {len(item['body'])} chars"
                       + (f" | text {len(text)} chars" if text else "")
-                      + f" | unread {unread}")
+                      + f" | unread {unread}"
+                      + (f" | via {via}" if via else ""))
             log.info("notify: received #%d from %s (%s): %r [%s] | unread %d",
                      item["id"], source, kind, item["title"],
                      item["project"], unread)
@@ -1144,6 +1209,53 @@ class Engine:
         cards. A sender that names no session falls back to its source,
         marked so it can never collide with a real session id."""
         return str(item.get("session", "")) or f"~{item.get('source', '')}"
+
+    def _same_finish(self, fields) -> dict | None:
+        """The stored finish this arrival repeats, or None — see "THE
+        SAME FINISH TOLD TWICE" above. Only the session's NEWEST finish
+        is compared: an older one is a turn that has passed, and a body
+        that differs from the newest is a new turn. The lock is held by
+        the caller."""
+        if fields.get("source") != "claude-code" \
+                or fields.get("kind") != "done" or not fields.get("session"):
+            return None
+        for item in reversed(self.store.items()):
+            if item.get("source") != "claude-code" \
+                    or item.get("kind") != "done" \
+                    or item.get("session") != fields["session"]:
+                continue
+            said = item["raw"] if "raw" in item else item.get("body", "")
+            if said != fields.get("body"):
+                return None
+            try:
+                age = (datetime.now() - datetime.fromisoformat(
+                    str(item.get("at")))).total_seconds()
+            except ValueError:
+                return None
+            return item if -5 <= age <= TWIN_S else None
+        return None
+
+    def _told_twice(self, twin: dict, fields: dict, via: str) -> dict:
+        """The answer for an arrival that repeats `twin`: nothing shown,
+        nothing summarised, nothing superseded. The transcript's copy of
+        a finish the hook already brought is simply dropped; the hook's
+        copy of one the transcript brought first gives the card its
+        window and link. The lock is held by the caller."""
+        ident = int(twin["id"])
+        if via:
+            self._log(f"TOLD TWICE #{ident} | the hook was first, the "
+                      f"transcript's copy is dropped")
+        else:
+            self.store.fold(ident, fields)
+            early = self._early_at.pop(ident, None)
+            ahead = (f"{self._clock() - early:.2f} s"
+                     if early is not None else "an unknown time")
+            self._log(f"FOLDED the hook into #{ident} | the transcript "
+                      f"was {ahead} ahead")
+            log.info("notify: the hook's finish folded into #%d — the "
+                     "transcript was %s ahead", ident, ahead)
+        return {"ok": True, "id": ident, "unread": self.store.unread(),
+                "coalesced": False, "held": False, "folded": True}
 
     def _supersede(self, item) -> None:
         """This session's older finish is no longer news.

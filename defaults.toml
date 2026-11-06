@@ -1206,7 +1206,16 @@ watch = "cowork"               # off | cowork | all. Which of the Claude
                                # hook installed); "off" never looks. Claude
                                # Chat is in none of them - a finished chat
                                # reply is announced to nothing on this machine
-summarize = true               # a "Claude finished" card says the message
+early = true                   # a "Claude finished" card the moment the
+                               # answer is written: the app reads it off
+                               # Claude Code's own transcript instead of
+                               # waiting for the Stop hook, which on most
+                               # turns knocks 2-5 s later (measured
+                               # 2026-10-24) and is then folded into the
+                               # same card. Same card, same sentence; only
+                               # while this copy is connected to Claude
+                               # Code. false = wait for the hook
+summarize = true              # a "Claude finished" card says the message
                                # in ONE SENTENCE instead of its first four
                                # lines: the hook sends the whole message,
                                # Groq writes the sentence, the card waits

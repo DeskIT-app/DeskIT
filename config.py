@@ -835,6 +835,12 @@ class NotifyConfig:
     # sessions to the Stop hook, which has already carded them; "all"
     # takes those too.
     watch: str = "cowork"
+    # A Claude Code finish read off the session's own transcript the
+    # moment it is written (notify_tail.py), instead of waiting for the
+    # Stop hook — which on most turns starts 2-5 s after the answer is on
+    # disk (measured 2026-10-24) and is then folded into the same card.
+    # Only while this copy holds Claude Code's door. False: the hook alone.
+    early: bool = True
     # A card comes down by itself when he reaches the session it came
     # from: he clicks into it after it spoke, or already has it on screen
     # with the Claude window in front. Only that card — entering Claude on
@@ -2074,6 +2080,7 @@ def build(data: dict) -> Config:
                                      NotifyConfig.interrupt)).strip().lower(),
             quiet_s=int(notify.get("quiet_s", NotifyConfig.quiet_s)),
             watch=str(notify.get("watch", NotifyConfig.watch)).strip().lower(),
+            early=bool(notify.get("early", NotifyConfig.early)),
             dismiss_on_arrival=bool(notify.get(
                 "dismiss_on_arrival", NotifyConfig.dismiss_on_arrival)),
             summarize=bool(notify.get("summarize", NotifyConfig.summarize)),
