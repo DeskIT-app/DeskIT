@@ -44980,6 +44980,13 @@ class _FakeSupabase:
                 refused = self._refused(table, items)
                 if refused:
                     return refused
+                if table == "devices" and any(
+                        str(r.get("id")) == str(i.get("id")) and r.get("user_id") != i.get("user_id")
+                        for r in rows for i in items):
+                    # devices.id is the whole primary key: row-level
+                    # security refuses an upsert over another account's row
+                    return _FakeRaw(b'{"code":"42501","message":"new row violates row-level '
+                                    b'security policy for table \\"devices\\""}', 403)
                 stamped = []
                 for item in items:
                     item = dict(item)
@@ -45066,7 +45073,7 @@ class _fixture_project:
         self.sb._forgotten_file().unlink(missing_ok=True)
         config_mod.save({"account.device_id": None, "account.device_seen_at": None,
                          "account.device_name": None, "account.device_session": None,
-                         "account.past_devices": None})
+                         "account.device_uid": None, "account.past_devices": None})
 
     def __exit__(self, *exc):
         try:
@@ -46160,8 +46167,8 @@ def test_with_both_syncs_off_the_account_pass_makes_the_lock_and_hears_a_phone()
             sb._device_names["at"] = 0.0
             sb.account_pass("test")
             code = vault.pairing_code(fake.UID, pid, public, vault.fingerprint(key))
-            assert [(r["id"], r["name"], r["code"]) for r in sb.pending_pairings()] == \
-                [(pid, "Galaxy S26", code)], "the request did not reach this PC"
+            assert [(r["id"], r["name"], r["code"], r["device"]) for r in sb.pending_pairings()] == \
+                [(pid, "Galaxy S26", code, _PHONE)], "the request did not reach this PC"
             assert [r["code"] for r in asked] == [code], asked
             lock = sb.status()["lock"]
             assert lock["quiet"] is False, "a phone in the account and the lock still unseen"
@@ -46529,6 +46536,72 @@ def test_a_devices_row_carries_its_session_and_a_link_goes_up_sealed():
                 assert "forgotten" in str(e), str(e)
             else:
                 raise AssertionError("a forgotten device wrote its row")
+    finally:
+        a.gone()
+
+
+def test_a_pc_signed_in_to_another_account_is_another_device():
+    """devices.id is the whole primary key, across accounts, and a PC kept
+    one id for life. A second account on the same PC (a family PC, a test
+    account and then a real one) had its row refused by row-level security:
+    cosmetic while the row only named a PC, and a silent loss now that the
+    row is how a phone finds it. Under another account the PC takes a new
+    id and its row goes up, its session on it, and the first account's row
+    is left alone. A failed write leaves the next pass to try: the new id
+    is taken before the daily wait can skip it. The same account back
+    keeps its id across a sign-out."""
+    import sb
+
+    second = "22222222-3333-4444-5555-666666666666"
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            first = sb.device_id()
+            sb.sign_out(everywhere=False)
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            assert sb.device_id() == first, "the same account back took a new id"
+
+            # the control: under the old id the second account's row is refused
+            fake.UID = second
+            status, _data = sb._rest("POST", "devices", purpose="account", query="on_conflict=id",
+                                     payload={"id": first, "user_id": second},
+                                     prefer="resolution=merge-duplicates,return=minimal")
+            assert status == 403, status
+
+            sid = "bbbbbbbb-0000-4000-8000-000000000002"
+            sb.sign_out(everywhere=False)
+            _sign_in_pc(fake, "desk", sid=sid)
+            sb.ensure_profile(force=True)
+            mine = sb.device_id()
+            assert mine != first, "another account under the same id"
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            assert row["user_id"] == second and row["session_id"] == sid, row
+            old = next(r for r in fake.tables["devices"] if r["id"] == first)
+            assert old["user_id"] == _FakeSupabase.UID, "the first account's row moved"
+            sb.account_pass("test")
+            assert not sb.status()["last_error"], sb.status()["last_error"]
+
+            # the write fails once: the next, ordinary, pass writes that
+            # same id and does not mint a third
+            sb.sign_out(everywhere=False)
+            fake.UID = _FakeSupabase.UID
+            _sign_in_pc(fake, "desk")
+            fake.script["rest/v1/devices"] = [(500, b'{"message":"no"}')]
+            try:
+                sb.ensure_profile(force=True)
+            except sb.AccountError:
+                pass
+            else:
+                raise AssertionError("a refused row said nothing")
+            mine = sb.device_id()
+            assert mine != first, "another account came between: this is a new device"
+            sb.ensure_profile()
+            assert sb.device_id() == mine, "a failed write minted another id"
+            assert any(r["id"] == mine and r["user_id"] == _FakeSupabase.UID
+                       for r in fake.tables["devices"]), "the row never went up"
     finally:
         a.gone()
 

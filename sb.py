@@ -480,7 +480,8 @@ def _storage(method: str, path: str, *, body: bytes | None = None,
 
 def device_id() -> str:
     """This PC's id in the account, minted once into state.json, and
-    again only when the account forgot the old one (``_leave``)."""
+    again only when the account forgot the old one (``_leave``) or this PC
+    signed in to another account (``ensure_profile``)."""
     import config
     state = config.read_state(paths.STATE_FILE)
     ident = str(state.get("account.device_id") or "")
@@ -569,11 +570,17 @@ def ensure_profile(force: bool = False) -> None:
     under the row is another one: its ``session_id`` is what Forget ends
     (migration 0007). A PC on the account's forgotten list leaves before
     it writes (``_forgotten_pass``), so what is written is a new device's
-    row and the forgotten one stays gone."""
+    row and the forgotten one stays gone. ``devices.id`` is unique across
+    accounts, so a PC signed in to another account is another device: under
+    the old id the row would be refused, and a phone would find no PC."""
     session = _fresh()
     uid = session["user"]["id"]
     import config
     state = config.read_state(paths.STATE_FILE)
+    if str(state.get("account.device_uid") or uid) != uid:
+        config.save({"account.device_id": str(uuid.uuid4()), "account.device_uid": uid,
+                     "account.device_seen_at": None, "account.device_session": None})
+        state = config.read_state(paths.STATE_FILE)
     seen = float(state.get("account.device_seen_at") or 0)
     sid = _session_id(session)
     moved = bool(sid) and sid != state.get("account.device_session")
@@ -597,7 +604,8 @@ def ensure_profile(force: bool = False) -> None:
                          payload=row, prefer="resolution=merge-duplicates,return=minimal")
     if status not in (200, 201, 204):
         raise AccountError(f"the device row was refused ({_server_said(status, data)})")
-    config.save({"account.device_seen_at": time.time(), "account.device_session": sid or None})
+    config.save({"account.device_seen_at": time.time(), "account.device_session": sid or None,
+                 "account.device_uid": uid})
 
 
 # ---------------------------------------------------------------- sign-in
@@ -971,7 +979,7 @@ def delete_account() -> None:
     import config
     config.save({"account.device_id": None, "account.device_seen_at": None,
                  "account.device_name": None, "account.device_session": None,
-                 "account.past_devices": None})
+                 "account.device_uid": None, "account.past_devices": None})
     _clear_outbox()
     _status["last_error"] = ""
     log.info("account: deleted on the server and forgotten here")
@@ -2323,7 +2331,8 @@ def pending_pairings() -> list[dict]:
     for reqs in asking.values():
         r = reqs[-1]
         entry = {"id": str(r.get("id") or ""), "name": str(r.get("device_name") or "") or "another PC",
-                 "code": "", "created_at": str(r.get("created_at") or "")}
+                 "code": "", "created_at": str(r.get("created_at") or ""),
+                 "device": str(r.get("device_id") or "")}
         if len(reqs) > 1:
             entry["twins"] = len(reqs)
             if entry["id"] not in _seen_pairings:
