@@ -1258,6 +1258,14 @@ class ServerConfig:
     # invisible to `tailscale serve`.
     host: str = ""
     port: int = 8756
+    # The phone door (server.PhoneDoor): the port it asks for first. Where
+    # it landed goes to state.json and out in this PC's `link` row.
+    phone_port: int = 8766
+    # What GET /review answers: "phone", the phone's own proposals, or
+    # "all", which keeps desk proposals answerable from the sofa.
+    review_scope: str = "phone"
+    # This PC's one yes to its phone door: a state key.
+    phone_allowed: bool = False
 
 
 @dataclass(frozen=True)
@@ -2057,6 +2065,10 @@ def build(data: dict) -> Config:
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
             host=str(server.get("host", ServerConfig.host)).strip(),
             port=int(server.get("port", ServerConfig.port)),
+            phone_port=int(server.get("phone_port", ServerConfig.phone_port)),
+            review_scope=str(server.get("review_scope",
+                                        ServerConfig.review_scope)).strip().lower(),
+            phone_allowed=bool(server.get("phone_allowed", ServerConfig.phone_allowed)),
         ),
         vocab=VocabConfig(
             enabled=bool(vocab.get("enabled", VocabConfig.enabled)),
@@ -2542,6 +2554,11 @@ def build(data: dict) -> Config:
         raise ConfigError("restore_delay_ms must be >= 0")
     if cfg.server.enabled and not (0 < cfg.server.port < 65536):
         raise ConfigError(f"server.port is out of range: {cfg.server.port}")
+    if not 0 < cfg.server.phone_port < 65536:
+        raise ConfigError(f"server.phone_port is out of range: {cfg.server.phone_port}")
+    if cfg.server.review_scope not in ("phone", "all"):
+        raise ConfigError(f"server.review_scope must be phone or all, "
+                          f"not {cfg.server.review_scope!r}")
     if cfg.audio.sample_rate <= 0:
         raise ConfigError("audio.sample_rate must be positive")
     if not cfg.gemini.models:
@@ -2865,7 +2882,8 @@ STATE_KEYS: frozenset[str] = frozenset({
     "shelf.x", "shelf.y", "shelf.scale",
     "review.x", "review.y", "review.scale",
     "audio.device", "camera.device", "visual_qa.voice",
-    "server.port", "setup.done", "setup.tour", "setup.autostart",
+    "server.port", "server.phone_port", "server.phone_allowed",
+    "setup.done", "setup.tour", "setup.autostart",
     "config_version",
     "updates.last_check", "updates.latest_seen", "updates.installed_version",
 })

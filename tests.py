@@ -4235,11 +4235,11 @@ def test_phone_server_binds_its_port_exclusively() -> None:
     def fake(wav):
         return "", "fake"
 
-    first = server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+    first = server_mod._Server(("127.0.0.1", port), "tok", server_mod.Routes(fake))
     try:
         raised = False
         try:
-            server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+            server_mod._Server(("127.0.0.1", port), "tok", server_mod.Routes(fake))
         except OSError:
             raised = True
         assert raised, "a second listener bound a port the first already held"
@@ -6056,6 +6056,95 @@ def test_the_door_takes_its_passphrase_by_name_and_says_so_when_the_key_will_not
             raise AssertionError("two doors held one port")
     finally:
         holder.stop()
+
+
+def _ask_door(port: int, chain, method: str, route: str, body: bytes = b"") -> tuple[int, dict]:
+    """One HTTP request through the door, the way the keyboard's would go."""
+    with _dial(port, chain) as tls:
+        tls.settimeout(10)
+        tls.sendall(f"{method} {route} HTTP/1.0\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+                    + body)
+        got = b""
+        while True:
+            more = tls.recv(65536)
+            if not more:
+                break
+            got += more
+    head, _, reply = got.partition(b"\r\n\r\n")
+    return int(head.split()[1]), json.loads(reply)
+
+
+def test_the_phone_door_runs_the_routes_for_a_listed_phone_only_and_has_no_notify() -> None:
+    """The door with its routes: a listed certificate reaches them with no
+    bearer, a client with none is dropped before any route runs, and
+    /notify exists on loopback and not here."""
+    import dataclasses
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server,
+                                                              phone_port=_door_port()))
+    lookups, notes = [], []
+
+    def lookup(text):
+        lookups.append(text)
+        return "answer", "en", "fake", 0.1
+
+    routes = server_mod.Routes(lambda wav: ("", "fake"), lookup=lookup,
+                               notify=lambda body: notes.append(body) or {"ok": True, "id": 1})
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26, stranger = _a_phone(folder, "S26 Ultra"), _a_phone(folder, "stranger")
+        door = server_mod.PhoneDoor(cfg, routes)
+        port = door.start(_anchors(s26))
+        try:
+            assert server_mod.PHONE_BIND == "127.0.0.1", "a test bound beyond loopback"
+            assert _ask_door(port, s26["chain"], "GET", "/health")[0] == 200
+            status, reply = _ask_door(port, s26["chain"], "POST", "/lookup", b'{"text": "word"}')
+            assert status == 200 and reply["text"] == "answer" and lookups == ["word"], reply
+
+            status, _reply = _ask_door(port, s26["chain"], "POST", "/notify", b'{"title": "x"}')
+            assert status == 404 and not notes, status
+            assert routes.handle("/notify", b'{"title": "x"}', None)[0] == 200 and notes
+
+            for chain in (None, stranger["chain"]):
+                try:
+                    _ask_door(port, chain, "POST", "/lookup", b'{"text": "nobody"}')
+                except (OSError, ValueError, IndexError):
+                    pass
+                else:
+                    raise AssertionError("a peer with no listed certificate got an answer")
+            assert lookups == ["word"], "a route ran for a client the door should have dropped"
+        finally:
+            door.stop()
+    assert not door.running
+
+
+def test_a_busy_port_falls_through_and_the_real_ports_stay_his() -> None:
+    """A door whose port is taken takes the next one, and a process the
+    suite started never asks for 8756 or 8766: his app is on the first."""
+    import dataclasses
+    import socket
+
+    import server as server_mod
+
+    with socket.socket() as held:
+        held.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        taken = held.getsockname()[1]
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server, enabled=True,
+                                                                  host="127.0.0.1", port=taken))
+        srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake")
+        srv.start()
+        try:
+            assert srv.port is not None and taken < srv.port <= taken + server_mod.PORT_TRIES
+        finally:
+            srv.stop()
+    assert server_mod._asked(8756) != 8756 and server_mod._asked(8766) != 8766
+    assert server_mod._asked(50123) == 50123
 
 
 def test_a_pc_makes_its_identity_once_and_a_lost_passphrase_is_a_new_one() -> None:

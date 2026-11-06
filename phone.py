@@ -327,3 +327,283 @@ def rotate() -> str:
     Nothing expires here, so this is never a matter of time."""
     with _lock:
         return _make_identity()
+
+
+# ---------------------------------------------------------------- the rows
+#
+# Every device writes its own row and no other, sealed under the account key
+# (vault.AAD_DEVICE), so the server cannot add a device: a row that does not
+# open is ignored. A phone: {"v", "kind": "phone", "cert": <the DER, base64>,
+# "proto", "backup"}. A PC: {"v", "kind": "pc", "cert": <SHA-256, hex>,
+# "addrs", "port", "proto", "words_sync"}. An unknown field is ignored.
+
+#: What this PC's door speaks, in a `link` row.
+PROTO = 1
+#: A row is small and a PC has few adapters; the sealed column is not free.
+MAX_ADDRS = 8
+
+
+def _uid() -> str:
+    """The signed-in account's id, off the local session: no network."""
+    import sb
+
+    who = sb.user()
+    return str((who or {}).get("id") or "")
+
+
+def _read_rows() -> dict:
+    """The file: {"uid", "rows": [the devices' rows, sealed], "forgotten",
+    "known": [the ids of the phones seen]}; {} when there is none."""
+    try:
+        data = json.loads(rows_path().read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_rows(data: dict) -> None:
+    target = rows_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    os.replace(tmp, target)
+
+
+def _forgotten(kept: dict) -> set[str]:
+    """Who stays out: what the account says, and what this file last heard
+    of it. This list only ever grows, whatever a row says."""
+    import sb
+
+    gone = {str(x) for x in kept.get("forgotten") or []}
+    try:
+        gone |= {str(x) for x in sb.forgotten()}
+    except Exception as e:                                   # noqa: BLE001
+        log.debug("phone: the forgotten list was not read (%s)", type(e).__name__)
+    return gone
+
+
+def _open_rows(key: bytes, uid: str, rows: list, gone: set[str]) -> list[dict]:
+    """The rows that open under the account key and are not forgotten, each
+    the row's plain columns with ``link`` opened. The only reader: a row
+    that does not open is nobody."""
+    import vault
+
+    out = []
+    for row in rows:
+        ident = str(row.get("id") or "")
+        sealed = row.get("link")
+        if not sealed or not ident or ident in gone:
+            continue
+        try:
+            link = vault.open_json(key, str(sealed), vault.AAD_DEVICE.format(uid=uid, device_id=ident))
+        except vault.VaultError as e:
+            log.info("phone: a device's row did not open (%s) — ignored", e)
+            continue
+        if isinstance(link, dict):
+            out.append({**{k: v for k, v in row.items() if k != "link"}, "link": link})
+    return out
+
+
+def _phone_cert(link: dict) -> bytes | None:
+    """A phone's certificate, or None for a row that is not a phone's."""
+    if link.get("kind") != "phone":
+        return None
+    try:
+        return base64.b64decode(str(link.get("cert") or ""), validate=True) or None
+    except ValueError:
+        return None
+
+
+def anchors(key: bytes | None = None) -> dict[str, dict]:
+    """fingerprint -> {"device", "name", "der"}: every phone of the account
+    that may come through the door, out of the kept rows, so this needs no
+    network: opening them takes only the account key, which is local."""
+    import vault
+
+    with _lock:
+        kept = _read_rows()
+        uid = _uid()
+        if not uid or str(kept.get("uid") or "") != uid:
+            return {}
+        key = key or vault.key(uid)
+        if key is None:
+            return {}
+        gone = _forgotten(kept)
+        out: dict[str, dict] = {}
+        for row in _open_rows(key, uid, kept.get("rows") or [], gone):
+            der = _phone_cert(row["link"])
+            if der is None:
+                continue
+            mark = fingerprint(der)
+            if mark in gone:                 # a new id under a forgotten certificate
+                continue
+            out[mark] = {"device": str(row["id"]), "name": str(row.get("name") or ""), "der": der}
+        return out
+
+
+def refresh(key: bytes) -> list[str]:
+    """Read the account's rows and keep them; the ids of the phones this PC
+    has not seen before. An account that cannot be read raises and leaves
+    the file as it is: a door must not close because the internet went."""
+    import sb
+
+    with _lock:
+        rows = sb.devices()
+        uid = _uid()
+        if not uid:
+            return []
+        kept = _read_rows()
+        same = str(kept.get("uid") or "") == uid
+        gone = _forgotten(kept if same else {})
+        known = {str(i) for i in kept.get("known") or []} if same else set()
+        keep = [{k: r.get(k) for k in ("id", "name", "platform", "last_seen", "link")}
+                for r in rows]
+        phones = [str(r["id"]) for r in _open_rows(key, uid, keep, gone)
+                  if _phone_cert(r["link"]) is not None]
+        fresh = [i for i in phones if i not in known]
+        _write_rows({"uid": uid, "rows": keep, "forgotten": sorted(gone),
+                     "known": sorted(known | set(phones)), "at": int(time.time())})
+        return fresh
+
+
+def drop_rows() -> None:
+    """Signed out: what the door opened from goes with the session."""
+    with _lock:
+        try:
+            rows_path().unlink()
+        except FileNotFoundError:
+            pass
+
+
+def publish(key: bytes, *, port: int, listening: bool, words_sync: bool) -> bool:
+    """This PC's ``link`` row, when anything in it changed; True when one
+    went out. ``listening`` is whether a phone should try here at all: a
+    PC that said no, or has the switch off, names no address."""
+    import sb
+    import vault
+
+    with _lock:
+        uid = _uid()
+        mine = sb.device_id()
+        kept = _read_rows()
+        if not uid or mine in _forgotten(kept):
+            return False
+        row = {"v": 1, "kind": "pc", "cert": identity(),
+               "addrs": addresses() if listening else [], "port": int(port), "proto": PROTO,
+               "words_sync": bool(words_sync)}
+        here = [r for r in kept.get("rows") or [] if str(r.get("id") or "") == mine]
+        opened = _open_rows(key, uid, here, set())
+        if opened and opened[0]["link"] == row:
+            return False
+        sb.write_link(vault.seal_json(key, row, vault.AAD_DEVICE.format(uid=uid, device_id=mine)))
+        log.info("phone: this PC's row went out (%d address(es), port %d)", len(row["addrs"]), port)
+        return True
+
+
+# ------------------------------------------------------------ the addresses
+#
+# Every private IPv4 of an adapter that is up, the default route's first, and
+# never Tailscale's 100.x or a virtual adapter's: the phone tries them all at
+# once and keeps the one that answers, so a wrong one costs little, and it
+# still is an address nobody can reach. A private handle on iphlpapi, for the
+# reason the CNG one is private.
+
+_AF_INET = 2
+_GAA_SKIP = 0x2 | 0x4 | 0x8            # no anycast, multicast or DNS lists
+_ERROR_BUFFER_OVERFLOW = 111
+_IF_UP = 1
+_IF_LOOPBACK = 24
+_IF_TUNNEL = 131
+#: Windows gives these no type of their own: a Hyper-V or WSL switch is plain
+#: Ethernet to it, so the adapter's own words are all there is to go on.
+_VIRTUAL = re.compile(r"tailscale|hyper-v|vethernet|wsl|virtualbox|vmware|wireguard|wintun"
+                      r"|tap-windows|openvpn|zerotier|hamachi|docker|bluetooth|loopback", re.I)
+
+
+class _Unicast(ctypes.Structure):
+    _fields_ = [("Length", ctypes.c_ulong), ("Flags", ctypes.c_ulong), ("Next", ctypes.c_void_p),
+                ("lpSockaddr", ctypes.c_void_p), ("iSockaddrLength", ctypes.c_int)]
+
+
+class _Adapter(ctypes.Structure):
+    """The head of IP_ADAPTER_ADDRESSES, as far as the fields read here."""
+
+    _fields_ = [("Length", ctypes.c_ulong), ("IfIndex", ctypes.c_ulong), ("Next", ctypes.c_void_p),
+                ("AdapterName", ctypes.c_char_p), ("FirstUnicastAddress", ctypes.c_void_p),
+                ("FirstAnycastAddress", ctypes.c_void_p),
+                ("FirstMulticastAddress", ctypes.c_void_p),
+                ("FirstDnsServerAddress", ctypes.c_void_p), ("DnsSuffix", ctypes.c_wchar_p),
+                ("Description", ctypes.c_wchar_p), ("FriendlyName", ctypes.c_wchar_p),
+                ("PhysicalAddress", ctypes.c_ubyte * 8), ("PhysicalAddressLength", ctypes.c_ulong),
+                ("Flags", ctypes.c_ulong), ("Mtu", ctypes.c_ulong), ("IfType", ctypes.c_ulong),
+                ("OperStatus", ctypes.c_int)]
+
+
+def _is_private(ip: str) -> bool:
+    try:
+        a, b = [int(x) for x in ip.split(".")[:2]]
+    except ValueError:
+        return False
+    return a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+
+
+def pick_addresses(adapters: list[dict], default_index: int | None) -> list[str]:
+    """The row's list, from what Windows said. Pure, so a test can drive it
+    with Tailscale, WSL and a laptop's two networks. Each adapter is
+    {"index", "name", "description", "type", "up", "ipv4": [...]}."""
+    usable = []
+    for a in adapters:
+        words = f"{a.get('name') or ''} {a.get('description') or ''}"
+        if not a.get("up") or a.get("type") in (_IF_LOOPBACK, _IF_TUNNEL) or _VIRTUAL.search(words):
+            continue
+        usable.append(a)
+    usable.sort(key=lambda a: (a.get("index") != default_index, a.get("index") or 0))
+    out: list[str] = []
+    for a in usable:
+        for ip in a.get("ipv4") or []:
+            if _is_private(ip) and ip not in out:
+                out.append(ip)
+    return out[:MAX_ADDRS]
+
+
+def _adapters() -> tuple[list[dict], int | None]:
+    """What Windows says: the adapters, and the index of the default route's
+    (asked about 8.8.8.8, and nothing is sent)."""
+    ip = ctypes.WinDLL("iphlpapi")
+    size = ctypes.c_ulong(16 * 1024)
+    buf = ctypes.create_string_buffer(size.value)
+    status = ip.GetAdaptersAddresses(_AF_INET, _GAA_SKIP, None, buf, ctypes.byref(size))
+    if status == _ERROR_BUFFER_OVERFLOW:
+        buf = ctypes.create_string_buffer(size.value)
+        status = ip.GetAdaptersAddresses(_AF_INET, _GAA_SKIP, None, buf, ctypes.byref(size))
+    if status != 0:
+        raise OSError(f"GetAdaptersAddresses answered {status}")
+    found = []
+    at = ctypes.addressof(buf)
+    while at:
+        one = _Adapter.from_address(at)
+        ips = []
+        uni = one.FirstUnicastAddress
+        while uni:
+            entry = _Unicast.from_address(uni)
+            raw = ctypes.string_at(entry.lpSockaddr, 8)    # sockaddr_in as far as the address
+            if int.from_bytes(raw[:2], "little") == _AF_INET:
+                ips.append(".".join(str(b) for b in raw[4:8]))
+            uni = entry.Next
+        found.append({"index": int(one.IfIndex), "name": one.FriendlyName or "",
+                      "description": one.Description or "", "type": int(one.IfType),
+                      "up": one.OperStatus == _IF_UP, "ipv4": ips})
+        at = one.Next
+    best = ctypes.c_ulong(0)
+    default = int(best.value) if ip.GetBestInterface(0x08080808, ctypes.byref(best)) == 0 else None
+    return found, default
+
+
+def addresses() -> list[str]:
+    """This PC's private addresses, the default route's first. Never raises:
+    a row with no address is a phone that waits, not a failed start."""
+    try:
+        return pick_addresses(*_adapters())
+    except (OSError, ValueError, AttributeError) as e:
+        log.info("phone: the addresses could not be read (%s)", e)
+        return []

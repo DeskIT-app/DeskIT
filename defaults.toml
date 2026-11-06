@@ -1535,6 +1535,12 @@ offline = false                # true refuses EVERY connection except this
 enabled = false
 host = ""
 port = 8756
+phone_port = 8766              # the phone door asks for this one first; a
+                               # busy port falls through and state.json
+                               # remembers where it landed.
+review_scope = "phone"         # phone | all. What GET /review answers: all
+                               # keeps desk proposals answerable from the sofa.
+phone_allowed = false          # this PC's one yes to its phone door; state.
 
 [history]
 # transcripts.log is every sentence you dictated, corrected, translated,
