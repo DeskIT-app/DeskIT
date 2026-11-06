@@ -515,8 +515,6 @@ HELD_BACK = "sync.held_back"
 #: What LAST_ACCOUNT says once that account is deleted, and of a copy from
 #: before it was kept that somebody signed out of: not an id, and not nobody.
 SOMEBODY = "somebody"
-#: The outbox's folder for reports whose account has left this PC.
-REPORTS_WAITING = "waiting"
 #: What ``vault.digest_keys`` hashes under at the door. No account's key,
 #: because the new account's may not be on this PC yet; these are hashes of
 #: long random keys, only ever compared with each other.
@@ -615,12 +613,12 @@ def _take_over(uid: str) -> None:
 def _reports_folder(uid: str):
     """Where ``uid``'s reports wait. By a mark and not by the id: the id is
     the server's word, and this is a path."""
-    return paths.OUTBOX_DIR / REPORTS_WAITING / sync.mark(uid)
+    return paths.OUTBOX_DIR / paths.OUTBOX_WAITING / sync.mark(uid)
 
 
 def _move_reports(source, target) -> None:
     try:
-        entries = [e for e in source.iterdir() if e.name != REPORTS_WAITING]
+        entries = [e for e in source.iterdir() if e.name != paths.OUTBOX_WAITING]
     except OSError:
         return                                               # nothing waits
     for entry in entries:
@@ -639,11 +637,12 @@ def _reports_wait(old: str, new: str) -> None:
     with the account that left, and what the new account left comes back,
     at the very paths its files were named by. A report that will not move
     is a log line. ``queued()`` and ``drain_outbox`` read the top of the
-    outbox alone, so what waits is neither counted nor sent."""
+    outbox alone, so what waits is neither counted nor sent, and
+    ``problems.sync_outbox`` knows the folder, so it does not read as sent."""
     _move_reports(paths.OUTBOX_DIR, _reports_folder(old))
     mine = _reports_folder(new)
     _move_reports(mine, paths.OUTBOX_DIR)
-    for folder in (mine, paths.OUTBOX_DIR / REPORTS_WAITING):
+    for folder in (mine, paths.OUTBOX_DIR / paths.OUTBOX_WAITING):
         try:
             folder.rmdir()
         except OSError:
@@ -1262,7 +1261,7 @@ def _clear_outbox(uid: str) -> None:
     left waiting are that account's (``_reports_wait``)."""
     try:
         for entry in paths.OUTBOX_DIR.iterdir():
-            if entry.name != REPORTS_WAITING:
+            if entry.name != paths.OUTBOX_WAITING:
                 _drop(entry)
     except OSError:
         pass

@@ -177,6 +177,11 @@ REVIEW_FILE = _rel("REVIEW_FILE")
 PROBLEMS_FILE = _rel("PROBLEMS_FILE")
 PROBLEMS_DIR = _rel("PROBLEMS_DIR")
 OUTBOX_DIR = _rel("OUTBOX_DIR")
+#: Inside the outbox: the reports of an account that has left this PC, one
+#: folder per account (sb._reports_wait). A name and not a store: the two
+#: modules that read the outbox both have to know it, because a report gone
+#: from the top of it otherwise reads as sent (problems.sync_outbox).
+OUTBOX_WAITING = "waiting"
 QUESTIONS_FILE = _rel("QUESTIONS_FILE")
 NOTIFY_FILE = _rel("NOTIFY_FILE")
 LOOKUP_CACHE = _rel("LOOKUP_CACHE")

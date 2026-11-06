@@ -1304,8 +1304,9 @@ def sync_outbox(store, *, app_dir) -> int:
     """Read the outbox's verdicts back into the rows: a QUEUED report
     whose payload is gone was sent (sb.py unlinks it, and the app's
     process may have done that while this one was not looking); one
-    with a .failed beside it failed, with the reason the file holds.
-    Returns how many rows changed. Never raises."""
+    with a .failed beside it failed, with the reason the file holds; one
+    moved aside for its account (sb._reports_wait) is still waiting, and
+    says so. Returns how many rows changed. Never raises."""
     changed = 0
     box = outbox_dir(app_dir)
     for item in store.items():
@@ -1319,7 +1320,8 @@ def sync_outbox(store, *, app_dir) -> int:
                 if mark_failed(store, rid, why):
                     changed += 1
             elif not (box / f"{rid}.json").exists():
-                if mark_sent(store, rid):
+                waiting = any(box.glob(f"{paths.OUTBOX_WAITING}/*/{rid}.json"))
+                if not waiting and mark_sent(store, rid):
                     changed += 1
         except OSError:
             continue

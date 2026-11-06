@@ -31275,6 +31275,13 @@ def test_the_copy_that_travels_is_the_toggles_and_nothing_else() -> None:
         assert problems_mod.sent_line(failed) == "could not be sent: HTTP 400: violates check constraint"
         (problems_mod.outbox_dir(tmp) / f"{rid}.failed").unlink()
         assert store._edit(item["id"], sent=problems_mod.QUEUED)
+        # moved aside for its account (sb._reports_wait) is not sent
+        waiting = problems_mod.outbox_dir(tmp) / paths.OUTBOX_WAITING / "someone"
+        waiting.mkdir(parents=True)
+        target.replace(waiting / target.name)
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 0, "a waiting report read as sent"
+        assert problems_mod.sent_line(store.get(item["id"])) == "waiting to send"
+        (waiting / target.name).replace(target)
         target.unlink()                                  # sb.py sent it
         assert problems_mod.sync_outbox(store, app_dir=tmp) == 1
         assert problems_mod.sent_line(store.get(item["id"])) == "sent to the developer"
@@ -47038,11 +47045,11 @@ def test_the_line_between_two_accounts_outlives_forget_all_a_sign_out_and_a_cras
 
             # a crash inside a sign-out leaves that account's cursor here
             sb.sign_out(everywhere=False)
-            sync_mod.write_cursor({"history_pushed_ts": "the last account's"})
+            sync_mod.write_cursor({"vocab_pulled_at": "2026-09-18T12:00:00+00:00"})
             fake.UID = _ONE
             _sign_in_pc(fake, "desk", uid=_ONE)
             sb.sync_now()
-            assert sync_mod.read_cursor().get("history_pushed_ts") != "the last account's"
+            assert "vocab_pulled_at" not in sync_mod.read_cursor(), "the last account's cursor stayed"
     finally:
         pc.gone()
 
@@ -47350,11 +47357,11 @@ def test_a_report_waits_for_the_account_that_queued_it():
             sb.delete_account()
             assert not stuck.exists(), "Delete left a report of this account's"
             assert (sb._reports_folder(_TWO) / f"{waits}.json").exists(), "Delete took another account's"
-            assert not [e for e in paths.OUTBOX_DIR.iterdir() if e.name != sb.REPORTS_WAITING]
+            assert not [e for e in paths.OUTBOX_DIR.iterdir() if e.name != paths.OUTBOX_WAITING]
             fake.tables.setdefault("problem_reports", [])
             _signs_in(fake, _TWO)
             assert sb.drain_outbox() == {waits: "sent"}, "it never came back"
-            assert not (paths.OUTBOX_DIR / sb.REPORTS_WAITING).exists()
+            assert not (paths.OUTBOX_DIR / paths.OUTBOX_WAITING).exists()
     finally:
         pc.gone()
 
