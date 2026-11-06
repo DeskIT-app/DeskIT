@@ -98,16 +98,24 @@ said": the text of what you dictated, translated, punctuated and looked
 up, one row per event, so the Said page is the same on every PC you
 sign into. Never audio, screenshots or clips. **Plain statement: what
 you said, and your cloud keys, leave the PC locked with a key that only
-your own PCs hold (the account lock, since 1.0.1). The rows sit in the
+your own devices hold (the account lock, since 1.0.1). The rows sit in the
 developer's database sealed; its security rules separate users from
 each other, and the lock keeps the project's administrator from reading
 what you said or your keys.** The time and kind of each row stay
-readable so the syncs can order them. A new PC gets the key when a PC
-already signed in approves it (a code compared on both screens), or
-when you type the recovery key the app made for you; the server only
+readable so the syncs can order them. A new device gets the key when a
+device already signed in approves it (a code compared on both screens),
+or when you type the recovery key the app made for you; the server only
 ever carries the key wrapped. If even that is not acceptable, leave
 the "what you said" sync off — dictation and everything else work
 exactly the same.
+
+**One connection stays open while you are signed in, syncs on or off.**
+Every signed-in copy keeps one connection to the account server, so that
+your own devices can reach each other. It carries nothing personal: that
+something changed, which device changed it and, while a device asks to
+join your account, that device's name and code. Never a word you said, a
+key or a file. With the syncs off, that connection, your device's row and
+the fingerprint of your lock are all that pass.
 
 Problem reports you chose to send: the report text you typed, only the
 attachments you ticked (a screenshot, a recording, the transcript, a
