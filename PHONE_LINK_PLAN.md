@@ -289,19 +289,19 @@ is stage 2b's, a few minutes each. M4, M11 and M13 are checked while stage 1 is 
 |---|---|---|---|
 | M1 | He, 1 min | Tailscale on the phone, on mobile data, away from the Wi-Fi. I run `tailscale ping` and read `tailscale status` on the PC: direct or relayed? | Whether a direct path exists from his carrier at all (Tailscale tries harder than WebRTC, so a direct here does not prove stage 3, while a relay here nearly disproves it) |
 | M2 | He, 1 min | On mobile data, the WebRTC project's Trickle ICE page with two STUN servers: do the two reflexive ports match? A screenshot is enough | Whether his carrier's NAT is the hard kind (§3.1) |
-| M3 | He, 1 min | At home: the phone's Wi-Fi address. `192.168.68.x` is the PC's network; `10.100.102.x` is the first router's | Whether stage 1 works as it stands in his own home |
+| M3 | Done 2026-11-06 | At home: the phone's Wi-Fi address. His phone is on `192.168.68.x`, the PC's network, not on the first router's | Stage 1 works as it stands in his own home. This is a check of one home; nothing in the product depends on it |
 | M4 | Me, with his UAC yes | A throwaway TLS listener on the LAN and the phone's browser opening it: what the firewall dialog offers on a Public network, and what a Cancel leaves behind. Beside it, on a self-signed Store package: which executable the manifest rule must name | Stage 1's wording and whether `netsh` is needed |
 | M6 | Done 2026-11-06 | `RTCPeerConnection` in a WebView owned by the keyboard, to a hidden WebView2 on the PC: works on the emulator (§6.3) | Stage 3 can stay free of native libraries, pending M8 |
 | M7 | Done 2026-11-06 | A browser page meeting a hidden WebView2 through Realtime and STUN, the whole road in 1.06 s (§6.2). A public topic, for the probe; the real one is private | The hello's road |
 | M8 | Me and his phone | The first real direct connection: phone on mobile data, a throwaway page, hidden WebView2 at home. Nothing is published for it: the page loads over Tailscale one last time (`tailscale serve --set-path`), Tailscale goes off, the page connects. Also watched for: no firewall dialog on his screen from the engine | The proof of stage 3, or its end |
 | M9 | Me, at night | Opus 16/24/32 kbps against WAV on the six public sets, more than one run each | Stage 2's compression |
 | M10 | He, 2 min | The Deco app's IPv6 setting: is it off? With another router in front, TP-Link's FAQ for its routers says Pass-Through (Bridge); it does not name the Deco, so the app's words may differ. I re-run `tailscale netcheck` | Whether his home has IPv6. If it does, most Israeli mobile networks reach it directly with no NAT at all (§3.1) |
-| M11 | He, 1 min | With Auto Blocker's state noted: the keyboard's APK installs on the S26 under One UI 9, and the mic works in it with no extra step | Whether the road to install is what the guide will say |
+| M11 | Partly done 2026-11-06 | Auto Blocker was on and stopped the APK with its own message, naming where to turn it off (Settings > Security and privacy > Auto Blocker). With it off the APK installed, and One UI asked nothing more. The mic in it is still to check | The guide's first step on a Galaxy is Auto Blocker, as written |
 | M12 | A borrowed iPhone, 10 min | The throwaway page, tab and Home Screen, on plain Wi-Fi and on mobile data: does the channel open, does the mic ask every launch, does the text copy | Whether stage 4's iPhone promise is true |
 | M13 | He, 2 min | The second router's uplink unplugged, mobile data on: does the keyboard still reach the PC over Wi-Fi | Whether "no internet needed" is true on his phone (stage 1, the bound Wi-Fi network) |
 | M14 | Done 2026-11-06 | A phone (Kotlin, no library) and a page (WebCrypto only) joining the lock against the real `vault.py`: same code on both sides, the key out of the hand-over, a vault row opened, an edit the PC could read. Not run: a removal, and the code as stage 1 changes it; test vectors hold both | The whole account road of stages 1, 2b and 4 (§1) |
 | M15 | He and I, with his yes | One real Hebrew clip from the phone through his Groq key, the free tier's real limits read off his console, `language` set and unset, and a real POST from a browser origin (the preflight already passes) | Stage 2b's words and the web page's backup |
-| M16 | Me and his phone | The Google sign-in on the S26: the browser, the return to the app through `deskit://`, a session. Needs that address on the project's allowed list | Stage 1's first step |
+| M16 | Done 2026-11-06 | The Google sign-in on his S26 (Android 17, SDK 37), debug build: the browser, the return through `deskit://auth`, a session sealed on the phone. The join's code in 146 ms. The client key made in 9 ms, signing in 4 ms, in secure hardware, unlocked only | Stage 1's first step stands. `deskit://auth` is on the project's allowed list |
 
 M1, M2 and M10 take him five minutes and decide stage 3. They do not hold up stages 1, 2 and 2b.
 
@@ -345,7 +345,7 @@ All in Kotlin with no library: REST through `HttpURLConnection` and the platform
   holds it, because nothing else would say why a join fails.
 - **The code takes a moment.** PBKDF2 at 2^17 rounds is 50 ms on his PC and took 1.7-5.1 s on the emulator, through a
   hand loop over `Mac` (`PBEKeySpec` takes characters and the material is binary). It runs on a thread, behind a
-  "preparing" line. A real phone should be far quicker; M16 says.
+  "preparing" line. On his S26 it took 146 ms (M16).
 - **`devices.link`, migration 0007.** One sealed column on the table that already exists, under `is_sealed()` and
   a new AAD, `device/{uid}/{device_id}`. JSON inside: for a PC its certificate's SHA-256, its addresses, its port, the
   protocol, and whether its words sync is on; for a phone its client certificate, the protocol, and whether its backup
@@ -496,8 +496,9 @@ every new network Public unless told otherwise, so most strangers will be there 
   an all-accepting verifier, and a real check is also simply correct.
 - The client key: an EC key in Android Keystore with `PURPOSE_SIGN` and `DIGEST_NONE`, which gets a self-signed
   certificate by itself, handed over by a small custom `X509KeyManager`. No page documents this with
-  `HttpsURLConnection`, so it was run: it works on the emulator (§1). The S26's own Keystore is still the first thing to
-  try on the real phone. If it fails, a software key sealed by a Keystore AES-GCM key (no library) does the same job.
+  `HttpsURLConnection`, so it was run: it works on the emulator (§1), and on his S26 the key is made and signs in secure
+  hardware (M16); TLS with it on a real phone is the next lane's first test. If a phone refuses, a software key sealed by a
+  Keystore AES-GCM key (no library) does the same job.
   `EncryptedSharedPreferences` (D22) is not used: `androidx.security-crypto` is deprecated, whole. The key is created
   with `setUnlockedDeviceRequired(true)` where the phone has it (API 28+), so a stolen, locked phone cannot use it.
 - `Transcriber.kt` keeps every route but opens connections through `Link`. The address that answered is remembered per
@@ -1266,9 +1267,8 @@ Windows: [new networks are Public](https://support.microsoft.com/en-us/windows/e
 [`DnsServiceRegister`](https://learn.microsoft.com/en-us/windows/win32/api/Windns/nf-windns-dnsserviceregister).
 
 **Not verified, and said so where it matters:** the carrier NAT of any Israeli network; Israel's month for
-developer verification; the sign-in's return through `deskit://` on the S26; whether Auto Blocker is
-on by default on the S26; whether One UI 9 flags a sideloaded microphone keyboard; the Keystore road on a real
-phone (it works on the emulator) and the join surviving a killed keyboard there; Opus's effect on Hebrew Whisper; the 66M model's speed on a
+developer verification; whether Auto Blocker is on by default on the S26 (it was on, on his); TLS with the
+Keystore key on a real phone, and the join surviving a killed keyboard there; Opus's effect on Hebrew Whisper; the 66M model's speed on a
 phone; the free tier's real Groq limits, Hebrew on its current page, and whether its API answers a browser;
 Android routing on a Wi-Fi with no internet on his S26;
 whether Cloudflare's sign-up really needs no card (its Workers pages say so, nobody walked it); Google's STUN terms; a real iPhone or Android Chrome
