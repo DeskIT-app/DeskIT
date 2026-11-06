@@ -44,6 +44,7 @@ winsound.Beep = lambda *a, **k: None
 import cues                          # noqa: E402
 cues.play = lambda kind: None
 
+import awake as awake_mod            # noqa: E402
 import config as config_mod          # noqa: E402
 import hotkey as hotkey_mod          # noqa: E402
 import injector                      # noqa: E402
@@ -52,6 +53,7 @@ import sb                            # noqa: E402
 from hotkey import parse_binding     # noqa: E402
 
 VK_RCTRL, VK_LWIN, VK_LSHIFT, VK_S, VK_ESC = 0xA3, 0x5B, 0xA0, 0x53, 0x1B
+VK_LCTRL, VK_LALT, VK_N = 0xA2, 0xA4, 0x4E          # ctrl+alt+n: the screens key
 
 # A person's pace. A press is a down and an up; "at once" is the
 # shortest gap a hand can manage between two buttons.
@@ -105,14 +107,29 @@ class Sim:
         # hidden desktop): the clipboard is shared with the owner's desk,
         # so it is recorded here and never written
         injector.set_text = lambda text: self.pasted.append(text)
+        # THE OWNER'S MONITORS MUST NEVER GO DARK FROM A SIMULATION. The
+        # real broadcast raises (and the run says so if it was reached);
+        # every engine this sim builds is handed `monitor` instead, a
+        # recorder of what WOULD have been sent (see _tame).
+        self.monitor: list[int] = []
+
+        def never_for_real(state: int) -> bool:
+            raise AssertionError("the sim reached the real monitor broadcast")
+
+        awake_mod.send_monitor_power = never_for_real
         cfg = config_mod.load_layered()
         # No repair pass: it would run the owner's Ollama on his GPU for
-        # every simulated sentence, and the second reading likewise.
+        # every simulated sentence, and the second reading likewise. No
+        # wake hold either (the process would keep the PC awake), and no
+        # watchdog, probe thread or vitals line around the screens mode.
         self.cfg = dataclasses.replace(
             cfg, backend="fake",
             polish=dataclasses.replace(cfg.polish, when="never"),
             review=dataclasses.replace(cfg.review, enabled=False)
-            if getattr(cfg, "review", None) is not None else None)
+            if getattr(cfg, "review", None) is not None else None,
+            awake=dataclasses.replace(
+                cfg.awake, hold=False, vitals_minutes=0,
+                screens_off_again_s=0, keep_screens_off_s=0))
         # The real model takes ~25 s to load; the fake takes none, which
         # would make "Start, then Stop at once" a Stop AFTER the load.
         # A second of load is what gives the person time to press.
@@ -130,13 +147,39 @@ class Sim:
 
     # ---- what a person does
 
+    def _tame(self, app) -> None:
+        """The screens engine of a sim App: the recorder in the sender's
+        place, no probe thread. Called BEFORE anything can darken."""
+        app.awake._sender = lambda state: self.monitor.append(state) or True
+        app.awake._probe_to_log = lambda: None
+
     def open_the_desk(self) -> None:
         """Nothing running, the desk opens: the app comes up without the
         model (dashboard.bring_up_the_keys → main.py --no-model)."""
         self.app = main_mod.App(self.cfg, model=False)
+        self._tame(self.app)
         self.app._say = self.said.append
         self.app.start()
         time.sleep(THINK_S)
+
+    def tap_screens_key(self, app=None) -> None:
+        """ctrl+alt+n, the way the hook feeds it to the state machine."""
+        m = (app or self.app).machine
+        for vk in (VK_LCTRL, VK_LALT, VK_N):
+            m.handle("down", vk, injected=False)
+            time.sleep(0.01)
+        time.sleep(TAP_S)
+        for vk in (VK_N, VK_LALT, VK_LCTRL):
+            m.handle("up", vk, injected=False)
+
+    @staticmethod
+    def until(cond, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return bool(cond())
 
     def press(self, name: str) -> dict:
         """A desk button. Start = `load` with the process up, Stop =
@@ -211,6 +254,101 @@ class Sim:
         assert self.app.machine.state == hotkey_mod.IDLE
         assert not self.dot_on_screen()
 
+    def s_screens_card_with_the_model_off(self) -> None:
+        """The "Screens off" card (2026-10-07) with the model OFF: the key
+        puts it up, nothing a person presses takes it down but the mode
+        ending, a notification stacks above it and survives its ending."""
+        import notify_card as nc
+        app = self.app
+        card = app.notify_card
+        assert app.status()["model"] == "off"
+        self.monitor.clear()
+        n = len(self.log.lines)
+
+        self.tap_screens_key()
+        assert self.until(lambda: app.awake.dark), "the screens key did nothing"
+        assert self.until(card.pinned), "no card went up with the screens"
+        assert self.until(lambda: card.rect is not None), \
+            "the card is pinned but no window drew it"
+        assert self.monitor and self.monitor[0] == awake_mod.MONITOR_OFF, \
+            self.monitor
+        assert "screens off" in self.said[-1], self.said[-1]
+
+        # Esc with the pointer on it, and the dismiss key: neither takes
+        # the pin down
+        card.hovering = lambda: True
+        assert app._popup_key(VK_ESC) is False, "Esc was eaten by the pin"
+        app.notify.dismiss(by="key")
+        time.sleep(THINK_S)
+        assert card.pinned() and card.rect is not None, \
+            "something dismissed the card"
+
+        # a notification arrives: it stacks ABOVE the pin
+        app._notify_from_outside({"title": "Claude finished", "kind": "done",
+                                  "source": "claude-code",
+                                  "body": "It is done."})
+        assert self.until(card.visible), "the notification never showed"
+        with card._state_lock:
+            column = [c["id"] for c in card._drawn()]
+        assert column[-1] == nc.PIN_ID and len(column) == 2, column
+
+        # Esc over the column dismisses THE NOTIFICATION and not the pin
+        assert app._popup_key(VK_ESC) is True
+        assert self.until(lambda: not card.visible())
+        assert card.pinned() and card.rect is not None, \
+            "Esc over the column took the pin with it"
+
+        # one more arrives, and the screens key ends the mode: the pin
+        # goes, the notification stays
+        app._notify_from_outside({"title": "Another", "kind": "done",
+                                  "source": "claude-code", "body": "Again."})
+        assert self.until(card.visible)
+        self.tap_screens_key()
+        assert self.until(lambda: not app.awake.dark)
+        assert self.until(lambda: not card.pinned()), "the pin outlived the mode"
+        time.sleep(THINK_S)
+        assert card.visible() and card.rect is not None, \
+            "the notification went down with the pin"
+        assert self.said[-1] == "screens on", self.said[-1]
+        assert self.until(lambda: awake_mod.MONITOR_ON in self.monitor)
+        assert self.monitor.count(awake_mod.MONITOR_OFF) == 1, self.monitor
+        assert not self.log.saw("screen broadcast failed", n), \
+            "the real monitor broadcast was reached"
+        app.notify.dismiss(by="key")
+        time.sleep(THINK_S)
+
+    def s_screens_card_button(self) -> None:
+        """The pill on the card, with the model ON, the mode started from
+        the desk's road (the control verb the Awake screen sends)."""
+        import notify_card as nc
+        app = self.app
+        card = app.notify_card
+        assert app.status()["model"] == "on"
+        self.monitor.clear()
+        r = app.control_command("screens", {"do": "off"})
+        assert r["ok"] and r["awake"]["dark"], r
+        assert self.until(card.pinned) and self.until(
+            lambda: card.rect is not None)
+        # a click on the card's body is nothing
+        card.pressed("open", nc.PIN_ID)
+        card.pressed("dismiss", nc.PIN_ID)
+        time.sleep(THINK_S)
+        assert card.pinned() and app.awake.dark
+        # the pill: the mode ends, the card goes, it says so once
+        said = len(self.said)
+        card.pressed("button", nc.PIN_ID)
+        assert self.until(lambda: not app.awake.dark), "the pill did nothing"
+        assert self.until(lambda: not card.pinned()), "the pin outlived the mode"
+        assert self.until(lambda: card.rect is None), "the window stayed up"
+        assert self.said[said:] == ["screens on"], self.said[said:]
+        assert self.monitor == [awake_mod.MONITOR_OFF, awake_mod.MONITOR_ON], \
+            self.monitor
+        # and the card follows the mode when the PHONE ends it too
+        r = app.control_command("screens", {"do": "off"})
+        assert r["ok"] and self.until(card.pinned)
+        r = app.control_command("screens", {"do": "on"})
+        assert r["ok"] and self.until(lambda: not card.pinned())
+
     def s_start_then_stop_at_once(self) -> None:
         r = self.press("Start")
         assert r["ok"], r
@@ -274,21 +412,59 @@ class Sim:
         assert thread is None or not thread.is_alive(), "the dot outlived the app"
         self.app = None
 
+    def s_screens_card_with_notifications_off(self) -> None:
+        """[notify] enabled = false and the screens card on: the column is
+        still built for the pin, and the notification engine is handed an
+        inert card, so nothing a program POSTs ever shows."""
+        import notify as notify_mod
+        import notify_card as nc
+        cfg = dataclasses.replace(
+            self.cfg, notify=dataclasses.replace(self.cfg.notify, enabled=False))
+        app = main_mod.App(cfg, model=False)
+        self.app = app
+        self._tame(app)
+        app._say = self.said.append
+        app.start()
+        time.sleep(THINK_S)
+        assert isinstance(app.notify.card, notify_mod.NullCard), \
+            "the engine was handed the real column with notifications off"
+        card = app.notify_card
+        assert hasattr(card, "pin"), "no column was built for the pin"
+        r = app.control_command("screens", {"do": "off"})
+        assert r["ok"] and self.until(card.pinned) and self.until(
+            lambda: card.rect is not None), "no card with notifications off"
+        try:
+            app._notify_from_outside({"title": "x", "source": "t"})
+        except Exception:                                    # noqa: BLE001
+            pass                                  # refused is fine; shown is not
+        time.sleep(THINK_S)
+        with card._state_lock:
+            assert [c["id"] for c in card._drawn()] == [nc.PIN_ID]
+        assert not card.visible()
+        card.pressed("button", nc.PIN_ID)
+        assert self.until(lambda: not card.pinned() and not app.awake.dark)
+        app.stop()
+        self.app = None
+
     # In the order a person meets them: the desk opens, the keys that
     # need no model, the first Start, dictation, the hammering, the end.
     ORDER = ("desk_opens_without_the_model",
              "screenshot_works_without_the_model",
              "hold_key_is_refused_without_the_model",
+             "screens_card_with_the_model_off",
              "start_then_stop_at_once",
+             "screens_card_button",
              "stop_while_recording_is_refused_then_the_dictation_lands",
              "stop_and_start_hammered",
              "phone_is_refused_with_the_model_off",
-             "quit_takes_everything")
+             "quit_takes_everything",
+             "screens_card_with_notifications_off")
 
     def all(self) -> int:
         for name in self.ORDER:
             self.run(name, getattr(self, "s_" + name))
-            if self.app is None and name != "quit_takes_everything":
+            if self.app is None and name not in ("quit_takes_everything",
+                                                 "screens_card_with_notifications_off"):
                 break
         if self.app is not None:
             try:

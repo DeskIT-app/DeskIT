@@ -178,7 +178,14 @@ class Tabs(tk.Frame):
             # height the holder used to take from its children.
             holder.configure(width=wide, height=tall + 7 + 2)
             holder.pack_propagate(False)
-            label.pack(pady=(0, 7))
+            # THE LABEL FILLS ITS HOLDER, so its window is the bold width
+            # whatever weight it draws in. Packed at its own width, a word
+            # going from bold to regular SHRANK its window, and the strip
+            # of the bold word it no longer covered was left on the glass
+            # until something else repainted there: "Corrections:" in the
+            # owner's clip of 2026-10-23, for up to a second after he left
+            # the place.
+            label.pack(pady=(0, 7), fill="x")
             bar = tk.Frame(holder, height=2, bg=bg)
             bar.pack(fill="x")
             for widget in (holder, label, bar):

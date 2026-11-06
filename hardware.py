@@ -52,14 +52,17 @@ TIERS = ("gpu", "gpu-small", "cpu")
 #: 6.3, the columns that differ from the shipped defaults. A key absent
 #: from a tier keeps defaults.toml's value (which is tier 1's, D6/D34).
 DERIVED: dict[str, dict[str, object]] = {
+    # int8_float16 on every card since 2026-10-23: the same words as
+    # float16 on the six public sets, half the graphics memory (one turbo
+    # 1,214 MB against 2,238), so a 4-6 GB card keeps the English model
+    # too — two of them are ~2.3 GB (notes\DeskIT-light-plan-2026-10-22.md)
     "gpu": {
-        "local.device": "cuda", "local.compute_type": "float16",
+        "local.device": "cuda", "local.compute_type": "int8_float16",
         "local.cpu_threads": 0, "local.beam_size": 5,
     },
     "gpu-small": {
         "local.device": "cuda", "local.compute_type": "int8_float16",
         "local.cpu_threads": 0, "local.beam_size": 5,
-        "local.english_model": "",
         "polish.max_wait_s": 6.0, "polish.ollama_model": "gemma3:4b",
         "lookup.model": "gemma3:4b", "lookup.keep_alive": "10m",
         "visual_qa.ollama_model": "gemma3:4b", "visual_qa.ollama_timeout_s": 60,
@@ -118,7 +121,8 @@ def driver_ok(driver: str) -> bool:
     return (major, minor) >= DRIVER_FLOOR
 
 
-def ram_mb() -> int:
+def _memory_status():
+    """GlobalMemoryStatusEx, or None."""
     class _MemoryStatus(ctypes.Structure):
         _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
                     ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
@@ -130,10 +134,26 @@ def ram_mb() -> int:
         status.dwLength = ctypes.sizeof(status)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         if kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return int(status.ullTotalPhys // (1024 * 1024))
+            return status
     except Exception:                                    # noqa: BLE001
         pass
-    return 0
+    return None
+
+
+def ram_mb() -> int:
+    status = _memory_status()
+    return int(status.ullTotalPhys // (1024 * 1024)) if status else 0
+
+
+def free_mb() -> tuple[int, int]:
+    """(RAM free, commit free) in MB now; (0, 0) when Windows will not
+    say. Commit free is what can still be promised before the page file
+    has to grow — on WDDM what sits on the graphics card is committed too."""
+    status = _memory_status()
+    if not status:
+        return 0, 0
+    return (int(status.ullAvailPhys // (1024 * 1024)),
+            int(status.ullAvailPageFile // (1024 * 1024)))
 
 
 def ollama(timeout: float = 1.0) -> tuple[bool, list[str]]:

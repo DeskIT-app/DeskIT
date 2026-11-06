@@ -315,10 +315,13 @@ class LocalWhisperTranscriber:
     _beam_size = 5
     #: The English detector's state: "" (none configured), "loading"
     #: (on its thread, english_later), "ready", "failed", "closed" (it
-    #: landed after close() and was dropped).
+    #: landed after close() and was dropped), "aside" (room for a game,
+    #: english_aside).
     english_state = ""
     _said_loading = False
     _closed = False
+    #: Room for a game asked the detector to stand aside (english_aside).
+    _english_aside = False
     _english_thread: threading.Thread | None = None
     #: Where the seconds went, for the log and the wizard: the ivrit
     #: load, its warm-up, the English load and ITS warm-up — each alone,
@@ -336,8 +339,15 @@ class LocalWhisperTranscriber:
         once by the caller, never a download."""
         source = models_mod.source(model_name)
         from faster_whisper import WhisperModel
-        compute = "float16" if self.device == "cuda" else "int8"
-        log.info("loading English model %s on %s...", model_name, self.device)
+        # the Hebrew model's number format, whatever the ladder settled
+        # on: until 2026-10-23 this was float16 on a card whatever the
+        # setting said, 1 GB of the app's graphics memory for nothing
+        # (the detector at int8_float16: +1.4% words wrong over the six
+        # public sets as a Hebrew witness, each set inside the spread)
+        compute = getattr(self, "_compute", None) or \
+            ("float16" if self.device == "cuda" else "int8")
+        log.info("loading English model %s on %s (%s)...", model_name,
+                 self.device, compute)
         return WhisperModel(source, device=self.device,
                             compute_type=compute)
 
@@ -368,6 +378,11 @@ class LocalWhisperTranscriber:
             log.info("English model loaded after this transcriber was "
                      "closed — dropped")
             return
+        if self._english_aside:
+            self.english_state = "aside"
+            log.info("English model loaded while it was asked to stand "
+                     "aside — dropped")
+            return
         self._english = english
         self.english_state = "ready"
         log.info("English model ready on %s (load %.1f s, warm-up %.1f s)"
@@ -389,6 +404,33 @@ class LocalWhisperTranscriber:
         with the object — only the word to a detector load still on its
         thread that its result is not wanted (see _load_english)."""
         self._closed = True
+
+    def english_aside(self) -> bool:
+        """Room for a game (room.py, rung 2): the English detector off the
+        card, the Hebrew model left where it is. A decode already running
+        keeps its own reference and finishes; the next dictation is
+        Hebrew. A load still on its thread drops what it brings. False
+        when there was no detector to take (none configured, or it failed)."""
+        if not self._english_model_name or self.english_state == "failed":
+            return False
+        self._english_aside = True
+        self._english = None
+        self.english_state = "aside"
+        return True
+
+    def english_back(self) -> None:
+        """The detector back, on a thread of its own (english_later's
+        path): a dictation in the seconds before it lands is Hebrew."""
+        if not self._english_aside:
+            return
+        self._english_aside = False
+        if self._english is not None or self._closed:
+            return
+        self.english_state = "loading"
+        self._said_loading = False
+        self._english_thread = threading.Thread(
+            target=self._load_english, daemon=True, name="english-model")
+        self._english_thread.start()
 
     def _detector(self):
         """The English model, or None — and, while it is still on its
@@ -535,21 +577,30 @@ class LocalWhisperTranscriber:
         self.last_windows: list = []
         self._guards = hallucination_guards(guard_hallucinations)
 
-        # The ladder as it always was, unless the probe (hardware.py, plan
-        # 6.3) or the person named a number format: then that format on
-        # the device asked for, and int8 on the processor underneath.
+        # The ladder, unless the probe (hardware.py, plan 6.3) or the
+        # person named a number format: then that format on the device
+        # asked for, and int8 on the processor underneath. On a card it
+        # tries int8_float16 first since 2026-10-23: the same words as
+        # float16 on all six public sets (night10, 6,351 against 6,362
+        # words wrong, every set inside the run-to-run spread), half the
+        # graphics memory (one model 1,214 MB against 2,238 with CUDA's
+        # context, measured), ~12% more decode time — ~0.04 s on a short
+        # dictation. A card that cannot do int8 refuses it at once and
+        # gets float16. notes\DeskIT-light-plan-2026-10-22.md has the table.
         if compute_type and compute_type != "auto":
             first = "cpu" if device == "cpu" else "cuda"
             attempts = [(first, compute_type)]
+            if first == "cuda" and compute_type == "int8_float16":
+                attempts.append(("cuda", "float16"))
             if first != "cpu":
                 attempts.append(("cpu", "int8"))
         else:
-            attempts = ([("cuda", "float16"), ("cpu", "int8")]
-                        if device == "auto" else
-                        [(device, "float16" if device == "cuda" else "int8")])
+            card = [("cuda", "int8_float16"), ("cuda", "float16")]
+            attempts = (card + [("cpu", "int8")] if device == "auto" else
+                        card if device == "cuda" else [(device, "int8")])
         threads = {"cpu_threads": int(cpu_threads)} if cpu_threads else {}
         last: Exception | None = None
-        for dev, compute in attempts:
+        for i, (dev, compute) in enumerate(attempts):
             started = time.perf_counter()
             try:
                 candidate = WhisperModel(source, device=dev,
@@ -566,14 +617,18 @@ class LocalWhisperTranscriber:
                 log.info("local model cannot use %s (%s) — %s", dev, compute,
                          str(e).splitlines()[0][:120])
                 if dev == "cuda" and not paths.PORTABLE \
+                        and not any(d == "cuda" for d, _ in attempts[i + 1:]) \
                         and packs_mod.state("gpu") in ("ok", "stale"):
                     # the pack is there and does not run: written down
                     # for the tier and the Home card (6.9), until the
-                    # next install or removal
+                    # next install or removal — and only after the LAST
+                    # card rung, since a card that merely refuses int8
+                    # runs float16 fine
                     packs_mod.note_failure("gpu", str(e))
                 continue
             self._model = candidate
             self.device = dev
+            self._compute = compute
             self.timing["load_s"] = round(load_s, 2)
             self.timing["warm_s"] = round(warm_s, 2)
             log.info("local model %s ready on %s (%s) — load %.1f s, "
@@ -621,6 +676,18 @@ class LocalWhisperTranscriber:
                               **self._guards)[0])
         list(model.transcribe(audio, language=language,
                               vad_filter=True)[0])
+
+    def rewarm(self) -> float:
+        """The load-time warm-ups again, on the models already loaded —
+        for a person coming back to a machine that pushed them out of
+        memory meanwhile (wake.py has the 11.8 s this paid on 2026-10-20).
+        The detector first, as a dictation runs them. Seconds taken; a
+        failure raises, like the load's probe — the caller logs it."""
+        started = time.perf_counter()
+        if getattr(self, "_english", None) is not None:
+            self._warm_detector()
+        self._warm(self._model, self._language)
+        return time.perf_counter() - started
 
     def _warm_detector(self, detector=None) -> None:
         """Pay the first-inference cost at startup, not on the first
@@ -733,9 +800,7 @@ class LocalWhisperTranscriber:
         if self._boilerplate:
             text, _removed = cleanup_mod.strip_trailing_boilerplate(
                 text, self._boilerplate)
-        if self._cleanup:
-            text = cleanup_mod.clean(text, self._fillers)
-        return text
+        return self.clean_text(text)
 
     def _choose(self, wav_bytes: bytes, language: str | None):
         """Which model and language a recording gets -> (model, code).
@@ -918,10 +983,11 @@ class LocalWhisperTranscriber:
         """The filler cleanup a transcript gets on its way out — the same
         one, so a stretch repaired while the key is held (main.App
         ._polish_window) starts from the text the whole recording would
-        have."""
+        have. The bidi controls go whether the cleanup is on or off: they
+        are the decoder's, never something said (cleanup.BIDI_CONTROLS)."""
         if self._cleanup and text:
             return cleanup_mod.clean(text, self._fillers)
-        return text
+        return cleanup_mod.strip_bidi_controls(text)
 
     # -- the rolling transcriber (rolling.py) --
 

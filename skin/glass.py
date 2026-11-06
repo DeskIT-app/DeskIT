@@ -106,6 +106,26 @@ _gdi32.SelectObject.restype = ctypes.c_void_p
 _gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 _gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
 _gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+try:
+    _dwmapi = ctypes.WinDLL("dwmapi")
+    _dwmapi.DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, w.DWORD,
+                                              ctypes.c_void_p, w.DWORD]
+    _dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+    _dwmapi.DwmGetWindowAttribute.argtypes = [ctypes.c_void_p, w.DWORD,
+                                              ctypes.c_void_p, w.DWORD]
+    _dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+except (OSError, AttributeError):
+    _dwmapi = None
+try:
+    # Undocumented, and in user32 since Windows 7: the call the taskbar and
+    # Start use for the blur behind them. Looked up rather than assumed, so
+    # a Windows without it is a Glass without a live blur and nothing else.
+    _user32.SetWindowCompositionAttribute.argtypes = [ctypes.c_void_p,
+                                                      ctypes.c_void_p]
+    _user32.SetWindowCompositionAttribute.restype = w.BOOL
+    _COMPOSITION = True
+except AttributeError:
+    _COMPOSITION = False
 
 WS_POPUP = 0x80000000
 WS_EX_LAYERED = 0x00080000
@@ -117,6 +137,7 @@ SW_SHOWNOACTIVATE = 4
 ULW_ALPHA = 0x00000002
 AC_SRC_OVER, AC_SRC_ALPHA = 0x00, 0x01
 SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = 0x0002, 0x0001, 0x0010
+SWP_NOZORDER = 0x0004
 HWND_TOPMOST = ctypes.c_void_p(-1)
 SPI_GETCLIENTAREAANIMATION = 0x1042
 ERROR_CLASS_ALREADY_EXISTS = 1410
@@ -166,6 +187,30 @@ class _POINT(ctypes.Structure):
 
 class _SIZE(ctypes.Structure):
     _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+
+class _ACCENT_POLICY(ctypes.Structure):
+    _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int),
+                ("GradientColor", ctypes.c_uint), ("AnimationId", ctypes.c_int)]
+
+
+class _WINCOMPATTRDATA(ctypes.Structure):
+    _fields_ = [("Attribute", ctypes.c_int), ("Data", ctypes.c_void_p),
+                ("SizeOfData", ctypes.c_size_t)]
+
+
+WCA_ACCENT_POLICY = 19
+ACCENT_DISABLED, ACCENT_ENABLE_BLURBEHIND = 0, 3
+WM_MOVE = 0x0003
+# Windows 11's own rounded corners (DwmSetWindowAttribute). The radius is
+# the system's, not ours: DWMWCP_ROUND is 8 px at 100 % — measured on the
+# real screen on 2026-10-19, the blur's edge leaving the window's top row
+# 4-5 px in and reaching its side by row 4, which is an 8 px arc.
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWA_BORDER_COLOR = 34
+DWMWCP_ROUND = 2
+DWMWA_COLOR_NONE = 0xFFFFFFFE
+DWM_RADIUS = 8
 
 
 _WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p,
@@ -229,6 +274,10 @@ def _proc(hwnd, msg, wparam, lparam):
                 if msg == WM_LBUTTONUP:
                     _user32.ReleaseCapture()
                 return 0
+            if msg == WM_MOVE and glass.moving:
+                # every step of a drag Windows runs for us, so whatever
+                # rides with this window can go with it as it moves
+                glass.moving()
             if msg in (WM_EXITSIZEMOVE, WM_NCLBUTTONUP) and glass.moved:
                 glass.moved()
     except Exception:
@@ -322,7 +371,7 @@ class Glass:
 
     def __init__(self, x: int, y: int, width: int, height: int,
                  gpu: bool = True, hit=None, moved=None, clicked=None,
-                 gripped=None) -> None:
+                 gripped=None, moving=None) -> None:
         # Deferred (see skin/__init__), and OPTIONAL since 2026-09-19: a
         # fresh install has no skia — it is the skin pack, a download —
         # and the dot, the boot card and the hint card paint with Pillow
@@ -346,6 +395,7 @@ class Glass:
         # called (screen x, y) for a press on HTBOTTOMRIGHT; `gripping`
         # stays True, with the mouse captured, until the button comes up
         self.gripped = gripped
+        self.moving = moving             # called on every WM_MOVE
         self.gripping = False
         self.hwnd = None
         self.dc = None
@@ -372,7 +422,7 @@ class Glass:
         # message arriving on a half-built or half-dead window finds
         # nothing and falls through to DefWindowProc.
         if (hit is not None or moved is not None or clicked is not None
-                or gripped is not None):
+                or gripped is not None or moving is not None):
             _live[int(self.hwnd)] = self
 
         screen = _user32.GetDC(None)
@@ -456,13 +506,20 @@ class Glass:
         """A new size for the same window — the same handle, so a mouse
         capture survives it (a corner drag resizes the hint card under the
         pointer it has captured). The next present() puts the picture up
-        at the new size. A window with a GPU surface is refused: nothing
-        that resizes has one."""
+        at the new size.
+
+        A window on the GPU gets a new render target of the new size from
+        the same context (2026-10-18: the notify column resizes in place
+        when one card of it goes, instead of being torn down and built
+        again — the rebuild was the "all of them vanish for a second" the
+        owner saw). If the driver refuses one, the window carries on on
+        the CPU rasteriser, which is slower and exactly as correct."""
         width, height = int(width), int(height)
         if (width, height) == (self.width, self.height) or not self.hwnd:
             return
-        if self.on_gpu:
-            raise RuntimeError("a GPU-backed glass window cannot resize")
+        gpu = None
+        if self.on_gpu and self._gr is not None:
+            gpu = self._gr.surface(width, height)
         self.width, self.height = width, height
         self.surface = self.canvas = None
         self._view = self._buf = None
@@ -472,9 +529,84 @@ class Glass:
             self._info = skia.ImageInfo.Make(width, height,
                                              skia.kBGRA_8888_ColorType,
                                              skia.kPremul_AlphaType)
-            self.surface = skia.Surface.MakeRasterDirect(
-                self._info, self._view, width * 4)
+            if gpu is not None:
+                self.surface = gpu
+            else:
+                self.on_gpu = False
+                self._gr = None
+                self.surface = skia.Surface.MakeRasterDirect(
+                    self._info, self._view, width * 4)
             self.canvas = self.surface.getCanvas() if self.surface else None
+
+    def blur_behind(self, on: bool = True) -> bool:
+        """Ask the compositor to blur whatever is BEHIND the window, live.
+
+        This is what the taskbar and Start do, and it is the only way a
+        translucent window can show the desktop moving behind it: the
+        picture of what is underneath is DWM's own, recomposed every
+        frame, so a window dragged behind the card is seen going behind
+        it as it moves (the owner's ask, 2026-10-18). Anything this
+        process grabs and blurs itself is a photograph, out of date the
+        moment it is taken — which is what the notify card's frost was.
+
+        THE BLUR FILLS THE WINDOW'S WHOLE RECTANGLE, under the picture,
+        whatever the picture's alpha — and a window region does NOT cut
+        it. Measured on the real screen on 2026-10-19 over a striped
+        pattern: a layered window and a plain one, each cut to a rounded
+        card with SetWindowRgn, blurred every pixel of their rectangle
+        (the dark frame the owner saw round the column), and so did a
+        DwmEnableBlurBehindWindow region. The one shape the compositor
+        honours is its OWN rounded corner (`round_corners`). So a window
+        that wants blur behind a rounded thing must BE that thing's size.
+        True when Windows took the request; False on a Windows without the
+        call, which then simply has no live blur.
+        """
+        if not _COMPOSITION or not self.hwnd:
+            return False
+        policy = _ACCENT_POLICY(ACCENT_ENABLE_BLURBEHIND if on
+                                else ACCENT_DISABLED, 0, 0, 0)
+        data = _WINCOMPATTRDATA(WCA_ACCENT_POLICY,
+                                ctypes.cast(ctypes.pointer(policy),
+                                            ctypes.c_void_p),
+                                ctypes.sizeof(policy))
+        try:
+            return bool(_user32.SetWindowCompositionAttribute(
+                self.hwnd, ctypes.byref(data)))
+        except Exception:
+            _log.debug("glass: no blur behind", exc_info=True)
+            return False
+
+    def round_corners(self) -> bool:
+        """Windows 11's rounded corners on this window, and no border.
+
+        The compositor rounds the window — its picture AND the blur behind
+        it — at DWM_RADIUS, antialiased; the light 1 px border it draws
+        with them is switched off, because the face draws its own rim.
+        False on a Windows before 11, where the window stays square."""
+        if _dwmapi is None or not self.hwnd:
+            return False
+        pref = ctypes.c_int(DWMWCP_ROUND)
+        none = ctypes.c_uint(DWMWA_COLOR_NONE)
+        try:
+            ok = _dwmapi.DwmSetWindowAttribute(
+                self.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(pref), ctypes.sizeof(pref)) == 0
+            _dwmapi.DwmSetWindowAttribute(
+                self.hwnd, DWMWA_BORDER_COLOR, ctypes.byref(none),
+                ctypes.sizeof(none))
+            return ok
+        except Exception:
+            _log.debug("glass: no rounded corners", exc_info=True)
+            return False
+
+    def place(self, x: int, y: int) -> None:
+        """Move the window NOW, without a new picture: `move` only records
+        where the next flush puts it, and something that follows another
+        window through a drag has no new picture to flush."""
+        self.move(x, y)
+        if self.hwnd:
+            _user32.SetWindowPos(self.hwnd, None, self.x, self.y, 0, 0,
+                                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
 
     def let_go(self) -> None:
         """End a grip this side asked to end: the capture goes back."""

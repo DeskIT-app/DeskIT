@@ -49,6 +49,8 @@ import io
 
 from PIL import Image, ImageDraw
 
+import look
+
 CARD_W = 420
 PAD = 22
 RADIUS = 14
@@ -59,7 +61,7 @@ EYEBROW_Y = 0
 TITLE_Y = 16
 HINT_Y = 44
 
-FIELD_RADIUS = 9
+FIELD_RADIUS = 12         # B+'s writing well is round (9 under LAMPLIGHT)
 FIELD_PAD_X = 12          # the interior breathing room the old one lacked
 FIELD_PAD_Y = 9
 FIELD_PT = 11.5
@@ -84,7 +86,7 @@ CHIP_PAD = 26             # ui.Chip's own padding: width = CHIP_PAD + text
 CHIPS_GAP = 14            # above the chip strip
 SHOT_GAP = 12
 SHOT_CAP_GAP = 16
-ACTS_GAP = 16
+ACTS_GAP = 26              # 16 until the command strip (2026-10-23)
 BTN_H = 36
 BTN_RADIUS = 9
 BTN_GAP = 8
@@ -133,6 +135,10 @@ PREVIEW_LABEL = "Preview"
 CANCEL_LABEL = "Cancel"
 SEND_TOGGLE_LABEL = "Send to the developer"
 STRIP_EYEBROW = "WHAT LEAVES THIS PC"
+# The same words in the card's own sentence case since B+ (2026-10-23);
+# the desk's report card still reads the capitals above. Spelled out, not
+# STRIP_EYEBROW.capitalize(), which painted "this pc".
+STRIP_HEAD = "What leaves this PC"
 # The four toggles' words — problems.ATTACH_WORDS, spelled here as well
 # so a painter with no problems module still draws them; a test keeps
 # the two equal.
@@ -147,18 +153,24 @@ NONE_WORD = "none"
 # it does not. A painter that must render with no Tk in the process cannot
 # have `import ui` at the top of it (ui pulls in tkinter and ImageTk), and
 # a card that cannot be rendered headless is a card nobody looks at until
-# it is on screen and wrong. These are skin\palette.py's LAMPLIGHT
-# values, which is what ui.py hands back once the skin has repainted it —
-# so the headless card and the on-screen card are the same picture.
-_FALLBACK = {"CARD": "#24201a", "CARD_HI": "#2e2921",
-             "FG": "#f1ece2", "DIM": "#b2a896",
-             "FAINT": "#7e7564", "LINE": "#3a342a", "STROKE": "#3a342a",
-             "EDGE": "#29241d", "ACCENT": "#e3a63c", "ACCENT_HI": "#f0b854",
-             "ACCENT_SOFT": "#332711", "ACCENT_TEXT": "#f0ba5c",
-             "ACCENT_ON": "#1a1409",
-             "ACCENT_EDGE": "#5a431a", "EDGE_HI": "#332d24",
-             "CHIP_BG": "#292419", "TILE_EDGE": "#5a5240",
-             "TRACK_OFF": "#4e4737"}
+# it is on screen and wrong. These are skin\palette.py's B+ values
+# (2026-10-23), which is what ui.py hands back — so the headless card and
+# the on-screen card are the same picture. The sheet itself, its well, its
+# pills and its switch are look.py's, the report sheet the owner approved
+# for the desk (design\2026-09-22\design\rev\home\report.png).
+_FALLBACK = {"CARD": "#1a1e35", "CARD_HI": "#242944", "PANE": "#121527",
+             "FG": "#efedf7", "DIM": "#c0c3d8",
+             "FAINT": "#70758e", "LINE": "#30365a", "STROKE": "#30365a",
+             "EDGE": "#1f2340", "ACCENT": "#a597ff", "ACCENT_HI": "#b9aeff",
+             "ACCENT_SOFT": "#393961", "ACCENT_TEXT": "#c2b9ff",
+             "ACCENT_ON": "#140f33",
+             "ACCENT_EDGE": "#595490", "EDGE_HI": "#2a3050",
+             "CHIP_BG": "#20243f", "TILE_EDGE": "#525a88",
+             "TRACK_OFF": "#454c78"}
+# The field: a real tk.Text lies over it, so the well is ONE flat colour the
+# widget can be given as its bg — PANE, a step darker than the sheet, the
+# way the report sheet's writing well is darker than the sheet round it.
+FIELD_BG = "PANE"
 
 
 def hex_of(name: str) -> str:
@@ -356,7 +368,7 @@ def layout(card: dict, cache: dict | None = None) -> dict:
     attach_rows: dict[str, tuple] = {}
     if send:
         y += STRIP_GAP
-        eyebrow = _ltr(cache, STRIP_EYEBROW, 8.0, rgb("FAINT"),
+        eyebrow = _ltr(cache, STRIP_HEAD, 8.0, rgb("FAINT"),
                        INNER - STRIP_INDENT)
         strip_head = (STRIP_INDENT, y, INNER, y + eyebrow.height)
         y += eyebrow.height + 6
@@ -596,42 +608,49 @@ def compose(card: dict, cache: dict | None = None):
     cache = cache if cache is not None else {}
     box = layout(card, cache)
     width, height = box["size"]
-    ground = rgb("CARD")
-    img = Image.new("RGB", (width, height), ground)
+    # B+'s sheet, opaque: the window has no per-pixel alpha (it holds a
+    # real Text), and its corner is Windows' own (_round_corners)
+    img = look.glass(Image.new("L", (width, height), 255),
+                     (0, 0, width, height), opaque=True)
     body = (PAD, PAD)
+    muted = look.INK["muted"]
 
     def put(layer, x, y) -> None:
-        if layer.mode == "RGBA":
-            img.paste(layer, (int(body[0] + x), int(body[1] + y)), layer)
-        else:
-            img.paste(layer, (int(body[0] + x), int(body[1] + y)))
+        img.alpha_composite(layer.convert("RGBA"),
+                            (int(body[0] + x), int(body[1] + y)))
 
-    where = (card.get("where") or "").upper()
-    if where:
-        eyebrow = _ltr(cache, f"ON {where}", 8.0, rgb("FAINT"), INNER)
-        put(eyebrow, 0, EYEBROW_Y)
-    title = _ltr(cache, TITLE, 14.0, rgb("FG"), INNER, weight=700)
-    put(title, 0, TITLE_Y)
-    put(_ltr(cache, HINT, 8.0, rgb("FAINT"), INNER), 0, HINT_Y)
+    where = (card.get("where") or "")
+    warn = look.glyph("warn", 13, muted + (255,), 1.4)
+    put(warn, 0, EYEBROW_Y - 1)
+    eyebrow = look.text(cache, f"Report a problem · on {where}" if where
+                        else "Report a problem", 9.0, muted, look.W_LABEL)
+    put(eyebrow, warn.width + 6, EYEBROW_Y)
+    title = look.text(cache, TITLE, 15.0, rgb("FG"), look.W_STRONG)
+    put(title, 0, TITLE_Y + 1)
+    put(_ltr(cache, HINT, 8.0, muted, INNER), 0, HINT_Y)
     # What Enter means, on the card. With no title bar there is no X to
     # click and no menu to read, so the keyboard is the only way out that
     # is always there — and Enter changed meaning the moment the field
     # grew past one line, which he must not have to discover by losing a
     # sentence to it.
     send_on = bool(card.get("send"))
-    put(_ltr(cache, KEYS_SEND if send_on else KEYS, KEYS_PT, rgb("FAINT"),
+    put(_ltr(cache, KEYS_SEND if send_on else KEYS, KEYS_PT, muted,
              INNER), 0, box["keys"][1])
 
     # -- the field: a well he can see the edges of, lit when it has the
     # caret. Drawn here and only drawn: the caret, the selection and the
     # characters are a real Text widget the window places over this
-    # rectangle, because a painted field is a picture of typing.
+    # rectangle, because a painted field is a picture of typing. Its fill
+    # is FIELD_BG exactly — the colour the widget is given.
     fx0, fy0, fx1, fy1 = box["field"]
     lit = bool(card.get("focused"))
-    put(_rr((fx1 - fx0, fy1 - fy0), FIELD_RADIUS,
-            fill=rgb("EDGE") + (255,),
-            outline=(rgb("ACCENT") if lit else rgb("STROKE")) + (255,),
-            width=1), fx0, fy0)
+    well = Image.new("RGBA", (fx1 - fx0, fy1 - fy0), (0, 0, 0, 0))
+    wmask = look.rounded(well.size, (0, 0) + well.size, FIELD_RADIUS)
+    well.alpha_composite(look.flat(well.size, rgb(FIELD_BG) + (255,), wmask))
+    well.alpha_composite(look.flat(well.size, look.c("iris", 150) if lit
+                                   else look.c("white", 18),
+                                   look.ring_of(wmask)))
+    put(well, fx0, fy0)
 
     # -- and this is what the field cannot do. Measured 2026-09-04 on both
     # widgets: typing "הכפתור של Settings לא עובד אחרי restart" into a
@@ -656,22 +675,17 @@ def compose(card: dict, cache: dict | None = None):
         cx0, cy0, cx1, cy1 = rect
         on = name == picked
         hot = hover == KIND_PREFIX + name
-        # ui.Chip's own three faces, in palette names rather than the
-        # literals it used to spell inline — its off fill and CARD are
-        # one step apart at most, so an unpicked chip is a
-        # hairline pill on the card and not a raised button, which is what
-        # the dashboard's row looks like and what made this one look
-        # heavier than it beside it.
+        # B+'s choice (the desk's tabs): the picked one is the glass
+        # bubble with its rim lit, the others pills of frost
+        chip = Image.new("RGBA", (cx1 - cx0, cy1 - cy0), (0, 0, 0, 0))
         if on:
-            fill, edge, ink = (rgb("ACCENT_SOFT"), rgb("ACCENT_EDGE"),
-                               rgb("ACCENT_TEXT"))
-        elif hot:
-            fill, edge, ink = (rgb("CARD_HI"), rgb("STROKE"), rgb("FG"))
+            look.bubble(chip, (0, 0) + chip.size)
+            ink = rgb("FG")
         else:
-            fill, edge, ink = (rgb("CARD"), rgb("LINE"), rgb("DIM"))
-        put(_rr((cx1 - cx0, cy1 - cy0), CHIP_H / 2, fill=fill + (255,),
-                outline=edge + (255,), width=1), cx0, cy0)
-        word = _rtl(cache, name, 9.0, ink)
+            look.quiet(chip, (0, 0) + chip.size, hover=hot)
+            ink = rgb("FG") if hot else rgb("DIM")
+        put(chip, cx0, cy0)
+        word = look.text(cache, name, 9.0, ink, look.W_LABEL)
         put(word, cx0 + (cx1 - cx0 - word.width) / 2,
             cy0 + (cy1 - cy0 - word.height) / 2)
 
@@ -689,7 +703,7 @@ def compose(card: dict, cache: dict | None = None):
             sx0, sy0)
         img.paste(shot, (int(body[0] + sx0 + 1), int(body[1] + sy0 + 1)))
         cap_w = max(80, INNER - shot.width - SHOT_CAP_GAP - 6)
-        put(_ltr(cache, SHOT_CAPTION, 8.0, rgb("FAINT"), cap_w),
+        put(_ltr(cache, SHOT_CAPTION, 8.0, muted, cap_w),
             shot.width + SHOT_CAP_GAP, sy0 + 2)
 
     # -- "Send to the developer": one checkbox, off. Under it, while it
@@ -700,13 +714,13 @@ def compose(card: dict, cache: dict | None = None):
     cx0, cy0, cx1, cy1 = box["check"]
     _switch(img, (body[0] + cx0, body[1] + cy0 + (ROW_H - SWITCH_H) / 2),
             send_on, hot=hover == SEND_TOGGLE)
-    word = _rtl(cache, SEND_TOGGLE_LABEL, 9.5,
-                rgb("FG") if send_on else rgb("DIM"))
+    word = look.text(cache, SEND_TOGGLE_LABEL, 9.5,
+                     rgb("FG") if send_on else rgb("DIM"), look.W_LABEL)
     put(word, cx0 + STRIP_INDENT, cy0 + (ROW_H - word.height) / 2)
     if send_on and box["strip_head"] is not None:
         hx0, hy0, _hx1, _hy1 = box["strip_head"]
-        put(_ltr(cache, STRIP_EYEBROW, 8.0, rgb("FAINT"), INNER - STRIP_INDENT),
-            hx0, hy0)
+        put(look.text(cache, STRIP_HEAD, 8.5, muted,
+                      look.W_LABEL), hx0, hy0)
         attach = card.get("attach") or {}
         sizes = card.get("sizes") or {}
         for name, (ax0, ay0, _ax1, _ay1) in box["attach"].items():
@@ -715,93 +729,85 @@ def compose(card: dict, cache: dict | None = None):
             _switch(img, (body[0] + ax0, body[1] + ay0 + (ROW_H - SWITCH_H) / 2),
                     on, hot=hover == ATTACH_PREFIX + name, dead=not have)
             text = f"{ATTACH_WORDS.get(name, name)}  ·  {size_word(sizes.get(name))}"
-            word = _rtl(cache, text, 9.0,
-                        rgb("FAINT") if not have else rgb("FG") if on else rgb("DIM"))
+            word = look.text(cache, text, 9.0,
+                             rgb("FAINT") if not have else rgb("FG") if on
+                             else rgb("DIM"), look.W_LABEL)
             put(word, ax0 + STRIP_INDENT, ay0 + (ROW_H - word.height) / 2)
 
-    # -- the two answers. The primary carries the accent and the icon
-    # the dashboard's does, and its word follows the checkbox — Keep on
-    # this PC, or Preview; Cancel is the quiet one, and it is a real
-    # button rather than only the Escape key because a floating card
-    # with no frame gives the mouse nothing else to say no with.
-    #
-    # ON the accent fill the label is ACCENT_ON and not FG. Under the blue
-    # palette white on the accent was 4.10:1 — already below AA — and on a
-    # gold fill it is 1.8:1, which is a word you cannot read on the one
-    # button the card is for. ACCENT_ON is 8.52:1 on it.
+    # -- the two answers. The primary is B+'s lit button — iris light
+    # from its top, its light pooled under it — and its word follows the
+    # switch: Keep on this PC, or Preview (with the send glyph). Cancel is
+    # a pill of frost, and it is a real button rather than only the Escape
+    # key because a floating card with no frame gives the mouse nothing
+    # else to say no with. ON the iris the label is ACCENT_ON, 7.39:1; FG
+    # there is 2.3:1, a word you cannot read on the one button the card
+    # is for.
     sx0, sy0, sx1, sy1 = box["send"]
+    # A CLASSIC DIALOG'S FOOT (2026-10-23, the owner: "more classic"): the
+    # two answers on their own strip, a step darker than the sheet, edge
+    # to edge, a hairline along its top
+    band_y = int(body[1] + sy0 - 20)
+    img.alpha_composite(Image.new("RGBA", (width, height - band_y),
+                                  look.INK["well"] + (70,)), (0, band_y))
+    look.fade_rule(img, 0, width, band_y, a=40)
     hot = hover == SEND
-    put(_rr((sx1 - sx0, sy1 - sy0), BTN_RADIUS,
-            fill=(rgb("ACCENT_HI") if hot else rgb("ACCENT")) + (255,)),
-        sx0, sy0)
-    label = _rtl(cache, PREVIEW_LABEL if send_on else SEND_LABEL, 9.5,
-                 rgb("ACCENT_ON"), weight=600)
-    icon = 14
-    total = icon + 8 + label.width
+    look.primary(img, (body[0] + sx0, body[1] + sy0, body[0] + sx1,
+                       body[1] + sy1), hover=hot)
+    label = look.text(cache, PREVIEW_LABEL if send_on else SEND_LABEL, 9.5,
+                      rgb("ACCENT_ON"), look.W_STRONG)
+    # the report sheet's send glyph, on the road that sends; keeping it on
+    # this PC is a word alone
+    icon = look.glyph("send", 14, rgb("ACCENT_ON") + (255,), 1.6) \
+        if send_on else None
+    total = (icon.width + 7 if icon else 0) + label.width
     ix = sx0 + (sx1 - sx0 - total) / 2
-    _circle_x(img, (int(body[0] + ix), int(body[1] + (sy0 + sy1) / 2)),
-              icon, rgb("ACCENT_ON"))
-    put(label, ix + icon + 8, (sy0 + sy1) / 2 - label.height / 2)
+    if icon is not None:
+        put(icon, ix, (sy0 + sy1) / 2 - icon.height / 2)
+        ix += icon.width + 7
+    put(label, ix, (sy0 + sy1) / 2 - label.height / 2)
 
     cx0, cy0, cx1, cy1 = box["cancel"]
     hot = hover == CANCEL
-    put(_rr((cx1 - cx0, cy1 - cy0), BTN_RADIUS,
-            fill=(rgb("EDGE_HI") if hot else rgb("EDGE")) + (255,),
-            outline=rgb("STROKE") + (255,), width=1), cx0, cy0)
-    label = _rtl(cache, CANCEL_LABEL, 9.5, rgb("DIM"), weight=600)
+    look.quiet(img, (body[0] + cx0, body[1] + cy0, body[0] + cx1,
+                     body[1] + cy1), hover=hot)
+    label = look.text(cache, CANCEL_LABEL, 9.5,
+                      rgb("FG") if hot else rgb("DIM"), look.W_LABEL)
     put(label, cx0 + (cx1 - cx0 - label.width) / 2,
         cy0 + (cy1 - cy0 - label.height) / 2)
-    return img
-
-
-def _circle_x(img, centre, size: int, colour) -> None:
-    """ui.ICON["error"]'s circled cross, drawn rather than typed.
-
-    The dashboard's Send carries that icon and this card should carry the
-    same one, but ui.ICON is a Tk PhotoImage table and a glyph (U+2297) is
-    at the mercy of whatever face DrawTextW picks. Two primitives are
-    neither. Supersampled 4x for the same reason _rr is.
-    """
-    k = 4
-    r = size * k / 2
-    layer = Image.new("RGBA", (size * k, size * k), (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
-    d.ellipse((k, k, size * k - k, size * k - k), outline=colour + (255,),
-              width=max(1, int(1.4 * k)))
-    off = r * 0.34
-    d.line((r - off, r - off, r + off, r + off), fill=colour + (255,),
-           width=max(1, int(1.3 * k)))
-    d.line((r - off, r + off, r + off, r - off), fill=colour + (255,),
-           width=max(1, int(1.3 * k)))
-    layer = layer.resize((size, size), Image.LANCZOS)
-    img.paste(layer, (int(centre[0]), int(centre[1] - size / 2)), layer)
+    return img.convert("RGB")
 
 
 def _switch(img, corner, on: bool, *, hot: bool = False,
             dead: bool = False) -> None:
-    """ui.Switch, painted: the track a pill — the accent when on, the
-    off track when not, LINE-faint when the piece is not there to turn
-    on — and the knob a disc of FG at the end the answer is. Same
-    numbers as the widget's, so the desk's box and this card show one
-    switch. Supersampled 4x like the rest."""
+    """B+'s switch (bplus.css --sw-*), at ui.Switch's size: on is a soft
+    lavender-grey track with a white knob — a switch carries no accent —
+    off a hollow ring with a grey knob, and a piece the report does not
+    have is that ring at half strength. Supersampled 4x like the rest."""
     k = 4
     w, h, inset = SWITCH_W * k, SWITCH_H * k, KNOB_INSET * k
-    if on:
-        track = rgb("ACCENT_HI") if hot else rgb("ACCENT")
-    elif dead:
-        track = rgb("LINE")
-    else:
-        track = rgb("TRACK_OFF")
-    knob = rgb("FAINT") if dead else rgb("FG")
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2,
-                        fill=track + (255,))
-    dia = h - 2 * inset
-    x = w - inset - dia if on else inset
-    d.ellipse((x, inset, x + dia, inset + dia), fill=knob + (255,))
+    alpha = 120 if dead else 255
+    if on:
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2,
+                            fill=look.c("sw_on"))
+        knob = look.c("white")
+    else:
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2,
+                            fill=look.c("sw_off", alpha),
+                            outline=look.c("sw_ring", alpha),
+                            width=max(1, int(1.4 * k)))
+        knob = look.c("knob_off", alpha)
+    dia = h - 2 * inset - (0 if on else 2 * k)
+    x = w - inset - dia if on else inset + k
+    top = (h - dia) / 2
+    d.ellipse((x, top, x + dia, top + dia), fill=knob)
+    if hot and not dead:
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2,
+                            outline=look.c("white", 60),
+                            width=max(1, int(1.0 * k)))
     layer = layer.resize((SWITCH_W, SWITCH_H), Image.LANCZOS)
-    img.paste(layer, (int(corner[0]), int(corner[1])), layer)
+    img.alpha_composite(layer, (int(corner[0]), int(corner[1])))
 
 
 __all__ = ["card_for", "attach_for", "size_word", "field_lines", "layout",

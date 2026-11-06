@@ -490,9 +490,11 @@ TABS: tuple[Tab, ...] = (
         )),
         Group("WHERE FILES ARE SAVED", (
             Friendly("capture.folder", "Where pictures are saved",
-                     "Screenshots and webcam photos both land here."),
+                     "Screenshots and webcam photos both land here — "
+                     "Windows' Pictures folder unless you pick another."),
             Friendly("capture.clip_folder", "Where recordings are saved",
-                     "Empty means the same folder as the pictures."),
+                     "Screen recordings land here — Windows' Videos folder "
+                     "unless you pick another."),
         )),
     )),
     Tab(DICTATION, (

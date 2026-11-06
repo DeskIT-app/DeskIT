@@ -31,16 +31,21 @@ those terms; when the provider changes its terms, the card comes back.
 
 ## Getting a free key
 
-**Groq first.** One Groq key unlocks the repair pass, punctuation, lookup and, on a PC without
-an NVIDIA card, cloud transcription. Create it at
+**Groq first.** One Groq key unlocks the repair pass, punctuation, lookup, translation and, on
+a PC without an NVIDIA card, cloud transcription. Create it at
 [console.groq.com](https://console.groq.com) (free tier, no credit card).
 
-**Gemini** only for translation and ask-the-screen, at
-[aistudio.google.com](https://aistudio.google.com).
+**Gemini** for translation (it goes first for it when you have both keys; Groq takes over when
+Gemini is busy or spent) and ask-the-screen, at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free, no credit card).
 
-Then **Settings > Privacy > YOUR CLOUD KEYS**: paste the key into the masked field (it is
-never shown again), press **Save and test** — "Works · N models visible" or the provider's own
-error — and the key is stored. **Remove** deletes it. The sentence under each field:
+The wizard asks for both on its **Cloud keys** page ([chapter 2](02-first-run)). Afterwards:
+**Settings > Privacy > YOUR CLOUD KEYS**. Paste the key into the masked field and press
+**Save key**: the key is stored and checked with the provider at once. A key that works is
+shown as a row of dots — never the key itself — with **Change key** beside it; Change opens an
+empty field with **Save** and **Cancel**, Cancel keeps the saved key, and a new key the
+provider refuses gives the saved one back. **Remove** deletes it. The sentence under each
+field:
 
 > This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 

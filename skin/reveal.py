@@ -86,24 +86,35 @@ N_MOTES = 38
 # that is what hot things do, and because a single hue reads as a UI
 # element lit from inside rather than as light.
 #
-# Retuned for LAMPLIGHT, and the shape did not change — only where the warm
+# Retuned for LAMPLIGHT, and the shape did not change ג€” only where the warm
 # half lands. The middle of the ramp is now the lamp's own gold instead of
 # a pale blue, so what opens over the desktop is the same light the icon,
 # the dot and the primary button are painted with. The blue did not go
 # away: it moved to the edge, which is exactly where it is in the mark.
 # The DEEPEST stops stay blue-black because a warm shadow reads as haze.
-# The seven stops are used as a BRIGHTNESS ramp as well as a hue one —
+# The seven stops are used as a BRIGHTNESS ramp as well as a hue one ג€”
 # `_front` reads them inner-to-edge and every gradient below assumes each
-# stop is dimmer than the one before it — so the retune keeps the relative
+# stop is dimmer than the one before it ג€” so the retune keeps the relative
 # luminance order (1.00 / .90 / .68 / .55 / .51 / .02) and moves only the
 # hue. Getting that wrong turns a shockwave inside out.
+#
+# Retuned again for B+ (2026-10-23) the same way: the heart a lavender
+# white, the middle the desk's iris, the corona the listening lamp's blue
+# ג€” the light the dot it lands in is ג€” and the same luminance order,
+# measured (1.00 / .89 / .66 / .53 / .51 / .01).
 CORE = (255, 255, 255)
-HOT = (255, 240, 206)            # incandescent — palette.LIGHT_HOT
-WARM = (250, 206, 128)           # the lamp, opened up
-MID = (240, 186, 92)             # ACCENT_TEXT: the lamp at its own weight
-COOL = (143, 192, 240)           # palette.COOL — the corona at the rim
-DEEP = (24, 38, 60)              # night beyond it
+HOT = (245, 242, 255)            # a lavender white
+WARM = (214, 206, 255)           # the iris, opened up
+MID = (194, 185, 255)            # ACCENT_TEXT: the iris at its own weight
+COOL = (120, 196, 255)           # the listening lamp's blue, lifted a step
+DEEP = (12, 16, 34)              # night beyond it ג€” palette.LIGHT_DEEP
 DIM = (3, 6, 14)
+LAND = (77, 184, 255)            # the listening lamp: the dot it lands in
+
+# The "ready" cue's first note, in ms: cues.CUES["ready"] is 587 Hz for
+# 90 ms, then 880. The arrival's second ring leaves on the second note; a
+# test holds the two numbers together.
+CUE_GAP_MS = 90
 
 
 # ---------------------------------------------------------------- aurora
@@ -507,6 +518,23 @@ class Reveal:
                 MaskFilter=skia.MaskFilter.MakeBlur(
                     skia.kNormal_BlurStyle, max(1.0, 9 * self.scale)),
                 Color=argb(190 * (1 - hit) ** 1.4, HOT)))
+        # AND A SECOND RING ON THE SECOND NOTE (2026-10-23). The "ready"
+        # cue is two notes, the second CUE_GAP_MS after the first, and it
+        # is fired on this pulse's first frame (boot._land_ms) ג€” so the
+        # first ring leaves on the first note and this one on the
+        # resolving one: two notes, two rings, one event. It is the
+        # listening lamp's own blue, so the last light on the screen is
+        # the colour the dot it arrives in will keep.
+        echo = ease.seg(t, T_LAND[1] - 320 + CUE_GAP_MS, T_LAND[1])
+        if echo > 0:
+            ring = 22 * self.scale + 120 * self.scale * ease.out_quart(echo)
+            canvas.drawCircle(ex, ey, ring, skia.Paint(
+                AntiAlias=True, Style=skia.Paint.kStroke_Style,
+                StrokeWidth=max(1.0, 5.0 * self.scale * (1 - echo)),
+                BlendMode=skia.BlendMode.kPlus,
+                MaskFilter=skia.MaskFilter.MakeBlur(
+                    skia.kNormal_BlurStyle, max(1.0, 7 * self.scale)),
+                Color=argb(220 * (1 - echo) ** 1.2, LAND)))
 
     # ---------------------------------------------------------- compose
     def draw(self, canvas, t: float) -> bool:

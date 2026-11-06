@@ -153,18 +153,15 @@ from size and from the accent, never from a Medium that does not exist.
 The dashboard can start *and* stop the app, so it can replace both Desktop
 shortcuts on its own; autostart is a separate shortcut in the Startup
 folder and is unaffected either way. Its icon is `icon.ico` — run
-`make_icon.py` (needs Pillow) to regenerate it. **The mark is a dalet
-drawn as a desk**: a tabletop with one leg hanging from its right end,
-the top's edge just past the leg, and the lamp — the same gold dot the
-status dot is — sitting above the left of the top, with two light arcs to
-its right. It is the app in one letter: a desk with a lamp on it, and the
-lamp is the part that is lit. There are **two cuts** of that one drawing
-in the file, because 16 px cannot hold what 256 px can: at 48 px and up
-the lamp keeps its glow and the two arcs; below 48 both go, and what is
-left is the desk and the dot. The whole thing is solved on the design's
-own 64-unit grid, drawn at 4× and downsampled with LANCZOS, into
-`icon.ico` at 16/24/32/48/64/128/256 and `icon.png`. The alef that used
-to be knocked out of a microphone is gone with the microphone.
+`dev\make_logo.py --app-only` to redraw it, which writes `icon.png` and
+the site's `docs\assets\icon.png` from the same frame in the same call
+(SKIN.md, "The mark"). **The mark is Corner** (since 2026-09-23): one
+rounded corner cut flat at both ends, with the lamp — the same gold the
+status dot is — at the exact centre of its curve. The dalet drawn as a
+desk that came before it, and the alef knocked out of a microphone before
+that, are gone; `make_icon.py`, which drew the dalet and would have
+written it back over `icon.ico` the next time anyone ran it, went on
+2026-10-03, together with the dalet `icon.png` it had left behind.
 
 Because there is no window, the app enforces one instance at a time
 (launching twice would paste every transcript twice) and writes its status
@@ -4412,9 +4409,10 @@ for `מבשרים`, all of which the local model got right.
 | `[lookup] hebrew_share` | `0.34` | share of Hebrew **words** — not letters — at or above which a selection is sent to English rather than to Hebrew |
 | `[lookup] both_ways` | `true` | off, a Hebrew selection gets the soft "nothing to do" note instead of coming back as English |
 | `[lookup] max_chars` | `20000` | above this it refuses and spends nothing. WAS 5000, which select-all kept hitting ("it didn't translate") — long selections now reach the local model in ~3800-char parts with the box naming each part, so a page translates in visible stages. Still minutes of local time at the cap; a whole document is Ctrl+F9's job |
-| `[lookup] prefer` | `ollama` | `ollama` \| `gemini`, and deliberately the **opposite** of the other two keys: this one is tapped while reading and would eat the whole 20/day/model tier that Ctrl+F9 and F2 depend on |
+| `[lookup] prefer` | `groq` | `groq` \| `gemini` \| `ollama` — the other cloud next, the local model last (`ollama` = local first, clouds after). Was `ollama` until 2026-10-17, when the only cloud was Gemini's 20/day/model tier; then a lookup waited 34 s on a cold gemma3:12b because his Gemini key answered 401. Groq gpt-oss-120b measured 0.5-1.1 s against warm gemma's 2.5-7.1 s on 14 selections, with the headline right where gemma wrote `ביצוע` for `commit` |
+| `[lookup] groq_model` | `openai/gpt-oss-120b` | the Groq model. `qwen/qwen3.8-27b` is 3x quicker and was rejected on the same 14: `התחייבות` for `commit`, one sentence garbled |
 | `[lookup] model` | `gemma3:12b` | the Ollama model. Already resident for `[polish]`, so it costs no extra VRAM. Not `qwen2.5:7b` — measured, it answered `?");` for `brittle` |
-| `[lookup] cold_to_gemini` | `true` | when the local model is not loaded, send *that one* lookup to the cloud and warm the local one in the background rather than make you wait 24.4 s |
+| `[lookup] cold_to_gemini` | `true` | read only with `prefer = "ollama"` (any cloud, despite the name): when the local model is not loaded, send *that one* lookup to the clouds and warm the local one in the background rather than make you wait 24.4 s |
 | `[lookup] keep_alive` | `"30m"` | how long Ollama keeps the model in VRAM after a lookup. The 5-minute default expired mid-reading-session and cost 23.19 s on the next tap. Shared with `[polish]`, Ctrl+F9 and F2 — it belongs to the loaded model, not to this key — so raising it pins 7.6 GB of the card for that long |
 | `[lookup] strip_niqqud` | `true` | drop the vowel points the model sometimes decorates its Hebrew with (8 marks in 4 runs out of 4 on one input). Combining marks only: the maqaf is left alone, or `בית־הספר` would come back welded into `ביתהספר` |
 | `[lookup] dwell_ms` | `12000` | **dead — nothing reads it.** The box waits to be closed, by its `×` or by `Esc`. A box that took itself away on a timer was the complaint this key's rewrite answered, and a timer you cannot tell from a bug is worse than no timer |

@@ -31,31 +31,36 @@ The pages, and the ORDER is the point:
      session exists. Remembered until Sign out.
   2. Microphone — one row per physical microphone, the live meter, the
      trap named once, the fix one click away
-  3. This computer — what the probe found, and the downloads this PC
-     needs, asked before a byte moves: the Hebrew model (models.py),
-     NVIDIA's libraries on a card that has one (packs.py), the English
-     detector where there is room for it. The download keeps running
-     while the wizard moves on.
-  4. Say one sentence — recorded and read back through the real backend,
+  3. Say one sentence — recorded and read back through the real backend,
      the decode time on its own, the model's load time said once
-  5. Keys — the bindings as chips; a click rebinds one, through the same
+  4. Keys — the bindings as chips; a click rebinds one, through the same
      path Settings > Keys writes
-  6. Extras — the five switches of D33, each one thing that leaves this
+  5. Extras — the five switches of D33, each one thing that leaves this
      PC or changes Windows: the cloud repair (its consent card first —
      privacy.py, consent_card.py), keep-awake, the weekly update check,
      the Claude Code door, the Snipping-Tool key. Drawn as they stand
      (D34: the defaults are what the owner runs) and written only when
      moved.
-  7. Ready — the hotkey named, Start-with-Windows and the phone asked
+  6. Ready — the hotkey named, Start-with-Windows and the phone asked
      once, and — signed in — the words-and-settings sync, ON by
      default (the owner, 2026-09-20: nobody found the gate in
      Settings; the row says what leaves and how to turn it off, and
      Start records the consent — a row nobody saw is never one); the
      desk one button away
 
-At most four real decisions (arch-A §1 P2): the microphone (only when
-more than one input exists), the downloads, the extras, and nothing
-else; every page has a way through without deciding.
+THE DOWNLOADS ARE NOT A PAGE (the owner, 2026-10-03, walking the Store
+copy, whose install could not download and whose page 4 stopped on a
+[Download] button): every part this computer can use — the Hebrew model,
+the Recording pack, NVIDIA's libraries and the English detector where
+the card can run them — starts downloading the moment the wizard opens,
+on every copy, in the background (downloads.py). The one sign of it is
+a slim bar with a short label in the top row of every page (`_strip`);
+the sentence page's Record waits for the model; whatever is still
+coming when Start is pressed goes on in the running app.
+
+At most three real decisions (arch-A §1 P2): the microphone (only when
+more than one input exists), the extras, and nothing else; every page
+has a way through without deciding.
 
 THE WORDS ARE ENGLISH — the owner's verdict of 2026-09-19, walking the
 installed copy as a stranger: "the design must be redone here, and the
@@ -101,8 +106,10 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 import config as config_mod
+import downloads
+import keyrow
 import paths
-import steps
+import tklook
 import ui
 
 log = logging.getLogger("app")
@@ -129,14 +136,26 @@ QUIET_S = 6.0
 SPEECH = 0.045
 TEST_S = 3.0                        # how long the sample recording runs
 
-PAGES = ("welcome", "account", "mic", "computer", "say", "keys", "extras", "done")
-#: The screenshot key when the Snipping-Tool switch is on / off (screen 13).
+PAGES = ("welcome", "account", "mic", "say", "keys", "screen", "cloud", "extras", "done")
+#: The strip's bar in the top row of every page (`_strip`).
+STRIP_W, STRIP_H = 120, 4
+#: The screenshot key when the Snipping-Tool switch is on / off (screen 13;
+#: on the "screen" page since 2026-10-03, beside the key it changes).
 SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 
 #: The keys page: (config field, the label a stranger reads).
 KEY_ROWS = (("hotkey", "keys.hold"), ("latch_hotkey", "keys.latch"),
             ("punctuate_hotkey", "keys.punctuate"),
-            ("visual_qa_hotkey", "keys.screen"))
+            ("visual_qa_hotkey", "keys.screen"),
+            # Translation on day one (store walk item 12, the owner: "it is
+            # what people cannot get anywhere else") — F8, his own binding
+            # since 2026-09-17 and the shipped default since (D34).
+            ("translate_hotkey", "keys.translate"))
+
+#: The "screen" page's two keys (the owner's Store walk, 2026-10-03, items
+#: 11 and 17): each with the folder its files go to, on a page of their
+#: own — he chose it over seven keys and two folders on one crowded page.
+SCREEN_KEYS = (("capture_hotkey", "keys.shot"), ("record_hotkey", "keys.record"))
 
 #: Every sentence the wizard shows, in one place so the guide (chapter
 #: 14) can quote it. English throughout; only the person's own sentence
@@ -217,11 +236,13 @@ WORDS = {
     "account.link.waiting": "Waiting for the approval…",
     "account.link.approved": "Approved — what you said and your cloud keys are on their way.",
     "account.link.recovery": "No other PC at hand? Type your recovery key",
-    "account.link.recovery.help": "24 letters and digits in six groups — the key DeskIT showed you once.",
+    "account.link.recovery.help": ("24 letters and digits in six groups — shown once, when it was made, "
+                                   "and never again. Lost it? Make a new one on your other PC: "
+                                   "Settings > Account > Replace the recovery key."),
     "account.link.recovery.button": "Open",
     "account.link.failed": "Not opened: {why}",
     "account.link.later": "Later",
-    "account.link.later.line": ("You can do this later from Settings > Privacy > Account, on either PC. "
+    "account.link.later.line": ("You can do this later from Settings > Account, on either PC. "
                                 "Until then DeskIT works here with your words and settings; what "
                                 "you said and your cloud keys stay locked."),
     "mic.title": "Which microphone?",
@@ -238,42 +259,13 @@ WORDS = {
                  "microphone”. DeskIT appears in that list only after its first "
                  "recording."),
     "mic.open": "Open Windows settings",
-    "computer.title": "This computer",
-    "computer.sub": ("What is missing downloads once. Next opens when the download is done; "
-                     "Pause it if you must go on, and finish it later from the desk."),
-    "computer.wait": "Downloading — Next opens when it is done, or press Pause.",
-    "computer.ready": "Everything this computer needs is already on the disk.",
-    "computer.portable": "Portable copy: the models come from the Hugging Face cache, as always.",
-    "computer.cpu": ("Without an NVIDIA card DeskIT works, only slower. Later you can add a "
-                     "free Groq key for fast transcription in the cloud (Settings > Privacy)."),
-    "computer.pack": "Use the NVIDIA card",
-    "computer.pack.help": "{size} of NVIDIA's CUDA libraries from PyPI, under NVIDIA's licence.",
-    "computer.detector": "Detect English automatically",
-    "computer.detector.help": "{size} more on the disk, and the same in video memory.",
-    "computer.recording": "Screen recording and the camera",
-    "computer.recording.help": "{size} from PyPI: PyAV with FFmpeg (a GPL build), for the record key, the photo key and the phone's audio.",
-    "computer.queue": "{n} of {total} · {name} · ",
-    "step.model.title": "The Hebrew model",
-    "step.model.body": ("DeskIT transcribes on this computer, without the cloud, with a "
-                        "Hebrew model that downloads once — {size} from huggingface.co "
-                        "into DeskIT's folder. Pause any time; the next start continues "
-                        "from the same point."),
-    "step.pack.title": "Speed from the NVIDIA card",
-    "step.pack.body": ("An NVIDIA card was found. To transcribe on it — many times faster "
-                       "than on the processor — DeskIT needs NVIDIA's CUDA libraries: "
-                       "{size} from PyPI, under NVIDIA's licence."),
-    "step.detector.title": "English detection",
-    "step.detector.body": ("A second, general model that notices when you spoke English and "
-                           "transcribes it as English: {size} more on the disk and in video "
-                           "memory. Without it an English sentence comes out in Hebrew letters."),
-    "step.recording.title": "Screen recording and the camera",
-    "step.recording.body": ("The record key, the photo key and the phone's audio need PyAV — "
-                            "{size} from PyPI, with FFmpeg (a GPL build), under their own licences."),
-    "step.done": "Downloaded and verified.",
-    "step.offline": ("No internet connection. DeskIT asks again at the next start, and the "
-                     "download continues from the same point."),
-    "step.paused": "Paused. The next start continues from the same point.",
-    "step.failed": "The download failed ({why}). DeskIT asks again at the next start.",
+    # The strip in the top row of every page while the parts download in
+    # the background (the owner, 2026-10-03: a bar and a few words, no
+    # page). Which part, its size and its licence are the desk's and the
+    # guide's (01-install#downloads), never the wizard's.
+    "strip.running": "Downloading app parts",
+    "strip.offline": "No connection — trying again",
+    "strip.failed": "Download stopped — the next start tries again",
     "say.title": "Say one sentence",
     "say.sub": ("Two steps. First load the speech model — once, a few seconds. "
                 "Then press Record, talk for three seconds, and read what came out."),
@@ -281,9 +273,10 @@ WORDS = {
     "say.loading_model": "Loading the speech model… a few seconds, once. Every sentence after this is fast.",
     "say.loaded_ready": "Model loaded in {seconds:.1f} s — now press Record and say a sentence.",
     "say.load_failed": "The model could not load: {error}",
-    "say.waiting": "The model is still downloading — the bar above. You can skip and try from the desk.",
-    "say.waiting.idle": "The model is not downloaded yet — press Download above, or skip and get it from the desk.",
-    "say.waiting.stopped": "The download stopped — Download above continues it, or skip and finish it from the desk.",
+    "say.waiting": ("The speech model is still downloading (the bar at the top) — the button "
+                    "opens when it lands. Next goes on; try it later from the desk."),
+    "say.waiting.stopped": ("The speech model's download stopped — DeskIT keeps trying by "
+                            "itself. Next goes on; try it later from the desk."),
     "say.placeholder": "Your sentence appears here.",
     "say.button": "Record 3 seconds",
     "say.recording": "Recording…",
@@ -293,6 +286,9 @@ WORDS = {
     "say.heard": "This is what it heard — decoded in {seconds:.1f} s",
     "say.loaded": "model loaded in {seconds:.1f} s",
     "say.cpu": "This is the speed to expect on this computer.",
+    "say.ask": "Are you sure you want to continue without trying the model?",
+    "say.ask.try": "Try it",
+    "say.ask.go": "Continue without trying",
     "keys.title": "Keys",
     "keys.sub": ("Click a key to change it. Everything here can be changed later "
                  "under Keys on the desk."),
@@ -300,33 +296,30 @@ WORDS = {
     "keys.latch": "Latch — talk without holding",
     "keys.punctuate": "Punctuate what was just pasted",
     "keys.screen": "Ask about the screen",
+    "keys.translate": "Translate what you selected into English",
     "keys.press": "Press a key…",
     "keys.listening": "Press the new key or combination. Esc cancels.",
     "keys.saved": "{label}: {key}",
     "keys.refused": "Not a key this can use — try another.",
     "keys.taken": "{key} already means “{other}” — pick another key.",
     "keys.no_chord": "This key is held, not tapped, so it cannot take Ctrl, Shift or Alt — press a single key.",
+    "keys.shot": "Take a screenshot",
+    "keys.record": "Record the screen — tap again to stop",
+    "screen.title": "Screenshots and recordings",
+    "screen.sub": ("Two keys, and the folders their files go to. All of it can be changed "
+                   "later in Settings."),
+    "screen.snip": "Use Win+Shift+S (Windows' Snipping Tool stops answering it)",
+    "screen.save_all": "Save every screenshot (off: only the ones you press Save on)",
+    "screen.saved_in": "Saved in",
+    "screen.browse": "Browse…",
+    "screen.pictures": "Screenshots and photos go to {path}",
+    "screen.videos": "Recordings go to {path}",
+    "screen.save_all.on": "Every screenshot is saved as well as copied.",
+    "screen.save_all.off": "Screenshots are copied; Save on the card keeps one.",
     "extras.title": "Extras",
     "extras.sub": ("Each row is one thing that leaves this PC or changes Windows. Nothing "
                    "goes to the cloud until you switch it on; all of it can be changed "
                    "later in Settings."),
-    "extras.cloud": "Fix misheard words with a free cloud model (text only)",
-    "extras.cloud.help": "Needs your own free Groq key; the text of what you said leaves this PC.",
-    "extras.cloud.key": "Paste your free Groq key — it is checked the moment you save it.",
-    "extras.key.have": "A Groq key is already stored on this PC — checking it…",
-    "extras.key.testing": "Checking the key with Groq…",
-    "extras.key.works": "Key works — cloud repair is on.",
-    "extras.key.refused": "Groq did not accept this key — check it and paste it again.",
-    "extras.key.offline": "Could not reach Groq right now — the key was kept and is checked the first time the cloud is used.",
-    "extras.key.notkey": "That does not look like a Groq key — keys start with gsk_ and hold only English letters and digits. Paste it again.",
-    "extras.key.wait": "Turn the cloud switch off, or paste a working key.",
-    "extras.key.checking": "Checking the key…",
-    "extras.key.placeholder": "Paste your Groq API key here",
-    "extras.key.save": "Save key",
-    "extras.key.get": "No key yet? Get a free one at console.groq.com/keys — a minute, no card needed.",
-    "extras.key.stored": "Stored in Windows Credential Manager — checking it with Groq…",
-    "extras.key.empty": "Nothing to save — paste the key first.",
-    "extras.key.failed": "Could not store the key: {error}",
     "extras.awake": "Keep this PC awake while DeskIT runs",
     "extras.awake.help": "Stops Windows from sleeping while it runs; Settings > General turns it off.",
     "extras.updates": "Check for updates weekly",
@@ -338,8 +331,6 @@ WORDS = {
     "extras.claude.keep": "Keep it",
     "extras.claude.take": "Yes, connect this one",
     "extras.claude.taking": "On Next, the other copy is disconnected and this one connected.",
-    "extras.snip": "Take over Win+Shift+S for DeskIT's screenshot key",
-    "extras.snip.help": "Windows' own Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11.",
     "done.autostart": "Start with Windows",
     "done.autostart.help": "Windows starts it when you sign in; Settings > General turns it off.",
     "done.phone": "Dictate from your phone",
@@ -351,17 +342,32 @@ WORDS = {
                        "your cloud keys follow you there — what you said and the keys locked "
                        "with a key only your own PCs hold. Never your voice. "
                        "Settings > Privacy > Withdraw turns it off."),
+    "cloud.title": "Cloud keys",
+    "cloud.sub": ("Free keys for the features that need a language model. Only the text "
+                  "leaves this PC, never your voice; Settings > Privacy changes it later."),
+    "cloud.free": "Free · no credit card",
+    "cloud.groq.unlocks": ("Fixes the words it misheard, puts in punctuation ({punctuate}) "
+                           "and translates what you select ({translate})."),
+    "cloud.groq.without": "Without it, what you say is pasted exactly as heard and those two keys do nothing.",
+    "cloud.gemini.unlocks": "Translates what you select into English ({translate}), first and best.",
+    "cloud.gemini.without": "Without it, Groq translates (if it is on); with neither, {translate} does nothing.",
+    "cloud.wait": "Turn the switch off, or save a working key.",
+    "cloud.checking": "Checking the key…",
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
-    "done.deferred": ("DeskIT is installed. The Hebrew model can be downloaded from the desk "
-                      "whenever you like."),
+    "done.deferred": ("The speech model is still downloading, in the background — dictation "
+                      "starts the moment it lands. Start opens the desk."),
     "done.hold": "Hold",
-    "next": "Next", "back": "Back", "skip": "Skip", "finish": "Start",
+    "next": "Next", "back": "Back", "finish": "Start",
     "saved.error": "Could not save: {error}",
 }
 
 GUIDE_PRIVACY_CHECK = f"{paths.PAGES_URL}/en/04-privacy"      # guide chapter 4, in the wizard's language
 PRIVACY_URL = f"{paths.PAGES_URL}/privacy"
+#: What each part is, its exact size and its licence — the installer's
+#: "More about these downloads" goes to the same table; the strip's words
+#: open it.
+DOWNLOADS_URL = f"{paths.PAGES_URL}/en/01-install#downloads"
 
 
 # ------------------------------------------------------------ the palette
@@ -392,6 +398,17 @@ def _lamplight() -> None:
             setattr(ui, name, value)
     ui.forget_images()
     log.info("wizard: palette applied without the skin pack")
+
+
+def _mark_picture(size: int):
+    """The mark (icon.png, the locked logo) at `size`, its corners clear —
+    so it stands on the sky as it is."""
+    try:
+        from PIL import Image
+        return Image.open(APP_DIR / "icon.png").convert("RGBA").resize(
+            (size, size), Image.LANCZOS)
+    except OSError:
+        return None
 
 
 def _colorref(colour: str) -> int:
@@ -644,17 +661,43 @@ class Meter(tk.Canvas):
     time you look back, and the whole screen exists to prove one thing.
     """
 
-    def __init__(self, parent, bg: str, width: int = METER_W):
+    def __init__(self, parent, bg: str, width: int = METER_W, sky=None):
         super().__init__(parent, width=width, height=METER_H + 6, bg=bg,
                          highlightthickness=0, bd=0)
         self._peak = 0.0
         self._width = width
-        self._track = self.create_image(
-            0, 3, anchor="nw",
-            image=ui.rounded(width, METER_H, METER_H // 2, ui.EDGE, bg, ui.LINE))
+        self._bg = bg
+        self._shown = None
+        self._track = self.create_image(0, 0, anchor="nw",
+                                        image=tklook.photo(self, self._picture(bg)))
         self._fill = self.create_rectangle(2, 5, 2, 1 + METER_H,
-                                           fill=ui.ACCENT, width=0)
-        self._mark = self.create_rectangle(0, 0, 0, 0, fill=ui.GREEN, width=0)
+                                           fill=ui.COOL, width=0)
+        self._mark = self.create_rectangle(0, 0, 0, 0, fill=ui.FG, width=0)
+        if sky is not None:
+            sky.wear(self)
+
+    def _picture(self, ground):
+        """The whole canvas: its ground (a colour or the sky's crop) with
+        the track, a well, 3 px down."""
+        from PIL import Image
+        h = METER_H + 6
+        if isinstance(ground, Image.Image):
+            img = ground.convert("RGBA").copy()
+            band = img.crop((0, 3, self._width, 3 + METER_H))
+        else:
+            img = Image.new("RGBA", (self._width, h), tuple(
+                int(ground[i:i + 2], 16) for i in (1, 3, 5)) + (255,))
+            band = ground
+        img.alpha_composite(tklook.track(self._width, METER_H, bg=band), (0, 3))
+        return img
+
+    def _wear(self, sky) -> None:
+        key = sky.where(self) + (self._width,)
+        if key == self._shown:
+            return
+        self._shown = key
+        crop = sky.crop(self, self._width, METER_H + 6)
+        self.itemconfig(self._track, image=tklook.photo(self, self._picture(crop)))
 
     def show(self, level: float) -> None:
         level = max(0.0, min(1.0, float(level)))
@@ -665,7 +708,7 @@ class Meter(tk.Canvas):
         shown = level ** 0.5
         self.coords(self._fill, 2, 5, max(2, (self._width - 4) * shown), 1 + METER_H)
         self.itemconfig(self._fill,
-                        fill=ui.GREEN if self._peak >= SPEECH else ui.ACCENT)
+                        fill=ui.GREEN if self._peak >= SPEECH else ui.COOL)
         if level > self._peak:
             self._peak = level
             x = (self._width - 4) * (self._peak ** 0.5)
@@ -679,6 +722,33 @@ class Meter(tk.Canvas):
         self._peak = 0.0
         self.coords(self._mark, 0, 0, 0, 0)
         self.coords(self._fill, 2, 5, 2, 1 + METER_H)
+
+
+class _Stage(tk.Canvas):
+    """The welcome page's canvas on the sky: its bottom item is the sky's
+    crop under it with the mark and a fading rule drawn in; the words are
+    canvas items over it (firstrun.Wizard._welcome_stage)."""
+
+    def __init__(self, parent, width: int, height: int, *, mark, at, rule_y: int):
+        super().__init__(parent, width=width, height=height, bg=ui.BG,
+                         highlightthickness=0, bd=0)
+        self._size = (width, height)
+        self._mark, self._at, self._rule_y = mark, at, rule_y
+        self._bg = self.create_image(0, 0, anchor="nw")
+        self._shown = None
+
+    def _wear(self, sky) -> None:
+        import look
+        key = sky.where(self) + self._size
+        if key == self._shown:
+            return
+        self._shown = key
+        picture = sky.crop(self, *self._size).copy()
+        if self._mark is not None:
+            picture.alpha_composite(self._mark, self._at)
+        mid = self._size[0] / 2
+        look.fade_rule(picture, mid - 22, mid + 22, self._rule_y, a=110)
+        self.itemconfig(self._bg, image=tklook.photo(self, picture))
 
 
 class Listener:
@@ -821,110 +891,10 @@ def transcribe_timed(cfg, wav: bytes, backend=None) -> tuple[Heard, object]:
     return Heard(text=text, load_s=load_s, decode_s=decode_s), backend
 
 
-# ------------------------------------------------------- this computer
-
-def card_tier(facts: dict | None) -> str:
-    """The tier the CARD earns once NVIDIA's libraries are there — what
-    page 2 speaks of, since on a first start the pack is not installed
-    yet and hardware.tier_for says cpu until it is. "" without a usable
-    card."""
-    facts = facts or {}
-    if int(facts.get("cuda_devices") or 0) < 1:
-        return ""
-    if not facts.get("driver_ok", True):
-        return ""
-    import hardware
-    vram = int(facts.get("vram_mb") or 0)
-    if vram and vram < hardware.GPU_SMALL_MB:
-        return ""
-    if vram and vram < hardware.GPU_MB:
-        return "gpu-small"
-    return "gpu"
-
-
-def hardware_line(facts: dict | None) -> str:
-    """The top line of page 2, chapter 9.2's three sentences — for the
-    card this PC has, not for the tier it runs at before the pack."""
-    facts = facts or {}
-    if not facts.get("tier"):
-        return "This computer has not been probed yet"
-    vram = int(facts.get("vram_mb") or 0)
-    card = card_tier(facts)
-    if card == "gpu":
-        return f"NVIDIA card, {vram / 1024:.0f} GB — fast transcription"
-    if card == "gpu-small":
-        return f"NVIDIA card, {vram / 1024:.0f} GB — fast, smaller mode"
-    if int(facts.get("cuda_devices") or 0) and not facts.get("driver_ok"):
-        return ("NVIDIA card with a driver too old for CUDA 12.3 — "
-                "transcription on the processor, about as long as you spoke")
-    return "No NVIDIA card found — transcription will take about as long as you spoke"
-
-
-def cfg_mod_english(cfg) -> str:
-    """local.english_model as the defaults and settings.toml say — the
-    machine layer may hold "" for the cpu tier (hardware.DERIVED)."""
-    try:
-        chosen = config_mod.read_settings(paths.SETTINGS_FILE)
-        if "local.english_model" in chosen:
-            return str(chosen["local.english_model"] or "")
-        return str(config_mod.defaults_flat().get("local.english_model") or "")
-    except Exception:                                      # noqa: BLE001
-        return str(getattr(cfg.local, "english_model", "") or "")
-
-
-def downloads_for(cfg, facts: dict | None) -> dict:
-    """What page 2 offers on THIS copy: the runs it may queue, in order,
-    and the two switches. Nothing on a portable copy (D4: the global
-    cache, as always). Everything that is already on disk is left out,
-    so `--setup` on a finished install shows an empty page."""
-    out = {"portable": paths.PORTABLE, "model": None, "pack": None,
-           "detector": None, "recording": None, "tier": (facts or {}).get("tier", "")}
-    if paths.PORTABLE:
-        return out
-    import models
-    import packs
-    repo = cfg.local.model
-    if cfg.backend == "local" and models.state(repo) != "ready":
-        out["model"] = models.entry(repo)
-    if packs.wanted(cfg, facts):
-        out["pack"] = packs.pack("gpu")
-    # The Recording pack (PyAV, 13.4): offered HERE, on by default, so
-    # nobody meets "needs the Recording pack" on the record key later —
-    # the owner's stranger walk, 2026-09-19 evening: "the software comes
-    # with everything; nobody installs things in the middle". It stays a
-    # download rather than a line in the installer because PyAV's wheel
-    # bundles a GPL FFmpeg (D24) — fetched with its licences shown.
-    if packs.state("recording") in ("missing", "stale"):
-        out["recording"] = packs.pack("recording")
-    # The detector goes with the CARD, not with the tier of the moment:
-    # on a first start the pack is not there yet, the tier says cpu, and
-    # the cpu tier's machine layer blanks local.english_model — so the
-    # name is read from the layers UNDER it (the file's default, the
-    # person's settings), never from the layer the tier wrote.
-    english = str(cfg_mod_english(cfg))
-    if (card_tier(facts) == "gpu" and english and cfg.backend == "local"
-            and models.state(english) != "ready"):
-        out["detector"] = models.entry(english)
-    return out
-
-
-def english_step(kind: str, step: steps.Step, size: int) -> steps.Step:
-    """The step with the wizard's English words on it. models.py and
-    packs.py speak Hebrew — that is the standalone window's design — and
-    the wizard's pages are English, so the copy the wizard hosts carries
-    its own title, paragraph and end sentences. The work, the size line,
-    the links and the button are the step's own."""
-    words = WORDS
-    title = words.get(f"step.{kind}.title", step.title)
-    body = words.get(f"step.{kind}.body", step.body).format(size=steps.human(size))
-    said = {"done": words["step.done"], "offline": words["step.offline"],
-            "paused": words["step.paused"], "failed": words["step.failed"]}
-    return dataclasses.replace(step, title=title, body=body, said=said)
-
-
-class KeyRefused(Exception):
-    """Groq answered, and the answer was no (a 4xx): the key is wrong."""
-
+# ------------------------------------------------------- the downloads
+# Which parts this copy downloads, and the queue that does it in the
+# background, are downloads.py's (2026-10-03): the wizard only starts
+# the queue, draws its strip and hands what is left to the app.
 
 def _live_vocab(cfg):
     """The vocabulary the wizard's pull writes into — the app's own
@@ -939,31 +909,6 @@ def _live_vocab(cfg):
         hebrew_after_hits=int(getattr(v, "hebrew_after_hits", 3)))
 
 
-def looks_like_key(value: str) -> bool:
-    """What a Groq key can be: printable ASCII with no spaces. Not a
-    check of the key — Groq does that — a check that it CAN be one, so
-    Hebrew or a sentence pasted by mistake is said so at once."""
-    return bool(value) and value.isascii() and value.isprintable() and not any(ch.isspace() for ch in value)
-
-
-def key_probe() -> int:
-    """How many models the stored Groq key can see — the one `key-test`
-    call, the same the desk's Privacy tab makes. KeyRefused on a 4xx
-    (the key itself), any other error for the road (offline, a 5xx)."""
-    import json as json_mod
-
-    import net
-    status, _headers, body = net.request(
-        "GET", "https://api.groq.com/openai/v1/models", "key-test",
-        secret="groq", timeout_s=20)
-    if 400 <= status < 500:
-        raise KeyRefused(f"HTTP {status}")
-    if status != 200:
-        raise RuntimeError(f"HTTP {status}")
-    data = json_mod.loads(body.decode("utf-8"))
-    return len(data.get("data") or [])
-
-
 def _write_key(field: str) -> str:
     """The dotted settings key a hotkey field is written under — the
     dashboard's NESTED_HOTKEYS, the one table Settings > Keys writes
@@ -976,7 +921,7 @@ def _write_key(field: str) -> str:
 
 
 def _label_of(field: str) -> str:
-    for name, word in KEY_ROWS:
+    for name, word in KEY_ROWS + SCREEN_KEYS:
         if name == field:
             return WORDS[word]
     for name, label in config_mod.HOTKEY_FIELDS:
@@ -1000,6 +945,33 @@ def plain_refusal(error: str, key: str) -> str:
     return text
 
 
+#: How wide the screen page's folder path may be drawn, in pixels: the
+#: card's inside less "Saved in" and the Browse button.
+FOLDER_W = INNER - 2 * 18 - 104 - 80
+
+
+def short_path(path: str, width: int, font=None) -> str:
+    """`path` as it fits in `width` pixels: whole when it fits, else the
+    drive, an ellipsis and as much of the END as fits — the end is the
+    folder the files are in, the part a person is looking for."""
+    try:
+        import tkinter.font as tkfont
+        measure = tkfont.Font(font=font or (ui.UI, 10)).measure
+    except Exception:                                      # noqa: BLE001
+        return path
+    if measure(path) <= width:
+        return path
+    drive, rest = os.path.splitdrive(path)
+    head = (drive + os.sep) if drive else ""
+    parts = [part for part in rest.split(os.sep) if part]
+    while parts:
+        shown = head + "…" + os.sep + os.sep.join(parts)
+        if measure(shown) <= width:
+            return shown
+        parts.pop(0)
+    return head + "…"
+
+
 class Result:
     """What `run()` answers: truthy when the wizard ran to the end and
     wrote `setup.done`; the two side facts main.py acts on."""
@@ -1015,6 +987,10 @@ class Result:
         #: their back (the owner, 2026-09-19 evening: "I pressed the red
         #: X and the model just started out of nowhere").
         self.closed = closed
+        #: The background queue (downloads.Queue) when Start was pressed
+        #: with parts still coming: main pumps it on in the running app
+        #: (downloads.carry_on). None when everything had landed.
+        self.downloads = None
 
     def __bool__(self) -> bool:
         return self.saved
@@ -1028,7 +1004,7 @@ class Wizard:
     a dialog chain you cannot walk back turns that into starting over.
 
     `facts` are the hardware probe's (hardware.recorded() when None);
-    `offers` replaces downloads_for() in a test, `stepper(kind, entry)`
+    `offers` replaces downloads.wanted() in a test, `stepper(kind, entry)`
     the steps.Step a download is made from.
     """
 
@@ -1049,6 +1025,11 @@ class Wizard:
         self._sample = ""
         self._seconds = 0.0
         self._said_loaded = False
+        # "Say one sentence": a recording was made (or the model would not
+        # load) — Next then goes on without asking; until then it asks
+        # once, inside the page (the owner's Store walk, item 10).
+        self._tried = False
+        self.ask_card = None
         self._backend = None
         self._closing = False
         self._deferred: queue.Queue = queue.Queue()   # worker threads' hand-backs, drained by the tick
@@ -1059,8 +1040,7 @@ class Wizard:
         self.rings: dict = {}
         self.meter = None
         self.hint = None
-        self.pane: steps.StepPane | None = None
-        self._stepper = stepper or self._step_for
+        self.strip = None
         if facts is None:
             try:
                 import hardware
@@ -1068,15 +1048,18 @@ class Wizard:
             except Exception:                              # noqa: BLE001
                 facts = {}
         self.facts = facts
-        self.offers = offers if offers is not None else downloads_for(cfg, facts)
-        # The downloads: built once, pressed on page 2, pumped on every
-        # page after it. `queue` is the order; `active` the index.
-        self.runs: dict[str, steps.StepRun] = {}
-        self.queue: list[str] = []
-        self.active: int = -1
-        self.want = {"pack": self.offers.get("pack") is not None,
-                     "detector": self.offers.get("detector") is not None,
-                     "recording": self.offers.get("recording") is not None}
+        # Every part this computer can use, downloading from the first
+        # second, in the background, on every copy (downloads.py — the
+        # owner, 2026-10-03: no page, no button, no switch). The tick
+        # pumps it; Start hands what is left to the app (Result.downloads).
+        if offers is None:
+            try:
+                offers = downloads.wanted(cfg, facts)
+            except Exception:                              # noqa: BLE001
+                log.warning("setup: could not tell which parts are missing", exc_info=True)
+                offers = {}
+        self.downloads = downloads.Queue(offers, stepper, on_landed=self._landed)
+        self.downloads.start()
         # The extras page shows each switch as it STANDS (D34: the
         # defaults are what the owner runs — keep-awake ships on, the
         # update check ships on, the phone and autostart off) and writes
@@ -1084,7 +1067,6 @@ class Wizard:
         self.extras = {
             "cloud": False, "updates": True, "claude": False,
             "awake": bool(getattr(getattr(cfg, "awake", None), "hold", True)),
-            "snip": str(getattr(cfg, "capture_hotkey", "")).strip().lower() == SNIP_KEY,
             "autostart": bool(getattr(cfg.setup, "autostart", False)),
             "phone": bool(getattr(getattr(cfg, "server", None), "enabled", False)),
         }
@@ -1094,6 +1076,10 @@ class Wizard:
             self.extras["cloud"] = bool(privacy.allowed("cloud_text"))
         except Exception:                                  # noqa: BLE001
             pass
+        # The cloud-keys page's two cards: on where the gate is open AND
+        # that key is already saved (a returning copy, a second run).
+        self.clouds = {name: bool(self.extras["cloud"]) and keyrow.stored(name)[0]
+                       for name in ("groq", "gemini")}
         # Whose hook lines Claude Code's settings.json holds: this copy's
         # (the switch on), another DeskIT copy's (off, with the other's
         # folder on the row and a question before it is taken over — see
@@ -1163,33 +1149,40 @@ class Wizard:
         except Exception:
             pass                      # cosmetic: never a reason not to run
         _caption(self.root)
+        # B+'s night behind every page (the owner, 2026-10-24: "leave it so,
+        # but do it in the whole wizard" — the installer's sky): one picture
+        # under the window, and everything that stands on it wears its crop
+        # (tklook.Sky). Cards stay opaque panes on it.
+        self.sky = tklook.Sky(self.root, (W, H))
 
         # The foot is packed FIRST, at the bottom: a page that grows (the
         # microphone help) then clips its own tail rather than pushing
         # Back and Next out of the window.
-        self.foot = tk.Frame(self.root, bg=ui.BG)
+        self.foot = self.sky.frame(self.root)
         self.foot.pack(side="bottom", fill="x", padx=PAD, pady=(14, PAD))
-        self.body = tk.Frame(self.root, bg=ui.BG)
+        self.body = self.sky.frame(self.root)
         self.body.pack(fill="both", expand=True, padx=PAD, pady=(PAD, 0))
         # One primary action per page (the owner's word): the way on is
         # gold on the pages where it IS the action, and quiet where the
         # page has a louder one — Sign in, Download, Record. Two buttons
         # with one job, because a ui.Button's faces are built once.
-        self.next_loud = ui.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
-                                   primary=True, w=150)
-        self.next_quiet = ui.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
-                                    w=150)
+        self.next_loud = tklook.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
+                                       primary=True, w=150, sky=self.sky)
+        self.next_quiet = tklook.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
+                                        w=150, sky=self.sky)
         self._loud = True
         self.next_loud.pack(side="right")
-        self.back = ui.Button(self.foot, WORDS["back"], self._back, bg=ui.BG,
-                              quiet=True, w=96)
+        self.back = tklook.Button(self.foot, WORDS["back"], self._back, bg=ui.BG,
+                                  quiet=True, w=96, sky=self.sky)
         self.back.pack(side="right", padx=(0, 10))
-        self.skip = ui.Button(self.foot, WORDS["skip"], self._skip, bg=ui.BG,
-                              quiet=True, w=96)
-        self.note = tk.Label(self.foot, text="", bg=ui.BG, fg=ui.DIM,
-                             font=(ui.UI, 9), anchor="w", justify="left",
-                             wraplength=INNER - 270)
-        self.note.pack(side="left", fill="x", expand=True)
+        # No Skip on the sentence page any more (his answer, 2026-10-03):
+        # Next asks once when nothing was tried, and its question has a
+        # "Continue without trying" — two buttons for one job were one
+        # too many.
+        self.note = self.sky.label(self.foot, text="", fg=ui.DIM,
+                                   font=(ui.UI, 9), anchor="w", justify="left",
+                                   wraplength=INNER - 270)
+        self.note.pack(side="left")
 
         self._show_page()
         self.root.after(60, self._tick)
@@ -1219,12 +1212,15 @@ class Wizard:
 
     def _clear(self) -> None:
         self._stop_capture()
-        self.pane = None
         self.meter = None
         self.hint = None
+        self.strip = None
+        self.stage = None
         self.say = None
+        self.ask_card = None
         self.waiting = None
         self.list_holder = None
+        self.list_card = None
         self.caps = {}
         self.rings = {}
         for child in self.body.winfo_children():
@@ -1234,22 +1230,66 @@ class Wizard:
     def _head(self, title: str, sub: str = "") -> None:
         """Every page's top: the mark and the name, the step count, the
         title and one line under it."""
-        row = tk.Frame(self.body, bg=ui.BG)
+        row = self.sky.frame(self.body)
         row.pack(fill="x")
-        mark = ui.icon_bitmap(APP_DIR / "icon.png", 20, ui.BG)
+        mark = _mark_picture(20)
         if mark is not None:
-            badge = tk.Label(row, image=mark, bg=ui.BG)
-            badge.photo = mark
-            badge.pack(side="left", padx=(0, 8))
-        tk.Label(row, text=WORDS["eyebrow"], bg=ui.BG, fg=ui.DIM,
-                 font=(ui.MEDIUM, 9)).pack(side="left")
+            self.sky.label(row, picture=mark).pack(side="left", padx=(0, 8))
+        self.sky.label(row, text=WORDS["eyebrow"], fg=tklook.MUTED,
+                       font=(ui.MEDIUM, 9)).pack(side="left")
         shown = [name for name in PAGES if not self._hidden(name)]
-        tk.Label(row, text=WORDS["step"].format(n=shown.index(self.name) + 1, total=len(shown)),
-                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)).pack(side="right")
-        tk.Label(self.body, text=title, bg=ui.BG, fg=ui.FG,
-                 font=(ui.DISPLAY, 18), anchor="w").pack(fill="x", pady=(16, 2))
+        self.sky.label(row, text=WORDS["step"].format(n=shown.index(self.name) + 1,
+                                                      total=len(shown)),
+                       fg=tklook.MUTED, font=(ui.UI, 9)).pack(side="right")
+        self._strip(row)
+        self.sky.label(self.body, text=title, fg=ui.FG, font=(ui.DISPLAY, 18),
+                       anchor="w").pack(anchor="w", pady=(16, 2))
         if sub:
             self._line(sub, colour=ui.DIM, size=10, pady=(0, 14))
+
+    def _strip(self, row) -> None:
+        """The one sign of the background downloads (the owner,
+        2026-10-03: "a bar and a short line saying it downloads the app's
+        parts — nobody needs to see more"): a few words and a slim bar in
+        the middle of a page's top row, kept by the tick (_strip_tick),
+        gone once everything has landed. The words open the guide's table
+        of what each part is, its size and its licence — the installer's
+        "More about these downloads", one click away and never in the way."""
+        if not self.downloads.order or self.downloads.done:
+            return
+        holder = self.sky.frame(row)
+        holder.pack(side="left", expand=True)
+        label = self.sky.label(holder, text="", fg=tklook.MUTED, font=(ui.UI, 9),
+                               cursor="hand2")
+        label.pack(side="left", padx=(0, 10))
+        label.bind("<Button-1>", lambda _e: self._open(DOWNLOADS_URL))
+        # B+: a well round at both ends on the sky, and the switch's
+        # lavender-grey for what has come down — the page's one iris thing
+        # is its Next
+        bar = tklook.TrackBar(holder, self.sky, STRIP_W, STRIP_H)
+        bar.pack(side="left", pady=(2, 0))
+        fill = bar.create_rectangle(0, 0, 0, STRIP_H, fill=tklook.STRIP_FILL, outline="")
+        self.strip = (holder, label, bar, fill)
+        self._strip_tick()
+
+    def _strip_tick(self) -> None:
+        if self.strip is None:
+            return
+        holder, label, bar, fill = self.strip
+        q = self.downloads
+        if q.done:
+            holder.destroy()              # everything landed: nothing to say
+            self.strip = None
+            return
+        if q.state == "failed":
+            text, colour = WORDS["strip.failed"], ui.AMBER
+        elif q.offline:
+            text, colour = WORDS["strip.offline"], ui.AMBER
+        else:
+            text, colour = WORDS["strip.running"], tklook.MUTED
+        if label.cget("text") != text or label.cget("fg") != colour:
+            label.configure(text=text, fg=colour)
+        bar.coords(fill, 0, 0, int(STRIP_W * q.fraction), STRIP_H)
 
     def _para(self, text: str, *, pt: int, colour: str, lines: int = 4,
               pady=(0, 0), parent=None, bg: str | None = None) -> tk.Label:
@@ -1281,7 +1321,15 @@ class Wizard:
               parent=None, size: int = 10, bg: str | None = None,
               width: int | None = None, anchor: str = "w") -> tk.Label:
         """One English line or short paragraph, left-aligned."""
-        label = tk.Label(parent or self.body, text=text, bg=bg or ui.BG,
+        if bg is None:
+            # on the ground, which is the sky: a Label as wide as its words
+            label = self.sky.label(parent or self.body, text=text,
+                                   fg=colour or ui.DIM, font=(ui.UI, size), anchor=anchor,
+                                   justify="left" if anchor == "w" else "center",
+                                   wraplength=width or INNER)
+            label.pack(anchor=anchor, pady=pady)
+            return label
+        label = tk.Label(parent or self.body, text=text, bg=bg,
                          fg=colour or ui.DIM, font=(ui.UI, size), anchor=anchor,
                          justify="left" if anchor == "w" else "center",
                          wraplength=width or INNER)
@@ -1289,7 +1337,13 @@ class Wizard:
         return label
 
     def _link(self, text: str, url: str, parent=None, bg: str | None = None) -> tk.Label:
-        label = tk.Label(parent or self.body, text=text, bg=bg or ui.BG,
+        if bg is None:
+            label = self.sky.label(parent or self.body, text=text, fg=ui.ACCENT_TEXT,
+                                   font=(ui.UI, 9, "underline"), cursor="hand2",
+                                   anchor="w")
+            label.bind("<Button-1>", lambda _e, u=url: self._open(u))
+            return label
+        label = tk.Label(parent or self.body, text=text, bg=bg,
                          fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
                          cursor="hand2", anchor="w")
         label.bind("<Button-1>", lambda _e, u=url: self._open(u))
@@ -1306,7 +1360,9 @@ class Wizard:
     def _card(self, parent=None, pad: int = 18) -> ui.Card:
         """A lifted face to put a page's rows on; `_fit` sizes it to
         them once they are packed."""
-        card = ui.Card(parent or self.body, INNER, 2 * pad + 1, bg=ui.BG, pad=pad)
+        parent = parent or self.body
+        card = tklook.Card(parent, INNER, 2 * pad + 1, bg=ui.BG, pad=pad,
+                           sky=self.sky if isinstance(parent, tklook.SkyFrame) else None)
         card.pad = pad
         return card
 
@@ -1327,7 +1383,7 @@ class Wizard:
         bg = bg or ui.BG
         row = tk.Frame(parent, bg=bg)
         row.pack(fill="x", pady=(0, 0 if last else 8))
-        switch = ui.Switch(row, value, command, bg=bg)
+        switch = tklook.Switch(row, value, command, bg=bg)
         switch.pack(side="left", padx=(0, 14), pady=(2, 0))
         words = tk.Frame(row, bg=bg)
         words.pack(side="left", fill="x", expand=True)
@@ -1353,41 +1409,74 @@ class Wizard:
         self._foot(True, WORDS["finish"] if self.name == "done" else WORDS["next"])
         getattr(self, f"_page_{self.name}")()
         self.back.enable(self.page > 0)
-        if self.name == "say":
-            self.skip.pack(side="right", padx=(0, 10))
-        else:
-            self.skip.pack_forget()
 
     # ---------------------------------------------------------------- welcome
     def _page_welcome(self) -> None:
         """The mark, the name, three sentences, two quiet links — the
         installer's side picture continued: dark tile, DeskIT, a gold
-        rule."""
-        head = tk.Frame(self.body, bg=ui.BG)
-        head.pack(fill="x", pady=(22, 0))
-        mark = ui.icon_bitmap(APP_DIR / "icon.png", 84, ui.BG)
-        if mark is not None:
-            badge = tk.Label(head, image=mark, bg=ui.BG)
-            badge.photo = mark
-            badge.pack()
-        tk.Label(self.body, text=WORDS["welcome.title"], bg=ui.BG, fg=ui.FG,
-                 font=(ui.DISPLAY, 22)).pack(pady=(18, 10))
-        rule = tk.Canvas(self.body, width=28, height=2, bg=ui.ACCENT,
-                         highlightthickness=0, bd=0)
-        rule.pack(pady=(0, 22))
-        for sentence in WORDS["welcome.lines"]:
-            tk.Label(self.body, text=sentence, bg=ui.BG, fg=ui.FG,
-                     font=(ui.UI, 12)).pack(pady=(0, 8))
-        self._line(WORDS["welcome.defaults"], colour=ui.DIM, size=10,
-                   pady=(14, 22), anchor="center")
-        links = tk.Frame(self.body, bg=ui.BG)
-        links.pack()
-        self._link(WORDS["welcome.link"], GUIDE_PRIVACY_CHECK, parent=links
-                   ).pack(side="left")
-        tk.Label(links, text="·", bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)
-                 ).pack(side="left", padx=10)
-        self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=links
-                   ).pack(side="left")
+        rule. The downloads' strip (_strip) has a top row of its own
+        here — this page has no head row — and the space it takes comes
+        out of the mark's margin, so the page does not move."""
+        top = self.sky.frame(self.body)
+        top.pack(fill="x")
+        self._strip(top)
+        top.update_idletasks()
+        room = (H - PAD - (self.foot.winfo_reqheight() + 14 + PAD)
+                - top.winfo_reqheight() - 4)
+        self.stage = self._welcome_stage(22 if self.strip is None else 12, room)
+        self.stage.pack()
+
+    def _welcome_stage(self, gap: int, room: int = 0) -> tk.Canvas:
+        """The welcome page as ONE canvas on the sky: the installer's first
+        page continued — the mark, the name, a fading rule, three
+        sentences, two quiet links. The words are canvas text, so they sit
+        on the sky's own pixels; the mark and the rule are drawn into the
+        stage's crop of it (_Stage)."""
+        import tkinter.font as tkfont
+
+        fonts = {"title": (ui.DISPLAY, 22), "line": (ui.UI, 12),
+                 "small": (ui.UI, 10), "link": (ui.UI, 9, "underline"),
+                 "dot": (ui.UI, 9)}
+
+        def line_h(font) -> int:
+            return tkfont.Font(root=self.root, font=font).metrics("linespace")
+
+        width, mark = INNER, 84
+        y_mark = gap + 6
+        y_title = y_mark + mark + 18
+        y_rule = y_title + line_h(fonts["title"]) + 10
+        y_lines = y_rule + 2 + 22
+        step = line_h(fonts["line"]) + 8
+        y_small = y_lines + step * len(WORDS["welcome.lines"]) + 14
+        y_links = y_small + line_h(fonts["small"]) + 22
+        height = max(y_links + line_h(fonts["link"]) + 24, room)
+        stage = _Stage(self.body, width, height, mark=_mark_picture(mark),
+                       at=((width - mark) // 2, y_mark), rule_y=y_rule)
+        mid = width / 2
+        stage.create_text(mid, y_title, anchor="n", text=WORDS["welcome.title"],
+                          fill=ui.FG, font=fonts["title"])
+        for i, sentence in enumerate(WORDS["welcome.lines"]):
+            stage.create_text(mid, y_lines + i * step, anchor="n", text=sentence,
+                              fill=ui.FG, font=fonts["line"])
+        stage.create_text(mid, y_small, anchor="n", text=WORDS["welcome.defaults"],
+                          fill=ui.DIM, font=fonts["small"])
+        measure = tkfont.Font(root=self.root, font=fonts["link"]).measure
+        dot_w = tkfont.Font(root=self.root, font=fonts["dot"]).measure("·") + 20
+        left_w, right_w = measure(WORDS["welcome.link"]), measure(WORDS["welcome.privacy"])
+        x = mid - (left_w + dot_w + right_w) / 2
+        for text, url, w_ in ((WORDS["welcome.link"], GUIDE_PRIVACY_CHECK, left_w),
+                              (WORDS["welcome.privacy"], PRIVACY_URL, right_w)):
+            item = stage.create_text(x, y_links, anchor="nw", text=text,
+                                     fill=ui.ACCENT_TEXT, font=fonts["link"])
+            stage.tag_bind(item, "<Button-1>", lambda _e, u=url: self._open(u))
+            stage.tag_bind(item, "<Enter>", lambda _e: stage.configure(cursor="hand2"))
+            stage.tag_bind(item, "<Leave>", lambda _e: stage.configure(cursor=""))
+            if text == WORDS["welcome.link"]:
+                stage.create_text(x + w_ + dot_w / 2, y_links, anchor="n", text="·",
+                                  fill=ui.FAINT, font=fonts["dot"])
+            x += w_ + dot_w
+        self.sky.wear(stage)
+        return stage
 
     # ---------------------------------------------------------------- account
     # The account page is a small stack of its own (the owner, 2026-09-20,
@@ -1434,7 +1523,7 @@ class Wizard:
         if not configured:
             self._line(WORDS["account.none"], colour=ui.DIM, size=10)
             return
-        self.account_holder = tk.Frame(self.body, bg=ui.BG)
+        self.account_holder = self.sky.frame(self.body)
         self.account_holder.pack(fill="x")
         if signed:
             self._account_show("signed", who=signed)
@@ -1536,7 +1625,7 @@ class Wizard:
                        width=INNER - 40, pady=(0, 4))
             self._line(WORDS[line], parent=f, bg=bg, colour=ui.DIM, size=10,
                        width=INNER - 40, pady=(0, 16))
-            self.roads[road] = ui.Button(f, WORDS[button],
+            self.roads[road] = tklook.Button(f, WORDS[button],
                                          lambda r=road: self._account_show(r),
                                          bg=bg, primary=(road == "create"), w=210, h=44)
             self.roads[road].pack(anchor="w")
@@ -1561,7 +1650,7 @@ class Wizard:
             row.pack(fill="x", pady=(0, 4))
             tk.Label(row, text=WORDS["account.name.label"], bg=bg, fg=ui.FG,
                      font=(ui.UI, 10), anchor="w", width=10).pack(side="left")
-            self.name_box = ui.Field(row, self.account_name, w=INNER - 40 - 100, h=34,
+            self.name_box = tklook.Field(row, self.account_name, w=INNER - 40 - 100, h=34,
                                      bg=bg, justify="left", pt=10)
             self.name_box.pack(side="left")
             self._line(WORDS["account.name.help"], parent=f, bg=bg, colour=ui.DIM,
@@ -1578,7 +1667,7 @@ class Wizard:
                    parent=f, bg=bg, colour=ui.DIM, size=9, width=INNER - 40, pady=(0, 18))
         row = tk.Frame(f, bg=bg)
         row.pack(fill="x")
-        self.signin = ui.Button(row, WORDS["account.create.button" if creating
+        self.signin = tklook.Button(row, WORDS["account.create.button" if creating
                                            else "account.button"],
                                 self._sign_in, bg=bg, primary=True, w=210, h=44)
         self.signin.pack(side="left")
@@ -1589,13 +1678,13 @@ class Wizard:
         self.account_line = self._line("", parent=f, bg=bg, colour=ui.DIM,
                                        size=9, width=INNER - 40, pady=(12, 0))
         self._fit(card)
-        other = tk.Label(self.account_holder,
-                         text=WORDS["account.other.have" if creating else "account.other.new"],
-                         bg=ui.BG, fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
-                         cursor="hand2", anchor="w")
+        other = self.sky.label(self.account_holder,
+                               text=WORDS["account.other.have" if creating else "account.other.new"],
+                               fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
+                               cursor="hand2", anchor="w")
         other.bind("<Button-1>", lambda _e, s=("signin" if creating else "create"):
                    self._account_show(s))
-        other.pack(fill="x", pady=(10, 0))
+        other.pack(anchor="w", pady=(10, 0))
         self.other_road = other
         self._foot(False)
         self.next.enable(not self._account_required)
@@ -1650,11 +1739,11 @@ class Wizard:
                                        size=9, width=INNER - 90, pady=(4, 0))
         self.account_card = card
         self._fit(card)
-        other = tk.Label(self.account_holder, text=WORDS["account.not_you"], bg=ui.BG,
-                         fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"), cursor="hand2",
-                         anchor="w")
+        other = self.sky.label(self.account_holder, text=WORDS["account.not_you"],
+                               fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
+                               cursor="hand2", anchor="w")
         other.bind("<Button-1>", lambda _e: self._account_sign_out())
-        other.pack(fill="x", pady=(10, 0))
+        other.pack(anchor="w", pady=(10, 0))
         self.other_road = other
         self._foot(True, WORDS["account.open" if self._returning else "account.continue"])
         self.next.enable(True)
@@ -1704,8 +1793,8 @@ class Wizard:
         """[Open DeskIT] on the account page of a returning person: the
         sync consent is recorded (this card said what is stored, the
         line said what comes along), the words and settings are pulled
-        now, then the downloads page if anything is left to fetch,
-        otherwise straight to Start's work — the app and the desk."""
+        now, then straight to Start's work — the app and the desk; any
+        part this PC still lacks goes on downloading in the app."""
         if self._returning_state == "bringing":
             return
         self._returning_state = "bringing"
@@ -1758,10 +1847,7 @@ class Wizard:
             # with the way to do it later
             self._link_open()
             return
-        if self._hidden("computer"):
-            self._open_desk()
-        else:
-            self._advance()
+        self._open_desk()           # the parts this PC lacks keep downloading in the app
 
     # ------------------------------------------------------- the link step
     # The account lock (2026-09-21, what Apple's "approve from another
@@ -1798,9 +1884,9 @@ class Wizard:
                    width=INNER - 40, pady=(0, 6))
         row = tk.Frame(f, bg=bg)
         row.pack(fill="x", pady=(0, 4))
-        self.recovery_box = ui.Field(row, w=INNER - 40 - 110, h=34, bg=bg, justify="left", pt=10)
+        self.recovery_box = tklook.Field(row, w=INNER - 40 - 110, h=34, bg=bg, justify="left", pt=10)
         self.recovery_box.pack(side="left")
-        self.recovery_button = ui.Button(row, WORDS["account.link.recovery.button"],
+        self.recovery_button = tklook.Button(row, WORDS["account.link.recovery.button"],
                                          self._link_recover, bg=bg, primary=False, w=96, h=34)
         self.recovery_button.pack(side="left", padx=(10, 0))
         self._line(WORDS["account.link.recovery.help"], parent=f, bg=bg, colour=ui.DIM,
@@ -1892,8 +1978,8 @@ class Wizard:
         self._link_poll_later()
 
     def _link_done(self, approved: bool) -> None:
-        """Approved, recovered, or Later: on to the desk (or the
-        downloads page) the way the returning road promised."""
+        """Approved, recovered, or Later: on to the desk the way the
+        returning road promised."""
         self._link_state = "idle"
         self._link_cancel()
         if approved:
@@ -1905,10 +1991,7 @@ class Wizard:
                 box.set("")
         if self.name != "account":
             return
-        if self._hidden("computer"):
-            self._open_desk()
-        else:
-            self._advance()
+        self._open_desk()           # the parts this PC lacks keep downloading in the app
 
     def _sign_in(self) -> None:
         """[Continue with Google] / [Sign in with Google]: the consent
@@ -2003,22 +2086,26 @@ class Wizard:
         # Every device, not the first few: a silent cap here is somebody
         # whose microphone is ninth concluding it is not supported.
         self.list_rows = len(rows)
-        self.list_holder = ui.Scroller(self.body, w=INNER - 10,
-                                       h=self._list_height(4), bg=ui.BG)
+        # the list on a pane (B+: rows in a card), the meter on the sky
+        self.list_card = self._card(pad=10)
+        self.list_card.pack(fill="x")
+        self.list_holder = ui.Scroller(self.list_card.body, w=INNER - 30,
+                                       h=self._list_height(4), bg=ui.CARD)
         self.list_holder.pack(fill="x")
+        self._fit(self.list_card)
         for key, name, _api, _index in order_for(rows, self.device):
             self._device_row(self.list_holder.inner, key, name, key == default_key)
         self.list_holder.bind_wheel(self.list_holder.inner)
-        self.meter_note = tk.Label(self.body, text="", bg=ui.BG, fg=ui.DIM,
-                                   font=(ui.UI, 10), anchor="w")
-        self.meter_note.pack(fill="x", pady=(14, 6))
-        self.meter = Meter(self.body, ui.BG)
+        self.meter_note = self.sky.label(self.body, text="", fg=ui.DIM,
+                                         font=(ui.UI, 10), anchor="w")
+        self.meter_note.pack(anchor="w", pady=(14, 6))
+        self.meter = Meter(self.body, ui.BG, sky=self.sky)
         self.meter.pack(anchor="w")
         # The help, ONCE: one frame the warning is drawn into, emptied
         # before it is drawn again. It used to be appended to the page
         # on every warning, and picking a second device after the first
         # warning put the whole block on screen twice (2026-09-19).
-        self.hint = tk.Frame(self.body, bg=ui.BG)
+        self.hint = self.sky.frame(self.body)
         self.hint.pack(fill="x", pady=(14, 0))
         self._listen()
         if microphone_allowed() is False and not self._warned:
@@ -2028,12 +2115,12 @@ class Wizard:
         # `key` is the identity (what the settings store, see device_key).
         # Ten narrower than the page, because `ui.Scroller` keeps
         # ui.GUTTER px of its canvas clear on the right for the way home.
-        width = INNER - 10 - ui.GUTTER
+        width = INNER - 30 - ui.GUTTER
         row = tk.Canvas(parent, width=width, height=ROW_H, bd=0,
-                        highlightthickness=0, cursor="hand2", bg=ui.BG)
+                        highlightthickness=0, cursor="hand2", bg=ui.CARD)
         row.pack(fill="x", pady=(0, 6))
         face = row.create_image(0, 0, anchor="nw",
-                                image=self._row_face(width, key == self.device))
+                                image=self._row_face(width, key == self.device, row=row))
         row.create_text(18, ROW_H / 2 + 1, text=name, anchor="w",
                         fill=ui.FG, font=(ui.UI, 11))
         if default:
@@ -2045,24 +2132,25 @@ class Wizard:
         self._rows[key] = (row, face, width)
 
     @staticmethod
-    def _row_face(width: int, chosen: bool, hot: bool = False):
-        if chosen:
-            return ui.rounded(width, ROW_H, 10, ui.ACCENT_SOFT, ui.BG, ui.ACCENT_EDGE)
-        if hot:
-            return ui.rounded(width, ROW_H, 10, ui.CARD_HI, ui.BG, ui.LINE_HI)
-        return ui.rounded(width, ROW_H, 10, ui.CARD, ui.BG, ui.LINE)
+    def _row_face(width: int, chosen: bool, hot: bool = False, *, row=None):
+        """B+'s list row (tklook.slip): frost and a rim at rest, a step
+        brighter under the pointer, the chosen one the desk's bubble. The
+        picture is made in the row's own interpreter (`row`, the canvas
+        that shows it)."""
+        state = "chosen" if chosen else ("hot" if hot else "rest")
+        return tklook.photo(row, tklook.slip(width, ROW_H, bg=ui.CARD, state=state))
 
     def _hover(self, key: str, over: bool) -> None:
         row, face, width = self._rows.get(key, (None, None, 0))
         if row is not None:
-            row.itemconfig(face, image=self._row_face(width, key == self.device, over))
+            row.itemconfig(face, image=self._row_face(width, key == self.device, over, row=row))
 
     def _pick(self, key: str) -> None:
         if key == self.device:
             return
         self.device = key
         for other, (row, face, width) in self._rows.items():
-            row.itemconfig(face, image=self._row_face(width, other == key))
+            row.itemconfig(face, image=self._row_face(width, other == key, row=row))
         self.meter.forget()
         self._quiet_since = time.monotonic()
         self._warned = False
@@ -2077,6 +2165,14 @@ class Wizard:
                 text=WORDS["mic.cannot"].format(error=self.listener.error),
                 fg=ui.RED)
 
+    def _refit_list(self) -> None:
+        card = getattr(self, "list_card", None)
+        if card is not None and self.name == "mic":
+            try:
+                self._fit(card)
+            except tk.TclError:
+                pass
+
     def _list_height(self, rows: int) -> int:
         return min(rows, getattr(self, "list_rows", rows)) * (ROW_H + 6) + 4
 
@@ -2087,6 +2183,7 @@ class Wizard:
         holder = getattr(self, "list_holder", None)
         if holder is not None and self.name == "mic":
             holder.resize(self._list_height(4))
+            self._refit_list()
 
     def _warn_silent(self, text: str | None = None) -> None:
         """The trap, named, with the fix one click away.
@@ -2108,11 +2205,12 @@ class Wizard:
         holder = getattr(self, "list_holder", None)
         if holder is not None:
             holder.resize(self._list_height(3))
+            self._refit_list()
         card = self._card(self.hint, pad=16)
         card.pack(fill="x")
         self._line(text or WORDS["mic.help"], parent=card.body, bg=ui.CARD,
                    colour=ui.FG, size=10, width=INNER - 36, pady=(0, 12))
-        ui.Button(card.body, WORDS["mic.open"], open_microphone_settings,
+        tklook.Button(card.body, WORDS["mic.open"], open_microphone_settings,
                   bg=ui.CARD, w=200).pack(anchor="w")
         self._fit(card)
 
@@ -2123,101 +2221,35 @@ class Wizard:
             return 0
         return len(self.hint.winfo_children())
 
-    # --------------------------------------------------------- this computer
-    def _page_computer(self) -> None:
-        self._head(WORDS["computer.title"], WORDS["computer.sub"])
-        self._line(hardware_line(self.facts), colour=ui.FG, size=11,
-                   pady=(0, 4))
-        offers = self.offers
-        if offers.get("portable"):
-            self._line(WORDS["computer.portable"], colour=ui.DIM, size=10)
-            return
-        if not any(offers.get(k) for k in ("model", "pack", "detector", "recording")):
-            self._line(WORDS["computer.ready"], colour=ui.GREEN, size=11)
-            return
-        self._ensure_runs()
-        current = self._current_run()
-        started = self.active >= 0
-        if current is not None:
-            self.pane = steps.StepPane(
-                self.body, current, width=INNER, bg=ui.BG, secondary=None,
-                closing=None, on_end=self._run_ended, compact=False,
-                prefix=self._prefix(), on_go=self._download, title_pt=13,
-                body_lines=3)
-            self.pane.pack(fill="x", pady=(0, 8))
-            # [Download] is the action here until it is pressed; then the
-            # bar runs by itself and the way on is the action again.
-            self._foot(started)
-        if not card_tier(self.facts):
-            self._line(WORDS["computer.cpu"], colour=ui.DIM, size=9,
-                       pady=(0, 12))
-        if offers.get("pack") is not None:
-            p = offers["pack"]
-            switch = self._switch_row(
-                WORDS["computer.pack"],
-                WORDS["computer.pack.help"].format(size=steps.human(p.bytes)),
-                self.want["pack"], lambda _v=None: self._flip("pack"))
-            if started:
-                switch.configure(state="disabled")
-        if offers.get("detector") is not None:
-            e = offers["detector"]
-            switch = self._switch_row(
-                WORDS["computer.detector"],
-                WORDS["computer.detector.help"].format(size=steps.human(e.bytes)),
-                self.want["detector"], lambda _v=None: self._flip("detector"))
-            if started:
-                switch.configure(state="disabled")
-        if offers.get("recording") is not None:
-            r = offers["recording"]
-            switch = self._switch_row(
-                WORDS["computer.recording"],
-                WORDS["computer.recording.help"].format(size=steps.human(r.bytes)),
-                self.want["recording"], lambda _v=None: self._flip("recording"))
-            if started:
-                switch.configure(state="disabled")
-
-    def _flip(self, which: str) -> None:
-        if self.active >= 0:
-            return                       # the queue is running; too late
-        self.want[which] = not self.want[which]
-
     # ------------------------------------------------------- say one sentence
     def _page_say(self) -> None:
         self._head(WORDS["say.title"], WORDS["say.sub"])
-        current = self._current_run()
-        if current is not None and not self._all_landed():
-            self.pane = steps.StepPane(
-                self.body, current, width=INNER, bg=ui.BG, secondary=None,
-                closing=None, on_end=self._run_ended, compact=True,
-                prefix=self._prefix(), on_go=self._download)
-            self.pane.pack(fill="x", pady=(0, 14))
         self.waiting = None
         if self._model_missing():
-            # Three ways to be without the model, three sentences: the
-            # stranger who pressed Next past page 4 without Download
-            # (the checkout's own walk, 2026-09-19) read "still
-            # downloading" over a bar that had never moved. The tick
-            # keeps the sentence with the run (_say_ready).
+            # The model still coming in the background: one sentence, and
+            # the strip at the top is the bar. The tick keeps the sentence
+            # with the queue (_say_ready) and takes it away when it lands.
             self.waiting = self._line(WORDS[self._waiting_key()], colour=ui.AMBER,
                                       size=10, pady=(0, 12))
         # One primary button, two jobs in order: load the model, then
         # record. People do not read the small print (the owner, 1.1.1
         # walkthrough, 2026-09-19): a Record that silently spent five
         # seconds loading read as "transcription is slow".
-        self.say = ui.Button(self.body,
+        self.say = tklook.Button(self.body,
                              WORDS["say.button"] if self._backend is not None
                              else WORDS["say.load"],
-                             self._say_action, bg=ui.BG, primary=True, w=220, h=44)
+                             self._say_action, bg=ui.BG, primary=True, w=220, h=44,
+                             sky=self.sky)
         self.say.pack(anchor="w")
         self._foot(False)
         self.result_card = self._card(pad=18)
         self.result_card.pack(fill="x", pady=(16, 0))
         self.result_label = None
         self._show_sample(self._sample)
-        self.status = tk.Label(self.body, text="", bg=ui.BG, fg=ui.DIM,
+        self.status = self.sky.label(self.body, text="", fg=ui.DIM,
                                font=(ui.UI, 10), anchor="w", justify="left",
                                wraplength=INNER)
-        self.status.pack(fill="x", pady=(10, 0))
+        self.status.pack(anchor="w", pady=(10, 0))
         self.cpu_note = None
         if self._sample:
             self._say_result_line(self._seconds, 0.0)
@@ -2239,14 +2271,13 @@ class Wizard:
         self._fit(card)
 
     def _waiting_key(self) -> str:
-        state = self.runs["model"].state
-        return ("say.waiting" if state == "running"
-                else "say.waiting.idle" if state == "idle"
-                else "say.waiting.stopped")
+        run = self.downloads.runs.get("model")
+        stopped = run is not None and run.state in ("offline", "failed", "paused")
+        return "say.waiting.stopped" if stopped else "say.waiting"
 
     def _say_ready(self) -> None:
-        """The record button waits for the model: a queue still running
-        means the backend would load a half-written folder or the CPU."""
+        """The record button waits for the model: a download still
+        running means the backend would load a half-written folder."""
         if getattr(self, "say", None) is None:
             return
         waiting = self._model_missing()
@@ -2256,27 +2287,67 @@ class Wizard:
         line = getattr(self, "waiting", None)
         if line is not None:
             if not waiting:
-                line.pack_forget()            # it landed while this page was up
+                line.destroy()                # it landed while this page was up
                 self.waiting = None
             elif line.cget("text") != WORDS[self._waiting_key()]:
                 line.configure(text=WORDS[self._waiting_key()])
 
-    def _computer_gate(self) -> None:
-        """Next waits for the downloads of this page: the owner watched
-        a stranger's Next stay live under a running bar (2026-09-19) and
-        asked that nobody could leave mid-download. Paused, failed,
-        offline or done: the way on opens again; the foot note says why
-        it is shut while it is."""
-        busy = any(run.running for run in self.runs.values())
-        for twin in (self.next_loud, self.next_quiet):
-            twin.enable(not busy)
-        self.note.configure(text=WORDS["computer.wait"] if busy else "", fg=ui.DIM)
-
     def _model_missing(self) -> bool:
-        run = self.runs.get("model")
-        if run is None:
-            return False
-        return run.state != "done" and not self.offers.get("portable")
+        """The Hebrew model is one of the parts still coming."""
+        return self.downloads.has("model")
+
+    # ------------------------------------------ "continue without trying?"
+    def _should_ask(self) -> bool:
+        """Next on the sentence page asks once while nothing was tried
+        (the owner's Store walk, item 10: the model loaded, nothing
+        recorded, and Next went straight on). Not while the model is
+        still missing — there is nothing to try yet, and the page's own
+        amber line already says so — and not a second time: Next pressed
+        with the question up is the answer "go on"."""
+        return (not self._tried and self.ask_card is None
+                and not self._model_missing())
+
+    def _say_ask(self) -> None:
+        """The question INSIDE the page, where the transcript would be:
+        a gold-edged card with [Try it] and [Continue without trying] —
+        no window of its own, and not a button that changes its word on
+        the first press (he rejected that on the desk's Stop)."""
+        if self.say is None:
+            return
+        self.result_card.pack_forget()
+        self.status.pack_forget()
+        card = tklook.Card(self.body, INNER, 120, bg=ui.BG, pad=18, border=ui.ACCENT,
+                           sky=self.sky)
+        card.pad = 18
+        card.pack(fill="x", pady=(16, 0))
+        tk.Label(card.body, text=WORDS["say.ask"], bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 11), anchor="w", justify="left",
+                 wraplength=INNER - 40).pack(fill="x")
+        row = tk.Frame(card.body, bg=ui.CARD)
+        row.pack(fill="x", pady=(14, 0))
+        self.ask_try = tklook.Button(row, WORDS["say.ask.try"], self._ask_close, bg=ui.CARD,
+                                 primary=True, w=120, h=36)
+        self.ask_try.pack(side="left", padx=(0, 10))
+        self.ask_go = tklook.Button(row, WORDS["say.ask.go"], self._advance, bg=ui.CARD,
+                                quiet=True, w=220, h=36)
+        self.ask_go.pack(side="left")
+        self._fit(card)
+        self.ask_card = card
+
+    def _ask_close(self) -> None:
+        """[Try it] — or the page's own button pressed with the question
+        up: the question goes and the page is as it was, the button that
+        loads or records right above it."""
+        card = self.ask_card
+        if card is None:
+            return
+        self.ask_card = None
+        try:
+            card.destroy()
+            self.result_card.pack(fill="x", pady=(16, 0), after=self.say)
+            self.status.pack(anchor="w", pady=(10, 0), after=self.result_card)
+        except tk.TclError:
+            pass                              # the page went away under it
 
     # ------------------------------------------------------------------ keys
     def _page_keys(self) -> None:
@@ -2295,7 +2366,7 @@ class Wizard:
             ring = tk.Frame(row, bg=ui.CARD, highlightthickness=2,
                             highlightbackground=ui.CARD, highlightcolor=ui.CARD)
             ring.pack(side="right")
-            cap = ui.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
+            cap = tklook.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
                             lambda f=field: self._rebind(f), bg=ui.CARD, w=180)
             cap.pack()
             self.caps[field] = cap
@@ -2303,10 +2374,12 @@ class Wizard:
         self._fit(card)
 
     def _ring(self, field: str, lit: bool) -> None:
-        ring = self.rings.get(field)
-        if ring is not None:
-            colour = ui.ACCENT if lit else ui.CARD
-            ring.configure(highlightbackground=colour, highlightcolor=colour)
+        """The cap being listened for wears an iris ring — drawn round its
+        own corners (tklook.KeyCap.lit), where a Frame's highlight was a
+        square around a round cap."""
+        cap = self.caps.get(field)
+        if cap is not None and hasattr(cap, "lit"):
+            cap.lit(lit)
 
     def _rebind(self, field: str) -> None:
         """A chip pressed: the wizard listens for the next key. The
@@ -2396,28 +2469,315 @@ class Wizard:
         except Exception as e:                             # noqa: BLE001
             self.caps[field].set(_pretty(getattr(self.cfg, field, "") or ""))
             self.note.configure(text=plain_refusal(e, key), fg=ui.RED)
+            self._sync_snip()
             return
         self.cfg = new
         self.caps[field].set(_pretty(key))
+        self._sync_snip()
         self.note.configure(
             text=WORDS["keys.saved"].format(label=_label_of(field), key=_pretty(key)),
             fg=ui.GREEN)
         log.info("setup: %s is now %r", field, key)
 
+    # ---------------------------------------------------------------- screen
+    def _page_screen(self) -> None:
+        """Screenshots and recordings: the two keys, each with the folder
+        its files go to (the owner's Store walk, 2026-10-03, items 11 and
+        17 — he looked for where the videos and pictures are saved and
+        could not find it, and chose a page of their own over a crowded
+        Keys page). The keys rebind the way the Keys page's do; the
+        switches and the folders are written the moment they move, like
+        a key."""
+        self._head(WORDS["screen.title"], WORDS["screen.sub"])
+        self.screen_switches: dict[str, ui.Switch] = {}
+        self.folder_labels: dict[str, tk.Label] = {}
+        shot = self._card(pad=18)
+        shot.pack(fill="x")
+        self._screen_key(shot.body, "capture_hotkey")
+        # The Snipping-Tool choice sits under the key it changes: on the
+        # extras page, one page after the Keys page, it silently replaced
+        # a key the person had just picked by hand (item 11's trap).
+        self.screen_switches["snip"] = self._small_switch(
+            shot.body, WORDS["screen.snip"], self._snip_on(), self._snip_flipped, gap=8)
+        self.screen_switches["save_all"] = self._small_switch(
+            shot.body, WORDS["screen.save_all"],
+            bool(getattr(self.cfg.capture, "always_save", False)),
+            self._save_all_flipped, gap=10)
+        self._folder_row(shot.body, "pictures")
+        self._fit(shot)
+        record = self._card(pad=18)
+        record.pack(fill="x", pady=(14, 0))
+        self._screen_key(record.body, "record_hotkey")
+        self._folder_row(record.body, "videos")
+        self._fit(record)
+
+    def _screen_key(self, parent, field: str) -> None:
+        """One key on the screen page: its words, and a cap that listens
+        when pressed — `_rebind`, the Keys page's own."""
+        word = dict(SCREEN_KEYS)[field]
+        row = tk.Frame(parent, bg=ui.CARD)
+        row.pack(fill="x", pady=(0, 10))
+        tk.Label(row, text=WORDS[word], bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 11), anchor="w").pack(side="left", fill="x", expand=True)
+        ring = tk.Frame(row, bg=ui.CARD, highlightthickness=2,
+                        highlightbackground=ui.CARD, highlightcolor=ui.CARD)
+        ring.pack(side="right")
+        cap = tklook.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
+                        lambda f=field: self._rebind(f), bg=ui.CARD, w=180)
+        cap.pack()
+        self.caps[field] = cap
+        self.rings[field] = ring
+
+    @staticmethod
+    def _small_switch(parent, text: str, value: bool, command, gap: int) -> ui.Switch:
+        """A switch and one line beside it — a setting OF the key above,
+        lighter than the extras page's two-line rows."""
+        line = tk.Frame(parent, bg=ui.CARD)
+        line.pack(fill="x", pady=(0, gap))
+        switch = tklook.Switch(line, value, command, bg=ui.CARD)
+        switch.pack(side="left", padx=(0, 12))
+        tk.Label(line, text=text, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 10),
+                 anchor="w").pack(side="left", fill="x", expand=True)
+        return switch
+
+    def _folder_row(self, parent, which: str) -> None:
+        """"Saved in <the full path>" and [Browse…] — the Settings page's
+        folder row, in the wizard (his ask on the first picture: a Browse
+        button you can see, not a small Change link)."""
+        line = tk.Frame(parent, bg=ui.CARD)
+        line.pack(fill="x")
+        browse = tklook.Button(line, WORDS["screen.browse"], lambda w=which: self._browse(w),
+                           bg=ui.CARD, quiet=True, w=104, h=32)
+        browse.pack(side="right")
+        tk.Label(line, text=WORDS["screen.saved_in"], bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 10), anchor="w").pack(side="left", padx=(0, 8))
+        label = tk.Label(line, text="", bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), anchor="w")
+        label.pack(side="left", fill="x", expand=True)
+        self.folder_labels[which] = label
+        self._refresh_folders()
+
+    def _folder_of(self, which: str) -> Path:
+        """Where the files of `which` land, as a full path: the pictures
+        folder, or the recordings' own (empty means the pictures')."""
+        cap = self.cfg.capture
+        folder = cap.folder if which == "pictures" else (cap.clip_folder or cap.folder)
+        return paths.resolve_folder(folder)
+
+    def _refresh_folders(self) -> None:
+        for which, label in getattr(self, "folder_labels", {}).items():
+            try:
+                label.configure(text=short_path(str(self._folder_of(which)), FOLDER_W))
+            except tk.TclError:
+                pass
+
+    def _browse(self, which: str) -> None:
+        """Windows' own folder dialog, opened where the folder is now."""
+        from tkinter import filedialog
+        chosen = filedialog.askdirectory(parent=self.root, initialdir=str(self._folder_of(which)),
+                                         title=WORDS["screen.title"], mustexist=False)
+        if chosen:
+            self._set_folder(which, str(Path(chosen)))
+
+    def _set_folder(self, which: str, folder: str) -> None:
+        """The chosen folder into the settings: the pictures for the
+        screenshots AND the camera's photos together (one row, one place
+        to look — config.FOLLOWERS), the recordings on their own."""
+        if which == "pictures":
+            updates = {"capture.folder": folder, "camera.folder": folder}
+        else:
+            updates = {"capture.clip_folder": folder}
+        if not self._write(updates):
+            return
+        cap = self.cfg.capture
+        if which == "pictures":
+            self.cfg = dataclasses.replace(
+                self.cfg, capture=dataclasses.replace(cap, folder=folder),
+                camera=dataclasses.replace(self.cfg.camera, folder=folder))
+        else:
+            self.cfg = dataclasses.replace(self.cfg, capture=dataclasses.replace(cap, clip_folder=folder))
+        self._refresh_folders()
+        self.note.configure(text=WORDS[f"screen.{which}"].format(path=self._folder_of(which)),
+                            fg=ui.GREEN)
+
+    def _snip_on(self) -> bool:
+        return str(getattr(self.cfg, "capture_hotkey", "")).strip().lower() == SNIP_KEY
+
+    def _snip_flipped(self, on: bool) -> None:
+        """On: the screenshot key is Win+Shift+S, taken from the Snipping
+        Tool; off: Ctrl+F11. Through `_apply_key`, so a clash is refused
+        with the Keys page's sentence and the switch goes back."""
+        key = SNIP_KEY if on else PLAIN_SNIP_KEY
+        if str(getattr(self.cfg, "capture_hotkey", "")).strip().lower() != key:
+            self._apply_key("capture_hotkey", key)
+        self._sync_snip()
+
+    def _sync_snip(self) -> None:
+        """The switch says what the key IS — after a rebind by hand too."""
+        switch = getattr(self, "screen_switches", {}).get("snip")
+        if switch is not None and self.name == "screen":
+            switch.set(self._snip_on())
+
+    def _save_all_flipped(self, on: bool) -> None:
+        """`capture.always_save`: off, a screenshot is on the clipboard and
+        a file only when Save is pressed on its card — the Browse beside
+        it still matters, it is where Save writes."""
+        if not self._write({"capture.always_save": bool(on)}):
+            self.screen_switches["save_all"].set(not on)
+            return
+        self.cfg = dataclasses.replace(
+            self.cfg, capture=dataclasses.replace(self.cfg.capture, always_save=bool(on)))
+        self.note.configure(text=WORDS["screen.save_all.on" if on else "screen.save_all.off"],
+                            fg=ui.GREEN)
+
+    def _write(self, updates: dict) -> bool:
+        """Settings the page changed, written now: config.save on the
+        layers, the line editor in one-file mode. A refusal is a red
+        line at the foot and nothing changed."""
+        try:
+            if self.path is None:
+                config_mod.save(updates)
+            else:
+                config_mod.set_values(self.path, updates)
+        except Exception as e:                             # noqa: BLE001
+            self.note.configure(text=WORDS["saved.error"].format(error=e), fg=ui.RED)
+            return False
+        log.info("setup: %s written", ", ".join(sorted(updates)))
+        return True
+
     # ---------------------------------------------------------------- extras
+    # ------------------------------------------------------------ cloud keys
+    def _page_cloud(self) -> None:
+        """The two free keys, a card each (store walk item 13, the owner's
+        pick of 2026-10-03 between one card and two: "two places to put
+        the keys, Groq and Gemini, each in its own card"). Each card says
+        what the key UNLOCKS and what is missing without it, because most
+        people skip a page like Extras and then cannot tell why F8 does
+        nothing. THE SWITCH IS THE CONSENT, as on Extras: on is
+        privacy.grant("cloud_text") with the card's text_version; off on
+        both cards withdraws it. Under a switch that is on, the key's row
+        (keyrow.KeyRow: locked dots + Change key once a key works); Next
+        waits while a card is on without a working key."""
+        self._head(WORDS["cloud.title"], WORDS["cloud.sub"])
+        self.switches = {}
+        keys = {"punctuate": _pretty(self.cfg.punctuate_hotkey) or "its key",
+                "translate": _pretty(self.cfg.translate_hotkey) or "its key"}
+        self.cloud_rows: dict[str, object] = {}
+        self.cloud_slots: dict[str, tk.Frame] = {}
+        self.cloud_cards: dict[str, ui.Card] = {}
+        for i, name in enumerate(("groq", "gemini")):
+            card = self._card(pad=16)
+            card.pack(fill="x", pady=(0, 12))
+            self.cloud_cards[name] = card
+            top = tk.Frame(card.body, bg=ui.CARD)
+            top.pack(fill="x")
+            switch = tklook.Switch(top, self.clouds[name],
+                               lambda _v=None, n=name: self._cloud_flipped(n), bg=ui.CARD)
+            switch.pack(side="left", padx=(0, 14), pady=(2, 0))
+            self.switches[f"cloud.{name}"] = switch
+            tk.Label(top, text=keyrow.PROVIDERS[name]["label"], bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 12, "bold"), anchor="w").pack(side="left")
+            tk.Label(top, text=WORDS["cloud.free"], bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 9)).pack(side="right")
+            for key, fg, size in ((f"cloud.{name}.unlocks", ui.FG, 10),
+                                  (f"cloud.{name}.without", ui.DIM, 9)):
+                tk.Label(card.body, text=WORDS[key].format(**keys), bg=ui.CARD, fg=fg,
+                         font=(ui.UI, size), anchor="w", justify="left",
+                         wraplength=INNER - 54 - 36).pack(fill="x", padx=(54, 0), pady=(4, 0))
+            slot = tk.Frame(card.body, bg=ui.CARD)
+            slot.pack(fill="x", padx=(54, 0))
+            self.cloud_slots[name] = slot
+            if self.clouds[name]:
+                self._cloud_row(name)
+            self._fit(card)
+        self._cloud_gate()
+
+    def _cloud_row(self, name: str) -> None:
+        slot = self.cloud_slots[name]
+        for child in slot.winfo_children():
+            child.destroy()
+        slot.configure(height=1)          # an emptied frame keeps its size
+        row = keyrow.KeyRow(slot, name, width=INNER - 54 - 36, bg=ui.CARD,
+                            on_state=lambda _s, _v, n=name: self._cloud_changed(n),
+                            probe=self._cloud_probe, check_saved=True)
+        row.pack(fill="x", pady=(8, 0))
+        self.cloud_rows[name] = row
+
+    @staticmethod
+    def _cloud_probe(name: str) -> int:
+        return keyrow.probe(name)
+
+    def _cloud_changed(self, name: str) -> None:
+        card = getattr(self, "cloud_cards", {}).get(name)
+        if card is not None and card.winfo_exists():
+            self._fit(card)
+        self._cloud_gate()
+
+    def _cloud_flipped(self, name: str) -> None:
+        on = self.switches[f"cloud.{name}"].get()
+        if on and not any(self.clouds.values()):
+            try:
+                import consent_card as cc
+                import privacy
+                privacy.grant("cloud_text", cc.card_for("cloud_text")["text_version"])
+            except Exception as e:                         # noqa: BLE001
+                log.warning("the wizard could not record the cloud consent: %s", e)
+                self.switches[f"cloud.{name}"].set(False)
+                return
+        self.clouds[name] = on
+        self.extras["cloud"] = any(self.clouds.values())
+        if on:
+            self._cloud_row(name)
+        else:
+            slot = self.cloud_slots[name]
+            for child in slot.winfo_children():
+                child.destroy()
+            slot.configure(height=1)
+            self.cloud_rows.pop(name, None)
+            if not any(self.clouds.values()):
+                try:
+                    import privacy
+                    privacy.withdraw("cloud_text")
+                except Exception:                          # noqa: BLE001
+                    log.info("the cloud gate was not withdrawn", exc_info=True)
+        self._fit(self.cloud_cards[name])
+        self._cloud_gate()
+
+    def _cloud_gate(self) -> None:
+        """Next waits while a card is on and its key is not saved and
+        working (a check with no answer counts: the cloud checks it on
+        first use, as the Extras row always did)."""
+        if self.name != "cloud":
+            return
+        waiting = testing = False
+        for name, on in self.clouds.items():
+            row = self.cloud_rows.get(name)
+            if not on or row is None:
+                continue
+            if row.state == "testing":
+                testing = waiting = True
+            elif row.state != "locked":
+                waiting = True
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(not waiting)
+        text = WORDS["cloud.checking" if testing else "cloud.wait"] if waiting else ""
+        if self.note.cget("text") != text:
+            self.note.configure(text=text, fg=ui.DIM)
+
     def _page_extras(self) -> None:
         self._head(WORDS["extras.title"], WORDS["extras.sub"])
         self.switches: dict[str, ui.Switch] = {}
         self.help_lines: dict[str, tk.Label] = {}
         card = self._card(pad=18)
         card.pack(fill="x")
-        rows = [("cloud", WORDS["extras.cloud"], WORDS["extras.cloud.help"]),
-                ("awake", WORDS["extras.awake"], WORDS["extras.awake.help"]),
+        rows = [("awake", WORDS["extras.awake"], WORDS["extras.awake.help"]),
                 ("updates", WORDS["extras.updates"], WORDS["extras.updates.help"]),
-                ("claude", WORDS["extras.claude"], WORDS["extras.claude.help"]),
-                ("snip", WORDS["extras.snip"], WORDS["extras.snip.help"])]
+                ("claude", WORDS["extras.claude"], WORDS["extras.claude.help"])]
+        # The Snipping-Tool row went to the "screen" page on 2026-10-03,
+        # under the key it changes (the owner's Store walk, item 11: a key
+        # picked on one page was silently replaced on the next). The cloud
+        # row went to the "cloud" page the same day, a card per key
+        # (item 13), and its key field with it (keyrow.KeyRow).
         self.extras_card = card
-        self.cloud_slot = None
         self.claude_slot = None
         for i, (key, label, help_) in enumerate(rows):
             help_fg = None
@@ -2431,56 +2791,15 @@ class Wizard:
                 lambda _v=None, k=key: self._extra_flipped(k),
                 parent=card.body, bg=ui.CARD, last=i == len(rows) - 1,
                 help_fg=help_fg, name=key)
-            if key == "cloud":
-                # What the cloud row opens — the consent, then the key —
-                # opens HERE, under the row, inside the card (the owner's
-                # walk of 2026-09-19: not a window somewhere else, not a
-                # square field under the card).
-                self.cloud_slot = tk.Frame(card.body, bg=ui.CARD)
-                self.cloud_slot.pack(fill="x")
             if key == "claude":
                 self.claude_slot = tk.Frame(card.body, bg=ui.CARD)
                 self.claude_slot.pack(fill="x")
         self._fit(card)
-        self.key_panel = None
-        self._key_state = "none"      # none | testing | ok | bad — Next waits for ok
-        if self.extras.get("cloud"):
-            self._show_key_panel()
 
     def _extra_flipped(self, key: str) -> None:
         on = self.switches[key].get()
         if key == "sync":
             self.sync_wanted = on          # written by Start, _save_sync
-            return
-        if key == "cloud":
-            # THE SWITCH IS THE CONSENT here (the owner, 2026-09-19 evening:
-            # "whoever turns it on — that is enough"): the row's own two
-            # lines say what leaves and to whom, and privacy.grant records
-            # the same text_version the card carries, so Settings > Privacy
-            # shows the grant like any other. Off is immediate
-            # (privacy.withdraw), like the Privacy tab's button.
-            if on:
-                granted = False
-                try:
-                    import consent_card as cc
-                    import privacy
-                    privacy.grant("cloud_text", cc.card_for("cloud_text")["text_version"])
-                    granted = True
-                except Exception as e:                     # noqa: BLE001
-                    log.warning("the wizard could not record the cloud consent: %s", e)
-                self.extras["cloud"] = granted
-                if granted:
-                    self._show_key_panel()
-                else:
-                    self.switches[key].set(False)
-            else:
-                self._clear_slot()
-                self.extras["cloud"] = False
-                try:
-                    import privacy
-                    privacy.withdraw("cloud_text")
-                except Exception:                          # noqa: BLE001
-                    log.info("the cloud gate was not withdrawn", exc_info=True)
             return
         if key == "claude" and self._claude_state == "other":
             # Another copy's lines are in the file: on only ASKS, under
@@ -2498,7 +2817,7 @@ class Wizard:
     # ------------------------------------------- the Claude row's question
     def _claude_ask(self) -> None:
         """Under the Claude row, inside the card: the question in amber
-        and its two answers, the way the cloud row opens its key panel —
+        and its two answers, the way a cloud card opens its key row —
         never a window somewhere else (the owner's rule for every
         yes/no, 2026-09-21)."""
         slot = getattr(self, "claude_slot", None)
@@ -2514,9 +2833,9 @@ class Wizard:
                  justify="left", wraplength=INNER - 110).pack(fill="x")
         row = tk.Frame(panel, bg=ui.CARD)
         row.pack(fill="x", pady=(6, 0))
-        ui.Button(row, WORDS["extras.claude.keep"], self._claude_keep,
+        tklook.Button(row, WORDS["extras.claude.keep"], self._claude_keep,
                   bg=ui.CARD, quiet=True, w=100, h=34).pack(side="left", padx=(0, 10))
-        ui.Button(row, WORDS["extras.claude.take"], self._claude_take,
+        tklook.Button(row, WORDS["extras.claude.take"], self._claude_take,
                   bg=ui.CARD, primary=True, w=190, h=34).pack(side="left")
         self._fit(self.extras_card)
 
@@ -2563,167 +2882,9 @@ class Wizard:
             return
         for child in slot.winfo_children():
             child.destroy()
-        slot.configure(height=1)          # see _clear_slot: an emptied frame keeps its size
+        slot.configure(height=1)          # an emptied frame keeps its size (the packer only
+                                          # propagates while it has slaves): back to 1 px
         self._fit(self.extras_card)
-
-    def _clear_slot(self) -> None:
-        """Whatever the cloud row had opened under it, gone; the card
-        shrinks back to its rows."""
-        slot = getattr(self, "cloud_slot", None)
-        if slot is None or not slot.winfo_exists():
-            return
-        for child in slot.winfo_children():
-            child.destroy()
-        # A frame whose last child is gone KEEPS its size (the packer only
-        # propagates while it has slaves): back to the 1 px it was born.
-        slot.configure(height=1)
-        self.key_panel = None
-        self._key_state = "none"
-        self._fit(self.extras_card)
-
-    def _show_key_panel(self) -> None:
-        """The Groq key, asked for under the switch, ON the card (the
-        owner, 1.1.1 walkthrough: "make it clickable, open a field for
-        the key, and a line that sends people to Groq's site"; his
-        stranger walk of 2026-09-19: "inside the card, under the row I
-        flipped, pretty and rounded"): a masked ui.Field, Save, and the
-        way to a free key for anyone who has none. The value goes to
-        secretstore (Credential Manager) and nowhere else."""
-        if self.name != "extras" or getattr(self, "key_panel", None) is not None:
-            return
-        slot = getattr(self, "cloud_slot", None)
-        if slot is None or not slot.winfo_exists():
-            return
-        self._clear_slot()
-        import secretstore
-        panel = tk.Frame(slot, bg=ui.CARD)
-        panel.pack(fill="x", padx=(54, 0), pady=(2, 10))    # under the words, past the switch
-        self.key_panel = panel
-        have = False
-        try:
-            have = bool(secretstore.get("groq"))
-        except Exception:                                  # noqa: BLE001
-            pass
-        # Two lines tall from the start, whatever it says: a note that
-        # grew from one line to two pushed the rows under it and the card
-        # face was never re-fitted, so the last row's help was cut off
-        # (his walk of the built installer, 2026-09-19 night).
-        self.key_note = tk.Label(panel, text=WORDS["extras.key.have"] if have else WORDS["extras.cloud.key"],
-                                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), height=2,
-                                 anchor="nw", justify="left", wraplength=INNER - 110)
-        self.key_note.pack(fill="x")
-        row = tk.Frame(panel, bg=ui.CARD)
-        row.pack(fill="x", pady=(6, 0))
-        self.key_box = ui.Field(row, w=INNER - 110 - 130, h=34, bg=ui.CARD, justify="left",
-                                placeholder=WORDS["extras.key.placeholder"], pt=10)
-        self.key_box.pack(side="left", padx=(0, 10))
-        self.key_field = self.key_box.entry
-        self.key_field.configure(show="\u2022")
-        self.key_box.bind_entry("<Return>", lambda _e: self._save_key())
-        self.key_save = ui.Button(row, WORDS["extras.key.save"], self._save_key,
-                                  bg=ui.CARD, primary=True, w=120, h=34)
-        self.key_save.pack(side="left")
-        self._link(WORDS["extras.key.get"], "https://console.groq.com/keys",
-                   parent=panel, bg=ui.CARD).pack(fill="x", pady=(6, 0))
-        self._fit(self.extras_card)
-        self.key_field.focus_set()
-        if have:
-            self._test_key()
-
-    def _key_say(self, key: str, colour: str, **fmt) -> None:
-        """One line under the row, and the card re-fitted around it —
-        the note's words change height (a wrap), the face must follow."""
-        self.key_note.configure(text=WORDS[key].format(**fmt), fg=colour)
-        self._fit(self.extras_card)
-
-    def _save_key(self) -> None:
-        """The pasted value into the store — never into a file — the
-        field emptied either way, and the key checked with Groq at once
-        (the owner, 2026-09-19: "a quick check that it really exists and
-        works"). Something that cannot be a key — Hebrew, a space — is
-        said so in plain words and never stored: a non-ASCII value put in
-        the Authorization header came back as a codec error dressed as
-        "could not reach Groq" (his walk of the built installer)."""
-        import secretstore
-        value = self.key_field.get().strip()
-        self.key_box.set("")                 # emptied either way; the placeholder returns
-        if not value:
-            self._key_say("extras.key.empty", ui.AMBER)
-            return
-        if not looks_like_key(value):
-            del value
-            self._key_say("extras.key.notkey", ui.RED)
-            return
-        try:
-            secretstore.set("groq", value)
-        except Exception as e:                             # noqa: BLE001
-            self._key_say("extras.key.failed", ui.RED, error=e)
-            return
-        del value
-        self._key_say("extras.key.stored", ui.DIM)
-        self._test_key()
-
-    def _test_key(self) -> None:
-        """One `key-test` request through net.py on a thread — Groq's
-        model list under the stored key; the value never touches this
-        code, net.py attaches it by name. The answer lands through the
-        queue the tick drains."""
-        self._key_state = "testing"
-
-        def work() -> None:
-            try:
-                count = key_probe()
-            except (KeyRefused, UnicodeEncodeError) as e:
-                # a 4xx, or a stored value no header can carry: not a key
-                detail = str(e)               # bound now: `e` is gone once the clause ends
-                self._later(lambda: self._key_tested("bad", detail))
-            except Exception as e:                         # noqa: BLE001
-                detail = str(e)[:120]
-                self._later(lambda: self._key_tested("offline", detail))
-            else:
-                self._later(lambda: self._key_tested("ok", str(count)))
-
-        threading.Thread(target=work, daemon=True, name="setup-key-test").start()
-
-    def _key_tested(self, word: str, detail: str) -> None:
-        """A refused key is taken out of the store again — "turn it off
-        or paste a key" only makes sense while nothing is there."""
-        if self.name != "extras" or getattr(self, "key_note", None) is None:
-            return
-        log.info("setup: the Groq key test said %s (%s)", word, detail)
-        if word == "ok":
-            self._key_state = "ok"
-            self._key_say("extras.key.works", ui.GREEN)
-        elif word == "bad":
-            self._key_state = "bad"
-            try:
-                import secretstore
-                secretstore.delete("groq")
-            except Exception:                              # noqa: BLE001
-                pass
-            self._key_say("extras.key.refused", ui.RED)
-        else:
-            # no answer from Groq: the key stays, and so does the person
-            # — the cloud pass checks it again on its first use; the
-            # reason is in the log, not on the card (plain words)
-            self._key_state = "ok"
-            self._key_say("extras.key.offline", ui.AMBER)
-        self._extras_gate()
-
-    def _extras_gate(self) -> None:
-        """Next waits while the cloud switch is on with no working key
-        (the owner, 2026-09-19: "if I turned it on and put no key it must
-        not let me continue — turn it off or paste a key")."""
-        if self.name != "extras":
-            return
-        waiting = bool(self.extras.get("cloud")) and self._key_state != "ok"
-        for twin in (self.next_loud, self.next_quiet):
-            twin.enable(not waiting)
-        text = ""
-        if waiting:
-            text = WORDS["extras.key.checking" if self._key_state == "testing" else "extras.key.wait"]
-        if self.note.cget("text") != text:
-            self.note.configure(text=text, fg=ui.DIM)
 
     # ----------------------------------------------------------------- ready
     def _page_done(self) -> None:
@@ -2736,7 +2897,7 @@ class Wizard:
         row.pack(fill="x", pady=(0, 16))
         tk.Label(row, text=WORDS["done.hold"], bg=ui.CARD, fg=ui.FG,
                  font=(ui.UI, 11), anchor="w").pack(side="left", fill="x", expand=True)
-        ui.KeyCap(row, _pretty(self.cfg.hotkey), bg=ui.CARD, w=180).pack(side="right")
+        tklook.KeyCap(row, _pretty(self.cfg.hotkey), bg=ui.CARD, w=180).pack(side="right")
         self.switches = {}
         # The sync row first, and only with an account to sync to: on a
         # copy without a server, or one that walked past the account
@@ -2775,86 +2936,18 @@ class Wizard:
         self._finish()
 
     # -------------------------------------------------------- the downloads
-    def _step_for(self, kind: str, thing) -> steps.Step:
-        import models
-        import packs
-        if kind in ("pack", "recording"):
-            return packs.step(thing)
-        if kind == "detector":
-            return models.step(thing, words=models.DETECTOR_TEXT)
-        return models.step(thing)
-
-    def _ensure_runs(self) -> None:
-        for kind in ("model", "pack", "detector", "recording"):
-            thing = self.offers.get(kind)
-            if thing is not None and kind not in self.runs:
-                step = self._stepper(kind, thing)
-                size = int(getattr(thing, "bytes", 0) or step.total)
-                self.runs[kind] = steps.StepRun(english_step(kind, step, size))
-
-    def _download(self) -> None:
-        """[Download] on page 2: the queue is decided by the switches
-        as they stand now, then the first run starts."""
-        if self.active >= 0:
-            run = self._current_run()
-            if run is not None and run.state in ("paused", "offline", "failed"):
-                run.start()
-                if self.pane is not None:
-                    self.pane.refresh()
-            return
-        self.queue = [k for k in ("model", "pack", "detector", "recording")
-                      if k in self.runs and (k == "model" or self.want.get(k))]
-        if not self.queue:
-            return
-        self.active = 0
-        self.runs[self.queue[0]].start()
-        if self.pane is not None:
-            self.pane.attach(self.runs[self.queue[0]])
-            self.pane.prefix = self._prefix()
-            self.pane.refresh()
-        if self.name == "computer":
-            self._show_page()             # the switches lock
-
-    def _current_run(self) -> steps.StepRun | None:
-        if self.active < 0:
-            return self.runs.get("model") or next(iter(self.runs.values()), None)
-        if self.active < len(self.queue):
-            return self.runs[self.queue[self.active]]
-        return self.runs[self.queue[-1]]
-
-    def _prefix(self) -> str:
-        if self.active < 0 or len(self.queue) < 2:
-            return ""
-        i = min(self.active, len(self.queue) - 1)
-        name = self.runs[self.queue[i]].step.name or self.queue[i]
-        return WORDS["computer.queue"].format(n=i + 1, total=len(self.queue), name=name)
-
-    def _all_landed(self) -> bool:
-        return self.active >= len(self.queue) - 1 and \
-            (self._current_run() is None or self._current_run().ended)
-
-    def _run_ended(self, word: str) -> None:
-        """One run's end word, from the pane. `done` starts the next of
-        the queue; anything else leaves the queue where it stopped and
-        the [Download] button re-armed on the same run."""
-        if word == "done":
-            kind = self.queue[self.active] if 0 <= self.active < len(self.queue) else ""
-            if kind == "pack":
-                self._after_pack()
-            if kind == "recording":
-                try:
-                    import packs
-                    packs.activate("recording")   # the record key works from here
-                except Exception:                              # noqa: BLE001
-                    log.info("the Recording pack landed but was not activated", exc_info=True)
-            if self.active + 1 < len(self.queue):
-                self.active += 1
-                nxt = self.runs[self.queue[self.active]]
-                nxt.start()
-                if self.pane is not None:
-                    self.pane.prefix = self._prefix()
-                    self.pane.attach(nxt)
-            self._say_ready()
+    def _landed(self, kind: str) -> None:
+        """One part arrived (downloads.Queue.on_landed, on the Tk thread —
+        the tick pumps the queue): what it changes right away."""
+        if kind == "pack":
+            self._after_pack()
+        elif kind == "recording":
+            try:
+                import packs
+                packs.activate("recording")   # the record key works from here
+            except Exception:                              # noqa: BLE001
+                log.info("the Recording pack landed but was not activated", exc_info=True)
+        self._say_ready()
 
     def _after_pack(self) -> None:
         """NVIDIA's libraries landed: the probe runs again so the tier and
@@ -2867,18 +2960,6 @@ class Wizard:
                 self.cfg = config_mod.load_layered()
         except Exception:                                  # noqa: BLE001
             log.warning("the hardware probe failed after the pack", exc_info=True)
-
-    def _pump_runs(self) -> None:
-        """Every tick, on every page: the threads' news into the runs,
-        the pane redrawn if one is up. A run that ends while its pane is
-        not on screen is picked up here too."""
-        for run in self.runs.values():
-            if run.state == "running":
-                landed = run.pump()
-                if landed and self.pane is None:
-                    self._run_ended(landed[0])
-        if self.pane is not None:
-            self.pane.refresh()
 
     # ------------------------------------------------------------- the loop
     def _tick(self) -> None:
@@ -2903,19 +2984,17 @@ class Wizard:
                         and self.meter.peak < SPEECH
                         and time.monotonic() - self._quiet_since > QUIET_S):
                     self._warn_silent()
-            self._pump_runs()
-            if self.name == "computer":
-                self._computer_gate()
+            self.downloads.pump()                 # _landed hears what arrived
+            self._strip_tick()
             if self.name == "say":
                 self._say_ready()
-            if self.name == "extras":
-                self._extras_gate()
         except Exception:                                  # noqa: BLE001
             log.debug("the wizard's tick tripped", exc_info=True)
         self.root.after(60, self._tick)
 
     def _say_action(self) -> None:
         """The button's job right now: the model first, then the sentence."""
+        self._ask_close()
         if self._backend is None:
             self._load_model()
         else:
@@ -2952,6 +3031,7 @@ class Wizard:
         if self.name != "say" or self.say is None:
             return                # the page moved on; the model is kept
         if backend is None:
+            self._tried = True            # nothing this page can try any more
             self.status.configure(text=WORDS["say.load_failed"].format(error=error), fg=ui.RED)
             self.say.enable(True)
             return
@@ -2963,6 +3043,7 @@ class Wizard:
         if self._busy:
             return
         self._busy = True
+        self._tried = True                # landed or failed, it was tried
         self.say.enable(False)
         self.status.configure(text=WORDS["say.recording"], fg=ui.DIM)
         self._show_sample("")
@@ -3025,7 +3106,7 @@ class Wizard:
             self._said_loaded = True
             line += " · " + WORDS["say.loaded"].format(seconds=load_s)
         self.status.configure(text=line, fg=ui.GREEN)
-        if not card_tier(self.facts) and getattr(self, "cpu_note", None) is None:
+        if not downloads.card_tier(self.facts) and getattr(self, "cpu_note", None) is None:
             self.cpu_note = self._line(WORDS["say.cpu"], colour=ui.DIM, size=9,
                                        pady=(6, 0))
 
@@ -3042,16 +3123,11 @@ class Wizard:
 
     # ----------------------------------------------------------- navigation
     def _hidden(self, name: str) -> bool:
-        """A page with nothing on it is not shown (the owner, 2026-09-19
-        evening: "I do not want the installation page"): the computer
-        page when nothing is left to download — a copy whose downloads
-        landed, or a portable one."""
-        if self._returning and name in ("mic", "say", "keys", "extras", "done"):
-            return True          # a returning person: only what this PC still lacks
-        if name != "computer":
-            return False
-        offers = self.offers
-        return not any(offers.get(k) for k in ("model", "pack", "detector", "recording"))
+        """A page this person does not need: a returning account skips
+        everything after the sign-in (its words and settings came down;
+        the parts this PC lacks download in the background). There is no
+        downloads page to hide any more (2026-10-03)."""
+        return self._returning and name in ("mic", "say", "keys", "screen", "cloud", "extras", "done")
 
     def _back(self) -> None:
         if self.page == 0:
@@ -3065,10 +3141,6 @@ class Wizard:
             self.page -= 1
         self._show_page()
 
-    def _skip(self) -> None:
-        if self.name == "say":
-            self._advance()
-
     def _next(self) -> None:
         if self.name == "account" and getattr(self, "_account_step", "") == "link":
             self._link_done(approved=False)          # Later
@@ -3081,6 +3153,9 @@ class Wizard:
         if self.name == "done":
             self._open_desk()
             return
+        if self.name == "say" and self._should_ask():
+            self._say_ask()
+            return
         if self.name == "extras":
             self._save_extras()
         self._advance()
@@ -3092,8 +3167,7 @@ class Wizard:
         while self.page < len(PAGES) - 1 and self._hidden(self.name):
             self.page += 1
         if self._returning and self.name == "done":
-            # the downloads were the last thing this PC needed
-            self._open_desk()
+            self._open_desk()             # a returning person has nothing past the sign-in
             return
         if self.name == "say":
             # the sentence page records: the stream is opened again
@@ -3121,20 +3195,19 @@ class Wizard:
                                 fg=ui.RED)
 
     def _save_extras(self) -> None:
-        """The switches of pages 6 and 7, each through its own writer and
-        only when the person moved it: the awake hold, the screenshot
-        key and the phone listener are settings, the update check a
+        """The switches of the extras and Ready pages, each through its own
+        writer and only when the person moved it: the awake hold and the
+        phone listener are settings (the screenshot key is the "screen"
+        page's, written the moment it moves), the update check a
         privacy switch, autostart a state key plus the Run value, the
         Claude Code door two hook lines in Claude's settings.json; the
-        cloud one was written by its card already."""
+        cloud cards wrote their consent the moment they were switched."""
         if self.path is not None:
             return
         want, shown = self.extras, self._extras_shown
         updates: dict[str, object] = {}
         if want["awake"] != shown["awake"]:
             updates["awake.hold"] = want["awake"]
-        if want["snip"] != shown["snip"]:
-            updates["capture.capture_hotkey"] = SNIP_KEY if want["snip"] else PLAIN_SNIP_KEY
         if want["phone"] != shown["phone"]:
             updates["server.enabled"] = want["phone"]
         if want["autostart"] != shown["autostart"]:
@@ -3223,9 +3296,12 @@ class Wizard:
             self.result.closed = True      # the X, not Start
         self._closing = True
         self.listener.close()
-        for run in self.runs.values():
-            if run.running:
-                run.pause()           # the part stays; the next start resumes
+        if self.result.saved and not self.downloads.done and self.downloads.order:
+            # Start with parts still coming: they go on in the running app
+            # (main hands this to downloads.carry_on) — nobody waits here.
+            self.result.downloads = self.downloads
+        else:
+            self.downloads.pause()    # the X: the part stays; the next start resumes
         self._link_cancel()
         try:
             self.root.destroy()

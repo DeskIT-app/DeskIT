@@ -11,6 +11,9 @@ supabase/               export-ignore
 packaging/              export-ignore
 android/                export-ignore
 .github/                export-ignore
+# the web desk's page sources, npm lock and toolchain: the product gets
+# the BUILT pages (paths.WEB_DIST), never the tree that makes them
+web/                    export-ignore
 .claude/                export-ignore
 .agents/                export-ignore
 tests*.py               export-ignore
@@ -21,7 +24,6 @@ weekly_review.ps1       export-ignore
 phase1_cutover.ps1      export-ignore
 questions.py            export-ignore
 answer_card.py          export-ignore
-make_icon.py            export-ignore
 audio_check.py          export-ignore
 install_fonts.py        export-ignore
 skin/preview.py         export-ignore
@@ -81,3 +83,6 @@ packs/                  export-ignore
 android/gradlew                 text eol=lf
 android/gradlew.bat             text eol=crlf
 android/gradle/wrapper/*.jar    binary
+# the one wheel PyPI does not have (dev/proxy_tools_wheel.py): its bytes
+# are the hash in requirements.lock, so no checkout may touch them
+packaging/wheels/*.whl          binary

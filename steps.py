@@ -100,6 +100,7 @@ class StepRun:
         self.total = int(step.total)
         self.stage = ""
         self.why = ""
+        self.reason = ""                 # net's word for the last stop: offline, busy, ...
         self.rate = 0.0
         self.started = False
         self._cancel = threading.Event()
@@ -116,6 +117,7 @@ class StepRun:
         self.state = "running"
         self.stage = ""
         self.why = ""
+        self.reason = ""
         self._cancel = threading.Event()
         cancel = self._cancel
 
@@ -174,6 +176,7 @@ class StepRun:
                 landed.append("done")
             elif kind == "failed":
                 reason, self.why = event[1], event[2]
+                self.reason = str(reason)
                 self.state = {"cancelled": "paused", "offline": "offline"}.get(reason, "failed")
                 landed.append(self.state)
                 log.info("step: stopped (%s): %s", reason, self.why)
@@ -244,12 +247,13 @@ class StepPane:
                  secondary: str | None = "Not now", closing: str | None = "Close",
                  on_end=None, compact: bool = False, prefix: str = "",
                  on_go=None, title_pt: int = 17, body_lines: int = 5,
-                 foot: bool = False):
+                 foot: bool = False, sky=None):
         import tkinter as tk
 
+        import tklook
         import ui
 
-        self._tk, self._ui = tk, ui
+        self._tk, self._ui, self._look = tk, ui, tklook
         self.run = run
         self.width = width
         self.bg = bg or ui.BG
@@ -262,11 +266,14 @@ class StepPane:
         self._told: set[str] = set()
         self._pausing = False
         self._later_shown = True
-        self.frame = tk.Frame(parent, bg=self.bg)
+        # B+'s night behind the window (tklook.Sky): everything the pane
+        # puts on the ground wears its crop of it; None draws on `bg`.
+        self.sky = sky
+        self.frame = sky.frame(parent) if sky else tk.Frame(parent, bg=self.bg)
         f = self.frame
         # The window keeps its buttons at the foot, where they always
         # were; a page keeps them under the bar, where the eye is.
-        self.buttons = tk.Frame(f, bg=self.bg)
+        self.buttons = sky.frame(f) if sky else tk.Frame(f, bg=self.bg)
         if foot:
             self.buttons.pack(side="bottom", fill="x")
         self.title_pt = 11 if compact else title_pt
@@ -277,27 +284,49 @@ class StepPane:
         if not compact:
             self.body = self._para(f, run.step.body, pt=10, colour=ui.DIM,
                                    lines=body_lines, pady=(6, 10))
-            self.size = tk.Label(f, text=run.step.size_line, bg=self.bg, fg=ui.FAINT,
-                                 font=(ui.UI, 9), anchor="w", justify="left", wraplength=width)
-            self.size.pack(fill="x")
-        self.links = tk.Frame(f, bg=self.bg)
+            if sky:
+                self.size = sky.label(f, text=run.step.size_line, fg=tklook.MUTED,
+                                      font=(ui.UI, 9), anchor="w", justify="left",
+                                      wraplength=width)
+                self.size.pack(anchor="w")
+            else:
+                self.size = tk.Label(f, text=run.step.size_line, bg=self.bg, fg=tklook.MUTED,
+                                     font=(ui.UI, 9), anchor="w", justify="left",
+                                     wraplength=width)
+                self.size.pack(fill="x")
+        self.links = sky.frame(f) if sky else tk.Frame(f, bg=self.bg)
         self.links.pack(fill="x", pady=(4, 0))
         self._draw_links()
-        self.bar = tk.Canvas(f, width=width, height=self.BAR_H, bg=self.bg,
-                             highlightthickness=0, bd=0)
-        self.bar.pack(fill="x", pady=(10 if compact else 14, 6))
-        self.bar.create_rectangle(0, 0, width, self.BAR_H, fill=ui.LINE, outline="")
-        self._bar_fill = self.bar.create_rectangle(0, 0, 0, self.BAR_H, fill=ui.ACCENT, outline="")
-        self.status = tk.Label(f, text="", bg=self.bg, fg=ui.DIM, font=(ui.UI, 9), anchor="w")
-        self.status.pack(fill="x")
-        self.note = tk.Label(f, bg=self.bg, anchor="e")
+        # B+: the track is a well round at both ends, and what has come
+        # down is a pill of the switch's lavender-grey inside it — green
+        # once it is all here; the window's one iris thing is its button
+        if sky:
+            self.bar = tklook.TrackBar(f, sky, width, self.BAR_H)
+            self.bar.pack(anchor="w", pady=(10 if compact else 14, 6))
+        else:
+            self.bar = tk.Canvas(f, width=width, height=self.BAR_H, bg=self.bg,
+                                 highlightthickness=0, bd=0)
+            self.bar.pack(fill="x", pady=(10 if compact else 14, 6))
+            self.bar.create_image(0, 0, anchor="nw", image=tklook.photo(
+                self.bar, tklook.track(width, self.BAR_H, bg=self.bg)))
+        self._bar_fill = self.bar.create_image(1, 1, anchor="nw")
+        self._bar_drawn = None
+        if sky:
+            self.status = sky.label(f, text="", fg=tklook.MUTED, font=(ui.UI, 9), anchor="w")
+            self.status.pack(anchor="w")
+            self.note = sky.label(f, picture=None, anchor="e")
+        else:
+            self.status = tk.Label(f, text="", bg=self.bg, fg=tklook.MUTED, font=(ui.UI, 9),
+                                   anchor="w")
+            self.status.pack(fill="x")
+            self.note = tk.Label(f, bg=self.bg, anchor="e")
         if not foot:
             self.buttons.pack(fill="x", pady=(8, 0))
-        self.go = ui.Button(self.buttons, run.step.button, on_go or self.start,
-                            bg=self.bg, primary=True, w=150)
+        self.go = tklook.Button(self.buttons, run.step.button, on_go or self.start,
+                                bg=self.bg, primary=True, w=150, sky=sky)
         self.go.pack(side="right")
-        self.later = ui.Button(self.buttons, secondary or "Pause", self.stop, bg=self.bg,
-                               quiet=True, w=110)
+        self.later = tklook.Button(self.buttons, secondary or "Pause", self.stop, bg=self.bg,
+                                   quiet=True, w=110, sky=sky)
         self.later.pack(side="right", padx=(0, 10))
         self.refresh()
 
@@ -311,6 +340,10 @@ class StepPane:
         # front of the line.
         ui = self._ui
         rtl = ui.is_rtl(text)
+        if self.sky:
+            label = self.sky.label(parent, picture=self._words(text, pt, colour, rtl, lines))
+            label.pack(anchor="e" if rtl else "w", pady=pady)
+            return label
         photo, _h, _n = ui.draw_text(text, pt=pt, width=self.width, max_lines=lines,
                                      colour=colour, bg=self.bg, rtl=rtl)
         label = self._tk.Label(parent, image=photo, bg=self.bg,
@@ -319,9 +352,27 @@ class StepPane:
         label.pack(fill="x", pady=pady)
         return label
 
+    def _words(self, text: str, pt: int, colour: str, rtl: bool, lines: int):
+        """A paragraph as an RGBA picture for the sky — the same bidi path
+        (DrawTextW + DT_RTLREADING) ui.draw_text draws on a flat colour,
+        through visual_qa.text_pil, cut to the lines it may take."""
+        from visual_qa import text_pil
+        rgb = tuple(int(colour[i:i + 2], 16) for i in (1, 3, 5))
+        img = text_pil(text, self.width, pt=pt, colour=rgb, rtl=rtl)
+        box = img.getchannel("A").getbbox()
+        if box is None:
+            return img.crop((0, 0, max(1, img.width), 1))
+        line_h = max(1, round(pt * 96 / 72 * 1.5))
+        bottom = min(box[3], lines * line_h + 4)
+        return img.crop((0, 0, img.width, bottom))
+
     def _repaint(self, label, text: str, *, pt: int, colour: str, lines: int) -> None:
         ui = self._ui
         rtl = ui.is_rtl(text)
+        if self.sky:
+            label.configure(picture=self._words(text, pt, colour, rtl, lines))
+            label.pack_configure(anchor="e" if rtl else "w")
+            return
         photo, _h, _n = ui.draw_text(text, pt=pt, width=self.width, max_lines=lines,
                                      colour=colour, bg=self.bg, rtl=rtl)
         label.configure(image=photo, anchor="e" if rtl else "w")
@@ -332,8 +383,12 @@ class StepPane:
         for child in self.links.winfo_children():
             child.destroy()
         for label, url in self.run.step.links:
-            link = tk.Label(self.links, text=label, bg=self.bg, fg=ui.ACCENT_TEXT,
-                            font=(ui.UI, 9, "underline"), cursor="hand2")
+            if self.sky:
+                link = self.sky.label(self.links, text=label, fg=ui.ACCENT_TEXT,
+                                      font=(ui.UI, 9, "underline"), cursor="hand2")
+            else:
+                link = tk.Label(self.links, text=label, bg=self.bg, fg=ui.ACCENT_TEXT,
+                                font=(ui.UI, 9, "underline"), cursor="hand2")
             link.pack(side="left", padx=(0, 14))
             link.bind("<Button-1>", lambda _e, u=url: self._open(u))
 
@@ -342,11 +397,18 @@ class StepPane:
         has something to say, so an idle pane stays short."""
         ui = self._ui
         if not text:
+            if self.sky:
+                self.note.pack_forget()
+                return
             self.note.configure(image="")
             self.note.photo = None
             self.note.pack_forget()
             return
         rtl = ui.is_rtl(text)
+        if self.sky:
+            self.note.configure(picture=self._words(text, 10, colour or ui.FG, rtl, 3))
+            self.note.pack(anchor="e" if rtl else "w", pady=(6, 0), after=self.status)
+            return
         photo, _h, _n = ui.draw_text(text, pt=10, width=self.width, max_lines=3,
                                      colour=colour or ui.FG, bg=self.bg, rtl=rtl)
         self.note.configure(image=photo, anchor="e" if rtl else "w")
@@ -401,7 +463,7 @@ class StepPane:
         ui = self._ui
         run = self.run
         try:
-            self.bar.coords(self._bar_fill, 0, 0, int(self.width * run.fraction), self.BAR_H)
+            self._draw_fill(run)
             self.status.configure(text=(self.prefix + run.status()) if run.status() else "")
             self.go.enable(run.state in ("idle", "paused", "offline", "failed"))
             if run.running:
@@ -429,6 +491,29 @@ class StepPane:
                     self.on_end(run.state)
         except Exception:                                    # noqa: BLE001
             log.debug("step: the pane could not draw", exc_info=True)
+
+    def _draw_fill(self, run) -> None:
+        """The part that has come down: a pill inside the track, redrawn
+        only when its width or its colour moves."""
+        width = int(round((self.width - 2) * max(0.0, min(1.0, run.fraction))))
+        done = run.state == "done"
+        key = (width, done)
+        if key == self._bar_drawn:
+            return
+        self._bar_drawn = key
+        if width < self.BAR_H - 2:
+            self.bar.itemconfig(self._bar_fill, image="")
+            return
+        colour = self._ui.GREEN if done else self._look.STRIP_FILL
+        if self.sky:
+            image = self._look.fill_pill(width, self.BAR_H - 2, colour=colour,
+                                         bg=self.sky.crop(self.bar, width + 2, self.BAR_H),
+                                         inset=1)
+        else:
+            image = self._look.fill_pill(width, self.BAR_H - 2, colour=colour,
+                                         bg=self.bg)
+        self.bar.coords(self._bar_fill, 1, 1)
+        self.bar.itemconfig(self._bar_fill, image=self._look.photo(self.bar, image))
 
     def pack(self, **kw) -> None:
         self.frame.pack(**kw)
@@ -470,6 +555,10 @@ class StepWindow:
         self.root.configure(bg=ui.BG)
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._not_now)
+        # the window's frame exists only once Tk has realised it: the mark
+        # hung on it before that went nowhere, and the title bar wore Tk's
+        # feather (the photo pass, 2026-10-24)
+        self.root.update_idletasks()
         try:
             import dashboard
             dashboard._set_window_icon(self.root)
@@ -479,8 +568,12 @@ class StepWindow:
         self.root.update_idletasks()
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         self.root.geometry(f"{self.W}x{self.H}+{(sw - self.W) // 2}+{max(0, (sh - self.H) // 3)}")
+        # B+'s night behind the window, as behind the first-run wizard
+        # (the owner, 2026-10-24: "yes, as in the wizard")
+        import tklook
+        self.sky = tklook.Sky(self.root, (self.W, self.H))
         self.pane = StepPane(self.root, self.run_, width=self.W - 2 * self.PAD,
-                             on_end=self._ended, foot=True)
+                             on_end=self._ended, foot=True, sky=self.sky)
         self.pane.pack(fill="both", expand=True, padx=self.PAD, pady=self.PAD)
         self._after = self.root.after(100, self._poll)
 

@@ -1,12 +1,11 @@
 """A card's face, drawn by Pillow: the shadow, the surface, the rim.
 
-boot.Card._plate_image and the skia cards paint the same thing — six
-offset round-rects of decaying alpha for a shadow, a face a hair lighter
-at the top than the bottom, a LINE hairline round it and a specular
-hairline along 60% of the top edge. This is that recipe for the painters
-that cannot assume Skia (a fresh install has none: the skin pack is a
-download), so the card a stranger sees on first launch is the card the
-owner sees, and not a Tk frame.
+Since 2026-10-23 the pane itself is B+'s and comes from look.py (`plate`
+hands over to look.plate: the desk's glass at the desktop's density, its
+frosted rim and its long soft shadow); what is left here are the small
+shapes the key card still draws its marks with. The point of the module
+stands: the card a stranger sees on first launch, with no skia, is the
+card the owner sees, and not a Tk frame.
 
 Two things Pillow gets wrong by default, and how they are handled here:
 
@@ -28,17 +27,11 @@ image and the stacking was a Skia-side economy.
 """
 from __future__ import annotations
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
-
-from .palette import BG, CARD, FG, LINE, rgb
+from PIL import Image, ImageDraw
 
 SS = 4                    # the supersampling every shape is drawn at
 SHADOW = 26               # px of room a card leaves around itself
-SHADOW_A = 118            # the shadow's core alpha
-SHADOW_BLUR = 9.0         # px
-SHADOW_DROP = 5           # px, downward
-FACE_A = 252              # boot.py's; the hint card uses less and shows frost
-SPEC_A = 46               # the specular hairline's peak alpha
+FACE_A = 252              # kept for callers that still pass one
 
 
 def _big(box):
@@ -116,46 +109,16 @@ def plate(width: int, height: int, radius: float, inset: int = SHADOW,
     """The card's static picture, `inset` px of shadow room on each side:
     (width + 2 * inset) x (height + 2 * inset). `backdrop` is an optional
     RGBA picture of what is behind the card (blurred, for frost), cut to
-    the card's shape under the face."""
-    W, H = width + inset * 2, height + inset * 2
-    x0 = y0 = inset
-    box = (x0, y0, x0 + width - 1, y0 + height - 1)
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    the card's shape under the face.
 
-    shadow = rounded((W, H), (x0, y0 + SHADOW_DROP, x0 + width - 1,
-                              y0 + height - 1 + SHADOW_DROP), radius, SHADOW_A)
-    shadow = shadow.filter(ImageFilter.GaussianBlur(SHADOW_BLUR))
-    img = Image.alpha_composite(img, text_layer((W, H), (0, 0, 0), shadow))
-
-    form = rounded((W, H), box, radius)
-    if backdrop is not None:
-        frost = backdrop.convert("RGBA").resize((W, H))
-        frost.putalpha(ImageChops.multiply(frost.getchannel("A"), form))
-        img = Image.alpha_composite(img, frost)
-
-    # the face: CARD at the top down to BG at the bottom — a surface lit
-    # from above, which is what makes a dark card read as lit rather than
-    # printed
-    top, bottom = rgb(CARD), rgb(BG)
-    grad = Image.linear_gradient("L").resize((W, H))
-    face = Image.new("RGBA", (W, H), top + (255,))
-    face.paste(Image.new("RGBA", (W, H), bottom + (255,)), (0, 0), grad)
-    face.putalpha(form.point(lambda v: v * face_alpha // 255))
-    img = Image.alpha_composite(img, face)
-
-    img = Image.alpha_composite(img, shape((W, H), box, radius,
-                                           outline=rgb(LINE) + (190,)))
-
-    # a specular hairline on the top edge only, 60% of the width, fading
-    # at both ends — the cheapest thing that says "glass"
-    spec = Image.new("L", (W, 1), 0)
-    left, span = int(x0 + width * 0.20), int(width * 0.60)
-    for i in range(span):
-        k = 1.0 - abs(i / max(1, span - 1) - 0.5) * 2.0
-        spec.putpixel((left + i, 0), int(SPEC_A * k))
-    line = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    line.paste(text_layer((W, 1), rgb(FG), spec), (0, y0))
-    return Image.alpha_composite(img, line)
+    B+ SINCE 2026-10-23: the pane is look.plate's — the desk's glass at
+    the desktop's density, its frosted rim and its long soft shadow — so
+    the key card and the move card sit on the pane every other card does.
+    `face_alpha` is no longer read (the density is the palette's,
+    GLASS_A_TOP / GLASS_A_BOT)."""
+    import look
+    return look.plate(int(width), int(height), radius, int(inset),
+                      frost=backdrop, shadow=inset > 0)
 
 
 def rule(size, x0: float, x1: float, y: float, colour) -> Image.Image:

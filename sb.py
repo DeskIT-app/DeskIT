@@ -365,7 +365,11 @@ def _refresh() -> dict:
         if status in (400, 401, 403, 404):
             # The refresh token was revoked or used elsewhere: the
             # account is gone or signed out from another PC (8.8).
-            _account_gone(f"the session could not be refreshed ({_server_said(status, data if isinstance(data, bytes) else b'')})")
+            # "Refresh Token Not Found" is the session deleted on the
+            # server — Sign out of every PC, or the account deleted.
+            said = _server_said(status, data if isinstance(data, bytes) else b"")
+            _account_gone(f"the session could not be refreshed ({said})",
+                          words=GONE_ELSEWHERE if "not found" in said.lower() else GONE_WORDS)
         raise AccountError(f"the session could not be refreshed ({status})")
     return _store_session(data)
 
@@ -381,14 +385,24 @@ def _fresh() -> dict:
         return session
 
 
-def _account_gone(why: str) -> None:
+#: What the sign-in card says under its button when this PC's session
+#: ended somewhere else. Plain words; the server's own reason goes to
+#: app.log. Until 2026-10-03 the card showed the server's line itself —
+#: "the session could not be refreshed (HTTP 400: Invalid Refresh Token:
+#: Refresh Token Not Found)" — and it said nothing to a person.
+GONE_ELSEWHERE = "Signed out from another PC."
+GONE_WORDS = "This PC was signed out."
+
+
+def _account_gone(why: str, *, words: str = GONE_WORDS) -> None:
     """A second 401, or a dead refresh token: drop the session and the
-    cursors; the next sign-in starts clean. Never a dialog."""
+    cursors; the next sign-in starts clean. Never a dialog: ``why`` goes
+    to the log, ``words`` to the sign-in card."""
     log.warning("account: %s — signed out on this PC", why)
     _clear_session()
     sync.forget_all()
     _forget_lock_state()
-    _status["last_error"] = why
+    _status["last_error"] = words
     _signed_out()
 
 
@@ -461,6 +475,29 @@ def device_name() -> str:
     return name[:40]
 
 
+def copy_name() -> str:
+    """Which DeskIT this is, in a person's words: the Store's, the
+    website's, winget's, or the owner's checkout."""
+    if paths.DEVELOPER:
+        return "DeskIT Dev"
+    if paths.PACKAGED or paths.CHANNEL == "store":
+        return "DeskIT App (Store)"
+    if paths.CHANNEL == "winget":
+        return "DeskIT (winget)"
+    return "DeskIT (website)"
+
+
+def request_name() -> str:
+    """The name a request to join carries: the PC's, and which copy on
+    it is asking. Two copies on one PC were both "YOAV" on the other's
+    Home (the Store walk, 2026-10-03: the Store copy asking the Dev, side
+    by side); "YOAV · DeskIT App (Store)" says which one to expect. The
+    column holds 40 characters, so the PC's name gives way, not the copy."""
+    copy = copy_name()
+    room = 40 - len(copy) - 3
+    return f"{device_name()[:room].rstrip()} · {copy}"
+
+
 def _app_version() -> str:
     try:
         import version
@@ -530,9 +567,9 @@ def _pkce() -> tuple[str, str]:
 # THE PAGE THE BROWSER LANDS ON. It is the last thing the person sees
 # before the app, and until 2026-09-19 it was a bare white page in Hebrew
 # — "you can close this tab" — over which he had to go and find the
-# window himself. It is the app's own surface now: LAMPLIGHT (skin\
-# palette.py — ground #14110C, card #24201A, text #F1ECE2, dim #B2A896,
-# the gold #E3A63C only where the palette allows it, the focus ring), the
+# window himself. It is the app's own surface now: B+ since 2026-10-23,
+# LAMPLIGHT before (skin\palette.py — ground #0B0D19, card #1A1E35, text
+# #EFEDF7, dim #C0C3D8, the iris #A597FF only as the focus ring), the
 # mark inline from icon.png, English (the first-run flow's language, his
 # decision that night), one card, one plain button. Nothing is fetched:
 # no font, no script, no image from anywhere — a page on 127.0.0.1 that
@@ -544,24 +581,24 @@ def _pkce() -> tuple[str, str]:
 _PAGE_CSS = (
     ":root{color-scheme:dark}"
     "html,body{height:100%;margin:0}"
-    "body{background:#14110c radial-gradient(60% 45% at 50% 0%,#292011 0%,#14110c 70%);"
-    "color:#f1ece2;font-family:system-ui,'Segoe UI',Rubik,Arial,sans-serif;"
+    "body{background:#0b0d19 radial-gradient(60% 45% at 50% 0%,#1a1b30 0%,#0b0d19 70%);"
+    "color:#efedf7;font-family:system-ui,'Segoe UI',Rubik,Arial,sans-serif;"
     "display:flex;align-items:center;justify-content:center;box-sizing:border-box;"
     "padding:24px 16px;-webkit-font-smoothing:antialiased}"
-    "main{background:#24201a;border:1px solid #3a342a;border-radius:16px;"
+    "main{background:#1a1e35;border:1px solid #30365a;border-radius:22px;"
     "padding:40px 36px 34px;max-width:420px;width:100%;text-align:center;"
     "box-shadow:0 24px 60px rgba(0,0,0,.45)}"
     ".mark{width:72px;height:72px;display:block;margin:0 auto 22px;border-radius:17px}"
     "h1{font-size:22px;font-weight:600;line-height:1.3;margin:0 0 10px;letter-spacing:-.01em}"
-    "p{color:#b2a896;font-size:15px;line-height:1.55;margin:0 0 26px}"
-    "p.why{color:#f1ece2;background:#1c1813;border:1px solid #3a342a;border-radius:10px;"
+    "p{color:#c0c3d8;font-size:15px;line-height:1.55;margin:0 0 26px}"
+    "p.why{color:#efedf7;background:#121527;border:1px solid #30365a;border-radius:14px;"
     "padding:10px 14px;font-size:14px;word-break:break-word}"
-    "button{font:inherit;font-size:15px;font-weight:600;color:#f1ece2;background:#29241d;"
-    "border:1px solid #4e4737;border-radius:10px;padding:11px 24px;cursor:pointer}"
-    "button:hover{background:#332d24;border-color:#5a5240}"
-    "button:active{background:#1f1b15}"
-    "button:focus-visible{outline:2px solid #e3a63c;outline-offset:2px}"
-    "small{display:block;margin-top:20px;color:#7e7564;font-size:12px}"
+    "button{font:inherit;font-size:15px;font-weight:500;color:#efedf7;background:#242944;"
+    "border:1px solid #454c78;border-radius:999px;padding:11px 26px;cursor:pointer}"
+    "button:hover{background:#2a3050;border-color:#525a88}"
+    "button:active{background:#161a2e}"
+    "button:focus-visible{outline:2px solid #a597ff;outline-offset:2px}"
+    "small{display:block;margin-top:20px;color:#a4a9c2;font-size:12px}"
 )
 _PAGE_JS = (
     "function shut(){window.close();setTimeout(function(){"
@@ -794,16 +831,48 @@ def set_name(name: str) -> str:
     return name
 
 
+def _end_the_others() -> None:
+    """Sign out of every PC, the part about the OTHER PCs: their sessions
+    end on the server (scope=others — this one is kept for one more
+    call), then one broadcast on the account's channel, ``signed_out``,
+    makes every copy that is listening ask the server about its own
+    session at once (``_live_once``); a refused refresh is
+    ``_account_gone``, the lock, within the second. Without it a copy
+    went on for the rest of its access token's hour: measured 2026-10-03,
+    the Dev worked 58 minutes past "Sign out of every PC" and approved
+    two requests to join. The order is the point: the broadcast goes
+    after the sessions are gone, so no copy can refresh in between, and
+    under this PC's own session, which the server's check (migration
+    0006) still lets through. A copy that is not listening — offline,
+    sync off, or not ours — meets that check on its next request."""
+    _fresh()
+    status, data = _auth("logout", {}, query="scope=others", bearer=True)
+    if status not in (200, 204):
+        raise AccountError(_server_said(status, data if isinstance(data, bytes) else b""))
+    _broadcast(event="signed_out")
+
+
 def sign_out(everywhere: bool = True) -> None:
     """Sign out everywhere (the refresh tokens are revoked server-side),
     then forget the session and the cursors here. The local files stay.
-    ``everywhere=False`` is the wizard's "Not you?": this PC's session
-    only, the person's other PCs keep theirs."""
+    ``everywhere=False`` is this PC's session only, the person's other
+    PCs keep theirs: the wizard's "Not you?" and, since the Store walk of
+    2026-10-03, the desk's own Sign out. The desk's Sign out of every PC
+    is the one caller of the default."""
     session = _load_session()
     if session is not None and configured():
+        # every PC: the others first and told (_end_the_others), then
+        # this one; if that road fails, the old one — all at once
+        scope = "local"
+        if everywhere:
+            try:
+                _end_the_others()
+            except Exception as e:                           # noqa: BLE001
+                log.info("account: the other PCs were not signed out one by one (%s) — "
+                         "all at once instead", e)
+                scope = "global"
         try:
-            _auth("logout", {}, query="scope=global" if everywhere else "scope=local",
-                  bearer=True)
+            _auth("logout", {}, query=f"scope={scope}", bearer=True)
         except Exception as e:                               # noqa: BLE001
             log.info("account: the sign-out did not reach the server (%s) — "
                      "signed out here", e)
@@ -1078,10 +1147,33 @@ def _history_aad(uid: str, row: dict) -> str:
                                     ts=ts, kind=str(row.get("kind") or ""))
 
 
+def _fit_history(text: str, raw):
+    """``text`` and ``raw`` as much as fits one sealed value
+    (vault.PLAIN_MAX, 5,672 bytes): whole when they fit, which is every
+    row but one of the owner's 1,486 on 2026-10-23; else ``raw`` is
+    dropped — the other PC reads a row's raw only for a learned pair
+    (sync.remote_line), a few words that never come near the cap — and
+    then, past about 2,800 Hebrew characters, the text keeps its head.
+    The whole text stays in this PC's transcripts.log either way."""
+    if vault.fits_json({"text": text, "raw": raw}):
+        return text, raw
+    keep, most = 0, len(text)                       # the longest head that fits
+    while keep < most:
+        mid = (keep + most + 1) // 2
+        if vault.fits_json({"text": text[:mid], "raw": None}):
+            keep = mid
+        else:
+            most = mid - 1
+    return text[:keep], None
+
+
 def _seal_history(key: bytes, uid: str, row: dict) -> dict:
     """The row as it leaves: ``text`` and ``raw`` gone, ``cipher`` in
-    their place."""
-    text, raw = row.pop("text", ""), row.pop("raw", None)
+    their place — always within the server's is_sealed() cap, because
+    one row it refuses refuses the batch, and the cursor waits on that
+    batch for good (2026-10-20 to 10-23: one long lookup held every
+    later row back)."""
+    text, raw = _fit_history(row.pop("text", ""), row.pop("raw", None))
     row["cipher"] = vault.seal_json(key, {"text": text, "raw": raw}, _history_aad(uid, row))
     return row
 
@@ -1163,6 +1255,40 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
     return word + (f", {unopened} not opened" if unopened else "")
 
 
+#: The keys' cursor as it was before each slot kept its own record —
+#: carried into this slot's record on the first pass (``_slot_record``).
+_VAULT_FLAT: tuple[str, ...] = ("vault_pulled_at", "vault_pushed", "vault_digest")
+
+
+def _slot_record(cursor: dict, key: bytes) -> dict:
+    """This slot's record of what it synced. The first pass after the
+    slots were split finds the folder's old single record instead and
+    carries it over: it describes the keys this copy synced from
+    ``DeskIT/``, and migrations step 6 copied those very keys into the
+    slot at start, so the two agree and a key changed here since is
+    pushed. A name the old record knew that the slot does not hold (the
+    copy failed, or the person emptied it) is forgotten instead of being
+    read as a removal, and the account's rows come down again from the
+    start, which fills it."""
+    slots: dict = cursor.setdefault("vault_slots", {})
+    flat = {k: cursor.pop(k) for k in _VAULT_FLAT if k in cursor}
+    if secretstore.TARGET_PREFIX in slots:
+        return dict(slots[secretstore.TARGET_PREFIX])
+    if not flat:
+        return {}
+    record = {"pulled_at": str(flat.get("vault_pulled_at") or ""),
+              "pushed": dict(flat.get("vault_pushed") or {}),
+              "digest": dict(flat.get("vault_digest") or {})}
+    _digests, present = vault.digest_keys(key)
+    gone = [n for n in record["digest"] if n not in present]
+    for name in gone:
+        record["digest"].pop(name, None)
+        record["pushed"].pop(name, None)
+    if gone:
+        record["pulled_at"] = ""
+    return record
+
+
 def _sync_vault(cursor: dict, push: bool = True) -> str:
     """The cloud keys, one sealed row per name, under the words-and-
     settings gate (a key is a setting). Down: a row newer than the
@@ -1172,15 +1298,33 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     sealed; a name that is empty here and was never synced is NOT
     pushed (a fresh PC must not wipe the account's keys), an emptied
     one is (a key removed here is removed everywhere). Last writer wins
-    per name. ``push=False`` is the live pull."""
+    per name. ``push=False`` is the live pull.
+
+    The cursor's half for the keys is the SLOT's, not the folder's: one
+    record per Credential Manager prefix (``vault_slots``). Until
+    2026-10-04 it was one record and every copy shared ``DeskIT/``; when
+    each copy got a prefix of its own (secretstore.TARGET_PREFIX), the old
+    record is carried into the slot's once (``_slot_record``): dropping it
+    made the first pass a fresh PC's, and the owner's Dev copy, whose key
+    he replaced in the minute between the update and that pass, had the
+    account's dead key pulled over the new one (2026-10-04 19:56:04,
+    "vault pulled 1, pushed 0", 0.4 s after the provider accepted the new key);
+    and keeping it as it was would have read a slot that is new and empty
+    as "the person removed the key here" and pushed the removal to every
+    PC. A slot with no record at all is a fresh PC's: everything the
+    account holds comes down, and only a name the account has never had
+    goes up. Two programs that share one data folder under different
+    prefixes keep a record each."""
     uid = _fresh()["user"]["id"]
     key = _lock_key(uid)
     if key is None:
         return _lock_wait_word()
-    pushed_ciphers: dict = dict(cursor.get("vault_pushed") or {})
-    known: dict = dict(cursor.get("vault_digest") or {})
+    slots: dict = cursor.setdefault("vault_slots", {})
+    mine: dict = _slot_record(cursor, key)
+    pushed_ciphers: dict = dict(mine.get("pushed") or {})
+    known: dict = dict(mine.get("digest") or {})
     # down
-    since = str(cursor.get("vault_pulled_at") or "")
+    since = str(mine.get("pulled_at") or "")
     query = "select=name,cipher,updated_at&order=updated_at.asc"
     if since:
         query += "&updated_at=gt." + urllib.parse.quote(since)
@@ -1191,15 +1335,16 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
                 if r.get("cipher") and str(r.get("cipher")) != pushed_ciphers.get(str(r.get("name")))}
     changed = vault.import_keys(key, uid, incoming) if incoming else []
     if rows:
-        cursor["vault_pulled_at"] = str(rows[-1].get("updated_at") or since)
+        mine["pulled_at"] = str(rows[-1].get("updated_at") or since)
     if changed or incoming:
         digests, _present = vault.digest_keys(key)
         for name in incoming:
             known[name] = digests.get(name, "")
-        cursor["vault_digest"] = known
+        mine["digest"] = known
         for name in incoming:
             pushed_ciphers.pop(name, None)
-        cursor["vault_pushed"] = pushed_ciphers
+        mine["pushed"] = pushed_ciphers
+    slots[secretstore.TARGET_PREFIX] = mine
     # up
     pushed = 0
     if push:
@@ -1217,12 +1362,13 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
             pushed = len(payload)
             stamps = [str(r.get("updated_at") or "") for r in (data or []) if isinstance(r, dict)]
             if stamps:
-                cursor["vault_pulled_at"] = max([cursor.get("vault_pulled_at") or ""] + stamps)
+                mine["pulled_at"] = max([mine.get("pulled_at") or ""] + stamps)
             pushed_ciphers.update(sealed)
-            cursor["vault_pushed"] = pushed_ciphers
+            mine["pushed"] = pushed_ciphers
             for n in to_push:
                 known[n] = digests[n]
-            cursor["vault_digest"] = known
+            mine["digest"] = known
+            slots[secretstore.TARGET_PREFIX] = mine
     return f"pulled {len(changed)}, pushed {pushed}"
 
 
@@ -1263,7 +1409,9 @@ def _broadcast(stores: list[str] | None = None, *, event: str = "changed",
     topic — ``pairing`` (a PC asks to join: its request id, code and
     name) and ``paired`` (a PC approved: the request id) — and carry
     nothing a stranger could use: the code is compared on two screens,
-    the key crosses wrapped inside the table. A failure is a debug line
+    the key crosses wrapped inside the table. ``signed_out`` (Sign out of
+    every PC, ``_end_the_others``) carries the device id alone and only
+    makes the others ask the server. A failure is a debug line
     — the 15-minute pass delivers the rows all the same."""
     try:
         uid = _fresh()["user"]["id"]
@@ -1343,11 +1491,17 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True) -> dict
             if changed and signed_in():
                 _broadcast(changed)
             errors = [f"{k}: {v[7:]}" for k, v in out.items() if v.startswith("error: ")]
+            # the account went away under this pass: _account_gone has
+            # said why in plain words, and the stores' errors are its
+            # echo — the log's, not the sign-in card's
+            gone = not signed_in()
             if errors:
-                _status["last_error"] = "; ".join(errors)[:200]
+                if not gone:
+                    _status["last_error"] = "; ".join(errors)[:200]
                 log.info("sync%s: %s", f" ({reason})" if reason else "", "; ".join(errors))
             else:
-                _status["last_error"] = ""
+                if not gone:
+                    _status["last_error"] = ""
                 _status["last_sync"] = _now_iso()
                 log.info("sync%s: %s", f" ({reason})" if reason else "",
                          ", ".join(f"{k} {v}" for k, v in out.items()) or "nothing to do")
@@ -1558,7 +1712,23 @@ def nudge(store: str | None = None) -> None:
 # ------------------------------------------------------------- the live channel
 
 _live_stop = threading.Event()
-_live_state: dict = {"on": False, "error": ""}
+_live_state: dict = {"on": False, "error": "", "asked": False}
+
+
+def _ask_about_this_session(why: str) -> None:
+    """Ask the server about this copy's session NOW, not at the worker's
+    next pass: a refused refresh is ``_account_gone`` and the lock. Two
+    doors call it — another PC's ``signed_out`` on the live channel, and
+    a refused join (since migration 0006 the channel refuses a session
+    that has ended: measured 2026-10-03, a copy reopened after Sign out
+    of every PC was refused at 4 s and still waited for its first pass,
+    30 s after the start, to lock)."""
+    log.info("live: %s — asking the server about this session", why)
+    try:
+        with _lock:
+            _refresh()
+    except AccountError as e:
+        log.info("live: %s", e)
 
 
 def _live_purpose() -> str | None:
@@ -1575,6 +1745,7 @@ def _live_loop(vocab) -> None:
     """Hold the socket for as long as the account and a gate are there;
     reconnect with LIVE_RETRY_S between tries; never raise."""
     tries = 0
+    _live_state["asked"] = False
     while not _live_stop.is_set():
         try:
             if not (configured() and signed_in()) or _live_purpose() is None or net.offline:
@@ -1625,8 +1796,13 @@ def _live_once(vocab) -> bool:
         answer = json.loads(reply) if reply else {}
         if answer.get("event") != "phx_reply" or (answer.get("payload") or {}).get("status") != "ok":
             said = json.dumps((answer.get("payload") or {}).get("response") or answer)[:160]
+            if not _live_state.get("asked"):
+                # once per run of refusals: a channel refused for any
+                # other reason must not cost a refresh at every retry
+                _live_state["asked"] = True
+                _ask_about_this_session("the live channel refused the join")
             raise AccountError(f"the live channel refused the join: {said}")
-        _live_state.update(on=True, error="")
+        _live_state.update(on=True, error="", asked=False)
         log.info("live: listening on the account's channel")
         if _lock_state.get("state") == "have":
             try:
@@ -1676,6 +1852,14 @@ def _live_once(vocab) -> bool:
                 if req and str(what.get("id") or "") == req["id"]:
                     log.info("live: this PC was approved — taking the key")
                     sync_now(vocab, reason="paired")
+                continue
+            if inner.get("event") == "signed_out":
+                # another PC signed every PC out (_end_the_others): ask
+                # the server about this session now, not at the end of
+                # its token's hour. The event only makes this copy look;
+                # a refused refresh is _account_gone and the lock, and
+                # the loop's next turn closes the socket.
+                _ask_about_this_session("another PC signed every PC out")
                 continue
             if inner.get("event") != "changed":
                 continue
@@ -1847,8 +2031,7 @@ def _cursor_follows_lock(cursor: dict, key: bytes) -> None:
         return
     if cursor.get("lock"):
         log.info("lock: the account's key changed — what was said syncs again from the start")
-    for name in ("history_pulled_at", "history_pushed_ts", "vault_pulled_at",
-                 "vault_pushed", "vault_digest"):
+    for name in ("history_pulled_at", "history_pushed_ts", "vault_slots") + _VAULT_FLAT:
         cursor.pop(name, None)
     sync.forget_remote()
     cursor["lock"] = fp
@@ -1924,7 +2107,7 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         code = vault.pairing_code(uid, pid, public)
         status, data = _rest("POST", "pairings", purpose="account",
                              payload={"id": pid, "user_id": uid, "device_id": device_id(),
-                                      "device_name": device_name(),
+                                      "device_name": request_name(),
                                       "code": vault.code_hint(code), "applicant": public},
                              prefer="return=minimal")
         if status not in (200, 201, 204):
@@ -1933,7 +2116,7 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         req = {"id": pid, "code": code, "expires": now + PAIRING_TTL_S, "lock_id": remote}
         log.info("lock: another PC holds the account's key — this PC asks to join (code %s)", code)
         _set_lock(state="waiting", lock_id=remote, pairing=req)
-        _broadcast(event="pairing", extra={"id": pid, "code": code, "name": device_name()})
+        _broadcast(event="pairing", extra={"id": pid, "code": code, "name": request_name()})
     else:
         _set_lock(state="waiting", lock_id=remote, pairing=req)
     return None
@@ -2115,8 +2298,8 @@ def lock_answer(yes: bool) -> str:
     other lock is not taken. Returns "asked".
     [It wasn't me]: nothing moves. The key stays, the sealed stores stay
     paused both ways, and the refusal is written beside the key so a
-    restart does not ask again; Home then points to Sign out (every
-    session of the account, a stolen one too) and offers
+    restart does not ask again; Home then points to Sign out of every PC
+    (every session of the account, a stolen one too) and offers
     ``restore_lock``. Returns "kept"."""
     uid = _fresh()["user"]["id"]
     with _sync_lock:
@@ -2283,7 +2466,7 @@ configure()
 __all__ = [
     "PROJECT_REF", "PUBLISHABLE_KEY", "configure", "configured", "base_url",
     "AccountError", "NotAllowed", "signed_in", "user", "device_id",
-    "device_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
+    "device_name", "copy_name", "request_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
     "set_name", "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
     "start_worker", "nudge", "status", "forget_cache", "REPORT_COLUMNS",
     "REQUIRED", "SIGNED_OUT_HOOKS", "LIVE_ENABLED", "STORES", "stop_live",

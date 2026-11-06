@@ -30,8 +30,9 @@ audio, not the clock:
 - the LATEST such pause, so windows come out as long as the config
   allows (window_s) rather than as short as the speech permits;
 - never past MAX_WINDOW_S without a cut: faster-whisper would break the
-  audio at 30 s itself, and a quiet chunk chosen here beats a hard edge
-  chosen there.
+  audio at 30 s itself, and the longest quiet run chosen here beats a
+  hard edge chosen there — the longest, not the quietest chunk, which in
+  unbroken speech is a consonant inside a word (cut_at says what it cost).
 
 HOW LONG A WINDOW MUST BE was measured, not chosen (2026-09-13, the 69
 gold clips in corpus\\, 2,881 labelled words, the roller simulated over
@@ -200,8 +201,46 @@ def cut_at(peaks: Sequence[float], sizes: Sequence[int], rate: int,
             return k if k > 0 else None
         i = j - 1
     if total >= max_window_s * rate:
-        # No pause at all in nearly half a minute: the quietest chunk of
-        # the last five seconds that is still LAG_S behind the microphone.
+        # No pause at all in nearly half a minute: the LONGEST run of quiet
+        # in the last five seconds that is still LAG_S behind the
+        # microphone, cut through its middle like a pause. Only when there
+        # is not one quiet chunk there, the quietest chunk.
+        #
+        # It was the quietest chunk alone until 2026-10-04, and in unbroken
+        # speech the quietest 10 ms is as likely as not the closure of a
+        # stop consonant INSIDE a word. Measured on the Store walk's 34.5 s
+        # dictation (read aloud, no 0.5 s pause in 27 s): the cut went to a
+        # chunk at peak 0.0001 at 28.32 s, the closure of the last ט of
+        # "מייקרוסופט", and the word after it ("הפגישה") fell between the
+        # two decodes and never reached the paste, while all three
+        # whole-recording witnesses had it.
+        # The longest run in the same five seconds was 0.18 s at
+        # 25.31-25.49, between "עברה" and "ונשלח". Over the 55 kept
+        # recordings that day (both copies' recent\), 55 cuts: 54 in a
+        # pause, none of them short of a word where a witness could tell,
+        # and this one forced.
+        lo = next((i for i in range(1, len(peaks))
+                   if starts[i] >= total - 5.0 * rate), len(peaks))
+        best, best_len, i = None, 0, lo
+        while i < len(peaks) and starts[i] <= latest:
+            if peaks[i] >= threshold:
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(peaks) and starts[j + 1] <= latest \
+                    and peaks[j + 1] < threshold:
+                j += 1
+            run_start = starts[i]
+            run_len = min(starts[j] + sizes[j], latest) - run_start
+            if run_len >= best_len:          # a tie: the later, longer window
+                middle = run_start + run_len / 2
+                k = i
+                while k < j and starts[k + 1] <= middle:
+                    k += 1
+                best, best_len = k, run_len
+            i = j + 1
+        if best is not None:
+            return best
         quietest, best = None, None
         for i in range(len(peaks) - 1, 0, -1):
             if starts[i] > latest:

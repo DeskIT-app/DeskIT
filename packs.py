@@ -295,7 +295,15 @@ def install(p: Pack, *, progress=None, cancel=None, stage=None) -> Path:
     """The wheels through net.download() (resumed from a part), then pip
     with no network into the pack's `site`, then the record beside it
     and the wheels deleted. Raises DownloadError (net's reasons) or
-    InstallError. Returns the site folder."""
+    InstallError. Returns the site folder. One installer per pack,
+    across processes (downloads.part_lock): a second one is refused with
+    Busy while the first holds it."""
+    from downloads import part_lock
+    with part_lock(p.folder):
+        return _install(p, progress=progress, cancel=cancel, stage=stage)
+
+
+def _install(p: Pack, *, progress=None, cancel=None, stage=None) -> Path:
     import shutil
 
     p.wheels_dir.mkdir(parents=True, exist_ok=True)
@@ -479,19 +487,36 @@ def wanted(cfg, facts: dict | None) -> bool:
     return state("gpu") in ("missing", "stale")
 
 
+#: The settings.toml switch that lets the background downloads
+#: (downloads.py) fetch a pack — false once the person turned it down.
+OFFER_KEYS = {"gpu": "setup.offer_gpu_pack", "recording": "setup.offer_recording_pack"}
+
+
 def decline(name: str) -> None:
-    """[Not now] at start: the person's choice, into settings.toml; the
-    Speed page keeps a one-line offer (chapter 9)."""
-    if name == "gpu":
-        try:
-            config_mod.save({"setup.offer_gpu_pack": False})
-        except Exception:                                    # noqa: BLE001
-            log.debug("packs: the decline was not written", exc_info=True)
+    """[Not now], or the pack removed by hand on the desk: the person's
+    choice, into settings.toml, so the background downloads never fetch
+    it again; Settings keeps a one-line offer (chapter 9)."""
+    _offered(name, False)
+
+
+def accept(name: str) -> None:
+    """The pack installed by hand: the background may keep it current."""
+    _offered(name, True)
+
+
+def _offered(name: str, on: bool) -> None:
+    key = OFFER_KEYS.get(name)
+    if key is None:
+        return
+    try:
+        config_mod.save({key: on})
+    except Exception:                                    # noqa: BLE001
+        log.debug("packs: %s was not written", key, exc_info=True)
 
 
 def offer(name: str, installer=None) -> str:
-    """The step for `name`: `done`, `declined` ([Not now], written
-    down), or `later`. Never raises."""
+    """The step for `name`: `done` (installed by hand: accept), `declined`
+    ([Not now], written down), or `later`. Never raises."""
     p = pack(name)
     if p is None:
         log.warning("packs: %s is not in packs.lock — nothing to offer", name)
@@ -499,6 +524,8 @@ def offer(name: str, installer=None) -> str:
     outcome = steps.show(step(p, installer))
     if outcome == "declined":
         decline(name)
+    elif outcome == "done":
+        accept(name)
     return outcome
 
 

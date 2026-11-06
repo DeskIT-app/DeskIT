@@ -317,12 +317,19 @@ tour = false
 # entry). A per-installation fact, kept in state.json like `done`.
 # Does nothing in a checkout, which starts from its own shortcut.
 autostart = false
-# On a PC with an NVIDIA card, the start offers NVIDIA's CUDA libraries
-# once (the GPU pack, 1.37 GB from PyPI — packs.py): with them the
-# transcription runs on the card, without them on the processor. "Not
-# now" writes false here and the start stops asking; Settings > The app
-# keeps offering it in one line. Nothing to offer in a checkout.
+# On a PC with an NVIDIA card, NVIDIA's CUDA libraries (the GPU pack,
+# 1.37 GB from PyPI — packs.py) download by themselves, in the
+# background (downloads.py, 2026-10-03): with them the transcription
+# runs on the card, without them on the processor. Removing the pack by
+# hand (Settings > Dictation, Turn off faster dictation) writes false
+# here and nothing downloads it again; installing it by hand writes true.
+# Nothing to download in a checkout.
 offer_gpu_pack = true
+# The Recording pack (PyAV with a GPL FFmpeg, 28 MB — the record key, the
+# photo key, the phone's audio) downloads by itself the same way. Removed
+# by hand (Settings > Screen) writes false here and nothing downloads it
+# again; installed by hand writes true.
+offer_recording_pack = true
 
 [updates]
 # The weekly look at GitHub Releases (the switch is [privacy]
@@ -354,12 +361,23 @@ retry_seconds = 45            # keep retrying this long before spooling to pendi
 [translate]
 # Whisper only transcribes, so translating needs a language model. Gemini
 # goes first (it keeps English technical terms in Latin script and holds
-# the register); when its daily cap is spent this drops to a local Ollama
-# model, so the key never becomes another thing that dies at 20 requests.
+# the register); when its daily cap is spent, or there is no Gemini key,
+# Groq answers, and a local Ollama model after both, so the key never
+# becomes another thing that dies at 20 requests (`prefer` below).
 target = "English"
 max_chars = 5000              # a guard: above this the key refuses, on the
                               # assumption ctrl+a caught a whole document
 ollama_model = "llama3.1:8b"  # the fallback; must be pulled in ollama
+# Which cloud translates first: gemini | groq | ollama. The other cloud
+# comes next, Ollama last, so ONE key of either kind is enough to translate.
+# Groq joined the chain 2026-10-03 after a measurement (dev\measure_translate.py,
+# 16 Hebrew prompts holding 44 English terms — config.toml, useEffect,
+# git rebase — or Hebrew-spelled ones like פוש): Groq gpt-oss-120b kept
+# 43/44 and 44/44 in two runs, p50 0.46-0.53 s, max 0.71 s, no failures;
+# Gemini (flash-latest, a new key) kept 26/26 of what it answered but
+# failed 7 of 16 (503 "high demand", 30 s read timeouts), p50 4.0 s. Its
+# one Groq miss: "ברנץ'" came out "brunch".
+prefer = "gemini"
 # 127.0.0.1 and NOT localhost, and the difference is not cosmetic: this
 # machine's getaddrinfo("localhost") hands back ::1 first, Ollama listens on
 # IPv4 only, and the refused connection takes ~2.05 s to come back before
@@ -475,17 +493,29 @@ both_ways = true
 # document you still want F9.
 max_chars = 20000
 
-# Which backend goes first, and this is deliberately the OPPOSITE of
-# [translate] and [punctuate]. The free Gemini tier is 20 requests per
-# model per day across 4 models — about 80 — and app.log shows F9 and F7
-# alone spending 34 / 39 / 17 / 18 of them on working days and running into
-# 429s on seven separate days. This key is tapped while READING, costs you
-# nothing to press, and would plausibly run 30-60 times a day; sent to the
-# cloud first it would take the whole pool and break the two keys whose
-# local fallback is the weak one. Measured warm over 127.0.0.1, gemma3:12b
-# answers a word in 1.9-3.1 s and a sentence in 1.0-2.0 s — about a second
-# behind Gemini's 0.8-1.3 s, and free.
-prefer = "ollama"
+# Which backend goes first: groq | gemini | ollama. The other cloud comes
+# next and the local model last; "ollama" puts the local model first and
+# the clouds after it.
+#
+# It was "ollama" until 2026-10-17, for a reason that was about Gemini
+# alone: its free tier is 20 requests per model per day, F9 and F7 already
+# spent most of them, and this key is tapped 30-60 times a day while
+# reading. Groq's free tier is about a thousand a day per model and this
+# PC sends it 50-100. What ended Ollama-first was the owner waiting 34 s
+# on a 370-char selection — gemma3:12b had dropped out of VRAM, the cloud
+# leg had only Gemini, and his Gemini key answered 401. Measured that
+# evening on 14 selections in both directions (words, a sentence, the
+# paragraph he had selected): Groq gpt-oss-120b 0.5-1.1 s, warm
+# gemma3:12b 2.5-7.1 s, and gemma got the headline wrong where Groq did
+# not — "commit" -> "ביצוע", "debounce" -> "עיכוב", "deadlock" ->
+# "חסימת נתונים", against Groq's "קומיט", "דיבאונס", "קיפאון".
+prefer = "groq"
+
+# The Groq model. qwen/qwen3.8-27b was measured beside it on the same 14
+# and answered three times quicker (0.16-0.47 s), but wrote "התחייבות" for
+# "commit" and turned "The decoder loops on a hesitation and eats the
+# words after it." into a sentence about a decoder that disappears.
+groq_model = "openai/gpt-oss-120b"
 
 # Already resident for [polish] (warm_up, when = "always"), and Ollama
 # serves one copy to every caller, so this costs no extra VRAM: nvidia-smi
@@ -514,12 +544,14 @@ prefer = "ollama"
 # held the shape every time.
 model = "gemma3:12b"
 
-# If the model is not resident, Ollama loads it first: 24.4 s to the first
-# token, 25.3 s in total. Rather than make you watch that, a cold model
-# sends this one lookup to the cloud and warms the local one in the
-# background. Bounded at about one cloud request per idle keep_alive
-# period, and any dictation resets that clock because [polish] keeps the
-# same model alive.
+# Read only with prefer = "ollama" (and named before Groq existed: it
+# means any cloud). If the model is not resident, Ollama loads it first:
+# 24.4 s to the first token, 25.3 s in total. Rather than make you watch
+# that, a cold model sends this one lookup to the clouds and warms the
+# local one in the background. Bounded at about one cloud request per idle
+# keep_alive period, and any dictation resets that clock because [polish]
+# keeps the same model alive. With a cloud first nothing is warmed: the
+# local model loads only when no cloud answered, and the box says so.
 cold_to_gemini = true
 
 # How long Ollama holds the model after a lookup. It matters because
@@ -796,8 +828,9 @@ cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
 #
 # PRIVACY. Unlike [visual_qa], whose screenshot lives in memory and is
 # never written down, this feature exists to write pictures of your screen
-# to disk. So `folder` is treated the way transcripts.log is: beside the
-# app, gitignored, and never uploaded by anything in capture.py. The only
+# to disk. So `folder` is treated the way transcripts.log is: never
+# uploaded by anything in capture.py, and out of the repo (Windows'
+# Pictures folder since 2026-10-03, see `folder` below). The only
 # route from a capture to a model is the editor's Ask button, which hands
 # the pixels to the ask card and obeys [privacy] cloud_screenshots.
 #
@@ -836,18 +869,29 @@ record_hotkey = "ctrl+f12"     # tap to start, tap again to stop. One key
                                # same thought as the first, and a recorder
                                # you have to hunt for with the mouse records
                                # you hunting for it
-folder = "captures"
+folder = "{pictures}/DeskIT"
                                # where screenshots and camera photos go.
-                               # A relative name is relative to the APP
-                               # folder, not to whatever directory the
-                               # process started in — this app is launched
+                               # {pictures} is Windows' own Pictures
+                               # folder (SHGetKnownFolderPath — wherever
+                               # the person moved it). It was "captures"
+                               # under the data folder until 2026-10-03:
+                               # nobody found it, and a Store uninstall
+                               # deleted it with the app (the owner's
+                               # Store walk, item 17). Pictures is where a
+                               # person looks, and it outlives the app;
+                               # if OneDrive backs Pictures up, the files
+                               # you SAVE go with it, as Windows' own
+                               # screenshots do. A relative name is
+                               # relative to the DATA folder, not to the
+                               # working directory — this app is launched
                                # from a .vbs, a shortcut and a scheduled
                                # task, and all three disagree. An absolute
                                # path is used as given
-clip_folder = ""
-                               # where screen RECORDINGS (clip *.mp4) go.
-                               # Empty means the same folder as the
-                               # pictures; an absolute path is used as
+clip_folder = "{videos}/DeskIT"
+                               # where screen RECORDINGS (clip *.mp4) go:
+                               # Windows' Videos folder, for the same
+                               # reasons. Empty means the same folder as
+                               # the pictures; an absolute path is used as
                                # given, like `folder`
 copy_to_clipboard = true       # Win+Shift+S's promise. CF_DIB and the
                                # registered PNG format, so Paint, Word,
@@ -990,7 +1034,7 @@ announce = true                # say "Recording started" for 2.6 s before
 # opens it for as long as the window is up and not a moment longer: the
 # device is released the instant the shutter fires, not when the editor
 # closes, so the light beside the lens means what it looks like it means.
-# The photo is written to `folder` beside the app, gitignored, and nothing
+# The photo is written to `folder` (Windows' Pictures folder), and nothing
 # here uploads anything anywhere. The one route from a photo to a model is
 # the editor's Ask button, which obeys [privacy] cloud_screenshots like
 # every other question. `enabled = false` unregisters the key.
@@ -1047,10 +1091,11 @@ timer = 0                      # 0, 3 or 10 seconds of self-timer to start
                                # on. `t` cycles it while the window is
                                # open, and Esc cancels a countdown before
                                # it closes the window
-folder = "captures"
+folder = "{pictures}/DeskIT"
                                # the same folder the screen captures go
                                # to, so there is one place to look for
-                               # pictures. The files are named
+                               # pictures (the wizard and Settings write
+                               # both together). The files are named
                                # "photo 2026-08-26 18-45-22.png" rather
                                # than "shot ...", so sorting by name still
                                # groups them
@@ -1119,6 +1164,16 @@ vitals_minutes = 10            # while the screens are off, a line in
                                # (2026-09-02, 09-03) the machine was
                                # found crawling with nothing in any log:
                                # this is the log that was missing. 0 = off
+screens_card = true            # while the screens are off, a card sits
+                               # pinned at the bottom of the notification
+                               # column - bottom-right, under whatever
+                               # else arrives - saying the screens are
+                               # off on purpose and how to bring them
+                               # back (the key, or its own Screens on
+                               # button). It has no close button and no
+                               # key dismisses it: only ending the mode
+                               # takes it down. The screens mode itself
+                               # is the same with this off
 pin_timeouts = false           # also set Windows' own "sleep after" and
                                # "hibernate after" to never while the app
                                # runs, and put the old numbers back on the
@@ -1126,6 +1181,50 @@ pin_timeouts = false           # also set Windows' own "sleep after" and
                                # died holding (awake_state.json). Off
                                # because the hold already covers S3 sleep
                                # and this is a second thing to restore
+
+[room]
+# ROOM FOR A GAME (room.py). On 2026-10-17 a game started beside the app
+# and the PC ran out of memory: Windows named Ollama's gemma3:12b (13.6 GB
+# of commit) and this app (6.3 GB) as the two biggest, at 98% of the
+# commit limit. What a program puts on the graphics card is committed
+# system memory too, so a full card and a game spilling out of it share
+# one limit. While another program holds a lot of graphics memory, the
+# models here step aside, one at a time and only while the machine is
+# still short: the local language model first (~9 GB of the card,
+# ~12 GB of commit, dictation untouched), then the English model
+# (dictation goes on in Hebrew). The Hebrew model stays (keep_speech).
+# All of it comes back by itself. The processor is not a step: measured
+# the same evening, a dictation took 9-10 s on all 12 cores against
+# 0.3-0.5 s on the card.
+# A game that never reaches competitor_gb counts too while its window
+# fills the screen in the foreground and it holds 1 GB or more (room.NOTE):
+# on 2026-10-23 Fortnite held 1.83 GB of the card + 0.13 GB shared with
+# commit at 93% of the limit and nothing stepped aside. No other program
+# on this PC holds even 0.5 GB, so an ordinary day never starts it.
+enabled = true                 # false = the models never step aside
+competitor_gb = 2.5            # a program holding at least this much
+                               # graphics memory - the card's own plus what
+                               # spilled into system memory - is a game.
+                               # Measured on an idle desktop: NVIDIA's
+                               # overlay 1.9 GB, every other program under
+                               # 0.2 GB; dwm, Ollama and Python never count
+commit_tight = 0.90            # with a game there, past this fraction of
+                               # the commit limit the next model steps
+                               # aside. This PC fell over at 0.98
+spill_gb = 1.0                 # with a game there, once this much of its
+                               # memory has been pushed out of the card
+                               # into system memory, the next model steps
+                               # aside: the card was too full for it
+poll_s = 5                     # seconds between two looks at the card
+settle_s = 15                  # seconds after one step before the next,
+                               # so the first one's effect can show
+exit_s = 60                    # seconds without a game before everything
+                               # comes back (Hebrew model ~7 s, English
+                               # ~16 s, the local model on its next use)
+keep_speech = true             # the Hebrew model stays while a game runs,
+                               # so dictation keeps working - the owner's
+                               # word on 2026-10-23; false = a third step
+                               # takes it off until the game is gone
 
 [notify]
 # A DOOR FOR OTHER PROGRAMS TO KNOCK ON. Claude Code's own "finished"
@@ -1347,22 +1446,17 @@ rows = 5                       # how many waiting things it lists before
                                # the rest become one "+N more" line that
                                # opens the window instead (1 .. 8)
 corner = "dot"                 # dot | top-right | top-left | bottom-right | bottom-left.
-                               # Where it opens before you have dragged
-                               # it. "dot" = the status dot's own corner
+                               # Where it opens. "dot" = the status
+                               # dot's own corner
                                # ([dot] corner), where it opens beside the
                                # dot - above it at the bottom, to its left
                                # at the top - and never covers it
-x = -100000                    # the left edge of the PANEL where you last
-                               # dragged it, in screen pixels. -100000 =
-                               # never moved: use `corner`. Not read while
-                               # `corner` says dot: a panel that follows the
-                               # dot opens beside it every time, and a drag
-                               # moves it for that opening only. The sentinel
-                               # is a number no desktop can reach, because
-                               # a negative coordinate is real on a
-                               # monitor to the left of the primary
-y = -100000                    # the top edge of that same panel, in
-                               # screen pixels. -100000 = never dragged
+x = -100000                    # NOT READ since 2026-10-04: where a drag
+                               # of the panel was recorded, and the panel
+                               # is not dragged any more - it opens beside
+                               # the dot (or in `corner`), and Move moves
+                               # the dot. Kept so an old file still loads
+y = -100000                    # not read either; see x
 scale = 1.0                    # how big it is drawn (0.6 .. 1.4)
 hush_notifications = true      # while the panel is open the notification
                                # column steps aside - the same cards are
@@ -1445,6 +1539,19 @@ keep_days = 30                 # how long those lines are kept. Older lines
                                # empty and says so. (The checkout's own
                                # copy never drops anything: its history
                                # is training data.)
+
+[desk]
+# The desk as a web page (React in WebView2, deskweb.py) instead of the Tk
+# window. Measured 2026-09-22 in the same shell: a place switch 3.5-16 ms
+# against Tk's 150-250 ms with every place kept built (2026-10-23).
+# Honoured in the checkout ONLY, and only while it is built (npm run build
+# in web\): the release keeps the Tk desk until all five places are on
+# the web one. Off, missing WebView2 or no pages: the Tk desk, silently.
+# The release already CARRIES the web desk (its packages, app\web\dist);
+# the launch is one line, deskweb.LAUNCHED — after it every copy opens the
+# web desk and this key, set false in a person's own settings, is the way
+# back to Tk. This line here then no longer decides anything.
+web = false
 
 [vocab]
 # The names Whisper has never heard, fed to the decoder BEFORE it runs so it
@@ -1716,6 +1823,25 @@ max_wait_s = 10           # THE LONGEST YOUR PASTE MAY BE HELD UP. Past this
                           # peaks at 6.2 s, so 6 would time out on exactly the
                           # long dictations that need it most. It also caps a
                           # COLD Ollama, which took 53.7 s (2026-08-14)
+cloud_wait_s = 2          # ...of which a CLOUD backend may have this much.
+                          # 10 s is the local model's number; Groq's work is
+                          # ~0.35 s and the rest is its queue (usage.queue_time
+                          # 3.98 of 4.73 s on one call, 2026-10-05). Measured
+                          # that day on 23 real dictations sent at once to
+                          # every option, the repair's hold on the paste:
+                          #     Groq, 10 s cap      1.4 s typical, 12.1 worst,
+                          #                         8 of 23 over 2 s; its 503
+                          #                         "over capacity" took ~5 s
+                          #     retry after a 503   15.4 s worst (worse)
+                          #     race with gemma     8.0 s worst; gemma won 11
+                          #                         of 23 with weaker fixes
+                          #     this cap at 2 s     2.0 s worst, the repair
+                          #                         lost on 2 of 23
+                          # The repair changed 3 of 20 of those dictations
+                          # (90 of 450 since 2026-09-21), and on the read-aloud
+                          # gold it fixed 3 words and broke 4, so a late one is
+                          # cheap to lose. A cloud timeout hands the rest of
+                          # max_wait_s to the next backend ("always"/"known")
 warm_up = true            # send one throwaway request at startup so the model
                           # is in VRAM before a dictation needs it (76 s cold
                           # vs 2.5 s warm). Costs that VRAM all session
@@ -1724,11 +1850,17 @@ warm_up = true            # send one throwaway request at startup so the model
 # Free-tier quota is PER MODEL (gemini-2.5-flash = 20 requests/day), so this
 # list is a longer runway: each is tried in order and rested when it reports
 # its cap. Verified as supporting audio input on 2026-08-12.
+# The two "-latest" aliases go FIRST since 2026-10-03: a key made that month
+# gets 404 "no longer available to new users" from both 2.5 models (probed
+# one request each: flash-latest answered in 3.7 s, flash-lite-latest in
+# 1.0 s, both 2.5s 404). gemini_pool.rotate rests a 404 model and moves on,
+# but a list that starts with two dead models spends two requests a day
+# finding that out. An older key still has the 2.5s, behind the aliases.
 models = [
-  "gemini-2.5-flash",
   "gemini-flash-latest",
-  "gemini-2.5-flash-lite",
   "gemini-flash-lite-latest",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
 ]
 timeout_s = 30
 
@@ -1736,9 +1868,13 @@ timeout_s = 30
 model = "ivrit-ai/whisper-large-v3-turbo-ct2"
 language = "he"               # MUST stay pinned — the fine-tune broke language autodetect
 device = "auto"               # auto | cuda | cpu — auto tries the GPU, falls back to CPU
-# The number format the model runs in. auto = float16 on a card, int8 on
-# the processor — what the ladder always did. The hardware probe writes
-# int8_float16 for a card with 4-6 GB (it fits, a little slower); a
+# The number format the model runs in, and the English model with it.
+# auto = int8_float16 on a card (float16 if the card refuses int8), int8 on
+# the processor. Since 2026-10-23 (it was float16 before): measured on the
+# six public sets, night10 int8_float16 6,351 words wrong against float16's
+# 6,362, every set inside the run-to-run spread; one model 1,214 MB of
+# graphics memory against 2,238; ~12% more decode time, ~0.04 s on a short
+# dictation. The hardware probe writes int8_float16 for every card; a
 # value here is yours and the probe leaves it alone.
 compute_type = "auto"        # auto | float16 | int8_float16 | int8
 # Processor threads for the model when it runs on the CPU. 0 = the
@@ -1830,6 +1966,21 @@ rolling_window_s = 25.0          # how much settled audio a stretch waits for
                                  # is done by the release; longer = each stretch
                                  # is read with more of its own context. Below
                                  # 20 it was measured to cost words
+#
+# WARM AGAIN ON THE WAY BACK (wake.py, 2026-10-20). An idle model does not stay
+# where it was loaded: the night's training took 15.1 of the card's 15.9 GB and
+# Windows moved these models off it; they stayed off all day (the card read 2.6
+# GB, 5.7 before the night) until a dictation asked — and that dictation waited
+# 11.8 s before the first word was decoded. Over 342 dictations (10-09..10-20)
+# the two slow first ones, 7.2 s and 12.2 s, each came minutes after the screens
+# came on. So the warm-up the load runs is run again when input comes back after
+# this many minutes without any, unless the model ran meanwhile (the phone), the
+# keys are paused, or the card has under 3 GB free (someone else is using it —
+# asked again every minute). Lifting the pause warms it too: a game is the other
+# thing that pushes it off the card. Warm, the warm-up took 0.51-0.52 s (four
+# runs on the real models, 2026-10-20).
+warm_after_away_min = 20.0       # minutes with no key or mouse before the
+                                 # model is warmed again on the way back; 0 = off
 
 [review]
 # FAST VERSION ONLY. The second reading (review.py): the moment a

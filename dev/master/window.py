@@ -1,6 +1,7 @@
 """The master's window: dev\\master\\web\\dist inside WebView2.
 
-It borrows the product's shell (``webdesk.py``) whole — the pre-check
+It opens in the product's own shell (``webdesk.py`` at the root, the
+same file the desk runs in — no copy since 2026-10-24) — the pre-check
 that keeps pywebview from silently falling back to MSHTML and writing
 HKCU on the way, the virtual host instead of a server or file://, our own
 CoreWebView2 environment with crash reporting kept local, the muted
@@ -47,7 +48,7 @@ def open_window(*, root: Root | None = None, dist: Path | None = None,
     root = root or Root.here()
     if str(root.dir) not in sys.path:               # webdesk.py imports paths
         sys.path.insert(0, str(root.dir))
-    from . import webdesk                           # noqa: PLC0415
+    import webdesk                                  # noqa: PLC0415 — the product's shell
 
     api = Api(root, Store(root.master_state), home=home, net=net)
     PROFILE.mkdir(parents=True, exist_ok=True)
@@ -95,7 +96,7 @@ def main(argv=None) -> int:
                 note["capture"] = desk.capture(ns.shot)
             except Exception as e:                    # noqa: BLE001
                 note["error"] = f"{type(e).__name__}: {e}"
-            note.update(errors=desk.errors, dropped=desk.dropped, blocked=desk.blocked,
+            note.update(errors=desk.errors, dropped=list(desk.dropped), blocked=list(desk.blocked),
                         stamps=sorted(desk.stamps), env=desk.env_info)
             print(json.dumps(note, ensure_ascii=False, default=str)[:2000])
 

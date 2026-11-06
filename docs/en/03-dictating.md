@@ -80,7 +80,7 @@ losing it.
 DeskIT also reads each dictation a second time on its own (the second reading) and proposes a
 correction when two readings disagree; the proposal is a card with **Yes** and **No**, and it
 waits at the top of the Corrections place too. The sentence is shown around the change: what
-it heard on a red pill, an arrow, and what it proposes on a gold one with a tick. On a PC
+it heard on a red pill, an arrow, and what it proposes on a violet one with a tick. On a PC
 without an NVIDIA card the second reading is off.
 
 ![The Corrections place](../img/03-corrections.png)

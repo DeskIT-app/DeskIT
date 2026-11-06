@@ -10,7 +10,10 @@
 #
 # Inputs from the repo: VERSION, requirements.lock (pip-compile
 # --generate-hashes over requirements.txt), packaging/python311._pth,
-# packaging/python-embed.sha256. The runner's own Python is pinned to the
+# packaging/python-embed.sha256, packaging/wheels/ (the one wheel PyPI
+# does not have, built from its sdist by dev/proxy_tools_wheel.py and
+# hashed in the lock), and web/ with its package-lock.json (the web desk's
+# pages, built in step 6a). The runner's own Python is pinned to the
 # same patch version as the embeddable zip because step 3 copies its
 # Tcl/Tk tree and _tkinter.pyd, which are built against one python311.dll.
 name: build
@@ -28,6 +31,10 @@ on:
 env:
   PYTHON_VERSION: "3.11.9"
   EMBED_URL: "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+  # the Node the web desk's pages are built with, exact like the Python
+  # above (verified 2026-10-23: npm ci + npm run build on 22.23.4 / npm
+  # 10.9.9 gave the same bytes as 25.7.0); ci.yml builds with the same one
+  NODE_VERSION: "22.23.4"
 
 permissions:
   contents: write        # the draft release and its assets (step 14)
@@ -35,7 +42,50 @@ permissions:
   attestations: write
 
 jobs:
+  # 6a, built APART: the web desk's pages come out of an npm toolchain —
+  # some two dozen third-party packages with native binaries, run here —
+  # so they are built in a job that holds nothing worth taking: a
+  # read-only token, no secret (SIGNPATH_API_TOKEN is the stage job's), no
+  # OIDC token, and no credentials left in .git/config by the checkout.
+  # The stage job takes web\dist as this run's artifact (step 6a there).
+  # Node exact; npm ci from the committed package-lock.json (it checks
+  # every package's integrity hash) with no install script of any package
+  # run (--ignore-scripts, and web\.npmrc says it too).
+  pages:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build the pages
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE) { throw "npm ci failed" }
+          npm run build
+          if ($LASTEXITCODE) { throw "npm run build failed" }
+          if (-not (Test-Path dist/index.html)) { throw "web/dist has no index.html" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 1
+
   stage:
+    needs: pages
     runs-on: windows-latest
     timeout-minutes: 180        # step 10b may wait up to two hours for the owner's approval
     defaults:
@@ -83,11 +133,10 @@ jobs:
       #     downloaded, hashed, no second download, no dependency
       #     resolution, the same install ci.yml runs. (Dry run #1 ran the
       #     check on a bare Python and stopped at `import PIL`.)
-      - name: The guide and the installer's download list are fresh
+      - name: The guide is fresh
         run: |
           python -m pip install --no-index --find-links wheels --require-hashes --no-deps -r requirements.lock
           python dev/gen_settings_doc.py --check
-          python dev/make_downloads_iss.py --check
 
       # 2. embed — the python.org zip, checked against the committed SHA-256
       - name: Embeddable Python
@@ -138,8 +187,28 @@ jobs:
           foreach ($f in "LICENSE", "NOTICE", "OFL.txt", "NETWORK.md", "SECURITY.md") {
             if (Test-Path "stage/app/$f") { Copy-Item "stage/app/$f" "stage/$f" }
           }
-          $forbidden = @("tests.py", "tests_quiet.py", "nightly.py", "questions.py", "AGENTS.md", "dev", "docs", "packaging", "android", ".github", ".gitattributes", ".gitignore")
+          $forbidden = @("tests.py", "tests_quiet.py", "nightly.py", "questions.py", "AGENTS.md", "dev", "docs", "packaging", "android", "web", ".github", ".gitattributes", ".gitignore")
           foreach ($f in $forbidden) { if (Test-Path "stage/app/$f") { throw "$f is in the archive" } }
+
+      # 6a. the web desk's pages (deskweb.py, webdesk.py) — web\ is
+      #     export-ignored, sources and npm lock alike, so the archive has
+      #     none of it: the pages job's BUILT pages go in at
+      #     paths.WEB_DIST, app\web\dist, before step 7 lists every file,
+      #     and nothing but index.html and assets\ — no source map.
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: stage/app/web/dist
+
+      - name: The web desk's pages
+        run: |
+          $dist = "stage/app/web/dist"
+          if (-not (Test-Path "$dist/index.html")) { throw "the pages job's artifact has no index.html" }
+          $odd = Get-ChildItem -Recurse -Force $dist -File | Where-Object {
+            $rel = $_.FullName.Substring((Resolve-Path $dist).Path.Length + 1)
+            ($rel -ne "index.html" -and -not $rel.StartsWith("assets\")) -or $_.Name -like "*.map" }
+          if ($odd) { $odd | ForEach-Object { $_.FullName }; throw "web/dist holds more than index.html and assets\" }
+          Get-ChildItem -Recurse stage/app/web -File | ForEach-Object { "{0,10}  {1}" -f $_.Length, $_.FullName.Substring((Resolve-Path stage/app).Path.Length + 1) }
 
       # 6b. notices — the generated half (pip-licenses over the staged
       #     site-packages) + the hand-written half (dev/notices-extra.txt,
@@ -176,6 +245,7 @@ jobs:
           Get-ChildItem -Recurse stage -Include __pycache__ -Directory | Remove-Item -Recurse -Force
           python stage/app/manifest.py write stage
           python stage/app/manifest.py verify stage
+          if (-not (Select-String -Path stage/MANIFEST.sha256 -Pattern "  app/web/dist/index.html$" -Quiet)) { throw "the manifest does not cover the web desk's pages" }
 
       # 8a. attest — the manifest's provenance, what the FAQ's "read the
       #     build attestation" line points to (D12 lock 5). GitHub signs
@@ -186,9 +256,15 @@ jobs:
         with:
           subject-path: stage/MANIFEST.sha256
 
+      # `import webview, clr` because release.yml never runs pip check: the
+      # web desk's five wheels go in without dependency resolution, and this
+      # is where a missing one (proxy_tools is a hard import of webview's) or
+      # a pythonnet that cannot load .NET Framework would show — before an
+      # installer exists.
       - name: The staged tree starts
         run: |
-          $out = & stage/python/python.exe -B -c "import sys, tkinter, numpy, PIL, sounddevice; print(sys.version.split()[0], tkinter.TkVersion, numpy.__version__)"
+          $out = & stage/python/python.exe -B -c "import sys, tkinter, numpy, PIL, sounddevice, webview, clr; import System; print(sys.version.split()[0], tkinter.TkVersion, numpy.__version__, 'NET', System.Environment.Version)"
+          if ($LASTEXITCODE) { throw "the staged tree does not import its base set" }
           Write-Host $out
           Get-ChildItem -Recurse stage -File | Measure-Object -Property Length -Sum | ForEach-Object { "stage: $($_.Count) files, $([math]::Round($_.Sum / 1MB)) MB" }
 
@@ -292,6 +368,7 @@ jobs:
           if ($p.ExitCode) { Get-Content $log; throw "the installer exited $($p.ExitCode)" }
           $app = "$env:LOCALAPPDATA\Programs\DeskIT"
           if ((Get-Content "$app\CHANNEL" -Raw) -ne 'github') { throw "CHANNEL is not github" }
+          if (-not (Test-Path "$app\app\web\dist\index.html")) { throw "the installed tree has no web desk pages" }
           $env:DESKIT_HOME = "$env:RUNNER_TEMP\deskit-smoke-home"
           $verdict = & "$app\python\python.exe" "$app\app\main.py" --verify
           Remove-Item Env:DESKIT_HOME

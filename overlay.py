@@ -71,16 +71,19 @@ GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TRANSPARENT = 0x00000020   # click-through
+WS_EX_TOPMOST = 0x00000008
+GW_HWNDPREV = 3                  # GetWindow: the window just above
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
-# LAMPLIGHT, spelled out. This module is imported before ui.py has built
+# B+ (2026-10-23), spelled out. This module is imported before ui.py has built
 # anything, so it cannot read the palette — it carries the four names the
 # splash and the word prompt need. skin\palette.py is the source; these are
 # PANE / FG / DIM / ACCENT from it.
-BG = "#1c1813"
-FG = "#f1ece2"
-DIM = "#b2a896"
-ACCENT = "#e3a63c"
-TROUGH = "#3a342a"      # the splash bar's channel — LINE, one step over BG
+BG = "#121527"
+FG = "#efedf7"
+DIM = "#c0c3d8"
+ACCENT = "#a597ff"
+TROUGH = "#30365a"      # the splash bar's channel — LINE, one step over BG
 
 _DONE = object()   # sentinel: close the window
 _HIDE = object()   # sentinel: the window off the screen, the thread kept
@@ -437,6 +440,101 @@ def _no_activate(root, click_through: bool = False) -> bool:
         return False
 
 
+_Z_USER32 = None
+
+
+def _z_user32():
+    """A PRIVATE user32 with the z-order calls declared, built once —
+    dig_out runs every second for as long as the app does. Private for
+    skin\\glass.py's reason, and a HWND is c_void_p because a 64-bit
+    handle does not fit the c_int ctypes would assume."""
+    global _Z_USER32
+    if _Z_USER32 is None:
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        u.GetWindow.restype = ctypes.c_void_p
+        u.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        u.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        u.IsWindowVisible.restype = ctypes.c_int
+        u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_uint]
+        u.SetWindowPos.restype = ctypes.c_int
+        u.GetParent.argtypes = [ctypes.c_void_p]
+        u.GetParent.restype = ctypes.c_void_p
+        _Z_USER32 = u
+    return _Z_USER32
+
+
+def dig_out(hwnd) -> int:
+    """Put the dot back on top if an ordinary window has got above it.
+
+    THE OWNER'S REPORT, 2026-10-10: "sometimes the dot disappears behind
+    the windows" — with two screenshots, Claude maximised and no dot, the
+    desktop shown and the dot right where it should be. Walked live, the
+    dot's window still carried WS_EX_TOPMOST and sat at z-order #121,
+    under the maximised Claude window at #38; the first window without
+    the bit was #36. Something had moved it BELOW the ordinary windows
+    and left the bit on. Not us: none of SetWindowPos' own doors does
+    that — HWND_BOTTOM, HWND_NOTOPMOST and "after an ordinary window"
+    all clear the bit, measured on throwaway windows the same day — and
+    it was not only us: about fifteen topmost windows of other programs
+    (Vanguard, EarTrumpet, Tailscale, the Start feed, Explorer's own)
+    sat down there with the bit on as well, while the taskbar and the
+    rest had evidently put themselves back. Every other window of ours
+    is raised each time it is shown; the dot is shown once and lives for
+    days, so it was the one that stayed buried. SetWindowPos(HWND_TOPMOST)
+    from outside brought it back at once (#121 -> #15, over Claude).
+
+    So the painters call this every DOT_ON_TOP_S. It walks UP from the
+    dot and raises it the moment it meets a visible window WITHOUT the
+    topmost bit — which, above a topmost window, can only mean the dot
+    was put where it does not belong. Topmost windows above it are left
+    alone: among topmost windows the newest is on top by Windows' own
+    rule, and the screenshot selector, the move frame (which goes UNDER
+    the dot on its own), the shelf and the cards all count on that.
+
+    Returns the ordinary window it found over the dot (0 for none, and
+    nothing was done), so the caller can say once who it was. Never
+    raises: a dot that cannot check its z-order is still a dot.
+    """
+    if not hwnd:
+        return 0
+    try:
+        u = _z_user32()
+        above = u.GetWindow(int(hwnd), GW_HWNDPREV)
+        for _ in range(4096):              # a desktop has hundreds, at most
+            if not above:
+                return 0
+            if (u.IsWindowVisible(above)
+                    and not u.GetWindowLongPtrW(above, GWL_EXSTYLE)
+                    & WS_EX_TOPMOST):
+                u.SetWindowPos(int(hwnd), ctypes.c_void_p(-1), 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                return int(above)
+            above = u.GetWindow(above, GW_HWNDPREV)
+    except Exception:
+        _log.debug("could not check the dot's z-order", exc_info=True)
+    return 0
+
+
+def window_owner(hwnd) -> str:
+    """'explorer.exe (Progman)' for a window: who it was, for the log. The
+    program and the class only — never the title, which is a browser
+    tab or a document name and has no business in app.log."""
+    try:
+        import os
+        import foreground
+        u32, k32 = foreground._handles()
+        pid = ctypes.c_ulong(0)
+        u32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
+        exe = os.path.basename(foreground._exe_of(k32, pid.value)) or "?"
+        return "%s (%s)" % (exe, foreground._class(u32, int(hwnd)))
+    except Exception:
+        return "?"
+
+
 # NO `_hide_from_capture` IN THIS MODULE ANY MORE. It was eleven lines
 # that set WDA_EXCLUDEFROMCAPTURE on an overlay window, all four of our
 # windows called it, and it was deleted on 2026-09-04 at the owner's
@@ -513,20 +611,20 @@ _CHROMA = "#0b0c0d"
 # The five states, as skin\palette.DOT_STATES spells them — kept here as
 # literals for the same reason as the four above: this module runs before
 # ui.py exists, and it is the path with skin\ deleted. Measured against
-# #1A1A1A, the darkest wallpaper the dot has to survive: 9.09 / 5.68 /
-# 7.62 / 10.36 / 3.46, and every pair separates by light or by hue.
+# #1A1A1A, the darkest wallpaper the dot has to survive: 7.97 / 5.84 /
+# 7.89 / 10.12 / 5.65, and every pair separates by light or by hue.
 STATES = {
     # state:      (fill,      ring,      pulses)
-    "ready":      ("#8fc0f0", "#16232f", False),   # cool: running, listening
-    "recording":  ("#ff5b4e", "#3a140f", False),   # red: capturing now
-    "locked":     ("#ff8a7e", "#3a140f", True),    # red, breathing: latched
-    "busy":       ("#f5c043", "#33260a", False),   # the lamp at full
+    "ready":      ("#4db8ff", "#0f2438", False),   # blue: running, listening
+    "recording":  ("#ff5d6e", "#3a1219", False),   # red: capturing now
+    "locked":     ("#ff8d99", "#3a1219", True),    # red, breathing: latched
+    "busy":       ("#ffb84d", "#33260f", False),   # amber: working
     # Neutral grey: loaded and alive, but the keys are inert. Deliberately
     # still VISIBLE — a paused app that showed nothing would be
     # indistinguishable from one that was never started, which is the whole
     # problem the dot exists to solve. It is also the only state with NO
     # HALO on the glass path, so it reads by absence and not by hue alone.
-    "paused":     ("#6f6f6f", "#1e1e1e", False),
+    "paused":     ("#8a93a8", "#1e2130", False),
 }
 
 # Where the dot may sit: a corner of the primary monitor's WORK AREA.
@@ -559,9 +657,19 @@ DOT_MOVE_S = 45.0
 # had to be asked for twice. The dashboard's own backstop
 # (dashboard.DOT_WAIT_S) is longer than this on purpose.
 DOT_FRAME_S = 180.0
+# How long a notification closed on the column stays off it whatever the
+# engine's next list says (NotifyCard._gone). The engine's dismissal is a
+# JSON write on a thread of its own, tens of milliseconds; two seconds is
+# room for a slow disk and short enough that a dismissal which failed
+# shows its card again rather than hiding it for good.
+NOTIFY_GONE_S = 2.0
 # A release that travelled less than this is a click, not a drag —
 # NotifyCard's rule and its number, kept the same everywhere.
 DOT_CLICK_PX = 4
+# How often the dot checks that no ordinary window has got above it
+# (`dig_out`). Once a second: the check is a few dozen GetWindow calls,
+# and a dot that took longer than that to come back would read as gone.
+DOT_ON_TOP_S = 1.0
 
 # THE ALARM: a dead microphone ten seconds into a dictation (recorder.
 # SILENT_PEAK). The owner's words for what he wants to see: "הנקודה
@@ -1168,6 +1276,14 @@ class StatusDot:
         # fallback is the path with skin\ deleted.
         on_click = self.on_click
         _no_activate(root, click_through=on_click is None)
+        # The real top-level, for dig_out: Tk's winfo_id is the client
+        # window inside it (see _no_activate).
+        try:
+            top_hwnd = (_z_user32().GetParent(int(root.winfo_id()))
+                        or int(root.winfo_id()))
+        except Exception:
+            top_hwnd = 0
+        on_top = {"next": 0.0, "buried": False}
         if on_click is not None:
             centre = box / 2.0
             reach = self._size / 2.0 + 2.0
@@ -1293,11 +1409,23 @@ class StatusDot:
                         root.geometry(f"+{at[0]}+{at[1]}")
                         root.deiconify()
                         self.rect = (at[0], at[1], at[0] + box, at[1] + box)
+                        on_top["next"] = 0.0      # check at once
                         continue
                     state["name"] = item
                     state["phase"] = 0.0
             except queue.Empty:
                 pass
+            # Pushed under the ordinary windows by something outside the
+            # app? Back on top — the glass painter's check, every
+            # DOT_ON_TOP_S (see dig_out for the whole story).
+            now = time.monotonic()
+            if not self.hidden and now >= on_top["next"]:
+                on_top["next"] = now + DOT_ON_TOP_S
+                over = dig_out(top_hwnd)
+                if over and not on_top["buried"]:
+                    _log.info("the dot was under %s — put back on top",
+                              window_owner(over))
+                on_top["buried"] = bool(over)
             # Somebody moved it from somewhere else — a drop that had to
             # be clamped, or "Back to the corner" from the dashboard.
             if self._replace.is_set():
@@ -2346,7 +2474,8 @@ class ProblemCard(WordPrompt):
             # side on 2026-09-04, because growing the field was a change
             # of widget and a change of widget is a change of bidi. Every
             # character is right; only the drawing lies.
-            field = tk.Text(root, bg=pc.hex_of("EDGE"), fg=pc.hex_of("FG"),
+            field = tk.Text(root, bg=pc.hex_of(pc.FIELD_BG),
+                            fg=pc.hex_of("FG"),
                             insertbackground=pc.hex_of("ACCENT"),
                             selectbackground=pc.hex_of("ACCENT_SOFT"),
                             selectforeground=pc.hex_of("FG"),
@@ -3383,6 +3512,9 @@ class ConsentCard(HintCard):
             root.update_idletasks()
             if not st["up"]:
                 _no_activate(root)
+                # B+ has no square corner anywhere (2026-10-23): Windows'
+                # own, the one a frameless Tk window can have
+                _round_corners(root, CARD_LINE)
             st["up"] = True
 
         def put_up(card: dict) -> None:
@@ -3861,6 +3993,17 @@ class NotifyCard(HintCard):
     NEVER `dismissed()`: that is the hint card's "don't show this again"
     and writes `enabled = false` into config.toml. Dismissing a
     notification means "seen", not "never again".
+
+    THE PIN (2026-10-07). The "Screens off" card (awake.py's mode) is not
+    a notification and sits BESIDE the column rather than in it: `pin()` /
+    `unpin()` put it up and take it down, and what is on screen is always
+    `notifications + [pin]` — the pin LAST, which is the bottom of the
+    column and the edge the window is anchored by, so it never moves while
+    notifications come and go. `visible()` / `current()` / `hovering()` /
+    Esc / the dismiss key all keep meaning "notifications" and never see
+    it, so the engine's reminders behave as they always did; nothing can
+    dismiss the pin, a click on its body does nothing, and its one pill
+    calls `on_pin_press`. See notify_card.pinned_card.
     """
 
     CORNERS = ("right", "left", "top-right", "top-left",
@@ -3869,11 +4012,14 @@ class NotifyCard(HintCard):
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_dismiss=None, on_open=None,
-                 seconds: float = 0.0, anchor: str = "bottom") -> None:
+                 seconds: float = 0.0, anchor: str = "bottom",
+                 on_pin_press=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
         self._on_dismiss = on_dismiss
         self._on_open = on_open
+        self._on_pin_press = on_pin_press
+        self._pin = None          # the pinned card's dict, or None
         # ZERO BY DEFAULT SINCE 2026-09-04: "I want you to remove the time
         # of each card, the card will not disappear". Nothing here was
         # deleted for it — a non-zero `seconds` still runs a clock, still
@@ -3884,6 +4030,9 @@ class NotifyCard(HintCard):
         self.rect = None          # screen rect of the visible column, or None
         self._current = None      # the NEWEST item id on screen
         self._cards: list = []    # the column as drawn, newest first
+        # id -> monotonic second, for a card closed HERE whose dismissal
+        # the engine may not have written yet (see `pressed`)
+        self._gone: dict = {}
         self._state_lock = threading.Lock()
 
     def start(self) -> None:
@@ -3897,8 +4046,40 @@ class NotifyCard(HintCard):
                                         name="notify-card")
         self._thread.start()
         self._alive.wait(timeout=3)
+        with self._state_lock:
+            drawn = self._drawn()
+        if self._pin is not None:         # pinned before the thread existed
+            self._q.put(drawn)
 
     # -- caller's threads --
+
+    def _drawn(self) -> list:
+        """What is on the window: the notifications, newest first, then
+        the pin. Caller holds `_state_lock`."""
+        return self._cards + ([self._pin] if self._pin is not None else [])
+
+    def pin(self, card: dict) -> None:
+        """Put the pinned card up at the bottom of the column. Only
+        enqueues — it is called from the screens mode's flip, on the
+        keyboard hook's thread."""
+        with self._state_lock:
+            self._pin = dict(card)
+            drawn = self._drawn()
+        if self._thread is not None and self._enabled:
+            self._q.put(drawn)
+
+    def unpin(self) -> None:
+        """Take the pinned card down; the notifications stay."""
+        with self._state_lock:
+            if self._pin is None:
+                return
+            self._pin = None
+            drawn = self._drawn()
+        if self._thread is not None and self._enabled:
+            self._q.put(drawn or None)
+
+    def pinned(self) -> bool:
+        return self._pin is not None
 
     def show(self, items) -> None:
         """Put the whole unread COLUMN up, newest first.
@@ -3923,6 +4104,19 @@ class NotifyCard(HintCard):
         if isinstance(items, dict):
             items = [items]
         import notify_card as nc
+        with self._state_lock:
+            # A card closed on this column a moment ago is not put back by
+            # a list the engine built before it heard of the close — the
+            # engine answers every press with show(live()), and two quick
+            # closes can cross: the answer to the first still names the
+            # second. GONE_S later the engine is the truth again, so a
+            # dismissal that never landed cannot hide a card for good.
+            now = time.monotonic()
+            self._gone = {k: t for k, t in self._gone.items()
+                          if now - t < NOTIFY_GONE_S}
+            gone = set(self._gone)
+        if gone:
+            items = [i for i in items if i.get("id") not in gone]
         cards = []
         for item in items:
             try:
@@ -3940,14 +4134,22 @@ class NotifyCard(HintCard):
             # the one at the top of the pile.
             self._current = cards[0]["id"]
             self._cards = cards
-        self._q.put(cards)
+            drawn = self._drawn()
+        self._q.put(drawn)
 
     def hide(self) -> None:
+        """The notifications down. The pin, if there is one, stays."""
         with self._state_lock:
+            had = self._current is not None
             self._current = None
             self._cards = []
-        if self._thread is not None:
+            drawn = self._drawn()
+        if self._thread is None:
+            return
+        if not drawn:
             self._q.put(None)
+        elif had:                  # nothing to take down means no rebuild
+            self._q.put(drawn)
 
     def visible(self) -> bool:
         return self._current is not None
@@ -3996,21 +4198,69 @@ class NotifyCard(HintCard):
         for a missing one here would quietly turn the dismiss key into a
         one-card dismissal.
 
-        The whole column comes down on any press, whichever card was hit.
-        The engine answers with `show(live())` — or `hide()` when nothing
-        is left — so what goes back up is the truth about the store rather
-        than this thread's guess at it.
+        A press that names nobody (Esc, the dismiss key, the Clear-all
+        pill) takes the whole column down. A press on ONE card of several
+        takes only that card off, at once, and leaves the others standing
+        (2026-10-18 — until then every press took the column down and the
+        owner watched all of them blink out and come back). Either way the
+        engine answers with `show(live())` — or `hide()` when nothing is
+        left — so what stays up is the truth about the store rather than
+        this thread's guess at it; `_gone` keeps an answer that crossed a
+        second close from putting that card back.
 
         Neither is HintCard.dismissed() — that writes enabled=false into
         config.toml, and this is "seen", not "never again".
         """
-        if name not in ("dismiss", "open"):
+        import notify_card as nc
+        if name == "button":
+            # The pill on the pinned card, the only thing on it that takes
+            # a click. Not a notification, so nothing is taken down here:
+            # the callback ends the screens mode and the mode's flip
+            # unpins, one road for every way out.
+            if item_id == nc.PIN_ID and self._on_pin_press is not None:
+                try:
+                    self._on_pin_press()
+                except Exception:
+                    _log.info("notify card: the pin's button failed",
+                              exc_info=True)
             return
-        with self._state_lock:
-            was, self._current, self._cards = self._current, None, []
-        if self._thread is not None:
-            self._q.put(None)
+        if name not in ("dismiss", "open") or item_id == nc.PIN_ID:
+            return                 # the pin is never dismissed or opened
         callback = self._on_open if name == "open" else self._on_dismiss
+        defer = False
+        with self._state_lock:
+            if item_id is not None:
+                self._gone[item_id] = time.monotonic()
+            if item_id is None or len(self._cards) <= 1:
+                was, self._current, self._cards = self._current, None, []
+            else:
+                # ONE CARD OF SEVERAL (2026-10-18): only that card leaves,
+                # now, and the rest stay exactly where they are. This used
+                # to take the whole column down and wait for the engine's
+                # show(live()) to put the others back — the owner's "all
+                # the cards vanish for a second and come back without the
+                # one I closed". A card that is not on the column any more
+                # is a second click on one already gone: no report.
+                keep = [c for c in self._cards if c.get("id") != item_id]
+                if len(keep) == len(self._cards):
+                    return
+                # A column cut short ("+N earlier" on its last card) is
+                # NOT redrawn here: the engine's answer, milliseconds
+                # behind, brings the next one up from underneath, and
+                # drawing the column one card short first would make it
+                # jump twice — shrink, then grow back. The picture stays
+                # as it is until that answer replaces it in place.
+                defer = (callback is not None
+                         and int(self._cards[-1].get("more") or 0) > 0)
+                was = self._current
+                self._cards = keep
+                self._current = keep[0]["id"]
+            drawn = self._drawn()
+        if self._thread is not None and not defer:
+            if not drawn:
+                self._q.put(None)
+            elif was is not None:
+                self._q.put(drawn)
         if was is None or callback is None:
             return
         try:
@@ -4029,6 +4279,11 @@ class NotifyCard(HintCard):
         with self._state_lock:
             self._current = None
             self._cards = []
+            drawn = self._drawn()
+        if drawn and self._thread is not None:
+            # The presenter is about to take the window down; the pin
+            # goes straight back up behind it.
+            self._q.put(drawn)
 
     # -- placement --
 
@@ -4037,7 +4292,7 @@ class NotifyCard(HintCard):
         import notify_card as nc
         if cards is None:
             with self._state_lock:
-                cards = list(self._cards)
+                cards = self._drawn()
         return nc.stack_measure(cards, self.scale)
 
     def placed(self, x: int, y: int) -> None:
@@ -4201,7 +4456,12 @@ class NotifyCard(HintCard):
         def put_up(cards: list) -> None:
             st["cards"], st["hover"] = list(cards), None
             st["press"] = None
-            cache.clear()
+            # The text cache is KEPT across columns (2026-10-18): the
+            # cards that stayed are the same strings, and drawing them all
+            # again through DrawTextW is the pause that made a closed card
+            # take the others with it for a moment. hide() still empties it.
+            if len(cache) > 400:
+                cache.clear()
             seconds = float(cards[0].get("seconds") or 0) if cards else 0
             st["deadline"] = ((time.monotonic() + seconds)
                               if seconds > 0 else None)
@@ -4297,6 +4557,11 @@ class NotifyCard(HintCard):
                 # The × of ONE card, named by its own id: everything else
                 # in the column stays unread.
                 self.pressed("dismiss", ident(where[0]))
+            elif code == nc.HTCLIENT and what == nc.CLEAR:
+                # Clear all: no id, which is "every unread one".
+                self.pressed("dismiss", None)
+            elif code == nc.HTCLIENT and what == nc.BUTTON:
+                self.pressed("button", ident(where[0]))
             elif code == nc.HTCAPTION:
                 st["drag"] = (event.x_root - root.winfo_x(),
                               event.y_root - root.winfo_y())
@@ -4413,22 +4678,22 @@ class NotifyCard(HintCard):
             gc.collect()
 
 
-# The fallback card's palette — LAMPLIGHT, spelled out rather than
+# The fallback card's palette — B+ (2026-10-23), spelled out rather than
 # imported: ui.py builds Tk styles at import and this module is imported
 # before any of that exists. skin\ repaints its own copy and never reads
 # these. A key chip is a KEY CAP and not a button: this card is a legend
 # with fifteen keys on it, and fifteen accent chips would be fifteen
 # primary actions competing for one glance. So the chips take ui.KeyCap's
 # own face and the only lit thing on the card is the state dot.
-CARD_BG = "#24201a"
-CARD_LINE = "#3a342a"
-CARD_FG = "#f1ece2"
-CARD_DIM = "#b2a896"
-CARD_FAINT = "#7e7564"
-CARD_KEY_BG = "#29241d"
-CARD_KEY_EDGE = "#4e4737"
-CARD_KEY_FG = "#f1ece2"
-CARD_DOT = {"recording": "#ff5b4e", "locked": "#ff8a7e"}
+CARD_BG = "#1e233e"      # palette.GLASS_FLAT: the glass with nothing behind
+CARD_LINE = "#30365a"
+CARD_FG = "#efedf7"
+CARD_DIM = "#c0c3d8"
+CARD_FAINT = "#70758e"
+CARD_KEY_BG = "#1b2036"
+CARD_KEY_EDGE = "#3a4068"
+CARD_KEY_FG = "#efedf7"
+CARD_DOT = {"recording": "#ff5d6e", "locked": "#ff8d99"}
 
 _HINT_PAD = 14
 _HINT_ROW = 26

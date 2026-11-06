@@ -135,7 +135,7 @@ PURPOSES: frozenset[str] = frozenset({
     "polish", "punctuate", "translate", "lookup", "review", "study",
     "reading", "ask-screen", "transcribe", "key-test", "catalog", "ollama",
     "notify", "summary", "model-download", "pack-install", "update-check",
-    "update-download", "account", "report", "sync", "history",
+    "update-download", "account", "report", "sync", "history", "room",
 })
 
 #: secret name -> (the one host it may go to, header, how it is written).
@@ -170,6 +170,41 @@ USER_AGENT = "deskit/1.0"
 #: ``privacy.configure`` from the settings; a module flag here so the
 #: refusal is the transport's, not a feature's.
 offline = False
+
+#: Room for a game (room.py, 2026-10-17): while a game needs the graphics
+#: card, every request to the local model's URL is refused here, before a
+#: socket — a request that reaches Ollama LOADS the model it names, ~9 GB
+#: on the card, which is exactly what is being kept off it. Keyed on
+#: (scheme, host, port); the value is the sentence the refusal carries.
+#: ``room`` — the unload itself — is the one purpose let through.
+_held: dict[tuple[str, str, int | None], str] = {}
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urllib.parse.urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return parts.scheme.lower(), (parts.hostname or "").lower(), port
+
+
+def hold(url: str, reason: str) -> None:
+    """Refuse every request to `url`'s scheme, host and port until
+    ``release(url)``, saying `reason`."""
+    with _LOCK:
+        _held[_origin(url)] = reason
+
+
+def release(url: str) -> None:
+    with _LOCK:
+        _held.pop(_origin(url), None)
+
+
+def held(url: str) -> str | None:
+    """The reason requests to `url` are refused, or None."""
+    with _LOCK:
+        return _held.get(_origin(url))
 
 #: The log rotates at this size; ``.1`` ``.2`` ``.3`` are kept.
 LOG_MAX_BYTES = 1_000_000
@@ -356,6 +391,10 @@ def _admit(url: str, purpose: str, secret: str | None,
         refuse(f"{parts.scheme or 'no'} scheme is not http(s)")
     if parts.scheme != "https" and host != LOOPBACK:
         refuse(f"{parts.scheme or 'no'} scheme; only https leaves this PC")
+    if purpose != "room":
+        held_for = held(url)
+        if held_for:
+            refuse(held_for)
     # The gate for the purpose (5.1): asked here for EVERY remote call,
     # not only at construction, so a consent withdrawn from the dashboard
     # — another process — stops the next request without a restart.

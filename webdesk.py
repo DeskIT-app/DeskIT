@@ -1,6 +1,10 @@
 """The desk as a web page: web/dist inside WebView2, in a WinForms window
 pywebview owns, talking to the running app through control.py's pipe.
 
+The SHELL: deskweb.py is the desk that runs in it (its Api, its places),
+and dev\\master\\window.py the owner's master app, on this same file (its
+own copy went on 2026-10-24: one shell, one set of flags).
+
 THE SPIKE (2026-09-22). This module is the proof that the React desk can
 run the way a release runs it — from the embeddable python\\ of the
 installer, with the five packages below in its site-packages — and it
@@ -38,13 +42,17 @@ every decision the preflight named is taken here, in code:
   path) and sends a failing call's traceback back to the page.
   DeskEdgeChrome reads every web message itself: {deskit: 1, id, fn,
   args} from our origin for a name in CALLS is answered with
-  PostWebMessageAsJson; a pywebview-shaped message is passed on only
-  for a name in CALLS; the rest is dropped. The Api object stays flat —
-  three methods, nothing else public. (pywebview's own window.pywebview
-  .api still comes up under the page's strict CSP: its `new Function`
-  runs inside ExecuteScriptAsync, which the CSP does not govern —
-  measured: an inline <script> is refused, eval from ExecuteScript is
-  not.)
+  PostWebMessageAsJson, a failure as its exception's TYPE; everything
+  else — a pywebview-shaped message included — is dropped. The Api
+  object stays flat — three methods, nothing else public — and is not
+  handed to pywebview at all: its own road (window.pywebview.api,
+  util.js_bridge_call) answered a call that raised with the message and
+  the whole traceback (the foundation's review, 2026-10-23), and no page
+  of ours ever took it. (pywebview's window.pywebview still comes up
+  under the page's strict CSP — its `new Function` runs inside
+  ExecuteScriptAsync, which the CSP does not govern; measured: an inline
+  <script> is refused, eval from ExecuteScript is not — with an empty
+  api and nothing behind it.)
 * NOTHING LEAVES, NOTHING SOUNDS, NOTHING PERSISTS. IsMuted, every
   permission request denied, autofill and password saving off, downloads
   cancelled, new windows dropped, pywebview's ALLOW_FILE_URLS (which adds
@@ -95,6 +103,7 @@ The render tool for designers is dev\\web_shot.py.
 """
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
 import logging
@@ -125,7 +134,8 @@ HOST = "deskit.example"
 ORIGIN = f"https://{HOST}"
 START = f"{ORIGIN}/index.html"
 
-#: What the page may call, over either road. Nothing else is dispatched.
+#: What the page may call, over our own channel (pywebview's road is
+#: closed, see DeskEdgeChrome.on_script_notify). Nothing else is dispatched.
 #: An Api object may carry its own allowlist as a CALLS attribute — the
 #: master app (dev\master\api.py) has six names of its own and none of
 #: these — and then that list is the one the dispatcher checks. A page
@@ -138,9 +148,10 @@ def _calls(api) -> tuple:
     names = getattr(api, "CALLS", None) if api is not None else None
     return tuple(names) if names else CALLS
 
-#: LAMPLIGHT's ground (skin/palette.BG): the colour WebView2 paints before
-#: the page does, so the first frame is not white.
-BACKGROUND = "#14110c"
+#: B+'s ground (web/src/bplus.css --ground): the colour WebView2 paints
+#: before the page does, so the first frame is not white — nor LAMPLIGHT's
+#: brown (#14110c), which the spike used before the web desk had a look.
+BACKGROUND = "#080a14"
 
 #: The same registry values pywebview's winforms._is_chromium() reads.
 WEBVIEW2_RUNTIME = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
@@ -179,8 +190,35 @@ SCRUB_PREFIXES = ("WEBVIEW2_", "PYWEBVIEW_", "PYTHONNET_")
 #: (Chromium's IPv6-route probe: connect() on UDP sends no packet), and
 #: WebView2's "required diagnostic data", which goes through Windows'
 #: own telemetry and not the network service — not measurable here.
+#:
+#: msOneAuthWAM — what the netlog could NOT see (2026-10-23, runtime
+#: 155.0.4283.62, dev\web_census.py: every socket of every process under
+#: the desk, 4x a second). A fresh profile held no socket for 180 s; in
+#: each of the 6 starts AFTER a first one, the BROWSER process opened two
+#: TLS connections to substrate.office.com (40.99.44.x — Windows' own DNS
+#: cache held that name for the address the moment they opened) 2-4 s
+#: after the page loaded and kept them (in two runs a third that closed
+#: at once); one run also showed a plain-HTTP connection to an Akamai
+#: address. Windows' resolver, not Chromium's, so
+#: --host-resolver-rules and the netlog never saw any of it. It is Edge's
+#: own sign-in, OneAuth through Windows' account broker (WAM): the
+#: connections are encrypted and were not read, and msedge.dll's strings
+#: put the Windows account's profile and photo on that host
+#: (edge_auth/account_info_fetcher, /profileb2, /imageb2).
+#: Bisected on a copy of that warm profile, 45 s a run: msOneAuthWAM
+#: alone -> 0 sockets; msImplicitSignin alone 3, msIdentityCore alone 2,
+#: msEdgeOSAccountInfoSubstrate alone 2. With it in the list, a fresh
+#: start and the warm one after it held 0 sockets (numbers in
+#: NETWORK.md). Re-run the census on a new runtime before trusting this.
+#: What else msOneAuthWAM switches off inside Edge is not enumerable from
+#: here; what was measured is that with it off the page still loads and
+#: its bridge answers (Home read its first answer in every census run),
+#: and the window signs in to nothing (every other origin is refused).
+#: It removes an authentication path and loosens
+#: nothing; the browser's real command line (the census's browser_flags)
+#: carries exactly these five switches plus WebView2's own embedding ones.
 BASE_ARGS = (
-    "--disable-features=ElasticOverscroll,msSmartScreenProtection",
+    "--disable-features=ElasticOverscroll,msSmartScreenProtection,msOneAuthWAM",
     "--disable-background-networking",
     "--disable-component-update",
     '--host-resolver-rules="MAP * ~NOTFOUND"',
@@ -188,6 +226,70 @@ BASE_ARGS = (
 )
 
 BLANK = "<!doctype html><meta charset=utf-8><title>DeskIT</title>"
+
+
+# ------------------------------------------------------------ menu mode
+
+
+class MenuGuard:
+    """Keeps a bare Alt or F10 from putting the window into the menu mode.
+
+    WebView2 hands every key the page does not swallow as an accelerator
+    back to the window that hosts it, and Windows' default handling of a
+    bare Alt or F10 coming up is WM_SYSCOMMAND SC_KEYMENU: the form drops
+    into the system-menu mode (GetGUIThreadInfo flags GUI_INMENUMODE |
+    GUI_SYSTEMMENUMODE). The page still sees that key, but nothing it asks
+    Python is answered until the mode ends, and the NEXT key a person
+    presses goes to the menu instead (measured by the Keys session on the
+    hidden desktop, 2026-10-24: a bare Alt, a bare F10 and Ctrl+F10 — the
+    owner's ask-the-screen key — every one). This window has no menu bar,
+    so SC_KEYMENU with no character (lParam 0) is swallowed here, on the
+    form itself; Alt+Space (lParam ' ') still opens the window's own menu,
+    and Alt+F4 is SC_CLOSE, untouched.
+
+    A comctl32 subclass of the form's own window (SetWindowSubclass,
+    chained through DefSubclassProc), installed on the UI thread before the
+    form is shown and removed when the window goes (WM_NCDESTROY). The
+    callback is kept on this object, which the control keeps for the
+    window's life. A private comctl32 handle: argtypes declared on the
+    process-wide windll would change them for every module (AGENTS.md)."""
+
+    WM_SYSCOMMAND = 0x0112
+    WM_NCDESTROY = 0x0082
+    SC_KEYMENU = 0xF100
+    ID = 0xDE5C
+
+    def __init__(self, hwnd: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+        self.hwnd = hwnd
+        self.swallowed = 0
+        lresult = ctypes.c_ssize_t
+        proc_type = ctypes.WINFUNCTYPE(lresult, wintypes.HWND, wintypes.UINT,
+                                       wintypes.WPARAM, wintypes.LPARAM,
+                                       ctypes.c_size_t, ctypes.c_size_t)
+        comctl = ctypes.WinDLL("comctl32")
+        comctl.SetWindowSubclass.argtypes = [wintypes.HWND, proc_type, ctypes.c_size_t,
+                                             ctypes.c_size_t]
+        comctl.SetWindowSubclass.restype = wintypes.BOOL
+        comctl.RemoveWindowSubclass.argtypes = [wintypes.HWND, proc_type, ctypes.c_size_t]
+        comctl.RemoveWindowSubclass.restype = wintypes.BOOL
+        comctl.DefSubclassProc.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                           wintypes.LPARAM]
+        comctl.DefSubclassProc.restype = lresult
+
+        def proc(hwnd, msg, wparam, lparam, _ident, _data):
+            if (msg == self.WM_SYSCOMMAND and (wparam & 0xFFF0) == self.SC_KEYMENU
+                    and not lparam):
+                self.swallowed += 1
+                return 0
+            if msg == self.WM_NCDESTROY:
+                comctl.RemoveWindowSubclass(hwnd, self._proc, self.ID)
+            return comctl.DefSubclassProc(hwnd, msg, wparam, lparam)
+
+        self._proc = proc_type(proc)
+        if not comctl.SetWindowSubclass(hwnd, self._proc, self.ID, 0):
+            raise OSError("SetWindowSubclass refused the form")
 
 
 # ------------------------------------------------------------ pre-check
@@ -320,6 +422,10 @@ class Options:
     #: Alt-Tab. Without it the window wears pythonw.exe's own — the Python
     #: snake, which is what he saw in the title bar (2026-09-24).
     icon: Path | None = None
+    #: called with the WinForms form on the UI thread, before it is first
+    #: shown — the desk paints its title bar dark here, so the first frame
+    #: is not a pale strip over a dark page
+    on_form: Callable[[Any], None] | None = None
 
 
 class Desk:
@@ -331,8 +437,10 @@ class Desk:
         self.window = window
         self.edge = None                    # DeskEdgeChrome, set in its __init__
         self.stamps: dict[str, float] = {}  # time.time() of each milestone
-        self.blocked: list[str] = []        # what the guards refused (URIs)
-        self.dropped: list[str] = []        # web messages not answered
+        # what the guards refused (URIs), and web messages not answered —
+        # the newest of each only: a page cannot grow them without bound
+        self.blocked: collections.deque[str] = collections.deque(maxlen=200)
+        self.dropped: collections.deque[str] = collections.deque(maxlen=200)
         self.errors: list[str] = []
         self.loaded = threading.Event()     # our page's NavigationCompleted
         self.settings_applied: dict[str, str] = {}
@@ -502,6 +610,15 @@ def _install(desks: dict):
                     form.Icon = _Icon(str(self._opts.icon))
                 except Exception as e:       # noqa: BLE001 — an icon is not worth a window
                     desk.errors.append(f"icon: {e!r}")
+            if self._opts.on_form is not None:
+                try:
+                    self._opts.on_form(form)
+                except Exception as e:       # noqa: BLE001 — a caption is not worth a window
+                    desk.errors.append(f"on_form: {e!r}")
+            try:
+                self._menu_guard = MenuGuard(int(form.Handle.ToInt64()))
+            except Exception as e:           # noqa: BLE001 — a window that can go deaf beats none
+                desk.errors.append(f"menu guard: {e!r}")
             options = CoreWebView2EnvironmentOptions()
             options.AdditionalBrowserArguments = self._opts.args
             try:
@@ -633,9 +750,9 @@ def _install(desks: dict):
             if isinstance(message, dict) and message.get("deskit") == 1:
                 self._answer(message)
                 return
-            if (isinstance(message, list) and len(message) == 3
-                    and message[0] in _calls(self._opts.api)):
-                return super().on_script_notify(sender, args)
+            # pywebview's own road is closed: it answers a call that
+            # raised with the message and the traceback (util.
+            # js_bridge_call), and nothing of ours speaks it
             name = message[0] if isinstance(message, list) and message else type(message).__name__
             self._desk.dropped.append(f"pywebview message {str(name)[:60]}")
 
@@ -668,7 +785,8 @@ def run(*, dist=None, route: str = "", width: int = 1180, height: int = 760,
         title: str = "DeskIT", storage=None, api=None, extra_args=(),
         on_ready: Callable[[Desk], None] | None = None, crash_local: bool = True,
         inprivate: bool = True, x: int | None = None, y: int | None = None,
-        icon=None) -> int:
+        icon=None, on_form: Callable[[Any], None] | None = None,
+        resizable: bool = True, hidden: bool = False) -> int:
     """Open the desk and block until it closes. 0 when it ran; 2 when the
     pre-check said no (nothing of webview was imported); 3 when it could
     not start. `on_ready(desk)` runs on a thread of its own once the page
@@ -697,12 +815,15 @@ def run(*, dist=None, route: str = "", width: int = 1180, height: int = 760,
     _install(desks)
     desk.stamp("winforms_imported")
     api = api if api is not None else Api()
-    window = webview.create_window(title, html=BLANK, js_api=api, width=width,
-                                   height=height, x=x, y=y,
-                                   background_color=BACKGROUND, text_select=False)
+    # js_api=None: the Api is answered on our own channel only (Options
+    # .api); pywebview is handed nothing it could dispatch to
+    window = webview.create_window(title, html=BLANK, js_api=None, width=width,
+                                   height=height, x=x, y=y, resizable=resizable,
+                                   hidden=hidden, background_color=BACKGROUND,
+                                   text_select=False)
     window._deskit_options = Options(dist=dist, route=route, args=browser_args(extra_args),
                                      crash_local=crash_local, inprivate=inprivate, api=api,
-                                     icon=Path(icon) if icon else None)
+                                     icon=Path(icon) if icon else None, on_form=on_form)
     desk.window = window
     desks[window.uid] = desk
     desk.stamp("start")

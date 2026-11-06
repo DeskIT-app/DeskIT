@@ -94,11 +94,31 @@ def _the_account_words_ask_nothing_new() -> None:
     privacy.carry_forward("account", privacy.CARRIED_FORWARD["account"])
 
 
+def _each_copy_its_own_key_slot() -> None:
+    """Each copy keeps its cloud keys under a Credential Manager prefix of
+    its own (2026-10-04, secretstore.TARGET_PREFIX): the Dev checkout
+    and a portable copy leave the shared ``DeskIT/`` and take ONE copy
+    of what it holds, if they were set up before — a fresh copy takes
+    nothing. ``DeskIT/`` itself is never touched: the released app (the
+    website's, winget's or the Store's — one app) keeps it, and may be
+    the one reading it on this PC.
+    The vault's cursor follows the slot by itself (sb._sync_vault), so a
+    slot that starts empty is a fresh PC's, never a removal."""
+    import secretstore
+    try:
+        state = config_mod.read_state(paths.STATE_FILE)
+    except Exception:                                        # noqa: BLE001
+        state = {}
+    set_up = bool(state.get("setup.done")) or paths.SETUP_MARKER.exists()
+    secretstore.adopt_release_keys(set_up)
+
+
 #: (config_version this step PRODUCES, the step). Append, never reorder.
 STEPS: list[tuple[int, object]] = [(2, _sync_follows_the_account),
                                    (3, _history_follows_the_sync),
                                    (4, _the_lock_asks_nothing_new),
-                                   (5, _the_account_words_ask_nothing_new)]
+                                   (5, _the_account_words_ask_nothing_new),
+                                   (6, _each_copy_its_own_key_slot)]
 
 
 def current() -> int:
