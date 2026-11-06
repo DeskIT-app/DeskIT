@@ -254,6 +254,28 @@ HISTORY_BATCH = 500
 TEXT_MAX = 4000
 
 
+def _stamped(events):
+    """The events a row is made of, oldest first, each with the stamp its
+    row carries (``history_rows`` says why two can differ from the log)."""
+    last: dict[str, datetime] = {}                     # kind -> the ts just used
+    for ev in sorted(events, key=lambda e: e.when):
+        if ev.kind not in HISTORY_KINDS or not (ev.text or "").strip():
+            continue
+        when = ev.when.astimezone(timezone.utc).replace(
+            microsecond=ev.when.microsecond // 1000 * 1000)
+        prev = last.get(ev.kind)
+        if prev is not None and when <= prev:
+            when = prev + timedelta(milliseconds=1)
+        last[ev.kind] = when
+        yield ev, when
+
+
+def history_floor(events) -> str | None:
+    """The stamp of the newest row these events make, or None for none."""
+    newest = max((when for _ev, when in _stamped(events)), default=None)
+    return newest.isoformat(timespec="milliseconds") if newest else None
+
+
 def history_rows(events, device_id: str, after: str | None) -> list[dict]:
     """The rows this PC pushes: every event newer than ``after`` (an ISO
     stamp, or None for all of them), oldest first, at most one batch.
@@ -271,16 +293,7 @@ def history_rows(events, device_id: str, after: str | None) -> list[dict]:
     """
     rows: list[dict] = []
     since = _parse_iso(after)
-    last: dict[str, datetime] = {}                     # kind -> the ts just used
-    for ev in sorted(events, key=lambda e: e.when):
-        if ev.kind not in HISTORY_KINDS or not (ev.text or "").strip():
-            continue
-        when = ev.when.astimezone(timezone.utc).replace(
-            microsecond=ev.when.microsecond // 1000 * 1000)
-        prev = last.get(ev.kind)
-        if prev is not None and when <= prev:
-            when = prev + timedelta(milliseconds=1)
-        last[ev.kind] = when
+    for ev, when in _stamped(events):
         if since is not None and when <= since:
             continue
         rows.append({

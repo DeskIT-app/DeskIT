@@ -126,17 +126,24 @@ TEXTS: dict[str, dict] = {
         # — what the syncs send, their own cards always said — so a row
         # given under the old words is carried forward
         # (privacy.CARRIED_FORWARD, migrations step 5), never asked again.
-        "version": "deskit-terms-0+en-2026-09-23",
+        # 2026-11-06: the id of a device's session, and the one connection a
+        # signed-in copy keeps whatever its syncs say. Both are new under
+        # this gate, so this time a row given under the old words is asked
+        # again.
+        "version": "deskit-terms-0+en-2026-11-06",
         "title": "Open an account?",
-        "changed": "It now says that signing in keeps what you said and your cloud "
-                   "keys in your account, locked with a key only your own PCs hold.",
+        "changed": "It now says that a signed-in copy keeps one open connection to your "
+                   "account, with the syncs on or off, and that the id of each device's "
+                   "session is kept with your account. Neither carries anything you said.",
         "blocks": (
             (WHAT, "An account id — anonymous, or the e-mail of the Google account you "
-                   "chose; this PC's name; the app, Windows and hardware versions."),
+                   "chose; this device's name; the app, Windows and hardware versions; "
+                   "the id of this device's session, so another device of yours can end it."),
             (WHOM, _DESKIT),
             (ACCOUNT, "DeskIT's project. Signing in also keeps your learned words and "
                       "settings there, and what you said and your cloud keys, locked "
-                      "with a key only your own PCs hold."),
+                      "with a key only your own devices hold. While you are signed in, one "
+                      "open connection stays up, syncs on or off; it carries nothing you said."),
             (TERMS, _TERMS),
             (OFF, "Your data > Delete my account."),
         ),

@@ -104,8 +104,9 @@ developer's database sealed; its security rules separate users from
 each other, and the lock keeps the project's administrator from reading
 what you said or your keys.** The time and kind of each row stay
 readable so the syncs can order them. A new device gets the key when a
-device already signed in approves it (a code compared on both screens),
-or when you type the recovery key the app made for you; the server only
+device already signed in approves it (a code compared on both screens,
+and a press on each), or when you type the recovery key the app made for
+you; the server only
 ever carries the key wrapped. If even that is not acceptable, leave
 the "what you said" sync off — dictation and everything else work
 exactly the same.

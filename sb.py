@@ -76,7 +76,10 @@ its public key; the ten-character code it shows is computed from that
 key and the lock it read) and waits for a device that has it to approve
 (``approve_pairing`` — the code computed again from the key it wraps to
 and the lock this device holds, the key wrapped to that public key,
-never in the clear), or for the person to type the recovery key
+never in the clear), and for its own person to say the two codes are the
+same (``same_code``: it opens nothing before that, or a dishonest server
+could write the answer itself, under a lock it named), or for the person
+to type the recovery key
 (``recover``). ``history.cipher`` and the ``vault`` rows (the cloud
 keys, one per name) are sealed under the account key and opened only
 here; ``ts``, ``kind`` and ``engine`` stay readable for the ordering.
@@ -413,7 +416,7 @@ def _fresh() -> dict:
 #: app.log. Until 2026-10-03 the card showed the server's line itself —
 #: "the session could not be refreshed (HTTP 400: Invalid Refresh Token:
 #: Refresh Token Not Found)" — and it said nothing to a person.
-GONE_ELSEWHERE = "Signed out from another PC."
+GONE_ELSEWHERE = "Signed out from another device."
 GONE_WORDS = "This PC was signed out."
 
 
@@ -478,16 +481,66 @@ def _storage(method: str, path: str, *, body: bytes | None = None,
 
 # ----------------------------------------------------------- the profile
 
-def device_id() -> str:
-    """This PC's id in the account, minted once into state.json, and
-    again only when the account forgot the old one (``_leave``) or this PC
-    signed in to another account (``ensure_profile``)."""
+def _state_reads() -> bool:
+    """Is state.json absent or readable? config.read_state says {} for a
+    file that is missing and for one that is damaged, and only the first
+    may have a new id written over it."""
+    try:
+        return isinstance(json.loads(paths.STATE_FILE.read_text("utf-8")), dict)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _per_account(name: str) -> dict:
+    """One of the maps state.json keeps by the account's uid."""
     import config
-    state = config.read_state(paths.STATE_FILE)
-    ident = str(state.get("account.device_id") or "")
-    if not ident:
-        ident = str(uuid.uuid4())
-        config.save({"account.device_id": ident})
+    data = config.read_state(paths.STATE_FILE).get(name)
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def device_id() -> str:
+    """This PC's id in the account signed in here: one per account, minted
+    once into state.json and kept, so going from A to B and back to A finds
+    A's own row again. ``devices.id`` is unique across accounts, so under
+    another account the old id would be refused, and a phone would find no
+    PC. A new one comes only when the account forgot the old (``_leave``).
+    Never minted over a state file that will not read, which may hold the
+    real one: AccountError then, and the next pass looks again."""
+    import config
+    session = _load_session()
+    uid = str(((session or {}).get("user") or {}).get("id") or "")
+    with _lock:
+        state = config.read_state(paths.STATE_FILE)
+        ids = state.get("account.device_ids")
+        ids = dict(ids) if isinstance(ids, dict) else {}
+        current = str(state.get("account.device_id") or "")
+        ident = str(ids.get(uid) or "") if uid else current
+        if not ident and current not in ids.values():
+            ident = current                  # the id this copy already had
+        if ident and ident == current and (not uid or ids.get(uid) == ident):
+            return ident
+        if not ident:
+            if not _state_reads():
+                raise AccountError("this PC's state file will not read, so its device id is not known")
+            ident = str(uuid.uuid4())
+        updates: dict = {"account.device_id": ident}
+        if uid:
+            updates["account.device_ids"] = {**ids, uid: ident}
+        if ident != current:
+            updates.update({"account.device_seen_at": None, "account.device_session": None})
+        config.save(updates)
+        return ident
+
+
+def _new_device_id(uid: str, **also) -> str:
+    """Another id for this PC under ``uid``, in place of the one it had."""
+    import config
+    ident = str(uuid.uuid4())
+    config.save({"account.device_id": ident,
+                 "account.device_ids": {**_per_account("account.device_ids"), uid: ident},
+                 "account.device_seen_at": None, "account.device_session": None, **also})
     return ident
 
 
@@ -570,17 +623,15 @@ def ensure_profile(force: bool = False) -> None:
     under the row is another one: its ``session_id`` is what Forget ends
     (migration 0007). A PC on the account's forgotten list leaves before
     it writes (``_forgotten_pass``), so what is written is a new device's
-    row and the forgotten one stays gone. ``devices.id`` is unique across
-    accounts, so a PC signed in to another account is another device: under
-    the old id the row would be refused, and a phone would find no PC."""
+    row and the forgotten one stays gone. An id whose row is another
+    account's (row-level security, 42501: a copy from before ``device_id``
+    kept one per account, or a state file put back from elsewhere) gives
+    way to a new one, once, or a phone would find no PC."""
     session = _fresh()
     uid = session["user"]["id"]
     import config
+    device_id()                      # under this account, before anything reads the state
     state = config.read_state(paths.STATE_FILE)
-    if str(state.get("account.device_uid") or uid) != uid:
-        config.save({"account.device_id": str(uuid.uuid4()), "account.device_uid": uid,
-                     "account.device_seen_at": None, "account.device_session": None})
-        state = config.read_state(paths.STATE_FILE)
     seen = float(state.get("account.device_seen_at") or 0)
     sid = _session_id(session)
     moved = bool(sid) and sid != state.get("account.device_session")
@@ -602,10 +653,14 @@ def ensure_profile(force: bool = False) -> None:
         row["session_id"] = sid
     status, data = _rest("POST", "devices", purpose="account", query="on_conflict=id",
                          payload=row, prefer="resolution=merge-duplicates,return=minimal")
+    if status == 403 and isinstance(data, bytes) and b"42501" in data:
+        log.info("account: this PC's device id belongs to another account — it takes a new one")
+        row["id"] = _new_device_id(uid)
+        status, data = _rest("POST", "devices", purpose="account", query="on_conflict=id",
+                             payload=row, prefer="resolution=merge-duplicates,return=minimal")
     if status not in (200, 201, 204):
         raise AccountError(f"the device row was refused ({_server_said(status, data)})")
-    config.save({"account.device_seen_at": time.time(), "account.device_session": sid or None,
-                 "account.device_uid": uid})
+    config.save({"account.device_seen_at": time.time(), "account.device_session": sid or None})
 
 
 # ---------------------------------------------------------------- sign-in
@@ -976,10 +1031,15 @@ def delete_account() -> None:
     sync.forget_all()
     vault.forget(uid)             # the key and every key of this account set aside
     _forget_lock_state()
+    try:
+        _forgotten_file(uid).unlink(missing_ok=True)
+    except OSError as e:
+        log.info("account: the list of forgotten devices stayed (%s)", e)
     import config
+    maps = {name: {k: v for k, v in _per_account(name).items() if k != uid} or None
+            for name in ("account.device_ids", "account.past_devices", "account.history_floor")}
     config.save({"account.device_id": None, "account.device_seen_at": None,
-                 "account.device_name": None, "account.device_session": None,
-                 "account.device_uid": None, "account.past_devices": None})
+                 "account.device_name": None, "account.device_session": None, **maps})
     _clear_outbox()
     _status["last_error"] = ""
     log.info("account: deleted on the server and forgotten here")
@@ -1325,9 +1385,10 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
             break
     # up
     events = history.all_events() if push else []
+    floor = _per_account("account.history_floor").get(uid)
     pushed = 0
     for _round in range(10):
-        batch = sync.history_rows(events, mine, cursor.get("history_pushed_ts"))
+        batch = sync.history_rows(events, mine, _later(cursor.get("history_pushed_ts"), floor))
         if not batch:
             break
         for row in batch:
@@ -1761,7 +1822,10 @@ def _worker_pass(vocab, on_sent, only) -> None:
     with both syncs off; sync_now then takes what that pass found, so a PC
     waiting to be approved looks at its request once a turn and not twice.
     A nudge names its stores and is those stores alone: a dictation must
-    not cost the requests of an account pass."""
+    not cost the requests of an account pass. Only the app has a worker, so
+    this is also where a leaving noticed in the desk or the wizard is
+    finished (``settle_left``)."""
+    settle_left()
     if not signed_in():
         return
     if only is None:
@@ -2206,7 +2270,11 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
             log.info("lock: the request to join is gone — asking again")
             vault.drop(req["id"])
             req = None
-        elif rows[0].get("handed"):
+        elif rows[0].get("handed") and req.get("same"):
+            # both sides press: without this one a dishonest server writes
+            # `handed` itself, with no other device at all, under a lock it
+            # named. Whatever is there stays unopened until the person here
+            # has said the two codes are the same, before or after the Approve
             aad = vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"])
             try:
                 key = vault.take(req["id"], str(rows[0]["handed"]), aad)
@@ -2263,6 +2331,27 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
     else:
         _set_lock(state="waiting", lock_id=remote, pairing=req)
     return None
+
+
+def same_code(code: str) -> None:
+    """[Same code] on the screen that shows the code: the joining side's
+    half of the join, as in Bluetooth pairing. The code binds the lock, and
+    that is worth something only if this device waits for its own person:
+    until this press it neither opens nor keeps what it was handed. It may
+    come before or after the Approve; what was handed is taken at the next
+    look (``_request_pairing``). ``code`` is the one the screen showed: a
+    request made afresh meanwhile has another, and is not answered by a
+    press on the old one."""
+    with _lock:
+        req = _lock_state.get("pairing")
+        if not req:
+            raise AccountError("this PC is not waiting to join")
+        if str(code or "").strip() != req["code"]:
+            raise AccountError("the code changed — look at it again")
+        req["same"] = True
+    log.info("lock: Same code was pressed on this PC")
+    _run_lock_hooks()
+    _wake.set()
 
 
 def _recovery_known() -> None:
@@ -2330,7 +2419,7 @@ def pending_pairings() -> list[dict]:
     out: list[dict] = []
     for reqs in asking.values():
         r = reqs[-1]
-        entry = {"id": str(r.get("id") or ""), "name": str(r.get("device_name") or "") or "another PC",
+        entry = {"id": str(r.get("id") or ""), "name": str(r.get("device_name") or "") or "another device",
                  "code": "", "created_at": str(r.get("created_at") or ""),
                  "device": str(r.get("device_id") or "")}
         if len(reqs) > 1:
@@ -2384,7 +2473,7 @@ def approve_pairing(pairing_id: str) -> str:
     if not rows:
         raise AccountError("that request is gone")
     row = rows[0]
-    name = str(row.get("device_name") or "") or "another PC"
+    name = str(row.get("device_name") or "") or "another device"
     until = sync._parse_iso(str(row.get("expires_at") or ""))
     if until is not None and until <= datetime.now(timezone.utc):
         raise AccountError(f"{name}'s request expired — it asks again on its own")
@@ -2541,7 +2630,7 @@ def recover(recovery: str) -> None:
     if status != 200 or not isinstance(rows, list):
         raise AccountError(f"lock: {_server_said(status, rows)}")
     if not rows:
-        raise AccountError("this account has no recovery key — approve this PC from your other one")
+        raise AccountError("this account has no recovery key — approve this PC from another device of yours")
     try:
         key = vault.unwrap_recovery(str(rows[0].get("wrapped") or ""), flat,
                                     vault.AAD_RECOVERY.format(uid=uid))
@@ -2567,7 +2656,8 @@ def recover(recovery: str) -> None:
 def lock_status() -> dict:
     """What the Account card and the wizard draw: ``state`` is ``have``
     (this PC holds the key), ``waiting`` (it asked to join; ``code`` is
-    what it shows), ``changed`` (the account's lock is not the one this
+    what it shows, ``same`` whether its person pressed Same code),
+    ``changed`` (the account's lock is not the one this
     PC holds — ``changed`` says ``server`` and ``mine``, eight hex each,
     and ``refused`` once he said it was not him), or empty (no account,
     or not looked at yet); ``pending`` the other PCs waiting on this
@@ -2580,6 +2670,7 @@ def lock_status() -> dict:
     ch = st.get("changed") or None
     return {"state": str(st.get("state") or ""), "id": str(st.get("lock_id") or "")[:8],
             "code": str(req["code"]) if req else "",
+            "same": bool(req and req.get("same")),
             "pending": [dict(r) for r in (st.get("pending") or [])],
             "recovery": st.get("recovery"), "error": str(st.get("error") or ""),
             "quiet": not _syncs_on() and not _device_names.get("phone"),
@@ -2651,6 +2742,8 @@ def write_link(sealed: str) -> None:
     mine = device_id()
     if mine in forgotten():
         raise AccountError("this device was forgotten")
+    if _left():
+        raise AccountError("this device left the account and still has its old certificate")
     status, data = _rest("POST", "devices", purpose="account", query="on_conflict=id",
                          payload={"id": mine, "user_id": uid, "name": device_name(),
                                   "platform": _platform(), "link": text},
@@ -2660,8 +2753,10 @@ def write_link(sealed: str) -> None:
     _broadcast(["devices"])
 
 
-def _forgotten_file():
-    return paths.SECRETS_DIR / "forgotten.json"
+def _forgotten_file(uid: str):
+    """One file per account: Delete my account takes its own and no
+    other's."""
+    return paths.SECRETS_DIR / f"forgotten-{uid}.json"
 
 
 def _forgotten_rows(rows) -> list[dict]:
@@ -2680,11 +2775,11 @@ def _forgotten_rows(rows) -> list[dict]:
     return list(out.values())
 
 
-def _read_forgotten() -> list[dict] | None:
+def _read_forgotten(uid: str) -> list[dict] | None:
     """The local list; None when the file is there and will not read,
     which is not the same as empty: nothing may be written over it."""
     try:
-        data = json.loads(_forgotten_file().read_text("utf-8"))
+        data = json.loads(_forgotten_file(uid).read_text("utf-8"))
     except FileNotFoundError:
         return []
     except (OSError, ValueError) as e:
@@ -2693,17 +2788,17 @@ def _read_forgotten() -> list[dict] | None:
     return _forgotten_rows(data.get("v") if isinstance(data, dict) else None)
 
 
-def _keep_forgotten(rows: list[dict]) -> list[dict]:
-    """``rows`` added to the local list, which only ever grows: it is what
-    keeps a device out when the server restores a row or drops the
+def _keep_forgotten(uid: str, rows: list[dict]) -> list[dict]:
+    """``rows`` added to the account's local list, which only ever grows: it
+    is what keeps a device out when the server restores a row or drops the
     account's list. Returns the whole list."""
     with _lock:
-        have = _read_forgotten()
+        have = _read_forgotten(uid)
         if have is None:
             return _forgotten_rows(rows)
         union = _forgotten_rows(have + rows)
         if len(union) > len(have):
-            path = _forgotten_file()
+            path = _forgotten_file(uid)
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 tmp = path.with_suffix(f".json.{os.getpid()}.new")
@@ -2716,12 +2811,14 @@ def _keep_forgotten(rows: list[dict]) -> list[dict]:
 
 
 def forgotten() -> set[str]:
-    """Device ids and certificate fingerprints that stay out: the local
-    list, which holds the account's as of the last account pass, so this
-    answers with no network and a door opens from it after a restart with
-    the internet down."""
+    """Device ids and certificate fingerprints that stay out of the account
+    signed in here: the local list, which holds the account's as of the
+    last account pass, so this answers with no network and a door opens
+    from it after a restart with the internet down. Nothing with nobody
+    signed in: with no account there is nobody to let in."""
     out: set[str] = set()
-    for row in _read_forgotten() or []:
+    who = user()
+    for row in (_read_forgotten(who["id"]) if who else None) or []:
         out.add(row["device"])
         if row["cert"]:
             out.add(row["cert"])
@@ -2731,9 +2828,34 @@ def forgotten() -> set[str]:
 def _past_devices() -> set[str]:
     """The ids this PC had before the account forgot it, so what it said
     under them does not come back to it as another device's lines."""
-    import config
-    past = config.read_state(paths.STATE_FILE).get("account.past_devices")
+    who = user()
+    past = _per_account("account.past_devices").get((who or {}).get("id"))
     return {str(p) for p in past} if isinstance(past, list) else set()
+
+
+def _later(a: str | None, b: str | None) -> str | None:
+    """The later of two stamps, either of which may be missing."""
+    stamps = [s for s in (a, b) if s]
+    if not stamps:
+        return None
+    return max(stamps, key=lambda s: sync._parse_iso(s) or datetime.min.replace(tzinfo=timezone.utc))
+
+
+def _history_floor(uid: str) -> str | None:
+    """Where this PC's history stands as it leaves: what it pushed, or, with
+    the cursor gone (the 401 that told it wiped them), everything it has.
+    Those rows are on the account under the old id, and under the new one
+    they would be new rows, every line doubled on every device. Kept in
+    state.json, because ``sync.forget_all`` takes the cursors at every
+    sign-out, and in the very sequence a Forget sets off."""
+    import history
+    pushed = sync.read_cursor().get("history_pushed_ts")
+    if not pushed:
+        try:
+            pushed = sync.history_floor(history.all_events())
+        except (OSError, ValueError) as e:
+            log.info("account: this PC's history was not read as it left (%s)", e)
+    return _later(pushed, _per_account("account.history_floor").get(uid))
 
 
 def _account_forgotten(uid: str, key: bytes) -> list[dict]:
@@ -2790,40 +2912,71 @@ def _forgotten_pass(uid: str) -> bool:
     if key is None or _lock_state.get("state") == "changed":
         return False
     theirs = _account_forgotten(uid, key)
-    union = _keep_forgotten(theirs)
+    union = _keep_forgotten(uid, theirs)
     if _lock_state.get("state") == "have" and _lock_state.get("lock_id") == vault.fingerprint(key):
         _write_forgotten(uid, key, union, theirs)
     mine = device_id()
     if any(r["device"] == mine for r in union):
-        _leave(uid, mine)
+        _leave(uid, mine, key)
         return True
     return False
 
 
-def _leave(uid: str, old: str) -> None:
+def _leave(uid: str, old: str, key: bytes) -> None:
     """This PC is on the account's forgotten list: its key moves aside,
     its row is never written again, and it asks to join as a new device,
     under a new id and, through FORGOTTEN_HOOKS, a new certificate, because
-    the list never lets the old ones back. The lock it asks for is the one
-    it held, and the key is kept, so nothing it could read before is lost
-    if the same key comes back to it."""
+    the list never lets the old ones back. The lock it will take a key for
+    is the one it held, by the key's own fingerprint and never the server's
+    column, and the key is kept, so nothing it could read before is lost if
+    the same key comes back to it. What it already said stays under the old
+    id (``_history_floor``). ``account.left`` is what finishes this in the
+    app when a desk or the wizard noticed it (``settle_left``)."""
     log.warning("account: this PC was forgotten on another device — its key is set aside "
                 "and it asks to join again as a new device")
+    floor = _history_floor(uid)
+    past = _per_account("account.past_devices")
     try:
-        vault.set_aside(uid, _profile_lock_id(uid) or "", why="this PC was forgotten")
+        vault.set_aside(uid, vault.fingerprint(key), why="this PC was forgotten")
     except vault.VaultError as e:
         raise AccountError(f"this PC was forgotten and its key could not be set aside ({e})") from e
-    import config
-    config.save({"account.device_id": str(uuid.uuid4()), "account.device_seen_at": None,
-                 "account.device_session": None,
-                 "account.past_devices": sorted(_past_devices() | {old})})
+    also: dict = {"account.left": old,
+                  "account.past_devices": {**past, uid: sorted(_past_devices() | {old})}}
+    if floor:
+        also["account.history_floor"] = {**_per_account("account.history_floor"), uid: floor}
+    _new_device_id(uid, **also)
     _device_names.update(at=0.0, names={}, phone=False)
     _set_lock(state="", lock_id="", pairing=None, pending=[], changed=None)
-    for hook in list(FORGOTTEN_HOOKS):
+    settle_left()
+
+
+def _left() -> bool:
+    import config
+    return bool(config.read_state(paths.STATE_FILE).get("account.left"))
+
+
+def settle_left() -> bool:
+    """Finish a leaving (``_leave``): FORGOTTEN_HOOKS run, and the mark in
+    state.json goes only once they all have. The process that notices may
+    be the desk or the wizard, where nothing is registered, so the mark
+    stays for the app, whose worker comes through here on every turn; a hook
+    that trips leaves it for the next. Until then ``write_link`` refuses: a
+    row under the new id must not carry the certificate the list names.
+    True when nothing is left to do."""
+    if not _left():
+        return True
+    hooks = list(FORGOTTEN_HOOKS)
+    if not hooks:
+        return False
+    for hook in hooks:
         try:
             hook()
         except Exception:                                    # noqa: BLE001
-            log.debug("a forgotten hook tripped", exc_info=True)
+            log.info("a forgotten hook tripped — it runs again at the next turn", exc_info=True)
+            return False
+    import config
+    config.save({"account.left": None})
+    return True
 
 
 def _mine() -> str:
@@ -2851,8 +3004,8 @@ def forget_device(device_id: str, cert: str) -> None:
         if key is None or _lock_state.get("state") != "have":
             raise AccountError("this PC does not hold the account's key")
         theirs = _account_forgotten(uid, key)
-        union = _keep_forgotten(theirs + [{"device": target, "cert": str(cert or ""),
-                                           "at": _now_iso()}])
+        union = _keep_forgotten(uid, theirs + [{"device": target, "cert": str(cert or ""),
+                                                "at": _now_iso()}])
         _write_forgotten(uid, key, union, theirs)
         status, data = _rest("POST", "rpc/forget_device", purpose="account",
                              payload={"target": target})
@@ -2956,6 +3109,6 @@ __all__ = [
     "REQUIRED", "SIGNED_OUT_HOOKS", "LIVE_ENABLED", "STORES", "stop_live",
     "PAIRING_HOOKS", "LOCK_HOOKS", "lock_status", "poll_lock", "pending_pairings",
     "approve_pairing", "decline_pairing", "make_recovery", "recover",
-    "lock_answer", "restore_lock", "account_pass", "ACCOUNT_HOOKS", "FORGOTTEN_HOOKS",
-    "devices", "write_link", "forget_device", "forgotten",
+    "lock_answer", "restore_lock", "same_code", "account_pass", "ACCOUNT_HOOKS",
+    "FORGOTTEN_HOOKS", "settle_left", "devices", "write_link", "forget_device", "forgotten",
 ]

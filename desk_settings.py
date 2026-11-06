@@ -175,7 +175,7 @@ ACCOUNT_DOS = {"google": "opening the browser",
                "signout_all": "signing out of every PC",
                "delete": "deleting"}
 #: The lock verbs (dashboard._paint_lock) and what each says when it worked.
-LOCK_DOS = {"approve": "approving", "decline": "declined",
+LOCK_DOS = {"approve": "approving", "decline": "declined", "same_code": "noted",
             "lock_answer": None, "lock_restore": "put back"}
 #: Files a button opens, by the name the page knows them by.
 FILES = ("app_log", "settings", "folder", "transcripts", "network_log")
@@ -945,7 +945,7 @@ class Place:
         elif self._lock_mode == "shown":
             said = "Your recovery key. Keep it somewhere safe — it is shown once."
             said_code = self._lock_fresh
-            said_sub = ("With it, a PC with no other PC of yours at hand can open your "
+            said_sub = ("With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.")
             tone = "warn"
             buttons = [{"label": "Copy", "do": "lock.copy"}, {"label": "Done", "do": "lock.done"}]
@@ -969,15 +969,15 @@ class Place:
                 said_sub += f"  ·  on the server: lock {ch['server']}, here: lock {ch.get('mine') or '—'}"
         elif lock.get("pending") and lock["pending"][0].get("twins"):
             ask = lock["pending"][0]
-            said = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            said = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     "neither can be approved.")
-            said_sub = (f"One of them is not your PC. On {ask.get('name') or 'that PC'}, sign out "
-                        "and sign in again to ask afresh.")
+            said_sub = (f"One of them is not yours. On {ask.get('name') or 'that device'}, sign "
+                        "out and sign in again to ask afresh.")
             tone = "bad"
             buttons = [{"label": "Not now", "do": "lock.do", "arg": ["decline", str(ask.get("id") or "")]}]
         elif lock.get("pending"):
             ask = lock["pending"][0]
-            said = f"{ask.get('name') or 'Another PC'} signed in to your account and asks to join."
+            said = f"{ask.get('name') or 'Another device'} signed in to your account and asks to join."
             said_code = str(ask.get("code") or "")
             said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
                         "It then gets your account's key: your cloud keys and what you "
@@ -985,17 +985,23 @@ class Place:
             buttons = [{"label": "Approve", "do": "lock.do", "arg": ["approve", str(ask.get("id") or "")]},
                        {"label": "Not now", "do": "lock.do", "arg": ["decline", str(ask.get("id") or "")]}]
         elif lock.get("state") == "waiting":
-            said = "Waiting for your other PC to approve this one."
+            said = "Waiting for another device of yours to approve this PC."
             said_code = str(lock.get("code") or "")
             typing = self._lock_mode == "typing"
             if typing:
                 said_sub = "Your recovery key — 24 letters and digits in six groups:"
                 buttons = [{"label": "Open", "do": "lock.recover"}, {"label": "Cancel", "do": "lock.done"}]
             else:
-                said_sub = ("Open the desk on your other PC: Home there shows this code — press "
-                            "Approve. Until then this PC has your words and settings; "
-                            "what you said and your cloud keys stay locked.")
+                said_sub = ("Open the desk on your other PC, or DeskIT on your phone. If it "
+                            "shows this code, press Approve there and Same code here. Until "
+                            "then this PC has your words and settings; what you said and your "
+                            "cloud keys stay locked.")
                 buttons = [{"label": "Type the recovery key", "do": "lock.type"}]
+                if lock.get("same"):
+                    said = "You pressed Same code — waiting for your other device to approve this PC."
+                else:
+                    buttons.insert(0, {"label": "Same code", "do": "lock.do",
+                                       "arg": ["same_code", str(lock.get("code") or "")]})
             if lock.get("error"):
                 said_sub = f"{lock['error']}  ·  {said_sub}"
         elif lock.get("state") == "have":
@@ -1669,6 +1675,10 @@ class Place:
             ids = {str(a.get("id")) for a in (lock.get("pending") or [])}
             if kind not in ids:
                 return "that request is not waiting any more"
+            said = LOCK_DOS[do]
+        elif do == "same_code":
+            if lock.get("state") != "waiting" or not kind or kind != lock.get("code"):
+                return "the code changed — look at it again"
             said = LOCK_DOS[do]
         elif do == "lock_answer":
             if kind not in ("yes", "no"):

@@ -2309,7 +2309,7 @@ class App:
         asks by itself; "a notification on the right that opens DeskIT,
         and I press Approve or Not now there"). The desk's Home row and
         banner carry the same without the notification."""
-        name = request.get("name") or "another PC"
+        name = request.get("name") or "another device"
         self._say(f"{name} asks to join your account — open the desk to approve it")
         engine = getattr(self, "notify", None)
         if engine is None:
@@ -3312,6 +3312,15 @@ class App:
                 return {"ok": False, "error": str(e)[:200]}
             self._say(f"{name} is in — your account opens there too")
             return {"ok": True, "message": f"{name} is in"}
+        if do == "same_code":
+            # the joining side's press (PHONE_LINK_PLAN.md stage 1): `kind` is
+            # the code the screen showed, and until this nothing handed over
+            # is opened or kept
+            try:
+                sb.same_code(kind)
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            return {"ok": True, "message": "noted — approve this PC on your other device"}
         if do == "decline":
             if not kind:
                 return {"ok": False, "error": "which request?"}
@@ -3338,7 +3347,8 @@ class App:
                 return {"ok": False, "error": str(e)[:200]}
             if said == "asked":
                 return {"ok": True, "message": "your old key is kept aside — approve this PC "
-                                               "from your other PC, or type the recovery key"}
+                                               "from another device of yours, or type the "
+                                               "recovery key"}
             return {"ok": True, "message": "kept — what you said and your keys stay paused"}
         if do == "lock_restore":
             try:

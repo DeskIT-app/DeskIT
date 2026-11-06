@@ -875,27 +875,37 @@ class Model:
                 [{"label": "Approve", "tone": "primary", "act": "lock.approve", "arg": ident},
                  {"label": "Not now", "tone": "quiet", "act": "lock.decline", "arg": ident}]))
         if lock.get("state") == "waiting":
-            note = ("Open the desk on your other PC and press Approve, or open DeskIT on your "
-                    "phone. Until then this PC has your words and settings; what you said and "
-                    "your cloud keys stay locked. No other device at hand? Type the recovery "
-                    "key DeskIT made for you.")
+            code = lock.get("code") or "…"
+            note = ("Open the desk on your other PC, or open DeskIT on your phone. If it shows "
+                    "this code, press Approve there and Same code here, in either order. Until "
+                    "then this PC has your words and settings; what you said and your cloud "
+                    "keys stay locked. No other device at hand? Type the recovery key DeskIT "
+                    "made for you.")
+            if lock.get("same"):
+                note = ("Now press Approve there: the desk on your other PC, or DeskIT on your "
+                        "phone. Until then what you said and your cloud keys stay locked.")
             if lock.get("error"):
                 note = f"{lock['error']}  ·  {note}"
             if self._lock_typing:
                 rows.append(row(
                     "lock:waiting", now, "warn",
                     f"Waiting for another device of yours to approve this PC — its screen must show "
-                    f"{lock.get('code') or '…'}",
+                    f"{code}",
                     "Your recovery key — 24 letters and digits in six groups:",
                     [{"label": "Open", "tone": "primary", "act": "lock.recover"},
                      {"label": "Cancel", "tone": "quiet", "act": "lock.cancel"}],
                     field="recovery"))
             else:
+                buttons = [{"label": "Type the recovery key", "tone": "quiet", "act": "lock.type"}]
+                if not lock.get("same"):
+                    buttons.insert(0, {"label": "Same code", "tone": "primary", "act": "lock.same",
+                                       "arg": lock.get("code")})
                 rows.append(row(
                     "lock:waiting", now, "warn",
-                    f"Waiting for another device of yours to approve this PC — its screen must show "
-                    f"{lock.get('code') or '…'}", note,
-                    [{"label": "Type the recovery key", "tone": "quiet", "act": "lock.type"}]))
+                    (f"You pressed Same code for {code} — waiting for your other device to "
+                     "approve this PC" if lock.get("same") else
+                     f"Waiting for another device of yours to approve this PC — its screen must "
+                     f"show {code}"), note, buttons))
         else:
             self._lock_typing = False
             if lock.get("state") == "have" and lock.get("recovery") is False \
@@ -983,7 +993,8 @@ class Model:
                                  "arg": ident}]}
         if lock.get("state") == "waiting":
             return {"text": f"Waiting for another device of yours to approve this PC — its "
-                            f"screen must show {lock.get('code') or '…'}", "buttons": []}
+                            f"screen must show {lock.get('code') or '…'}",
+                    "buttons": [] if lock.get("same") else [home]}
         return None
 
     def _stamp(self) -> float:
@@ -1516,6 +1527,12 @@ class Model:
             verb = do.split(".", 1)[1]
             return self._said(self._ask("account", do=verb, kind=ident),
                               "approving" if verb == "approve" else "declined")
+        if do == "lock.same":
+            # the code this row showed, or nothing: a request made afresh
+            # meanwhile has another
+            if lock.get("state") != "waiting" or not arg or arg != lock.get("code"):
+                return "the code changed — look at it again"
+            return self._said(self._ask("account", do="same_code", kind=arg), "noted")
         if do == "lock.recover":
             # the typed key goes to the app over the pipe and nowhere
             # else: never a note, never a log line, never kept here
@@ -1911,7 +1928,7 @@ class Model:
                   "report.send", "report.consent", "report.keep"):
             return self._report_do(do, arg)
         if do in ("lock.copy", "lock.done", "lock.type", "lock.cancel", "lock.approve",
-                  "lock.decline", "lock.recover", "lock.answer", "lock.restore",
+                  "lock.decline", "lock.same", "lock.recover", "lock.answer", "lock.restore",
                   "lock.signout_ask", "lock.signout_keep", "lock.signout_all",
                   "lock.recovery_new"):
             return self._lock_do(do, arg)
