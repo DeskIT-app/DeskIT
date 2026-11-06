@@ -829,10 +829,11 @@ class _ExecuteInfo(ctypes.Structure):
                 ("hIcon", ctypes.c_void_p), ("hProcess", ctypes.c_void_p)]
 
 
-def _elevated(system: str, line: str) -> str:
+def _elevated(system: str, line: str, verb: str = "runas") -> str:
     """One elevated, windowless cmd.exe; done, declined or failed. Absolute
     paths and system32 as its folder: an elevated cmd.exe looks in its own
-    folder first, and that folder must not be one a person can write to."""
+    folder first, and that folder must not be one a person can write to.
+    ``verb`` is a test's way through this code with no prompt."""
     shell = ctypes.WinDLL("shell32", use_last_error=True)
     k32 = ctypes.WinDLL("kernel32")
     k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
@@ -841,7 +842,7 @@ def _elevated(system: str, line: str) -> str:
     info = _ExecuteInfo()
     info.cbSize = ctypes.sizeof(info)
     info.fMask = _SEE_MASK_NOCLOSEPROCESS | _SEE_MASK_FLAG_NO_UI
-    info.lpVerb = "runas"
+    info.lpVerb = verb
     info.lpFile = os.path.join(system, "cmd.exe")
     info.lpParameters = f'/s /c "{line}"'
     info.lpDirectory = system

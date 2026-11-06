@@ -4230,7 +4230,7 @@ def test_phone_server_binds_its_port_exclusively() -> None:
     import server as server_mod
 
     assert server_mod._Server.allow_reuse_address is False
-    port = 8791
+    port = _door_port()
 
     def fake(wav):
         return "", "fake"
@@ -5646,28 +5646,6 @@ def test_splash_log_forwards_app_messages_and_trims_long_ones() -> None:
     assert len(seen[1]) <= 110 and seen[1].endswith("…"), len(seen[1])
 
 
-def test_subprocess_output_survives_a_hebrew_locale() -> None:
-    """This machine's locale code page is cp1255. subprocess(text=True)
-    decodes with it, so a tool emitting UTF-8 raises UnicodeDecodeError in
-    the reader thread and returns stdout=None — and because that is a
-    ValueError, a broad except reports the tool as absent. Exactly how the
-    app came to log "tailscale is not up" while Tailscale was up."""
-    import json as json_mod
-
-    import server as server_mod
-
-    # “ is 0x9c in cp1255's undefined range — the real byte that broke it
-    payload = {"Self": {"DNSName": "yoav.example.ts.net."},
-               "note": "עברית “quoted”"}
-    script = ("import sys,io;"
-              "sys.stdout=io.TextIOWrapper(sys.stdout.buffer,encoding='utf-8');"
-              f"print({json_mod.dumps(json_mod.dumps(payload))})")
-    out = server_mod.run_utf8([sys.executable, "-c", script])
-    assert out is not None, "utf-8 stdout came back as None"
-    assert json_mod.loads(out)["Self"]["DNSName"] == "yoav.example.ts.net."
-    assert server_mod.run_utf8(["definitely-not-a-real-binary-xyz"]) is None
-
-
 def test_phone_token_is_generated_once_and_reused() -> None:
     """It travels in a URL the user bookmarks — regenerating it on every
     start would silently break the phone."""
@@ -6808,6 +6786,22 @@ def test_the_firewall_line_lets_this_program_through_on_this_port() -> None:
     assert me.is_file() and me.name.lower() in ("python.exe", "pythonw.exe"), me
     assert "Scripts" not in me.parts or ".venv" not in me.parts, f"a launcher: {me}"
     assert isinstance(phone_mod.block_rules(str(me)), (list, type(None)))
+
+
+def test_the_elevated_call_runs_its_line_and_reads_its_answer() -> None:
+    """Everything of the firewall's press but Windows' prompt, with the verb
+    that raises none: the structure Windows reads, a full path in quotes
+    surviving cmd.exe, nothing on the screen, and the exit code read back."""
+    import ctypes
+
+    import phone as phone_mod
+
+    assert ctypes.sizeof(phone_mod._ExecuteInfo) == 112, "SHELLEXECUTEINFOW on 64 bits"
+    system = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
+    quiet = f'"{os.path.join(system, "hostname.exe")}"'
+    assert phone_mod._elevated(system, f"{quiet} > NUL", "open") == "done"
+    assert phone_mod._elevated(system, f"{quiet} > NUL & exit 3", "open") == "failed"
+    assert phone_mod._elevated(system, "exit 0", "no such verb") == "failed"
 
 
 def test_the_phone_cant_connect_says_what_windows_answered() -> None:

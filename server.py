@@ -55,8 +55,6 @@ import logging
 import os
 import secrets
 import socket
-import subprocess
-import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -65,27 +63,6 @@ from pathlib import Path
 import paths
 
 log = logging.getLogger("app")
-
-# tailscale.exe is a CONSOLE program and this app runs under pythonw,
-# which has no console: without this flag every spawn ALLOCATES ONE, and
-# on Windows 11 that is a WINDOWS TERMINAL window (class
-# CASCADIA_HOSTING_WINDOW_CLASS), not the conhost the older comments in
-# this repo describe — which is why it reads as a terminal flashing open
-# and shut rather than a flicker. Probed under a parent with no console
-# anywhere in its chain: seven top-level windows created without this
-# flag, none with it, and tailscale still answers.
-#
-# HOW LONG IT WAS UP is the command's own runtime, about 110 ms warm —
-# which is exactly the "it appears for a split second" this was reported
-# as. An earlier note here said 0.7-2.1 s, read off the gap in app.log
-# between "phone endpoint on ..." and the URL line. That gap is
-# tailscale's cold start, NOT the window: it fell to ~110 ms on its own,
-# on boots that still predate this flag. The window is the finding; the
-# gap never measured it.
-#
-# Same reason and same constant as versions._CREATE_NO_WINDOW and
-# awake.CREATE_NO_WINDOW; the rule is in AGENTS.md.
-_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 APP_DIR = Path(__file__).resolve().parent
 #: Where the token lived until 2026-09-17, a plaintext file beside the
@@ -189,57 +166,6 @@ def load_token() -> str:
         log.info("generated a new phone token in %s",
                  secretstore.blob_path("phone_token").name)
     return token
-
-
-def _tailscale_exe() -> str | None:
-    """The Windows installer does not put tailscale.exe on PATH."""
-    import shutil
-    found = shutil.which("tailscale")
-    if found:
-        return found
-    for guess in (r"C:\Program Files\Tailscale\tailscale.exe",
-                  r"C:\Program Files (x86)\Tailscale\tailscale.exe"):
-        if Path(guess).exists():
-            return guess
-    return None
-
-
-def run_utf8(cmd: list[str], timeout: float = 10) -> str | None:
-    """Run a command and return its stdout as text, or None on any failure.
-
-    `encoding` is the entire point. subprocess's text=True decodes with the
-    LOCALE code page, which on this machine is cp1255 (Hebrew) — so any
-    tool that emits UTF-8 blows up with UnicodeDecodeError inside
-    subprocess's reader thread and hands back stdout=None. That exception
-    is a ValueError, so a broad `except` swallows it and the caller
-    concludes the tool is missing or the service is down. Cost real
-    debugging time: the app reported Tailscale as offline while it was up.
-
-    `creationflags` is the second point: see _CREATE_NO_WINDOW above.
-    """
-    try:
-        out = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                             errors="replace", timeout=timeout, check=False,
-                             creationflags=_CREATE_NO_WINDOW)
-    except (OSError, subprocess.SubprocessError) as e:
-        log.debug("command %r failed: %r", cmd[:1], e)
-        return None
-    return out.stdout
-
-
-def tailscale_name() -> str | None:
-    """This machine's MagicDNS name, which is the host `tailscale serve`
-    publishes it under. None when Tailscale is not up — used only to print
-    a URL, never to decide what to bind."""
-    exe = _tailscale_exe()
-    if not exe:
-        return None
-    raw = run_utf8([exe, "status", "--json"])
-    try:
-        self_node = json.loads(raw or "{}").get("Self") or {}
-    except ValueError:
-        return None
-    return (self_node.get("DNSName") or "").strip(". ") or None
 
 
 def to_wav(raw: bytes) -> tuple[bytes, float]:
