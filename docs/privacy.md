@@ -81,9 +81,10 @@ Account block.) Collected on sign-in: a user id; with Google, the e-mail address
 Google account you chose and the name Google gives, or the name you
 typed on the account page (held by the sign-in service, never shown to
 other users); the name of this PC as Windows reports it (or the name
-you typed), the app version, the Windows build, the hardware tier;
-timestamps; and the IP address as the processor sees it, in its logs
-only (kept one day).
+you typed), the app version, the Windows build, the hardware tier; the
+id of the session this device runs on, so that another device of yours
+can end it; timestamps; and the IP address as the processor sees it, in
+its logs only (kept one day).
 
 **Two syncs, one switch.** Both come with the account: the account
 card says your learned words and settings follow you to any PC you
@@ -114,8 +115,10 @@ Every signed-in copy keeps one connection to the account server, so that
 your own devices can reach each other. It carries nothing personal: that
 something changed, which device changed it and, while a device asks to
 join your account, that device's name and code. Never a word you said, a
-key or a file. With the syncs off, that connection, your device's row and
-the fingerprint of your lock are all that pass.
+key or a file. With the syncs off, this is all that passes: that
+connection, your account's row and each device's row, the fingerprint of
+your lock, a device's request to join, and the sealed notes your devices
+leave each other, which the server cannot open.
 
 Problem reports you chose to send: the report text you typed, only the
 attachments you ticked (a screenshot, a recording, the transcript, a

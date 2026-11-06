@@ -1747,6 +1747,21 @@ _live: threading.Thread | None = None
 _pending: set[str] = set()          # the stores nudged since the last pass
 
 
+def _worker_pass(vocab, on_sent, only) -> None:
+    """One turn of the worker. A pass over everything (``only`` None) starts
+    with the account pass, which needs no sync and is what reaches a person
+    with both syncs off; sync_now then takes what that pass found, so a PC
+    waiting to be approved looks at its request once a turn and not twice.
+    A nudge names its stores and is those stores alone: a dictation must
+    not cost the requests of an account pass."""
+    if not signed_in():
+        return
+    if only is None:
+        account_pass(reason="worker")
+    sync_now(vocab, reason="nudge" if only else "worker", only=only, after_pass=only is None)
+    drain_outbox(on_sent)
+
+
 def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
     """The app's background pass: FIRST_DELAY_S after start, then every
     CADENCE_S, and NUDGE_SETTLE_S after a nudge (a dictation ended, a
@@ -1780,12 +1795,7 @@ def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
                 named.add("settings")
             only = None if (not named or "*" in named) else sorted(named)
             try:
-                if signed_in():
-                    if only is None:
-                        account_pass(reason="worker")
-                    sync_now(vocab, reason="nudge" if only else "worker", only=only,
-                             after_pass=only is None)
-                    drain_outbox(on_sent)
+                _worker_pass(vocab, on_sent, only)
             except Exception:                                # noqa: BLE001
                 log.debug("account worker tripped", exc_info=True)
             wait = PAIRING_POLL_S if _lock_state.get("state") == "waiting" else CADENCE_S

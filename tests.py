@@ -46296,6 +46296,112 @@ def test_a_further_pc_with_the_syncs_off_asks_to_join_only_once_there_is_a_phone
             pc.gone()
 
 
+def test_a_pc_with_its_syncs_off_takes_the_key_the_moment_it_is_approved():
+    """`paired` used to go straight to sync_now, which returns at once with
+    both syncs off, so a PC in that state would have sat on an approved
+    request until the next pass. The live channel runs the account pass:
+    the key is taken within the second, and a `paired` naming another
+    request takes nothing."""
+    import net as net_mod
+    import sb
+    import vault
+
+    other = "99999999-8888-7777-6666-555555555555"
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+                key = vault.key(fake.UID)
+            _a_phone_row(fake)
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "waiting"
+                req = fake.tables["pairings"][0]
+                sb._live_stop.clear()
+                sb._live_state.update(on=False, error="")
+                server = _FakeRealtime()
+
+                def paired(ident):
+                    server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                                 "payload": {"type": "broadcast", "event": "paired",
+                                             "payload": {"id": ident, "device": other}}})
+
+                with _patched(net_mod, "_ws_connect", server.connect), \
+                        _patched(sb, "LIVE_RETRY_S", (0.2,)), _patched(sb, "LIVE_ENABLED", True):
+                    thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                    thread.start()
+                    assert server.joined.wait(5), "no socket with both syncs off"
+                    req["handed"] = vault.hand_over(key, req["applicant"],
+                                                    vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=req["id"]))
+                    # another request's answer: nothing is taken
+                    paired("00000000-0000-0000-0000-000000000000")
+                    time.sleep(0.4)
+                    assert vault.key(fake.UID) is None, "a paired for another request took the key"
+                    t0 = time.monotonic()
+                    paired(req["id"])
+                    assert _until(lambda: vault.key(fake.UID) == key), "the approved PC did not take the key"
+                    took = time.monotonic() - t0
+                    assert took < 2.0, f"{took:.2f} s from the approval to the key"
+                    assert _until(lambda: sb.status()["lock"]["state"] == "have")
+                    assert fake.tables["pairings"] == [], "the request stayed after it was answered"
+                    sb._live_stop.set()
+                    thread.join(5)
+                    assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_the_worker_starts_a_whole_pass_with_the_account_and_a_nudge_stays_small():
+    """One turn of the worker (sb._worker_pass). A pass over everything
+    runs the account pass first, and sync_now takes what it found, so a PC
+    waiting to be approved looks at its request once a turn and not twice.
+    A nudge names a store and is that store: a dictation costs no account
+    pass. With both syncs off the turn still reaches the lock, which is
+    the whole point of the pass, and signed out it does nothing."""
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake:
+            with _consented("account"), a:
+                calls = len(fake.calls)
+                sb._worker_pass(None, None, None)
+                assert len(fake.calls) == calls, "a turn with nobody signed in made a request"
+                _sign_in_pc(fake, "desk")
+                sb._worker_pass(None, None, None)
+                assert vault.key(fake.UID) is not None and sb.status()["lock"]["state"] == "have"
+            with _consented("account", "settings_sync", "history_sync"):
+                with a:
+                    # a nudge: the store it named, and no account pass
+                    with _patched(sb, "account_pass", lambda reason="": fake.calls.clear()):
+                        fake.calls.append({"path": "nudge", "url": ""})
+                        sb._worker_pass(None, None, ["history"])
+                    assert any(c["path"] == "nudge" for c in fake.calls), "a nudge ran the account pass"
+                    assert not any(c["path"] == "rest/v1/settings_sync" for c in fake.calls), \
+                        "a nudge touched another store"
+                with b:
+                    _sign_in_pc(fake, "laptop")
+                    sb._worker_pass(None, None, None)
+                    assert sb.status()["lock"]["state"] == "waiting"
+                    # a PC that waits: one look at its request a turn
+                    n = len(fake.calls)
+                    sb._worker_pass(None, None, None)
+                    looks = [c for c in fake.calls[n:] if c["path"] == "rest/v1/pairings"
+                             and c["method"] == "GET"]
+                    assert len(looks) == 1, f"{len(looks)} looks at the request in one turn"
+                    assert sb.status()["lock"]["state"] == "waiting"
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
 def test_names_under_a_shut_history_gate_leave_the_socket_up():
     """Found by notes\\phone-link-probes\\names_probe.py: _names() asked
     under the purpose `history`, so a copy with the words sync on and the
