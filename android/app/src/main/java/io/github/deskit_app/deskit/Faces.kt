@@ -1,6 +1,7 @@
 package io.github.deskit_app.deskit
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
@@ -60,38 +61,68 @@ abstract class Face : Drawable() {
 
 /**
  * The night behind everything: the desk's floor and four soft fields of light.
- * Dithered, or a gradient this dark bands on most screens.
+ *
+ * Painted once into a small picture and shared by every page, then drawn as one
+ * stretched texture. It sits behind everything, so it is redrawn on every frame
+ * of a scroll or a page moving in, and four full-screen gradients each frame is
+ * nothing on a new phone and dropped frames on a cheap one. There is no detail
+ * in it to lose at a third of the size, and dither keeps the dark from banding.
  */
 class Sky : Face() {
-    private class Field(val x: Float, val y: Float, val r: Float, val colour: Int) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
-    }
+    private class Field(val x: Float, val y: Float, val r: Float, val colour: Int)
 
-    private val fields = listOf(
-        Field(0.08f, 0.16f, 1.05f, rgba(118, 98, 246, .30f)),       // --f-indigo
-        Field(1.02f, 0.48f, 0.95f, rgba(44, 146, 232, .20f)),       // --f-blue
-        Field(0.05f, 0.92f, 0.95f, rgba(196, 92, 178, .13f)),       // --f-plum
-        Field(0.95f, 1.02f, 0.70f, rgba(40, 178, 168, .10f)),       // --f-teal
-    )
+    private val filter = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+    private var picture: Bitmap? = null
 
     override fun onBoundsChange(bounds: Rect) {
-        val w = bounds.width().toFloat()
-        val h = bounds.height().toFloat()
-        if (w <= 0f || h <= 0f) return
-        for (f in fields) {
-            val a = Color.alpha(f.colour)
-            val edge = f.colour and 0x00FFFFFF
-            val mid = Color.argb((a * 0.42f).toInt(), Color.red(f.colour), Color.green(f.colour),
-                                 Color.blue(f.colour))
-            f.paint.shader = RadialGradient(w * f.x, h * f.y, w * f.r,
-                intArrayOf(f.colour, mid, edge), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
-        }
+        picture = painted(bounds.width(), bounds.height())
     }
 
     override fun draw(canvas: Canvas) {
-        canvas.drawColor(Skin.GROUND)
-        val b = RectF(bounds)
-        for (f in fields) canvas.drawRect(b, f.paint)
+        val p = picture
+        if (p == null) canvas.drawColor(Skin.GROUND)
+        else canvas.drawBitmap(p, null, bounds, filter)
+    }
+
+    private companion object {
+        const val SHRINK = 3
+
+        val FIELDS = listOf(
+            Field(0.08f, 0.16f, 1.05f, rgba(118, 98, 246, .30f)),   // --f-indigo
+            Field(1.02f, 0.48f, 0.95f, rgba(44, 146, 232, .20f)),   // --f-blue
+            Field(0.05f, 0.92f, 0.95f, rgba(196, 92, 178, .13f)),   // --f-plum
+            Field(0.95f, 1.02f, 0.70f, rgba(40, 178, 168, .10f)),   // --f-teal
+        )
+
+        /** One picture per window size: every page of the app is the same size. */
+        var shared: Bitmap? = null
+        var sharedFor = 0L
+
+        @Synchronized
+        fun painted(width: Int, height: Int): Bitmap? {
+            if (width <= 0 || height <= 0) return null
+            val key = width.toLong() shl 32 or height.toLong()
+            shared?.takeIf { sharedFor == key }?.let { return it }
+            val w = (width / SHRINK).coerceAtLeast(1)
+            val h = (height / SHRINK).coerceAtLeast(1)
+            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+            canvas.drawColor(Skin.GROUND)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
+            val all = RectF(0f, 0f, w.toFloat(), h.toFloat())
+            for (f in FIELDS) {
+                val a = Color.alpha(f.colour)
+                val mid = Color.argb((a * 0.42f).toInt(), Color.red(f.colour),
+                                     Color.green(f.colour), Color.blue(f.colour))
+                paint.shader = RadialGradient(w * f.x, h * f.y, w * f.r,
+                    intArrayOf(f.colour, mid, f.colour and 0x00FFFFFF),
+                    floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+                canvas.drawRect(all, paint)
+            }
+            shared = out
+            sharedFor = key
+            return out
+        }
     }
 }
 

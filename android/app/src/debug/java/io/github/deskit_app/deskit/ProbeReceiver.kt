@@ -20,6 +20,12 @@ class ProbeReceiver : BroadcastReceiver() {
 
     override fun onReceive(c: Context, intent: Intent) {
         val done = goAsync()
+        // What the keyboard pays at its first start in a process: run this right
+        // after a kill, or it reads the cache.
+        val t0 = System.nanoTime()
+        Skin.font(c)
+        Skin.fontBold(c)
+        val fonts = (System.nanoTime() - t0) / 1_000_000
         thread {
             val sealed = try {
                 if (Sealed.get(c, "session") == null) "none" else "opened"
@@ -46,7 +52,7 @@ class ProbeReceiver : BroadcastReceiver() {
                 "refused"
             }
             Log.i("DeskIT", "probe: sealed=$sealed signs=$signs " +
-                "locked=${Sealed.locked(c)} lockable=${Sealed.lockable(c)}")
+                "locked=${Sealed.locked(c)} lockable=${Sealed.lockable(c)} fonts=${fonts}ms")
             done.finish()
         }
     }

@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Going back: this page sinks and fades. -->
+<!-- Going back: this page sinks and is gone quickly. -->
 <set xmlns:android="http://schemas.android.com/apk/res/android"
     android:interpolator="@android:interpolator/fast_out_slow_in"
-    android:duration="220">
+    android:fillBefore="true"
+    android:startOffset="0"
+    android:duration="110">
     <alpha android:fromAlpha="1" android:toAlpha="0" />
     <translate android:fromYDelta="0%" android:toYDelta="3%" />
 </set>

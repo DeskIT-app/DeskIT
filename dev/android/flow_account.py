@@ -80,6 +80,24 @@ def back() -> None:
     drive.shell("input", "keyevent", "4")
 
 
+def browser_opens(acct: fake_pc.FakeAccount, seen: int) -> bool:
+    """The page is asked for. A phone with two browsers and no default asks
+    which one first: a person picks, and so does this."""
+    end = time.time() + 30
+    while time.time() < end:
+        if len(acct.authorized) > seen:
+            return True
+        choice = drive.find("^Chrome$")
+        if choice is not None:
+            drive.shell("input", "tap", choice["x"], choice["y"])
+            time.sleep(0.6)
+            once = drive.find("(?i)^always$")
+            if once is not None:
+                drive.shell("input", "tap", once["x"], once["y"])
+        time.sleep(0.5)
+    return False
+
+
 def sign_in(acct: fake_pc.FakeAccount, *, from_home: bool = True) -> None:
     """The real request, the real browser opening, the same way back."""
     seen = len(acct.authorized)
@@ -87,9 +105,10 @@ def sign_in(acct: fake_pc.FakeAccount, *, from_home: bool = True) -> None:
         to_account_page()
     drive.wait("^Sign in$", 15)
     drive.tap(STEP_SIGN_IN, 10)
-    assert until(lambda: len(acct.authorized) > seen, 20), "the browser never asked the account"
+    assert browser_opens(acct, seen), "the browser never asked the account"
     code = acct.authorized[-1]["code"]
-    drive.shell("am", "start", "-W", "-a", "android.intent.action.VIEW",
+    # no -W: this page finishes itself, and Android 8 would wait on it for ever
+    drive.shell("am", "start", "-a", "android.intent.action.VIEW",
                 "-d", f"deskit://auth?code={code}")
 
 
@@ -133,7 +152,7 @@ def flow_sign_in():
         raw = drive.as_app("cat", "no_backup/sealed/session.bin", check=False)
         check("the session is sealed on disk", "access_token" not in raw and len(raw) > 40)
         before = len(acct.sessions)
-        drive.shell("am", "start", "-W", "-a", "android.intent.action.VIEW",
+        drive.shell("am", "start", "-a", "android.intent.action.VIEW",
                     "-d", "deskit://auth?code=made-up")
         time.sleep(1.5)
         check("a code from another app starts no session", len(acct.sessions) == before)
@@ -576,14 +595,15 @@ def flow_browser_tap():
         to_account_page()
         drive.wait("^Sign in$", 15)
         drive.tap(STEP_SIGN_IN, 10)
-        check("the browser opens on the account's page", until(lambda: bool(acct.authorized), 25))
+        check("the browser opens on the account's page", browser_opens(acct, 0))
         time.sleep(1.5)
         n = drive.find("^No thanks$")            # Chrome's own first-run question
         if n is not None:
             drive.shell("input", "tap", n["x"], n["y"])
             time.sleep(1)
         drive.shot("browser_page")
-        drive.shell("input", "tap", 300, 370)    # the page's one link
+        link = drive.find("Continue as")         # where a browser lets it be read
+        drive.shell("input", "tap", link["x"] if link else 300, link["y"] if link else 370)
         time.sleep(2.5)
         drive.shot("browser_after_tap")
         n = drive.find("^(Continue|Open|Open in app|Always|Just once)$")
@@ -782,7 +802,7 @@ def main() -> None:
         print(f"--- {name}", flush=True)
         try:
             FLOWS[name]()
-        except AssertionError as e:
+        except (AssertionError, subprocess.TimeoutExpired) as e:
             check(f"{name} ran to its end", False, str(e)[:500])
             drive.shot(f"failed_{name}")
     print(f"{_passed} passed, {_failed} failed", flush=True)

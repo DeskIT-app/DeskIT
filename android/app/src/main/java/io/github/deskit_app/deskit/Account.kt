@@ -186,8 +186,8 @@ object Account {
 
     /** sb._account_gone: the session goes, and the key and everything else stay. */
     private fun gone(c: Context, words: String) {
+        sp(c).edit().putString(KEY_WORDS, words).commit()
         clear(c)
-        sp(c).edit().putString(KEY_WORDS, words).apply()
     }
 
     // ---- the wire ----
@@ -336,9 +336,17 @@ object Account {
         }
         val verifier = Sealed.getText(c, PKCE)
             ?: throw Failed("That sign-in has ended. Try again.")
-        val r = call(c, "POST", "/auth/v1/token?grant_type=pkce",
-                     JSONObject().put("auth_code", code).put("code_verifier", verifier).toString(),
-                     null)
+        val body = JSONObject().put("auth_code", code).put("code_verifier", verifier).toString()
+        val r = try {
+            call(c, "POST", "/auth/v1/token?grant_type=pkce", body, null)
+        } catch (e: Failed) {
+            if (!e.offline) throw e
+            // A phone just back from the browser can take a moment to have its
+            // network again, and failing here costs the whole sign-in. One more
+            // try: a code the server did not see is still good.
+            Thread.sleep(1500)
+            call(c, "POST", "/auth/v1/token?grant_type=pkce", body, null)
+        }
         val data = r.obj()
         if (r.status != 200 || data == null || data.optString("access_token", "").isEmpty()) {
             throw Failed("The sign-in code was refused (${r.said()}).")

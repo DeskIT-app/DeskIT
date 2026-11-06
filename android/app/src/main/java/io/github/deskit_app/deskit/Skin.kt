@@ -32,9 +32,14 @@ import android.widget.TextView
  * top of this file and none of the glass, so it stays light and fast.
  *
  * Rubik is one variable font and every weight comes out of that one file
- * (res/font/rubik_var.ttf, SIL OFL), at the desk's own weights: 400 words, 420
+ * (assets/fonts/rubik.ttf, SIL OFL), at the desk's own weights: 400 words, 420
  * titles, 460 labels and buttons, 500 the one strong word. The two files this
  * replaced were the same font twice, under two names.
+ *
+ * Built in code and not in res/font, on purpose. Android 8 reads a <font> family
+ * from resources with no variation at all, so every word on the phone came out
+ * at the file's default, Light 300, while Android 14 looked right. Typeface.Builder
+ * has honoured the axis from API 26, which is minSdk.
  */
 object Skin {
 
@@ -87,25 +92,30 @@ object Skin {
 
     private val faces = HashMap<Int, Typeface>()
 
-    private fun loaded(c: Context, id: Int, fallback: Typeface): Typeface = faces.getOrPut(id) {
-        try {
-            c.resources.getFont(id)
-        } catch (e: Exception) {
-            fallback
+    @Synchronized
+    private fun rubik(c: Context, weight: Int, fallback: Typeface): Typeface =
+        faces.getOrPut(weight) {
+            try {
+                Typeface.Builder(c.assets, "fonts/rubik.ttf")
+                    .setWeight(weight)
+                    .setFontVariationSettings("'wght' $weight")
+                    .build() ?: fallback
+            } catch (e: Exception) {
+                fallback
+            }
         }
-    }
 
     /** Words: --w-body, 400. */
-    fun font(c: Context): Typeface = loaded(c, R.font.rubik, Typeface.SANS_SERIF)
+    fun font(c: Context): Typeface = rubik(c, 400, Typeface.SANS_SERIF)
 
     /** Titles: --w-display, 420. */
-    fun fontDisplay(c: Context): Typeface = loaded(c, R.font.rubik_display, Typeface.SANS_SERIF)
+    fun fontDisplay(c: Context): Typeface = rubik(c, 420, Typeface.SANS_SERIF)
 
     /** Labels and buttons: --w-label, 460. */
-    fun fontLabel(c: Context): Typeface = loaded(c, R.font.rubik_label, Typeface.SANS_SERIF)
+    fun fontLabel(c: Context): Typeface = rubik(c, 460, Typeface.SANS_SERIF)
 
     /** The one strong word: --w-strong, 500. */
-    fun fontBold(c: Context): Typeface = loaded(c, R.font.rubik_strong, Typeface.DEFAULT_BOLD)
+    fun fontBold(c: Context): Typeface = rubik(c, 500, Typeface.DEFAULT_BOLD)
 
     fun dp(c: Context, v: Int): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), c.resources.displayMetrics
