@@ -21,6 +21,7 @@ object Prefs {
     private const val KEY_ORDER = "key_order"
     private const val KEY_SAID = "said"
     private const val KEY_NOTIFIED = "notified"
+    private const val KEY_CLIP_OWED = "clip_owed"
     private const val KEY_UPDATE_SEEN = "update_seen"
 
     /** How many of the phone's own dictations the home screen keeps. */
@@ -109,7 +110,13 @@ object Prefs {
         }
     }
 
-    fun addSaid(c: Context, text: String) {
+    /**
+     * [since] is [Traces.wipes] as the dictation set out: one that comes back to
+     * a phone that has left its account since then keeps nothing here.
+     */
+    @Synchronized
+    fun addSaid(c: Context, text: String, since: Int) {
+        if (since != Traces.wipes) return
         val rows = listOf(Pair(System.currentTimeMillis(), text)) +
                 said(c).take(SAID_KEEP - 1)
         val arr = org.json.JSONArray()
@@ -119,6 +126,20 @@ object Prefs {
 
     fun clearSaid(c: Context) {
         sp(c).edit().remove(KEY_SAID).apply()
+    }
+
+    /** A wipe could not see the clipboard: [Traces.focused]. */
+    fun clipOwed(c: Context): Boolean = sp(c).getBoolean(KEY_CLIP_OWED, false)
+
+    fun clipOwed(c: Context, owed: Boolean) {
+        sp(c).edit().putBoolean(KEY_CLIP_OWED, owed).commit()
+    }
+
+    /** What [Traces.wipe] takes from this file. The keys' order and the switch are the phone's. */
+    @Synchronized
+    fun forget(c: Context) {
+        sp(c).edit().remove(KEY_SAID).remove(KEY_NOTIFIED)
+            .remove(KEY_URL).remove(KEY_TOKEN).commit()
     }
 
     /**

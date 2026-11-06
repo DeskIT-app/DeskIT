@@ -59,7 +59,9 @@ object Notify {
     fun poll(c: Context): List<Transcriber.Proposal>? {
         val token = Prefs.token(c)
         if (token.isEmpty()) return null
+        val wipes = Traces.wipes
         val items = Transcriber.reviewPending(Prefs.url(c), token) ?: return null
+        if (wipes != Traces.wipes) return null
         // Marked only once shown: with notifications not yet allowed the
         // proposal must still ring the day they are.
         if (allowed(c)) for (p in items) {

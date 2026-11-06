@@ -30,8 +30,9 @@ import java.util.Base64
  * memory, and refreshed the way sb._fresh does: under one lock, so that two
  * threads cannot spend one refresh token, ten seconds before its hour is up.
  * A 401 is one refresh and one retry; a second 401, or a refresh the server
- * refuses, is [gone]: the session goes and nothing else does. The key stays,
- * so the same account back on this phone needs no second Approve.
+ * refuses, is [gone]: the session goes and so do the person's words ([Traces]).
+ * The key and the recordings stay, so the same account back on this phone needs
+ * no second Approve.
  *
  * The publishable key is public by design: it is in sb.py, in every install
  * and in the keep-alive workflow. Which server this build speaks to is a
@@ -49,6 +50,10 @@ object Account {
     private const val PKCE = "pkce"
     private const val FILE = "account"
     private const val KEY_WORDS = "gone_words"
+    /** A session is sealed here: how a session that can no longer open is told from none. */
+    private const val KEY_HELD = "held"
+    /** Whose it is or last was, until this phone signs out: how another account is noticed. */
+    private const val KEY_UID = "uid"
 
     /** sb.REFRESH_MARGIN_S. */
     private const val REFRESH_MARGIN_S = 10L
@@ -129,11 +134,42 @@ object Account {
     @Synchronized
     fun session(c: Context): Session? {
         cached?.let { return it }
-        val text = Sealed.getText(c, SESSION) ?: return null
+        val text = Sealed.getText(c, SESSION)
+        if (text == null) {
+            lost(c)
+            return null
+        }
         return parse(text).also { cached = it }
     }
 
     fun signedIn(c: Context): Boolean = session(c) != null
+
+    /**
+     * A session sealed here that will never open again: the screen lock was
+     * taken away and the Keystore key with it. Nobody pressed anything and no
+     * server said so, but the phone is out of the account all the same.
+     */
+    private fun lost(c: Context) {
+        if (!sp(c).getBoolean(KEY_HELD, false)) return
+        Log.w("DeskIT", "account: the session here can no longer open")
+        Traces.wipe(c)
+        sp(c).edit().remove(KEY_HELD).commit()
+    }
+
+    /**
+     * [lost], for a screen about to draw what was said. It runs on the main
+     * thread, so it stays off this object's lock: a refresh holds that for as
+     * long as the network takes.
+     */
+    fun settle(c: Context) {
+        if (cached != null || !sp(c).getBoolean(KEY_HELD, false)) return
+        val opens = try {
+            Sealed.get(c, SESSION) != null
+        } catch (e: Sealed.NotNow) {
+            true
+        }
+        if (!opens) lost(c)
+    }
 
     /**
      * sb._store_session, with one difference: the hour is counted from
@@ -159,6 +195,7 @@ object Account {
                 .put("name", name))
         Sealed.putText(c, SESSION, keep.toString())
         val s = parse(keep.toString()) ?: throw Failed("the server's answer was not a session")
+        sp(c).edit().putBoolean(KEY_HELD, true).putString(KEY_UID, s.uid).commit()
         cached = s
         return s
     }
@@ -166,6 +203,7 @@ object Account {
     @Synchronized
     private fun clear(c: Context) {
         Sealed.delete(c, SESSION)
+        sp(c).edit().remove(KEY_HELD).commit()
         cached = null
     }
 
@@ -185,9 +223,15 @@ object Account {
     /** Why the phone was signed out, until the next sign-in clears it. */
     fun goneWords(c: Context): String = sp(c).getString(KEY_WORDS, "") ?: ""
 
-    /** sb._account_gone: the session goes, and the key and everything else stay. */
+    /**
+     * sb._account_gone: the session goes, the key and the recordings stay. So
+     * much is a PC's rule. A phone also lets go of the person's words, because
+     * this is how being forgotten reaches it, and it cannot tell that from any
+     * other end of a session. First, so that a kill here loses nothing that matters.
+     */
     private fun gone(c: Context, words: String) {
         sp(c).edit().putString(KEY_WORDS, words).commit()
+        Traces.wipe(c)
         clear(c)
     }
 
@@ -348,8 +392,15 @@ object Account {
             throw Failed("The sign-in code was refused (${r.said()}).")
         }
         Sealed.delete(c, PKCE)
+        val was = sp(c).getString(KEY_UID, "").orEmpty()
         sp(c).edit().remove(KEY_WORDS).apply()
-        return store(c, data)
+        val s = store(c, data)
+        if (was.isNotEmpty() && was != s.uid) {
+            // Someone else's phone until now, whichever road they left it by.
+            Traces.wipe(c)
+            Lock.dropRecordings(c)
+        }
+        return s
     }
 
     /** This session and nothing else: scope=local, then forgotten here. */
@@ -363,5 +414,6 @@ object Account {
             // the same
         }
         clear(c)
+        sp(c).edit().remove(KEY_UID).commit()
     }
 }

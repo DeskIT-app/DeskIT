@@ -7,6 +7,11 @@
             android:name=".ProtoActivity"
             android:exported="true"
             android:label="Prototype" />
+        <!-- What is on the clipboard: Android 10 and up tell a window, not a receiver. -->
+        <activity
+            android:name=".ClipProbe"
+            android:exported="true"
+            android:label="Clipboard probe" />
         <!-- Whether a locked phone can use what is sealed: one log line. -->
         <receiver
             android:name=".ProbeReceiver"

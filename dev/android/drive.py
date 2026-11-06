@@ -110,6 +110,21 @@ def swipe_up() -> None:
     shell("input", "swipe", 500, 1700, 500, 500, 300)
 
 
+def swipe_down() -> None:
+    shell("input", "swipe", 500, 500, 500, 1700, 300)
+
+
+def seek(pattern: str, swipes: int = 6) -> dict | None:
+    """Something further down the page, without pressing it."""
+    for _ in range(swipes + 1):
+        n = find(pattern)
+        if n is not None:
+            return n
+        swipe_up()
+        time.sleep(0.3)
+    return None
+
+
 def tap_scrolling(pattern: str, swipes: int = 6) -> None:
     """Press something further down the page."""
     for _ in range(swipes + 1):
@@ -123,7 +138,22 @@ def tap_scrolling(pattern: str, swipes: int = 6) -> None:
 
 
 def home() -> None:
-    shell("am", "start", "-W", "-n", f"{PKG}/.HomeActivity")
+    """Android, clearing away the app's last task, can take the process it has just
+    started for this one with it ("Destroy timeout of remove-task", then "failed to
+    attach"), and then nothing of the app ever runs and the start waits for ever.
+    Only this hand stops an app twice in a second. With the process alive the
+    wait is the app's own fault, and that stays a failure."""
+    for _ in range(3):
+        try:
+            shell("am", "start", "-W", "-n", f"{PKG}/.HomeActivity", timeout=20)
+            return
+        except subprocess.TimeoutExpired:
+            if shell("pidof", PKG, check=False).strip():
+                raise
+            print("      Android lost the start: once more", flush=True)
+            shell("am", "force-stop", PKG)
+            time.sleep(2)
+    raise AssertionError("Home never started")
 
 
 def kill() -> None:
@@ -132,9 +162,24 @@ def kill() -> None:
     shell("am", "force-stop", PKG)
 
 
+def die() -> None:
+    """The same, by the road Android takes: force-stop would also clear the
+    notifications, and those are part of what has to outlive a process."""
+    shell("input", "keyevent", "3")              # home: nothing of ours in front
+    time.sleep(0.5)
+    as_app("sh", "-c", f"'kill -9 $(pidof {PKG})'", check=False)
+    time.sleep(0.5)
+
+
 def clear_app() -> None:
     """A fresh install, as far as the app can tell. Keystore keys go with it."""
     shell("pm", "clear", PKG, check=False)
+    time.sleep(1.5)                              # Android is still taking the last task away
+
+
+def notifications() -> str:
+    """Everything on the shade, in full."""
+    return shell("dumpsys", "notification", "--noredact", check=False)
 
 
 def shot(name: str) -> Path:

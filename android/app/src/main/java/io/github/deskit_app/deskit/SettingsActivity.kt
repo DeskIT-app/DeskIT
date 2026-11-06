@@ -38,6 +38,7 @@ class SettingsActivity : Activity() {
     private lateinit var result: TextView
     private lateinit var updateResult: TextView
     private lateinit var accountBox: LinearLayout
+    private var traces = Traces.wipes
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
@@ -177,6 +178,13 @@ class SettingsActivity : Activity() {
                 }
             }
             runOnUiThread {
+                // The pasted line went from the phone: it must not stay in the
+                // fields, where Save would write it straight back.
+                if (traces != Traces.wipes) {
+                    traces = Traces.wipes
+                    urlField.setText(Prefs.url(this))
+                    tokenField.setText(Prefs.token(this))
+                }
                 drawnState = st
                 drawnDevices = devices
                 drawnAsking = asking

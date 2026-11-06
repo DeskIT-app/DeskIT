@@ -32,6 +32,13 @@ class ReviewActivity : Activity() {
     private lateinit var col: LinearLayout
     private var items: List<Transcriber.Proposal> = emptyList()
     private var at = 0
+    private val traces = Traces.wipes
+
+    /** A sentence on this page outlives nothing: [Traces]. */
+    override fun onResume() {
+        super.onResume()
+        if (traces != Traces.wipes) finish()
+    }
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)

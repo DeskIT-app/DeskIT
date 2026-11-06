@@ -55,6 +55,8 @@ class HomeActivity : Activity() {
     /** The account's line among the steps, as the last look left it. */
     private var accountStep = R.string.step_sign_in
     private var accountDone = false
+    /** [Traces.wipes] as of what this page last drew. */
+    private var traces = Traces.wipes
 
     /** This build's versionCode — MAJOR*10000 + MINOR*100 + PATCH. */
     private val versionCode: Int
@@ -177,6 +179,8 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        Account.settle(this)
+        traces = Traces.wipes
         accountDone = Lock.holdsKey(this)
         buildSteps()
         buildSaid()
@@ -184,10 +188,24 @@ class HomeActivity : Activity() {
         lookAtAccount()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) Traces.focused(this)
+    }
+
+    /** The page as this phone stands now, after the words went: [Traces]. */
+    private fun redrawIfWiped() {
+        if (traces == Traces.wipes) return
+        traces = Traces.wipes
+        buildSaid()
+        check()
+    }
+
     /** Where the account stands, on a thread: the first step's words and dot. */
     private fun lookAtAccount() {
         thread {
             val st = Lock.look(this)
+            runOnUiThread { redrawIfWiped() }
             // No answer, or Keystore said no: that says nothing about the
             // account, so the step keeps its words. The page says what is wrong.
             if (st is Lock.State.NotNow || st is Lock.State.Trouble) return@thread
@@ -218,14 +236,17 @@ class HomeActivity : Activity() {
         val token = Prefs.token(this)
         if (token.isEmpty()) {
             state(Skin.PAUSED, false, getString(R.string.no_token_title), "")
+            buildReview(null)
             return
         }
         stateTitle.text = getString(R.string.checking)
+        val wipes = Traces.wipes
         thread {
             val pcVersion = Transcriber.health(url)
             val versions = if (pcVersion != null) Transcriber.versions(url, token) else null
             val pending = if (pcVersion != null) Notify.poll(this) else null
             runOnUiThread {
+                if (wipes != Traces.wipes) return@runOnUiThread
                 if (pcVersion == null) {
                     state(Skin.PAUSED, false, getString(R.string.unreachable_title),
                           getString(R.string.unreachable_line))
@@ -414,7 +435,7 @@ class HomeActivity : Activity() {
                 isClickable = true
                 setOnClickListener {
                     (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager)
-                        .setPrimaryClip(ClipData.newPlainText("DeskIT", s))
+                        .setPrimaryClip(ClipData.newPlainText(Traces.CLIP, s))
                     Toast.makeText(this@HomeActivity, getString(R.string.copied),
                                    Toast.LENGTH_SHORT).show()
                 }

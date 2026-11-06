@@ -66,7 +66,7 @@ class LookupActivity : Activity() {
         row.addView(Skin.button(this, getString(R.string.copy), primary = true) {
             val text = got ?: return@button
             (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("DeskIT", text))
+                .setPrimaryClip(ClipData.newPlainText(Traces.CLIP, text))
             Toast.makeText(this, getString(R.string.copied), Toast.LENGTH_SHORT).show()
             finish()
         }.apply {

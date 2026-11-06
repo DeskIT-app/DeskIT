@@ -4,7 +4,7 @@ the owner's: every key here is made fresh and dies with the process.
 
     python fake_pc.py             the PC's phone server, real server.py with
                                   fake hooks, on 8790
-    python fake_pc.py --account   the account alone, on 8791
+    python fake_pc.py --account   the account alone, on 18791
 
 ``FakeAccount`` is the account: enough of Supabase for everything a phone does
 (the sign-in with its PKCE, refresh, REST on the four tables, forget_device,
@@ -12,7 +12,7 @@ the broadcast), checking what the real migrations check, so a wrong column or
 a bad shape fails here as it would there. And it is a PC of that account: it
 holds the account key and answers with the REAL vault.py, so a join on the
 emulator is a join against the real formats. flow_account.py drives it.
-Build the app for it with `gradle assembleDebug -PdeskitAccount=http://10.0.2.2:8791`.
+Build the app for it with `gradle assembleDebug -PdeskitAccount=http://10.0.2.2:18791`.
 
 Writes what it was told to fake_pc.log, never a key.
 """
@@ -159,7 +159,7 @@ _LISTENERS: dict[int, _Server] = {}
 class FakeAccount:
     """One account, one server, one PC of it. Everything in memory."""
 
-    def __init__(self, port: int = 8791, email: str = "you@example.com", name: str = "Dana Levi"):
+    def __init__(self, port: int = 18791, email: str = "you@example.com", name: str = "Dana Levi"):
         self.port = port
         self.email = email
         self.name = name
@@ -174,6 +174,10 @@ class FakeAccount:
         self.calls: list[tuple[str, str]] = []
         self.broadcasts: list[dict] = []
         self.tables: dict[str, list[dict]] = {t: [] for t in COLUMNS}
+        # the old road beside the account: a pasted address and token
+        self.door_token = uuid.uuid4().hex
+        #: what the second reading holds for this phone
+        self.proposals: list[dict] = []
         # the PC of this account
         self.pc_id = str(uuid.uuid4())
         self.pc_name = "HOME-PC"
@@ -578,6 +582,18 @@ class FakeAccount:
                     self.sessions.pop(sid, None)
         h._send(204)
 
+    def _pc_door(self, h, path: str):
+        """The PC's old door, as far as Home asks it on the way up."""
+        if path == "/health":
+            h._send(200, {"ok": True, "version": "1.0.6"})
+            return
+        if h.headers.get("Authorization") != f"Bearer {self.door_token}":
+            raise Refuse(401, "no_token", "not this PC's token")
+        if path == "/api/version":
+            h._send(200, {"pc": "1.0.6", "ime_min": 0, "ime_latest": 0})
+            return
+        h._send(200, {"items": list(self.proposals)})
+
     def route(self, h, method: str, body):
         split = urllib.parse.urlsplit(h.path)
         path = split.path
@@ -585,6 +601,9 @@ class FakeAccount:
         with self.mutex:
             self.calls.append((method, path))
         log.info("%s %s", method, path)
+        if path in ("/health", "/api/version", "/review"):
+            self._pc_door(h, path)
+            return
         if path.startswith("/auth/v1/"):
             # the browser's GET carries no apikey; the app's calls do
             if method != "GET" and h.headers.get("apikey") != PUBLISHABLE_KEY:

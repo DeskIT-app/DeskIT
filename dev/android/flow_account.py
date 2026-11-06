@@ -3,7 +3,7 @@ the fake account of fake_pc.py and the REAL vault.py behind it.
 
     python dev\\android\\flow_account.py [name ...]
 
-Build for it first: gradle assembleDebug -PdeskitAccount=http://10.0.2.2:8791
+Build for it first: gradle assembleDebug -PdeskitAccount=http://10.0.2.2:18791
 (a build for the real project speaks to the real project, and these flows must
 never touch that: main() refuses one). emu.py boots the phone and installs it.
 
@@ -137,6 +137,98 @@ def join(acct: fake_pc.FakeAccount) -> dict:
 
 def sealed_files() -> str:
     return drive.as_app("ls", "no_backup/sealed", check=False)
+
+
+# ---- what a person leaves on a phone, and watching it go ----
+
+# One word each: adb's shell splits on spaces.
+SAID = "what-she-said"
+HEARD = "what-it-heard"
+MEANT = "what-she-meant"
+NOT_LINKED = "^Not connected yet$"
+HINT = "^https://"                               # what an empty address field shows
+
+
+def told(*args) -> str:
+    """One word to the debug probe, and the line it answers with."""
+    drive.logcat_clear()
+    drive.shell("am", "broadcast", "-n", f"{PKG}/.ProbeReceiver", *args)
+    end = time.time() + 15
+    while time.time() < end:
+        for line in drive.logcat().splitlines():
+            if "probe:" in line:
+                return line.split("probe:", 1)[1].strip()
+        time.sleep(0.3)
+    raise AssertionError(f"the probe never answered {args}")
+
+
+def clip() -> str:
+    """The label on the clipboard, read by a window with the focus."""
+    drive.logcat_clear()
+    drive.shell("am", "start", "-n", f"{PKG}/.ClipProbe")
+    end = time.time() + 15
+    while time.time() < end:
+        for line in drive.logcat().splitlines():
+            if "probe:" in line:
+                return line.split("probe:", 1)[1].strip()
+        time.sleep(0.3)
+    raise AssertionError("the clipboard probe never answered")
+
+
+def on_disk() -> str:
+    return drive.as_app("cat", "shared_prefs/dictation.xml", check=False)
+
+
+def recording(name: str = "a.wav") -> None:
+    drive.as_app("mkdir", "-p", "files/spool")
+    drive.as_app("touch", f"files/spool/{name}")
+
+
+def recordings() -> str:
+    return drive.as_app("ls", "files/spool", check=False)
+
+
+def plant(acct: fake_pc.FakeAccount) -> None:
+    told("--es", "say", SAID, "--es", "url", f"http://10.0.2.2:{acct.port}",
+         "--es", "token", acct.door_token)
+
+
+def leave_traces(acct: fake_pc.FakeAccount) -> None:
+    """A person's ordinary day: a sentence in Said and copied from there, the PC's
+    line pasted, and a proposal from the second reading on Home and on the shade."""
+    drive.shell("pm", "grant", PKG, "android.permission.POST_NOTIFICATIONS", check=False)
+    acct.proposals = [{
+        "id": "20261106-120000-0001", "when": "2026-11-06 12:00:00", "text": HEARD,
+        "proposed": MEANT, "source": "phone", "status": "pending",
+        "changes": [{"before": HEARD, "after": MEANT, "kind": "replace", "why": "the sentence"}],
+    }]
+    plant(acct)
+    drive.kill()                                 # Home asks the PC as it opens
+    drive.home()
+    drive.wait(MEANT, 20)
+    drive.tap_scrolling(SAID)
+    time.sleep(0.6)
+    assert SAID in on_disk() and acct.door_token in on_disk(), "the traces did not land"
+    assert until(lambda: MEANT in drive.notifications(), 15), "no proposal on the shade"
+    assert "clip=DeskIT" in clip(), "the sentence was not copied"
+
+
+def no_traces(acct: fake_pc.FakeAccount, road: str) -> None:
+    kept = on_disk()
+    check(f"{road}: Said is off the disk", SAID not in kept, kept[:300])
+    check(f"{road}: so is the PC's address and token",
+          acct.door_token not in kept and f":{acct.port}" not in kept, kept[:300])
+    check(f"{road}: no sentence on the shade",
+          until(lambda: MEANT not in drive.notifications(), 10))
+    on = clip()
+    check(f"{road}: none on the clipboard", "clip=DeskIT" not in on, on)
+
+
+def nothing_on_home(road: str) -> None:
+    """Home, which a person sees first. The caller has brought it up."""
+    drive.wait(NOT_LINKED, 20)
+    check(f"{road}: Home shows nothing that was said",
+          drive.find(SAID) is None and drive.find(MEANT) is None, drive.screen()[:300])
 
 
 # ------------------------------------------------------------------ the flows
@@ -414,22 +506,31 @@ def flow_forgotten():
         fp = hashlib.sha256(base64.b64decode(link["cert"])).hexdigest()
         files = sealed_files()
         check("the phone holds the key before", "account_key.bin" in files, files)
+        leave_traces(acct)
+        recording()
+        drive.die()                              # first, so that no look of Home's is out
+        check("what is on the shade outlives the process", MEANT in drive.notifications())
         acct.write_forgotten([{"device": row["id"], "cert": fp, "at": fake_pc.now_iso()}])
         with acct.mutex:
             acct.tables["devices"] = [r for r in acct.tables["devices"] if r["id"] != row["id"]]
         acct.end_every_session()
-        drive.kill()
-        to_account_page_or_sign_in()
+        drive.home()
+        drive.wait(STEP_SIGN_IN, 20)
+        nothing_on_home("forgotten, and the phone has only heard its session ended")
+        no_traces(acct, "forgotten, and the phone has only heard its session ended")
+        drive.tap(STEP_SIGN_IN, 10)
         drive.wait("Signed out from another device", 20)
         check("a refused refresh signs it out and says so", True)
         files = sealed_files()
-        check("the session ending alone wipes nothing", "account_key.bin" in files, files)
+        check("the session ending alone leaves the device as it was", "account_key.bin" in files, files)
+        check("and the recordings", "a.wav" in recordings())
         sign_in(acct, from_home=False)
         drive.wait(CODE, 30)
         drive.wait("This phone was removed", 5)
         check("it says it was removed", True)
         files = sealed_files()
         check("it wiped the key", "account_key.bin" not in files, files)
+        check("and the recordings", "a.wav" not in recordings())
         req = acct.requests()[0]
         check("it asks as a new device", req["device_id"] != row["id"])
         same_code()
@@ -439,6 +540,28 @@ def flow_forgotten():
         assert until(lambda: bool(acct.phones()), 10)
         new = acct.open_link(acct.phones()[0])
         check("under a new certificate", new["cert"] != link["cert"])
+    finally:
+        acct.stop()
+
+
+def flow_forgotten_awake():
+    """The list names this phone while its session still stands: the road the
+    phone hears about itself, and everything goes at that look."""
+    acct = fresh()
+    try:
+        row = join(acct)
+        link = acct.open_link(row)
+        fp = hashlib.sha256(base64.b64decode(link["cert"])).hexdigest()
+        leave_traces(acct)
+        recording()
+        drive.die()
+        acct.write_forgotten([{"device": row["id"], "cert": fp, "at": fake_pc.now_iso()}])
+        drive.home()
+        drive.wait("^Approve this phone$", 25)
+        nothing_on_home("found itself on the list")
+        no_traces(acct, "found itself on the list")
+        check("the recordings go with the key", "a.wav" not in recordings())
+        check("and the key is gone", "account_key.bin" not in sealed_files())
     finally:
         acct.stop()
 
@@ -454,9 +577,9 @@ def flow_sign_out():
         row = join(acct)
         link = acct.open_link(row)
         fp = hashlib.sha256(base64.b64decode(link["cert"])).hexdigest()
-        drive.as_app("mkdir", "-p", "files/spool")
-        drive.as_app("touch", "files/spool/a.wav")
-        drive.as_app("touch", "files/spool/b.wav")
+        leave_traces(acct)
+        recording("a.wav")
+        recording("b.wav")
         to_settings()
         drive.wait("^Sign out$", 20)
         drive.tap_scrolling("^Sign out$")
@@ -465,6 +588,7 @@ def flow_sign_out():
         drive.tap("^Stay signed in$")
         drive.gone("2 recordings", 10)
         check("Stay signed in changes nothing", acct.row_of(row["id"]) is not None)
+        check("and takes nothing that was said", SAID in on_disk())
         drive.tap_scrolling("^Sign out$")
         drive.wait("2 recordings", 10)
         drive.tap_scrolling("^Sign out$")
@@ -478,8 +602,14 @@ def flow_sign_out():
         check("the key, the session and the rows are wiped", until(
             lambda: not [f for f in sealed_files().split() if f in
                          ("account_key.bin", "session.bin", "device_rows.bin")], 10), sealed_files())
-        check("the recordings are gone", "a.wav" not in drive.as_app("ls", "files/spool", check=False))
-        back()
+        check("the recordings are gone", "a.wav" not in recordings())
+        no_traces(acct, "signed out")
+        drive.tap_scrolling("^Other ways$")
+        drive.swipe_up()
+        drive.wait(HINT, 10)
+        check("the fields no longer hold the PC's line", drive.find(acct.door_token) is None)
+        back()                                   # the same Home that sat under Settings
+        nothing_on_home("signed out")
         to_account_page()
         drive.wait("^Sign in$", 15)
         sign_in(acct, from_home=False)
@@ -562,13 +692,18 @@ def flow_session():
         check("an expired token is refreshed and nothing shows", True)
         back()
         first = acct.row_of(row["id"])["session_id"]
+        leave_traces(acct)
+        recording()
+        drive.die()
         acct.end_every_session()
-        drive.kill()
         to_account_page_or_sign_in()
         drive.wait("Signed out from another device", 20)
+        no_traces(acct, "the session ended from elsewhere")
+        check("the recordings wait for the same account", "a.wav" in recordings())
         sign_in(acct, from_home=False)
         drive.wait("This phone is ready", 30)
         check("the same account back needs no second Approve", not acct.requests())
+        check("and finds its recordings", "a.wav" in recordings())
         check("under the same device", acct.phones()[0]["id"] == row["id"])
         check("its row names the new session", until(
             lambda: acct.row_of(row["id"])["session_id"] not in (None, first), 15))
@@ -680,6 +815,7 @@ def flow_locked_phone():
 
         # the owner takes the screen lock away
         back()
+        leave_traces(acct)
         drive.shell("locksettings", "clear", "--old", pin)
         time.sleep(1.5)
         now = probe()
@@ -691,8 +827,10 @@ def flow_locked_phone():
             return
         check("what was sealed under the lock is gone with it, and says so as nothing",
               "sealed=none" in now, now)
-        drive.kill()
+        drive.die()
         drive.home()
+        nothing_on_home("the screen lock taken away")
+        no_traces(acct, "the screen lock taken away")
         # the road back: nothing to unlock, so it is a new sign-in and a new Approve
         to_account_page_or_sign_in()
         sign_in(acct, from_home=False)
@@ -762,9 +900,12 @@ def flow_pin_added_later():
 
 
 def flow_another_account():
-    """The wrong Google account, noticed on the code screen."""
+    """The wrong Google account, noticed on the code screen. Then a second person
+    on a phone the first left by no press at all: nothing of the first reaches them."""
     acct = fresh()
+    second = fake_pc.FakeAccount(email="someone@else.example", name="Noa Bar")
     try:
+        leave_traces(acct)
         sign_in(acct)
         drive.wait(CODE, 30)
         check("the screen names the account it is on", drive.find(acct.email) is not None)
@@ -773,10 +914,114 @@ def flow_another_account():
         drive.wait("^Sign in$", 20)
         check("the request goes", until(lambda: not acct.requests(), 10))
         check("the session goes", until(lambda: not acct.sessions, 10))
+        no_traces(acct, "another account")
         sign_in(acct, from_home=False)
         drive.wait(CODE, 30)
         check("the next sign-in asks afresh", acct.requests()[0]["id"] != first["id"])
+
+        # all the way in, and out by a road nobody pressed here
+        same_code()
+        acct.approve(acct.requests()[-1]["id"])
+        drive.wait("This phone is ready", 20)
+        drive.tap("^Done$")
+        assert until(lambda: bool(acct.phones()), 10)
+        left = acct.phones()[0]["id"]
+        leave_traces(acct)
+        recording()
+        drive.die()
+        acct.end_every_session()
+        to_account_page_or_sign_in()
+        drive.wait("Signed out from another device", 20)
+        check("the recordings wait for their own account", "a.wav" in recordings())
+        # the old road is still open to whoever has the line, signed in or not
+        plant(acct)
+        check("a line pasted after that is on the phone", SAID in on_disk())
+
+        acct.stop()
+        second.start()
+        sign_in(second, from_home=False)
+        drive.wait(CODE, 30)
+        no_traces(acct, "a second account")
+        check("the first account's recordings do not reach the second's PC",
+              "a.wav" not in recordings())
+        req = second.requests()[-1]
+        check("it is a new device", req["device_id"] != left)
+        same_code()
+        second.approve(req["id"])
+        drive.wait("This phone is ready", 25)
+        drive.tap("^Done$")
+        nothing_on_home("a second account")
     finally:
+        acct.stop()
+        second.stop()
+
+
+def flow_clipboard_later():
+    """Android 10 and up tell only a window what is on the clipboard. A wipe with
+    none of ours in front cannot look, and the process may die before one comes."""
+    acct = fresh()
+    try:
+        leave_traces(acct)
+        drive.shell("input", "keyevent", "3")
+        time.sleep(1)
+        told("--es", "wipe", "1")
+        drive.die()
+        check("the wipe itself needed no window", SAID not in on_disk())
+        drive.home()
+        drive.wait(NOT_LINKED, 20)
+        on = clip()
+        check("the clipboard is seen to at the next focus", "clip=DeskIT" not in on, on)
+    finally:
+        acct.stop()
+
+
+def flow_keyboard():
+    """What only a running keyboard holds: a transcript waiting for a field, the
+    last recording, and a dictation still on its way back from the PC."""
+    ime = f"{PKG}/.DictationIme"
+    acct = fresh()
+    try:
+        drive.shell("settings", "put", "secure", "show_ime_with_hard_keyboard", "1")
+        join(acct)
+        plant(acct)
+        drive.kill()                             # Android gives up on a stopped keyboard
+        drive.shell("ime", "enable", ime, check=False)
+        drive.shell("ime", "set", ime, check=False)
+        to_settings()
+        drive.tap_scrolling("^Other ways$")
+        drive.tap_scrolling(r"10\.0\.2\.2")       # the keyboard comes up for this field
+        assert until(lambda: "pending" in told("--es", "ime", "read"), 15), "no keyboard came up"
+
+        told("--es", "ime", "now")
+        check("a dictation that comes back in time reaches Said",
+              until(lambda: "landed-words" in on_disk(), 5), on_disk()[:300])
+        back()                                   # the keyboard away, and the field in view
+        check("and its field", drive.seek("landed-words") is not None, drive.screen()[:400])
+        held = told("--es", "ime", "plant")
+        check("the keyboard holds a transcript and a recording",
+              "pending=true" in held and "wav=true" in held, held)
+
+        for _ in range(3):
+            drive.swipe_down()
+        drive.tap_scrolling("^Sign out$")
+        drive.wait("^Sign out of this phone\\?$", 10)
+        drive.tap_scrolling("^Sign out$")
+        check("signed out", until(lambda: not acct.sessions, 15))
+        time.sleep(1)
+
+        drive.tap_scrolling(HINT)                # the emptied field
+        time.sleep(1.5)
+        now = told("--es", "ime", "read")
+        check("what it held is gone once it is seen again",
+              "pending=false" in now and "wav=false" in now, now)
+        now = told("--es", "ime", "late")
+        check("a dictation that comes back after that lands nowhere",
+              "said=0" in now and "late-words" not in on_disk(), now)
+        back()                                   # the keyboard away
+        check("nor in the field, which is empty",
+              drive.seek(HINT) is not None and drive.find("late-words") is None, drive.screen()[:400])
+    finally:
+        drive.shell("ime", "reset", check=False)
         acct.stop()
 
 
@@ -839,7 +1084,7 @@ def main() -> None:
                / "apk" / "debug" / "app-debug.apk")
     if not built_for_the_fake(apk):
         sys.exit("this APK speaks to the real project, and no flow may: "
-                 "gradle assembleDebug -PdeskitAccount=http://10.0.2.2:8791")
+                 "gradle assembleDebug -PdeskitAccount=http://10.0.2.2:18791")
     drive.adb("install", "-r", "-g", apk, timeout=300)
     names = sys.argv[1:] or list(FLOWS)
     print("vault's code takes the lock:", fake_pc.takes_the_lock(), flush=True)

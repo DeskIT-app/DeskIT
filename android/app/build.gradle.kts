@@ -64,7 +64,7 @@ android {
     buildTypes {
         debug {
             // The fake account of dev/android/fake_pc.py, for the emulator:
-            // `gradle assembleDebug -PdeskitAccount=http://10.0.2.2:8791`.
+            // `gradle assembleDebug -PdeskitAccount=http://10.0.2.2:18791`.
             // A build-time fact and never a setting, so nothing on a phone
             // can point the app at another server. Without the property the
             // app speaks to the real project (Account.kt).

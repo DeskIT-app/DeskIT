@@ -50,8 +50,9 @@ import java.util.UUID
  * **Leaving.** Sign out is Forget on itself: a phone is lent and sold as a PC is
  * not. It wipes the key, the certificate and the cached rows, and the next
  * sign-in is a new device. So does finding itself on the `forgotten` list. The
- * session merely ending wipes nothing: the same account back on this phone
- * needs no second Approve.
+ * session merely ending keeps the device, so the same account back on this phone
+ * needs no second Approve. On every one of these roads the person's words go
+ * ([Traces]).
  *
  * Every state is the answer to [look], which blocks: call it from a thread. A
  * key goes into a variable here and in [Crypt], and is zeroed after use.
@@ -74,7 +75,6 @@ object Lock {
     private const val PREF_DECLINED = "declined"
     private const val PREF_REMOVED = "removed"
     private const val PREF_FORGOTTEN = "forgotten"
-    private const val PREF_EMAIL = "email"
 
     private const val HAVE = "have"
     private const val CHANGED = "changed"
@@ -501,11 +501,10 @@ object Lock {
     private fun remember(c: Context, st: State) {
         val e = sp(c).edit()
         when (st) {
-            is State.Ready -> e.putString(PREF_STATE, HAVE).putString(PREF_EMAIL, st.email)
-                .remove(PREF_DECLINED)
+            is State.Ready -> e.putString(PREF_STATE, HAVE).remove(PREF_DECLINED)
             is State.Changed -> e.putString(PREF_STATE, CHANGED).putString(PREF_SERVER, st.server)
-                .putString(PREF_MINE, st.mine).putString(PREF_EMAIL, st.email)
-            is State.Waiting -> e.putString(PREF_STATE, "").putString(PREF_EMAIL, st.email)
+                .putString(PREF_MINE, st.mine)
+            is State.Waiting -> e.putString(PREF_STATE, "")
             is State.NoLock, is State.Declined, is State.SignedOut -> e.putString(PREF_STATE, "")
             else -> return
         }
@@ -557,9 +556,6 @@ object Lock {
             unreached(c, s, Account.Failed(UNREADABLE))
         }
     }
-
-    /** The last thing the pass said, with no network and no Keystore: for a first paint. */
-    fun lastEmail(c: Context): String = sp(c).getString(PREF_EMAIL, "").orEmpty()
 
     fun holdsKey(c: Context): Boolean = sp(c).getString(PREF_STATE, "") == HAVE
 
@@ -956,8 +952,22 @@ object Lock {
     /** How many recordings no PC has yet. Named before Sign out deletes them. */
     fun recordings(c: Context): Int = File(c.filesDir, SPOOL).list()?.size ?: 0
 
+    /**
+     * Recordings no PC has yet are the only copy of those words, so unlike
+     * [Traces] they outlive a session that merely ended: a reply lost on a bad
+     * network can end one with nobody having asked, and the same person's next
+     * sign-in sends them on. They go when this phone leaves or learns it was
+     * forgotten, and before another account can reach them: that account's PC
+     * would write them down.
+     */
+    fun dropRecordings(c: Context) {
+        File(c.filesDir, SPOOL).deleteRecursively()
+    }
+
     /** Everything this device holds of the account but the session. */
     private fun wipe(c: Context) {
+        Traces.wipe(c)
+        dropRecordings(c)
         for (name in listOf(HELD, ASIDE, REQUEST, ROWS, DEVICE)) Sealed.delete(c, name)
         known = null
         try {
@@ -979,6 +989,8 @@ object Lock {
      */
     @Synchronized
     fun signOut(c: Context): Boolean {
+        // Before anything else: with the Wi-Fi off, the calls below can take minutes.
+        Traces.wipe(c)
         var told = true
         fun step(work: () -> Unit) {
             try {
@@ -1023,7 +1035,6 @@ object Lock {
         Account.endSession(c)
         wipe(c)
         Sealed.dropKey()
-        File(c.filesDir, SPOOL).deleteRecursively()
         return told
     }
 }
