@@ -41,6 +41,11 @@ under the same five rules: admitted like a request, the publishable key
 attached here, the session token injected by name into the one message
 that carries it, and two rows in the table (opened, closed).
 
+The one way IN that is not loopback — the phone's door at home,
+``serve_tls()`` below, PHONE_LINK_PLAN.md stage 1 — lives here too, because
+rule 1 is about ``ssl`` and ``socket`` and it would need both: nothing else
+may import them. It writes a row per connection like everything else.
+
 Gemini speaks REST through here too (gemini_pool.Client, plan 5.6): the
 google-genai SDK, which owned its own httpx client and read the key from
 the environment on its own, is gone, and with it the transport this
@@ -48,6 +53,7 @@ module used to build for it.
 """
 from __future__ import annotations
 
+import hashlib
 import http.client
 import logging
 import socket
@@ -128,14 +134,16 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 
 #: Why a request is made — the closed vocabulary of 5.4, plus ``reading``
 #: (the read-aloud writer, reading.py), ``notify`` (the Claude Code
-#: hook's knock on our own listener) and ``summary`` (the one sentence
-#: a "Claude finished" card carries instead of the message's first
-#: lines, notify.Summary, 2026-09-21), which the plan's list predates.
+#: hook's knock on our own listener), ``summary`` (the one sentence a
+#: "Claude finished" card carries instead of the message's first lines,
+#: notify.Summary, 2026-09-21) and ``phone`` (a connection that came IN,
+#: to the door at home, ``serve_tls``), which the plan's list predates.
 PURPOSES: frozenset[str] = frozenset({
     "polish", "punctuate", "translate", "lookup", "review", "study",
     "reading", "ask-screen", "transcribe", "key-test", "catalog", "ollama",
     "notify", "summary", "model-download", "pack-install", "update-check",
     "update-download", "account", "report", "sync", "history", "room",
+    "phone",
 })
 
 #: secret name -> (the one host it may go to, header, how it is written).
@@ -889,6 +897,298 @@ def websocket(url: str, purpose: str, *, headers: dict | None = None,
     ws._buf = rest
     _record(host, purpose, ws.up, ws.down, 101, None, consent)
     return ws
+
+
+# ------------------------------------------------------------ the way in
+# The phone's door at home (PHONE_LINK_PLAN.md stage 1). A phone reaches this
+# PC straight over the house's network, with nobody in between, so here is
+# the one socket the app opens on more than loopback, and everything about
+# it is decided before a byte of what a peer says is read.
+#
+# Both ends are pinned. TLS 1.2 or newer, because Android has 1.3 only from
+# API 29 and the keyboard's minSdk is 26; a client certificate is REQUIRED,
+# and the only trust anchors are the phones the account lists. So a stranger
+# on a cafe's Wi-Fi gets a dropped handshake: nothing reaches http.server,
+# and no route ever runs for it. Measured 2026-11-06 on loopback: handshake
+# p50 1.8 ms, a megabyte round trip 10.4 ms.
+#
+# THE HANDSHAKE RUNS ON THE CONNECTION'S OWN THREAD, never in accept: a peer
+# that connects and says nothing must not stop the next phone. At most
+# DOOR_HANDSHAKES at once, each with DOOR_HANDSHAKE_S to finish, and that
+# timeout is a deadline for the whole handshake, not per read (_ssl.c's
+# do_handshake), so a peer feeding it a byte at a time gets no longer. A
+# flood costs sixteen threads for ten seconds, and past that a connection is
+# closed the moment it is accepted.
+#
+# VERIFY_X509_PARTIAL_CHAIN is what lets two phones in: their self-signed
+# certificates may share a subject (Android's default is CN=fake for
+# everyone), and without the flag OpenSSL takes the first anchor of a name:
+# three such phones gave [ok, SSLError, refused], with it [ok, ok, ok]
+# (2026-11-06). And it is why the door then checks the leaf ITSELF: with the
+# flag a chain ending in a listed certificate would verify, and only the
+# listed leaf is a phone.
+#
+# A context can gain an anchor but it cannot lose one, so a change of phones
+# builds a new context (``Door.admit``), and a phone taken off the list loses
+# its open connections there and then. No session tickets and no cached
+# session outlives that: a new context has neither, and tickets are off.
+
+#: The word in a row's purpose column for a connection that came in.
+DOOR_PURPOSE = "phone"
+#: The whole handshake, and how many may run at once.
+DOOR_HANDSHAKE_S = 10.0
+DOOR_HANDSHAKES = 16
+DOOR_BACKLOG = 32
+#: The one secret a door may be handed, by name.
+DOOR_SECRETS: frozenset[str] = frozenset({"phone_key_pass"})
+#: A peer that never got in leaves one row per address in this long: a scanner
+#: must not wash the phone's own rows out of the table it is shown in.
+DOOR_DROP_ROW_S = 60.0
+_DOOR_DROPS_KEPT = 64
+
+Peer = namedtuple("Peer", "fingerprint name")
+
+
+class DoorError(Exception):
+    """The door could not be built: the key will not open, or it is not
+    there. Never a busy port, which is the plain OSError of the bind."""
+
+
+_Counted = None
+
+
+def _counted():
+    """An SSLSocket that counts what crosses it, for the row. Built on
+    first use, so `import ssl` stays out of every process that never opens
+    a door (the hook's among them)."""
+    global _Counted
+    if _Counted is None:
+        import ssl
+
+        class Counted(ssl.SSLSocket):
+            sent = 0
+            received = 0
+
+            def recv(self, buflen=1024, flags=0):
+                data = super().recv(buflen, flags)
+                self.received += len(data)
+                return data
+
+            def recv_into(self, buffer, nbytes=None, flags=0):
+                n = super().recv_into(buffer, nbytes, flags)
+                self.received += n
+                return n
+
+            def send(self, data, flags=0):
+                n = super().send(data, flags)
+                self.sent += n
+                return n
+
+        _Counted = Counted
+    return _Counted
+
+
+def _door_context(chain, passphrase: str, anchors: dict):
+    """A server context that takes only ``anchors`` (fingerprint -> {"der"}).
+    The passphrase is looked up HERE, by name, inside the callback OpenSSL
+    calls: it is never handed in. Without a callback OpenSSL asks for it on
+    the console, and a process with one hangs there for good (it did)."""
+    import ssl
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.options |= ssl.OP_NO_TICKET | ssl.OP_NO_RENEGOTIATION
+    ctx.num_tickets = 0
+    ctx.sslsocket_class = _counted()
+    try:
+        ctx.load_cert_chain(str(chain), password=lambda: _resolve(passphrase))
+    except (OSError, NetError, ValueError) as e:      # ssl.SSLError is an OSError
+        raise DoorError(f"the door's key will not open ({type(e).__name__})") from None
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    for fingerprint, phone in anchors.items():
+        try:
+            ctx.load_verify_locations(cadata=phone["der"])
+        except (ValueError, TypeError, OSError) as e:
+            log.info("door: the certificate %s could not be read (%s)", fingerprint[:12],
+                     type(e).__name__)
+    return ctx
+
+
+def _door_name(name: str) -> str:
+    """A name fit for a row: one line, no separator. It came from the
+    account's table, so it may say anything."""
+    clean = "".join(c for c in str(name or "") if c.isprintable()).replace("|", "/")
+    return clean.strip()[:40] or "a phone"
+
+
+class Door:
+    """A listening socket, who may come in, and who is in now. ``port`` is
+    the port it holds; ``admit`` changes the list; ``stop`` closes it all.
+    ``handler(sock, address, peer)`` runs on the connection's own thread
+    once the peer is proved, and the connection ends when it returns."""
+
+    def __init__(self, listener, chain, passphrase: str, ctx, anchors: dict, handler) -> None:
+        self._listener = listener
+        self.host, self.port = listener.getsockname()[:2]
+        self._chain, self._passphrase = chain, passphrase
+        self._ctx, self._known = ctx, dict(anchors)
+        self._handler = handler
+        self._lock = threading.Lock()
+        self._open: dict[str, set] = {}
+        self._cut: set = set()
+        self._slots = threading.BoundedSemaphore(DOOR_HANDSHAKES)
+        self._drops: dict[str, float] = {}
+        self._closing = False
+        #: fingerprint -> time.time() of its last connection, for the desk
+        self.seen: dict[str, float] = {}
+        self._listener.settimeout(0.5)     # a close on Windows may not wake accept
+        self._thread = threading.Thread(target=self._accept, daemon=True, name="phone-door")
+        self._thread.start()
+
+    def _accept(self) -> None:
+        while not self._closing:
+            try:
+                raw, address = self._listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                if self._closing:
+                    return
+                time.sleep(0.05)
+                continue
+            if not self._slots.acquire(blocking=False):
+                # sixteen peers are in the handshake: this one gets nothing,
+                # and accept stays free for whoever comes when one is done
+                self._shut(raw)
+                self._dropped(address)
+                continue
+            threading.Thread(target=self._one, args=(raw, address), daemon=True,
+                             name="phone-door-peer").start()
+
+    def _one(self, raw, address) -> None:
+        tls = None
+        try:
+            raw.settimeout(DOOR_HANDSHAKE_S)
+            with self._lock:
+                ctx = self._ctx
+            tls = ctx.wrap_socket(raw, server_side=True, do_handshake_on_connect=False)
+            tls.do_handshake()
+            der = tls.getpeercert(binary_form=True) or b""
+            fingerprint = hashlib.sha256(der).hexdigest()
+            with self._lock:
+                phone = self._known.get(fingerprint)
+                if phone is not None:
+                    self._open.setdefault(fingerprint, set()).add(tls)
+                    self.seen[fingerprint] = time.time()
+            if phone is None:
+                raise ValueError("not a listed certificate")
+        except (OSError, ValueError) as e:                   # ssl.SSLError is an OSError
+            log.debug("door: %s dropped (%s)", address[0], type(e).__name__)
+            self._shut(tls if tls is not None else raw)
+            self._dropped(address)
+            return
+        finally:
+            self._slots.release()
+        name = _door_name(phone.get("name"))
+        try:
+            tls.settimeout(None)
+            self._handler(tls, address, Peer(fingerprint, name))
+        except Exception:                                    # noqa: BLE001
+            log.debug("door: a connection from %s ended badly", name, exc_info=True)
+        finally:
+            with self._lock:
+                live = self._open.get(fingerprint)
+                if live is not None:
+                    live.discard(tls)
+                    if not live:
+                        self._open.pop(fingerprint, None)
+                cut = tls in self._cut
+                self._cut.discard(tls)
+            up, down = tls.sent, tls.received
+            self._shut(tls)
+            _record(name, DOOR_PURPOSE, up, down, "cut" if cut else "closed", None, None)
+
+    def _dropped(self, address) -> None:
+        """One row for a peer that never got in, now and then."""
+        ip = str(address[0])
+        now = time.monotonic()
+        with self._lock:
+            if now - self._drops.get(ip, -DOOR_DROP_ROW_S) < DOOR_DROP_ROW_S:
+                return
+            if len(self._drops) >= _DOOR_DROPS_KEPT:
+                self._drops.clear()
+            self._drops[ip] = now
+        _record(ip, DOOR_PURPOSE, 0, 0, "dropped", None, None)
+
+    @staticmethod
+    def _shut(sock) -> None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _kick(self, tls) -> None:
+        """Wake whoever is reading ``tls``, from another thread; its own
+        thread closes it and writes the row."""
+        try:
+            socket.socket.shutdown(tls, socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def admit(self, anchors: dict) -> None:
+        """These phones, and no others, from now on. A new context, and the
+        open connections of whoever left the list are closed here."""
+        ctx = _door_context(self._chain, self._passphrase, anchors)
+        with self._lock:
+            self._ctx, self._known = ctx, dict(anchors)
+            gone = [tls for fingerprint, live in self._open.items()
+                    if fingerprint not in self._known for tls in live]
+            self._cut.update(gone)
+        for tls in gone:
+            self._kick(tls)
+
+    def stop(self) -> None:
+        """Nothing listens, and nobody is left inside."""
+        self._closing = True
+        try:
+            self._listener.close()
+        except OSError:
+            pass
+        with self._lock:
+            everyone = [tls for live in self._open.values() for tls in live]
+        for tls in everyone:
+            self._kick(tls)
+        self._thread.join(timeout=2)
+
+
+def serve_tls(host: str, port: int, *, chain, passphrase: str, anchors: dict, handler) -> Door:
+    """Open the door: ``chain`` is the PEM file holding the certificate and
+    its encrypted key, ``passphrase`` the NAME it is opened by, ``anchors``
+    fingerprint -> {"name", "der"} for every phone that may come in.
+
+    ``OSError`` when the port is taken, which the caller answers by trying
+    the next one; ``DoorError`` when the key will not open. The socket is
+    this process's alone (SO_EXCLUSIVEADDRUSE, as server._Server explains):
+    nobody can bind beside it and read what a phone says."""
+    if passphrase not in DOOR_SECRETS:
+        raise ValueError(f"unknown door secret {passphrase!r}")
+    ctx = _door_context(chain, passphrase, anchors)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        flag = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if flag is not None:
+            listener.setsockopt(socket.SOL_SOCKET, flag, 1)
+        listener.bind((host, port))
+        listener.listen(DOOR_BACKLOG)
+    except OSError:
+        listener.close()
+        raise
+    return Door(listener, chain, passphrase, ctx, anchors, handler)
 
 
 # --------------------------------------------------------------- download

@@ -5769,6 +5769,295 @@ def test_phone_routes_no_apk_no_web_page() -> None:
 # firewall dialog on his screen.
 
 
+def _door_port() -> int:
+    """A port nothing holds right now, for a test that has to name one."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _a_phone(folder: Path, name: str, subject: str | None = None) -> dict:
+    """A phone as the door sees it: its certificate, and a file a test
+    client can hold it in. A real phone keeps this key in Android Keystore."""
+    import phone as phone_mod
+
+    der, sec1 = phone_mod.make_pair(subject or f"CN test {name}")
+    chain = folder / f"{phone_mod.fingerprint(der)[:12]}.pem"
+    chain.write_text(phone_mod._pem("CERTIFICATE", der) + phone_mod._pem("EC PRIVATE KEY", sec1),
+                     "ascii")
+    return {"name": name, "der": der, "chain": chain,
+            "fingerprint": phone_mod.fingerprint(der)}
+
+
+def _anchors(*phones) -> dict:
+    return {p["fingerprint"]: {"name": p["name"], "der": p["der"]} for p in phones}
+
+
+def _dial(port: int, chain=None, maximum=None):
+    """A TLS connection to the door, the way the keyboard's would be: it
+    trusts by pin, so nothing here checks the PC's certificate."""
+    import socket
+    import ssl
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    if chain is not None:
+        ctx.load_cert_chain(str(chain))
+    if maximum is not None:
+        ctx.maximum_version = maximum
+    return ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5))
+
+
+def _knock(port: int, chain=None, maximum=None) -> bytes | None:
+    """One word to the door and its answer; None when the door dropped us,
+    which TLS 1.3 only says on the first read after the handshake."""
+    import ssl
+
+    try:
+        with _dial(port, chain, maximum) as tls:
+            tls.settimeout(5)
+            tls.sendall(b"hello\n")
+            return tls.recv(64) or None
+    except (ssl.SSLError, OSError):
+        return None
+
+
+def _echo_door(anchors: dict, *, port: int = 0):
+    """A door on loopback whose handler says who came in, with what came
+    in kept on the object: the transport alone, no routes."""
+    import net as net_mod
+    import phone as phone_mod
+
+    phone_mod.identity()
+    came: list = []
+
+    def handler(sock, address, peer):
+        came.append(peer)
+        sock.settimeout(10)
+        data = sock.recv(64)
+        if data:
+            sock.sendall(b"in:" + peer.name.encode("utf-8"))
+        sock.recv(64)                      # until the phone hangs up, or is cut
+
+    door = net_mod.serve_tls("127.0.0.1", port, chain=phone_mod.key_path(),
+                             passphrase=phone_mod.PASS_NAME, anchors=anchors,
+                             handler=handler)
+    door.came = came
+    return door
+
+
+def test_the_door_lets_a_listed_phone_in_and_drops_the_rest_in_the_handshake() -> None:
+    """The whole promise of the home road: only a certificate the account
+    lists gets past the handshake, and everybody else is gone before a
+    byte of theirs reaches anything of ours. Over TLS 1.3 and over 1.2,
+    which the keyboard's oldest Android needs."""
+    import ssl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26, stranger = _a_phone(folder, "S26 Ultra"), _a_phone(folder, "stranger")
+        door = _echo_door(_anchors(s26))
+        try:
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra"
+            assert _knock(door.port, s26["chain"], ssl.TLSVersion.TLSv1_2) == b"in:S26 Ultra"
+            assert len(door.came) == 2
+            assert door.came[0].fingerprint == s26["fingerprint"]
+
+            assert _knock(door.port) is None, "a client with no certificate got an answer"
+            assert _knock(door.port, stranger["chain"]) is None, "a stranger got an answer"
+            assert _knock(door.port, stranger["chain"], ssl.TLSVersion.TLSv1_2) is None
+            assert len(door.came) == 2, "a dropped peer reached the handler"
+        finally:
+            door.stop()
+
+
+def test_the_door_refuses_a_leaf_signed_by_a_listed_phone() -> None:
+    """VERIFY_X509_PARTIAL_CHAIN lets a chain end at any anchor, so a
+    certificate that a listed phone's key signed could verify. Only the
+    listed certificate itself is a phone: the door checks the leaf."""
+    import net as net_mod
+
+    door = None
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        listed = _a_phone(folder, "listed")
+        door = _echo_door(_anchors(listed))
+        try:
+            known = dict(door._known)
+            with door._lock:              # the handshake passes, the list says no
+                door._known = {}
+            assert _knock(door.port, listed["chain"]) is None
+            assert not door.came
+            with door._lock:
+                door._known = known
+            assert _knock(door.port, listed["chain"]) == b"in:listed"
+        finally:
+            door.stop()
+    assert net_mod.DOOR_HANDSHAKES == 16 and net_mod.DOOR_HANDSHAKE_S == 10.0
+
+
+def test_two_phones_with_one_subject_both_get_in_and_removing_one_leaves_the_other() -> None:
+    """Android's self-signed certificates may share a subject (CN=fake is
+    its default), and OpenSSL takes the first anchor of a name unless told
+    otherwise: [ok, SSLError, refused], measured 2026-11-06. And a context
+    cannot lose an anchor, so taking a phone off the list has to build a
+    new one and close what that phone already has open."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        one = _a_phone(folder, "one", subject="CN fake")
+        two = _a_phone(folder, "two", subject="CN fake")
+        three = _a_phone(folder, "three", subject="CN fake")
+        door = _echo_door(_anchors(one, two, three))
+        try:
+            for phone in (one, two, three):
+                assert _knock(door.port, phone["chain"]) == f"in:{phone['name']}".encode(), phone["name"]
+
+            held = _dial(door.port, two["chain"])
+            held.settimeout(5)
+            held.sendall(b"hello\n")
+            assert held.recv(64) == b"in:two"
+
+            door.admit(_anchors(one, three))
+            try:
+                assert held.recv(64) == b"", "the removed phone's connection stayed open"
+            except OSError:
+                pass                      # closed under it: as good
+            finally:
+                held.close()
+            assert _knock(door.port, two["chain"]) is None, "the removed phone still gets in"
+            assert _knock(door.port, one["chain"]) == b"in:one", "removing one cost the other"
+            assert _knock(door.port, three["chain"]) == b"in:three"
+        finally:
+            door.stop()
+
+
+def test_a_peer_that_says_nothing_does_not_stop_the_next_phone() -> None:
+    """The handshake runs on the connection's own thread, never in accept.
+    Sixteen peers that connect and say nothing hold the sixteen places, a
+    seventeenth is closed at once, and when one leaves the phone gets in.
+    Ten seconds is the deadline for a whole handshake."""
+    import socket
+
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = _echo_door(_anchors(s26))
+        silent = []
+        try:
+            silent.append(socket.create_connection(("127.0.0.1", door.port), timeout=5))
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra", \
+                "a silent peer stopped the next phone"
+            for _ in range(net_mod.DOOR_HANDSHAKES - 1):
+                silent.append(socket.create_connection(("127.0.0.1", door.port), timeout=5))
+            assert _until(lambda: door._slots._value == 0, 5), door._slots._value
+
+            late = socket.create_connection(("127.0.0.1", door.port), timeout=5)
+            late.settimeout(5)
+            try:
+                assert late.recv(1) == b"", "the seventeenth peer was kept"
+            except OSError:
+                pass
+            finally:
+                late.close()
+
+            for sock in silent:
+                sock.close()
+            silent.clear()
+            assert _until(lambda: door._slots._value == net_mod.DOOR_HANDSHAKES, 5)
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra"
+        finally:
+            for sock in silent:
+                sock.close()
+            door.stop()
+
+
+def test_a_connection_through_the_door_is_a_row_with_a_name_and_no_body() -> None:
+    """One row per connection in the Network log: the phone's name, the
+    bytes, never what was said. A peer that never got in is a row too, by
+    its address, and a scanner does not get to fill the table with them.
+    A name is the account's table talking, so it stays one clean cell."""
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26 = _a_phone(folder, "S26 | Ultra\nforged")
+        door = _echo_door(_anchors(s26))
+        before = len(net_mod.rows())
+        try:
+            assert _knock(door.port, s26["chain"])
+            assert _until(lambda: len(net_mod.rows()) > before, 5)
+            row = net_mod.rows()[-1]
+            assert row.host == "S26 / Ultraforged" and row.purpose == "phone", row
+            assert row.status == "closed" and row.down == 6 and row.up == len("in:S26 / Ultraforged"), row
+            assert row.secret == "-" and row.consent == "-", row
+            line = net_mod.format_row(row)
+            assert net_mod.parse_row(line) == row, line
+            assert "hello" not in line
+
+            count = len(net_mod.rows())
+            for _ in range(5):
+                assert _knock(door.port) is None
+            assert _until(lambda: len(net_mod.rows()) == count + 1, 5)
+            time.sleep(0.2)
+            rows = net_mod.rows()
+            assert len(rows) == count + 1, rows[count:]
+            assert rows[-1].host == "127.0.0.1" and rows[-1].status == "dropped", rows[-1]
+        finally:
+            door.stop()
+
+
+def test_the_door_takes_its_passphrase_by_name_and_says_so_when_the_key_will_not_open() -> None:
+    """The value never travels: serve_tls is handed a NAME, and asks the
+    store inside OpenSSL's callback. Any other name is a programming
+    error. A key that will not open is DoorError, told apart from a busy
+    port (OSError), because the answers are different: a new identity
+    against the next port."""
+    import net as net_mod
+    import phone as phone_mod
+    import secretstore
+
+    phone_mod.identity()
+    try:
+        net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(), passphrase="groq",
+                          anchors={}, handler=print)
+    except ValueError as e:
+        assert "groq" in str(e)
+    else:
+        raise AssertionError("a door took a cloud key's name")
+
+    real = secretstore.get(phone_mod.PASS_NAME)
+    secretstore.set(phone_mod.PASS_NAME, "not the passphrase")
+    try:
+        try:
+            net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(),
+                              passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+        except net_mod.DoorError as e:
+            assert "not the passphrase" not in str(e)
+        else:
+            raise AssertionError("a key opened with the wrong passphrase")
+    finally:
+        secretstore.set(phone_mod.PASS_NAME, real)
+    del real
+
+    holder = net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(),
+                               passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+    try:
+        try:
+            net_mod.serve_tls("127.0.0.1", holder.port, chain=phone_mod.key_path(),
+                              passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+        except net_mod.DoorError:
+            raise AssertionError("a busy port read as a key that will not open") from None
+        except OSError:
+            pass
+        else:
+            raise AssertionError("two doors held one port")
+    finally:
+        holder.stop()
+
+
 def test_a_pc_makes_its_identity_once_and_a_lost_passphrase_is_a_new_one() -> None:
     """identity() answers the same fingerprint for as long as the key is
     there; the file holds no private key in the clear. DPAPI that cannot

@@ -38,6 +38,19 @@ the server can read: your cloud keys reach it only inside the `vault`
 rows, locked with a key only your own PCs hold, and only while your
 settings sync to your account.
 
+## What can come in
+
+One thing listens beyond this PC's own loopback, and only once a phone has
+joined your account and you said yes to it on this PC: the phone's door at
+home, a TLS port (`server.phone_port`, 8766 unless that is taken) on every
+network this PC is on. It takes only a certificate listed, sealed, in your
+own account; anything else is dropped in the handshake, before a byte of
+what it says is read. A dropped peer is a `dropped` row, and a phone's
+connection one row with the phone's name, the purpose word `phone` and the
+bytes, never what was said. It is inbound and local, so Offline mode does
+not stop it; the switch on Settings > Phone does. Without a phone in your
+account nothing listens but the loopback door.
+
 ## The desk's web window (WebView2) — outside `net.py`
 
 The desk opens as a web page (`deskweb.py`; the older window takes its
