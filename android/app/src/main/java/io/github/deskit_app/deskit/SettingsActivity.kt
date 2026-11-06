@@ -70,6 +70,8 @@ class SettingsActivity : Activity() {
             setLineSpacing(0f, 1.25f)
         })
 
+        col.addView(kitCard())
+
         // ---- the PC ----
         val pc = Skin.card(this)
         pc.addView(Skin.eyebrow(this, getString(R.string.the_pc)))
@@ -158,6 +160,118 @@ class SettingsActivity : Activity() {
 
         // Paste the whole "https://host/#t=token" line and both fields fill.
         urlField.setOnFocusChangeListener { _, focused -> if (!focused) splitPastedUrl() }
+    }
+
+    // ---- M16: the sign-in on a real phone, and nothing else ----
+
+    private lateinit var kitState: TextView
+    private lateinit var kitDetail: TextView
+
+    private fun kitCard(): LinearLayout {
+        val card = Skin.card(this)
+        card.addView(Skin.eyebrow(this, "Account test"))
+        card.addView(Skin.gap(this, 10))
+        kitState = Skin.text(this, "", 15f, Skin.FG).apply {
+            setLineSpacing(0f, 1.25f)
+            setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 12))
+        }
+        card.addView(kitState)
+        card.addView(Skin.button(this, "Sign in with Google", primary = true) {
+            kitSay("Opening the browser…", Skin.DIM)
+            try {
+                Account.beginSignIn(this)
+            } catch (e: Account.Failed) {
+                kitSay(e.message.orEmpty(), Skin.RED)
+            } catch (e: Sealed.NotNow) {
+                kitSay(getString(R.string.phone_locked), Skin.RED)
+            }
+        })
+        card.addView(Skin.gap(this, 10))
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(Skin.button(this, "Refresh") { kitRefresh() }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = Skin.dp(this@SettingsActivity, 10) }
+        })
+        row.addView(Skin.button(this, "Sign out") { kitSignOut() }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        card.addView(row)
+        kitDetail = Skin.text(this, "", 13f, Skin.DIM).apply {
+            setLineSpacing(0f, 1.25f)
+            setPadding(0, Skin.dp(this@SettingsActivity, 12), 0, 0)
+        }
+        card.addView(kitDetail)
+        kitShow(intent?.getStringExtra(AuthActivity.EXTRA_WORD).orEmpty())
+        return card
+    }
+
+    private fun kitSay(s: String, colour: Int) {
+        kitState.text = s
+        kitState.setTextColor(colour)
+    }
+
+    private fun kitShow(word: String) {
+        if (word.isNotEmpty()) { kitSay(word, Skin.RED); return }
+        val s = try {
+            Account.session(this)
+        } catch (e: Sealed.NotNow) {
+            kitSay(getString(R.string.phone_locked), Skin.RED)
+            return
+        }
+        if (s == null) {
+            kitSay(Account.takeGoneWords(this).ifEmpty { "Not signed in." }, Skin.DIM)
+            return
+        }
+        val left = (s.expiresAt - System.currentTimeMillis() / 1000) / 60
+        kitSay("Signed in as ${s.email}. Good for $left more minutes. Sealed on this phone.",
+               Skin.GREEN)
+        kitDetail.text = "Measuring this phone…"
+        thread {
+            val t0 = System.nanoTime()
+            Crypt.pairingCode("11111111-2222-3333-4444-555555555555",
+                              "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                              ByteArray(Crypt.POINT_BYTES) { 0x41 }, "0123456789abcdef")
+            val code = (System.nanoTime() - t0) / 1_000_000
+            val keystore = try {
+                ClientKey.probe(this)
+            } catch (e: Exception) {
+                "failed: ${e.javaClass.simpleName}"
+            }
+            runOnUiThread {
+                kitDetail.text = "Join code: $code ms\nClient key: $keystore\nAndroid ${Build.VERSION.SDK_INT}"
+            }
+        }
+    }
+
+    private fun kitRefresh() {
+        kitSay(getString(R.string.checking), Skin.DIM)
+        thread {
+            val word = try {
+                Account.refreshNow(this)
+                ""
+            } catch (e: Account.Failed) {
+                e.message.orEmpty()
+            } catch (e: Sealed.NotNow) {
+                getString(R.string.phone_locked)
+            }
+            runOnUiThread { kitShow(word) }
+        }
+    }
+
+    private fun kitSignOut() {
+        kitSay(getString(R.string.checking), Skin.DIM)
+        thread {
+            val word = try {
+                Account.endSession(this)
+                ""
+            } catch (e: Sealed.NotNow) {
+                getString(R.string.phone_locked)
+            }
+            runOnUiThread {
+                kitDetail.text = ""
+                kitShow(word)
+            }
+        }
     }
 
     private fun label(s: String): TextView = Skin.text(this, s, 13f, Skin.DIM).apply {

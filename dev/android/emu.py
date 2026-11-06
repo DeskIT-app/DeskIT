@@ -21,7 +21,9 @@ JDK = Path(r"C:\Users\shimr\dev-tools\jdk")
 HERE = Path(__file__).resolve().parent
 # Screenshots and logs go next to the script unless told otherwise.
 OUT = Path(os.environ.get("DESKIT_EMU_OUT", HERE))
-APK = Path(r"C:\Users\shimr\Desktop\Organized\Projects\DeskIT\android\app\build\outputs\apk\debug\app-debug.apk")
+# This checkout's own build, so a worktree installs its own; DESKIT_APK to pick another.
+APK = Path(os.environ.get("DESKIT_APK")
+           or HERE.parents[1] / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk")
 AVD = "deskit"
 IMAGE = "system-images;android-34;google_apis;x86_64"
 ADB = SDK / "platform-tools" / "adb.exe"
@@ -103,7 +105,11 @@ def boot():
 
 def install():
     adb("install", "-r", "-g", APK, timeout=300)
-    adb("shell", "ime", "enable", IME)
+    # The system takes a moment to read a fresh package's input methods.
+    for _ in range(30):
+        if adb("shell", "ime", "enable", IME, check=False).returncode == 0:
+            break
+        time.sleep(0.5)
     adb("shell", "ime", "set", IME)
     print(adb("shell", "ime", "list", "-s").stdout)
 

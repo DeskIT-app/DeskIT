@@ -26,6 +26,22 @@
             </intent-filter>
         </activity>
 
+        <!-- Where the browser lands after the Google sign-in. Exported so a
+             browser can reach it; a code nobody asked for fails the exchange,
+             for want of the verifier this phone sealed. -->
+        <activity
+            android:name=".AuthActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="deskit" android:host="auth" />
+            </intent-filter>
+        </activity>
+
         <activity
             android:name=".SettingsActivity"
             android:exported="false"

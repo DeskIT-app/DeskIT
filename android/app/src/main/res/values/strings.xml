@@ -158,6 +158,10 @@
     <string name="nothing_waiting">Nothing waiting.</string>
     <string name="close">Close</string>
 
+    <!-- The account. -->
+    <string name="signing_in">Signing in…</string>
+    <string name="phone_locked">Unlock the phone and try again.</string>
+
     <!-- The lookup box. -->
     <string name="lookup_title">DeskIT · look up</string>
     <string name="looking_up">Looking up…</string>
