@@ -7893,7 +7893,7 @@ class Dashboard:
         return dict(((self.status.get("account") or {}).get("lock") or {}))
 
     def _lock_asks(self) -> bool:
-        """Does the pile carry a lock row that asks — another PC waiting
+        """Does the pile carry a lock row that asks — another device waiting
         to join, or the lock changed somewhere else? Those are the two
         questions the app also knocks for (source "account")."""
         lock = self._lock_info()
@@ -8013,10 +8013,12 @@ class Dashboard:
     def _waiting_lock(self) -> list[dict]:
         """The lock on the pile (the owner, 2026-09-21, meeting the
         approve card beside the dot: "not outside DeskIT — inside, on
-        Home"): another PC asking to join, with its code and Approve /
-        Not now; this PC waiting for its other PC, with the code it
-        shows; a fresh recovery key, until Done; and — while the account
-        has none — the one thing worth doing before a PC is lost."""
+        Home"): another device asking to join, with its code and Approve /
+        Not now; this PC waiting for another device of the account, with
+        the code it shows; a fresh recovery key, until Done; and — while
+        the account has none, and once a sync is on or the account has a
+        phone (a lock held with both syncs off asks nothing: ``quiet``) —
+        the one thing worth doing before a PC is lost."""
         lock = self._lock_info()
         if not lock or not (self.status.get("account") or {}).get("signed_in"):
             return []
@@ -8027,13 +8029,13 @@ class Dashboard:
                 "at": now + 2, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your recovery key", "eyebrow_right": False,
                 "text": f"{self._lock_fresh}  —  keep it somewhere safe, it is shown once",
-                "note": "With it, a PC with no other PC of yours at hand can open your "
+                "note": "With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.",
                 "buttons": [("Copy", "gold", self._lock_copy), ("Done", "quiet", self._lock_done)],
             })
         rows += self._lock_changed_rows(lock, now)
         for ask in lock.get("pending") or []:
-            name = ask.get("name") or "Another PC"
+            name = ask.get("name") or "Another device"
             if ask.get("twins"):
                 # two open requests from one PC: one of them is somebody
                 # else's copy (the audit's A74) — nothing to approve
@@ -8041,7 +8043,7 @@ class Dashboard:
                     "at": now + 1, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
                     "eyebrow": "Your account", "eyebrow_right": False,
                     "text": f"Two requests say they are {name} — neither can be approved",
-                    "note": f"One of them is not your PC. On {name}, sign out and sign in again to "
+                    "note": f"One of them is not yours. On {name}, sign out and sign in again to "
                             "ask afresh. Nobody of yours asking right now? Settings > Account > "
                             "Sign out of every PC — it ends every session of your account, "
                             "anyone else's too.",
@@ -8066,23 +8068,25 @@ class Dashboard:
             rows.append({
                 "at": now, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your account", "eyebrow_right": False,
-                "text": f"Waiting for your other PC to approve this one — Home there "
-                        f"must show {lock.get('code') or '…'}",
-                "note": "Open the desk on your other PC and press Approve. Until then this PC "
-                        "has your words and settings; what you said and your cloud keys stay "
-                        "locked. No other PC at hand? Type the recovery key DeskIT made for you.",
+                "text": f"Waiting for another device of yours to approve this PC — its "
+                        f"screen must show {lock.get('code') or '…'}",
+                "note": "Open the desk on your other PC and press Approve, or open DeskIT on "
+                        "your phone. Until then this PC has your words and settings; what you "
+                        "said and your cloud keys stay locked. No other device at hand? Type "
+                        "the recovery key DeskIT made for you.",
                 "buttons": [("Type the recovery key", "quiet", self._lock_go_type)],
             })
         elif lock.get("state") == "have" and lock.get("recovery") is False \
-                and getattr(self, "_lock_mode", "") != "shown":
+                and getattr(self, "_lock_mode", "") != "shown" and not lock.get("quiet"):
             rows.append({
                 "at": 0.0, "kind": "lock", "mark": "keys", "mark_colour": ui.ACCENT,
                 "eyebrow": "Your account", "eyebrow_right": False,
                 "text": "Make a recovery key — so a new PC of yours can open your account "
                         "when this one is gone",
                 "note": "DeskIT makes it (24 characters) and shows it once; you keep it. What "
-                        "you said and your cloud keys are locked with a key only your PCs "
-                        "hold — without another PC or the recovery key, a new PC cannot open them.",
+                        "you said and your cloud keys are locked with a key only your devices "
+                        "hold — without another device or the recovery key, a new PC cannot "
+                        "open them.",
                 "buttons": [("Make a recovery key", "gold", self._lock_new_recovery)],
             })
         return rows
@@ -8108,8 +8112,8 @@ class Dashboard:
                 "text": "The lock of your account changed — not on this PC. Was it you?",
                 "note": "Until you answer, what you said and your cloud keys stop syncing, both "
                         "ways; this PC keeps its key. It was you: this PC asks to join the new "
-                        "lock — approve it from your other PC or type the recovery key. It "
-                        "wasn't: nothing here changes.",
+                        "lock — approve it from another device of yours or type the recovery "
+                        "key. It wasn't: nothing here changes.",
                 "buttons": [("It wasn't me", "gold",
                              lambda: self._lock_do("lock_answer", "kept", kind="no")),
                             ("It was me", "quiet",
@@ -8165,7 +8169,7 @@ class Dashboard:
     def _lock_banner(self, lock: dict) -> None:
         """One line at the top of every screen while the lock needs the
         person (the owner, 2026-09-21: "something on every screen, up
-        top"): another PC asking, with Approve / Not now; this PC waiting,
+        top"): another device asking, with Approve / Not now; this PC waiting,
         with its code. On the pane, above the sheet, like the toast —
         gone the moment nothing waits."""
         # kept on self, not in parts: _show() replaces the parts dict on
@@ -8182,20 +8186,20 @@ class Dashboard:
             key = ("changed", (lock.get("changed") or {}).get("server"))
         elif pending and pending[0].get("twins"):
             ask = pending[0]
-            text = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            text = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     f"neither can be approved. See Home.")
             buttons = [("Home", lambda: self._show("Home"))]
             key = ("twins", ask.get("id"))
         elif pending:
             ask = pending[0]
-            text = (f"{ask.get('name') or 'Another PC'} asks to join your account — "
+            text = (f"{ask.get('name') or 'Another device'} asks to join your account — "
                     f"its screen must show  {ask.get('code') or '?'}")
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                        ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
             key = ("pending", ask.get("id"), ask.get("code"))
         elif waiting:
-            text = (f"Waiting for your other PC to approve this one — Home there must "
-                    f"show  {lock.get('code') or '…'}")
+            text = (f"Waiting for another device of yours to approve this PC — its screen "
+                    f"must show  {lock.get('code') or '…'}")
             buttons = []
             key = ("waiting", lock.get("code"))
         else:

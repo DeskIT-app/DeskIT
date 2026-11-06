@@ -820,11 +820,13 @@ class Model:
     def _lock_rows(self) -> list[dict]:
         """dashboard._waiting_lock and _lock_changed_rows, with their
         answers on the rows (the owner, 2026-09-21: "not outside DeskIT —
-        inside, on Home"): another PC asking to join, with its code and
-        Approve / Not now; this PC waiting for its other PC, with the
-        code — and the recovery key typed into the row; a fresh recovery
-        key, shown once, until Done; the changed lock's It wasn't me / It
-        was me; and while the account has none, Make a recovery key."""
+        inside, on Home"): another device asking to join, with its code
+        and Approve / Not now; this PC waiting for another device of the
+        account, with the code — and the recovery key typed into the row;
+        a fresh recovery key, shown once, until Done; the changed lock's
+        It wasn't me / It was me; and while the account has none, Make a
+        recovery key, once a sync is on or the account has a phone (a lock
+        held with both syncs off asks nothing: ``quiet``)."""
         lock = self._lock_info()
         if not lock:
             self._lock_typing = self._lock_asking = False
@@ -841,7 +843,7 @@ class Model:
         if self._lock_fresh:
             rows.append(row(
                 "lock:fresh", now + 2, "warn", "keep it somewhere safe, it is shown once",
-                "With it, a PC with no other PC of yours at hand can open your account. "
+                "With it, a PC with no other device of yours at hand can open your account. "
                 "Making a new one replaces it.",
                 [{"label": "Copy", "tone": "primary", "act": "lock.copy"},
                  {"label": "Done", "tone": "quiet", "act": "lock.done"}],
@@ -849,14 +851,14 @@ class Model:
         rows += self._lock_changed_rows(lock, now, row)
         for ask in lock.get("pending") or []:
             ident = str(ask.get("id") or "")
-            name = str(ask.get("name") or "Another PC")
+            name = str(ask.get("name") or "Another device")
             if ask.get("twins"):
                 # two open requests from one PC: one of them is somebody
                 # else's copy (the audit's A74) — nothing to approve
                 rows.append(row(
                     f"lock:ask:{ident}", now + 1, "bad",
                     f"Two requests say they are {name} — neither can be approved",
-                    f"One of them is not your PC. On {name}, sign out and sign in again to "
+                    f"One of them is not yours. On {name}, sign out and sign in again to "
                     "ask afresh. Nobody of yours asking right now? Settings > Account > "
                     "Sign out of every PC — it ends every session of your account, "
                     "anyone else's too.",
@@ -873,15 +875,16 @@ class Model:
                 [{"label": "Approve", "tone": "primary", "act": "lock.approve", "arg": ident},
                  {"label": "Not now", "tone": "quiet", "act": "lock.decline", "arg": ident}]))
         if lock.get("state") == "waiting":
-            note = ("Open the desk on your other PC and press Approve. Until then this PC has "
-                    "your words and settings; what you said and your cloud keys stay locked. "
-                    "No other PC at hand? Type the recovery key DeskIT made for you.")
+            note = ("Open the desk on your other PC and press Approve, or open DeskIT on your "
+                    "phone. Until then this PC has your words and settings; what you said and "
+                    "your cloud keys stay locked. No other device at hand? Type the recovery "
+                    "key DeskIT made for you.")
             if lock.get("error"):
                 note = f"{lock['error']}  ·  {note}"
             if self._lock_typing:
                 rows.append(row(
                     "lock:waiting", now, "warn",
-                    f"Waiting for your other PC to approve this one — Home there must show "
+                    f"Waiting for another device of yours to approve this PC — its screen must show "
                     f"{lock.get('code') or '…'}",
                     "Your recovery key — 24 letters and digits in six groups:",
                     [{"label": "Open", "tone": "primary", "act": "lock.recover"},
@@ -890,20 +893,20 @@ class Model:
             else:
                 rows.append(row(
                     "lock:waiting", now, "warn",
-                    f"Waiting for your other PC to approve this one — Home there must show "
+                    f"Waiting for another device of yours to approve this PC — its screen must show "
                     f"{lock.get('code') or '…'}", note,
                     [{"label": "Type the recovery key", "tone": "quiet", "act": "lock.type"}]))
         else:
             self._lock_typing = False
             if lock.get("state") == "have" and lock.get("recovery") is False \
-                    and not self._lock_fresh:
+                    and not self._lock_fresh and not lock.get("quiet"):
                 rows.append(row(
                     "lock:recovery", 0.0, "q",
                     "Make a recovery key — so a new PC of yours can open your account when "
                     "this one is gone",
                     "DeskIT makes it (24 characters) and shows it once; you keep it. What you "
-                    "said and your cloud keys are locked with a key only your PCs hold — "
-                    "without another PC or the recovery key, a new PC cannot open them.",
+                    "said and your cloud keys are locked with a key only your devices hold — "
+                    "without another device or the recovery key, a new PC cannot open them.",
                     [{"label": "Make a recovery key", "tone": "primary",
                       "act": "lock.recovery_new"}]))
         return rows
@@ -939,8 +942,8 @@ class Model:
                 "The lock of your account changed — not on this PC. Was it you?",
                 "Until you answer, what you said and your cloud keys stop syncing, both ways; "
                 "this PC keeps its key. It was you: this PC asks to join the new lock — "
-                "approve it from your other PC or type the recovery key. It wasn't: nothing "
-                "here changes.",
+                "approve it from another device of yours or type the recovery key. It wasn't: "
+                "nothing here changes.",
                 [{"label": "It wasn't me", "tone": "primary", "act": "lock.answer", "arg": "no"},
                  {"label": "It was me", "tone": "quiet", "act": "lock.answer", "arg": "yes"}])]
         if self._lock_asking:
@@ -967,7 +970,7 @@ class Model:
     def _banner(self) -> dict | None:
         """dashboard._lock_banner: one line over every place but Home
         while the lock needs the person (the owner, 2026-09-21: "something
-        on every screen, up top") — another PC asking, with Approve / Not
+        on every screen, up top") — another device asking, with Approve / Not
         now; two requests from one name, or a lock changed elsewhere,
         with the way to Home; this PC waiting, with its code. Home
         carries the same as a row, so the frame does not draw it there."""
@@ -980,21 +983,21 @@ class Model:
             return {"text": "The lock of your account changed — not on this PC. "
                             "Answer on Home.", "buttons": [home]}
         if pending and pending[0].get("twins"):
-            name = pending[0].get("name") or "another PC"
+            name = pending[0].get("name") or "another device"
             return {"text": f"Two requests say they are {name} — neither can be approved. "
                             f"See Home.", "buttons": [home]}
         if pending:
             ask = pending[0]
             ident = str(ask.get("id") or "")
-            return {"text": f"{ask.get('name') or 'Another PC'} asks to join your account — "
+            return {"text": f"{ask.get('name') or 'Another device'} asks to join your account — "
                             f"its screen must show {ask.get('code') or '?'}",
                     "buttons": [{"label": "Approve", "tone": "primary", "act": "lock.approve",
                                  "arg": ident},
                                 {"label": "Not now", "tone": "quiet", "act": "lock.decline",
                                  "arg": ident}]}
         if lock.get("state") == "waiting":
-            return {"text": f"Waiting for your other PC to approve this one — Home there "
-                            f"must show {lock.get('code') or '…'}", "buttons": []}
+            return {"text": f"Waiting for another device of yours to approve this PC — its "
+                            f"screen must show {lock.get('code') or '…'}", "buttons": []}
         return None
 
     def _stamp(self) -> float:

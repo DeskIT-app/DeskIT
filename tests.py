@@ -46077,7 +46077,7 @@ class _FakeSupabase:
     #: lookup sealed past the cap was refused live for three days with
     #: every test green.
     SEALED = {"history": ("cipher",), "vault": ("cipher",), "recovery": ("wrapped",),
-              "pairings": ("applicant", "handed")}
+              "pairings": ("applicant", "handed"), "devices": ("link",)}
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -46089,6 +46089,7 @@ class _FakeSupabase:
         self.email = ""
         self.name = ""
         self.deleted = False
+        self.ended: list = []              # the sessions forget_device() ended
 
     def session(self, email: str = "", token: str | None = None) -> dict:
         return {"access_token": token or self.TOKEN, "token_type": "bearer",
@@ -46140,6 +46141,13 @@ class _FakeSupabase:
             self.deleted = True
             self.tables.clear()
             return _FakeRaw(b"", 204)
+        if path == "rest/v1/rpc/forget_device":
+            # migration 0007: the row, and the session it names
+            rows = self.tables.setdefault("devices", [])
+            self.ended += [r["session_id"] for r in rows
+                           if r.get("id") == payload["target"] and r.get("session_id")]
+            rows[:] = [r for r in rows if r.get("id") != payload["target"]]
+            return _FakeRaw(b"", 204)
         if path.startswith("rest/v1/"):
             table = path[len("rest/v1/"):]
             rows = self.tables.setdefault(table, [])
@@ -46184,6 +46192,13 @@ class _FakeSupabase:
                 refused = self._refused(table, items)
                 if refused:
                     return refused
+                if table == "devices" and any(
+                        str(r.get("id")) == str(i.get("id")) and r.get("user_id") != i.get("user_id")
+                        for r in rows for i in items):
+                    # devices.id is the whole primary key: row-level
+                    # security refuses an upsert over another account's row
+                    return _FakeRaw(b'{"code":"42501","message":"new row violates row-level '
+                                    b'security policy for table \\"devices\\""}', 403)
                 stamped = []
                 for item in items:
                     item = dict(item)
@@ -46264,11 +46279,13 @@ class _fixture_project:
         secretstore.delete("account_key_aside")
         self.sb.forget_cache()
         self.sb._status.update(busy="", last_error="", last_sync="", signin_url="")
-        self.sb._device_names.update(at=0.0, names={})       # the other PCs' names, believed 10 min
+        self.sb._device_names.update(at=0.0, names={}, phone=False)       # believed 10 min
         self.sb._forget_lock_state()
         self.sync.forget_all()
+        self.sb._forgotten_file().unlink(missing_ok=True)
         config_mod.save({"account.device_id": None, "account.device_seen_at": None,
-                         "account.device_name": None})
+                         "account.device_name": None, "account.device_session": None,
+                         "account.device_uid": None, "account.past_devices": None})
 
     def __exit__(self, *exc):
         try:
@@ -46627,11 +46644,17 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
                 assert not any(c["path"].startswith("rest/v1/settings_sync") for c in fake.calls[calls:]), \
                     "a history nudge touched the settings"
                 assert len(fake.broadcasts) == 2
-                # the socket goes when the gate shuts
+                # both syncs shut: the socket stays (every signed-in copy
+                # holds one, whatever its syncs say; PHONE_LINK_PLAN.md
+                # stage 1) and it goes with the account's own gate
                 import privacy
                 privacy.withdraw("settings_sync")
                 privacy.withdraw("history_sync")
-                assert server.closed.wait(5), "the socket stayed open with both gates shut"
+                time.sleep(1.5)
+                assert not server.closed.is_set() and sb.status()["live"], \
+                    "the socket went with the syncs"
+                privacy.withdraw("account")
+                assert server.closed.wait(5), "the socket stayed open with the account gate shut"
                 sb._live_stop.set()
                 thread.join(5)
                 assert not thread.is_alive()
@@ -46639,6 +46662,7 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
 
             # 3. a refused join: logged, retried, never raised
             sb._live_stop.clear()
+            privacy.grant("account")
             privacy.grant("settings_sync")
             privacy.grant("history_sync")
             refused = _FakeRealtime(refuse_join="Unauthorized")
@@ -46822,7 +46846,7 @@ class _pc:
                              "_lock_state": {"at": 0.0, "state": "", "lock_id": "", "pairing": None,
                                              "pending": [], "recovery": None, "error": "",
                                              "changed": None},
-                             "_device_names": {"at": 0.0, "names": {}},
+                             "_device_names": {"at": 0.0, "names": {}, "phone": False},
                              "_seen_pairings": set(), "_pending": set()},
                       "vault": {"_applicants": {}}}
         self._sb, self._vault = sb, vault
@@ -46927,7 +46951,7 @@ def test_vault_seals_hands_over_and_recovers_through_cng():
         recovery = vault.new_recovery()
         assert re.fullmatch(r"([0-9A-HJKMNP-TV-Z]{4}-){5}[0-9A-HJKMNP-TV-Z]{4}", recovery), recovery
         assert not hasattr(vault, "new_code"), "a random pairing code is back"
-        code = vault.pairing_code(uid, "req-1", pub)
+        code = vault.pairing_code(uid, "req-1", pub, vault.fingerprint(key))
         assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", code), code
         assert vault.normalize("0l1o-abcd", 8) == "0110ABCD" and vault.normalize("ABCD-EFG", 8) is None \
             and vault.normalize("ABCD-EFGU", 8) is None and vault.pretty("0110ABCD") == "0110-ABCD"
@@ -47055,7 +47079,7 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 b_name = f"laptop · {sb.copy_name()}"
                 assert req["device_name"] == b_name and req["code"] == lock["code"].replace("-", "")[:8] \
                     and req["applicant"].startswith("p1.") and req.get("handed") is None, req
-                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"])
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"], fp)
                 assert set(req) == {"id", "user_id", "device_id", "device_name", "code", "applicant", "updated_at"}
                 pairing = [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
                 assert len(pairing) == 1 and pairing[0]["messages"][0]["payload"]["code"] == lock["code"]
@@ -47172,10 +47196,1032 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 sb.delete_account()
                 assert vault.key(fake.UID) is None and sb.status()["lock"] == {
                     "state": "", "id": "", "code": "", "pending": [], "recovery": None, "error": "",
-                    "changed": None}
+                    "quiet": False, "changed": None}
     finally:
         for pc in (a, b, c):
             pc.gone()
+
+
+def test_the_code_binds_the_lock_so_a_server_cannot_hand_a_key_of_its_own():
+    """Stage 1 of PHONE_LINK_PLAN.md: until now the code proved the asking
+    device to the approver and nothing proved the approver to the asking
+    device: hand_over is unauthenticated, and the one check afterwards is
+    the fingerprint against lock_id, both written by the server, so a
+    dishonest server could hand a joining device a key of its own. The
+    lock goes into the code: the asking device uses the lock_id it read,
+    the approver the fingerprint of the key it holds, never the column.
+    The two worked examples are chapter 12's, and a Kotlin test holds the
+    same two. Against the fake project: a server that names B another lock
+    gets two different codes on the two screens, and the honest road gives
+    one. A's Approve goes by what A computes, whatever the column says."""
+    import base64
+    import sb
+    import secretstore
+    import vault
+
+    uid, pid = _FakeSupabase.UID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    point = "p1." + base64.b64encode(b"\x41" * 64).decode("ascii")
+    vault._codes.clear()
+    assert vault.pairing_code(uid, pid, point, "0123456789abcdef") == "WK0MS-7HN8C"
+    assert vault.pairing_code(uid, pid, point, "fedcba9876543210") == "R85CJ-HRE9H"
+    assert vault.code_hint("WK0MS-7HN8C") == "WK0MS7HN"
+    assert vault.AAD_DEVICE.format(uid=uid, device_id=pid) == f"device/{uid}/{pid}"
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            session = json.dumps(fake.session("p@example.com"))
+
+            def sign_in(name):
+                secretstore.set("supabase_session", session)
+                sb.forget_cache()
+                config_mod.save({"account.device_name": name})
+
+            with a:
+                sign_in("desk")
+                sb.sync_now()
+                fp = vault.fingerprint(vault.key(fake.UID))
+            # the server tells B another lock while B asks
+            forged = "f" * 16
+            fake.tables["profiles"][0]["lock_id"] = forged
+            with b:
+                sign_in("laptop")
+                sb.sync_now()
+                lied_to = sb.status()["lock"]["code"]
+            fake.tables["profiles"][0]["lock_id"] = fp
+            with a:
+                shown = sb.pending_pairings()
+                assert len(shown) == 1 and shown[0]["code"] != lied_to, "the lie left one code"
+                req = fake.tables["pairings"][0]
+                assert shown[0]["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"], fp)
+                assert lied_to == vault.pairing_code(fake.UID, req["id"], req["applicant"], forged)
+                sb.decline_pairing(shown[0]["id"])
+            # told the truth, the two screens agree
+            with b:
+                sb.sync_now()
+                honest = sb.status()["lock"]["code"]
+            assert honest != lied_to
+            with a:
+                # the approver reads its own key, never the server's column
+                fake.tables["profiles"][0]["lock_id"] = forged
+                assert [p["code"] for p in sb.pending_pairings()] == [honest]
+                fake.tables["profiles"][0]["lock_id"] = fp
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "have"
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def _sign_in_pc(fake, name: str, *, sid: str = "") -> None:
+    """A device of the account inside a test: its session (the claim the
+    real token carries, when the test wants one) and its name."""
+    import base64
+    import sb
+    import secretstore
+    token = None
+    if sid:
+        claims = base64.urlsafe_b64encode(json.dumps({"session_id": sid}).encode()).rstrip(b"=").decode()
+        token = f"eyJhbGciOiJFUzI1NiJ9.{claims}.sig"
+    secretstore.set("supabase_session", json.dumps(fake.session("p@example.com", token=token)))
+    sb.forget_cache()
+    config_mod.save({"account.device_name": name})
+
+
+_PHONE = "99999999-8888-7777-6666-555555555501"
+_PHONE_CERT = "ab" * 32
+
+
+def _a_phone_asks(fake, phone: str = _PHONE) -> tuple[str, str]:
+    """What Lock.kt writes: the request, as _request_pairing does it, with
+    the private half kept in vault.py's memory. Returns (id, public)."""
+    import uuid
+    import vault
+    pid = str(uuid.uuid4())
+    public = vault.applicant(pid)
+    lock_id = fake.tables["profiles"][0]["lock_id"]
+    code = vault.pairing_code(fake.UID, pid, public, lock_id)
+    fake.tables.setdefault("pairings", []).append(
+        {"id": pid, "user_id": fake.UID, "device_id": phone, "device_name": "Galaxy S26",
+         "code": vault.code_hint(code), "applicant": public, "handed": None})
+    return pid, public
+
+
+def _a_phone_row(fake, phone: str = _PHONE, platform: str = "android-36", **extra) -> dict:
+    row = {"id": phone, "user_id": fake.UID, "name": "Galaxy S26", "platform": platform, **extra}
+    fake.tables.setdefault("devices", []).append(row)
+    return row
+
+
+def test_with_both_syncs_off_the_account_pass_makes_the_lock_and_hears_a_phone():
+    """The account pass (PHONE_LINK_PLAN.md stage 1). A person with both
+    syncs off could not be reached at all: the lock lived inside sync_now,
+    which returns at once with the gates shut, the worker read the
+    requests only once the lock said have, there was no socket, and
+    _broadcast was hard-wired to the purpose sync. With the account gate
+    alone: the pass makes the lock, unseen (no recovery-key row on Home in
+    either desk); touches no store; a phone's request reaches
+    pending_pairings and Home; the answer and its broadcast go out under
+    `account`, nothing is refused, and the phone can open what it was
+    handed. The recovery row comes the moment there is a phone, or a
+    sync. ACCOUNT_HOOKS run with the key at the end of every pass once the
+    lock says have, and never before; a hook that trips stops nothing."""
+    import dashboard
+    import deskweb
+    import net as net_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    asked: list[dict] = []
+    keys: list[bytes] = []
+
+    def tripping(_key):
+        raise RuntimeError("a hook that trips")
+
+    def rows_of(lock):
+        board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+        board.running = True
+        board.status = {"account": {"signed_in": True, "lock": dict(lock)}}
+        tk_rows = [r["text"] for r in board._waiting_lock()]
+        model = deskweb.Model.__new__(deskweb.Model)
+        model.running = True
+        model.status = {"account": {"signed_in": True, "lock": dict(lock)}}
+        model._lock_fresh, model._lock_typing, model._lock_asking = "", False, False
+        return tk_rows, [r["text"] for r in model._lock_rows()]
+
+    try:
+        with _fixture_project() as fake, _consented("account"), a, \
+                _patched(sb, "PAIRING_HOOKS", [asked.append]), \
+                _patched(sb, "ACCOUNT_HOOKS", [tripping, keys.append]):
+            _sign_in_pc(fake, "desk")
+            before = len(net_mod.rows())
+            out = sb.account_pass("test")
+            assert out["lock"] == "have" and not [v for v in out.values() if v.startswith("error")], out
+            key = vault.key(fake.UID)
+            assert key is not None and fake.tables["profiles"][0]["lock_id"] == vault.fingerprint(key)
+            assert keys == [key], "the hooks did not get the key"
+            touched = {c["path"] for c in fake.calls}
+            assert not touched & {"rest/v1/settings_sync", "rest/v1/vocab_sync", "rest/v1/history"}, touched
+            assert not any(r.status == "refused" for r in net_mod.rows()[before:]), net_mod.rows()[before:]
+            assert {r.purpose for r in net_mod.rows()[before:]} == {"account"}
+            # unseen: the fact is there, and Home asks nothing
+            lock = sb.status()["lock"]
+            assert lock["state"] == "have" and lock["recovery"] is False and lock["quiet"] is True, lock
+            assert rows_of(lock) == ([], []), "a recovery row for someone who asked for nothing"
+            assert sb._live_purpose() == "account", "no socket with both syncs off"
+
+            # a phone asks: the request reaches this PC, the card, and Home
+            pid, public = _a_phone_asks(fake)
+            _a_phone_row(fake)
+            sb._device_names["at"] = 0.0
+            sb.account_pass("test")
+            code = vault.pairing_code(fake.UID, pid, public, vault.fingerprint(key))
+            assert [(r["id"], r["name"], r["code"], r["device"]) for r in sb.pending_pairings()] == \
+                [(pid, "Galaxy S26", code, _PHONE)], "the request did not reach this PC"
+            assert [r["code"] for r in asked] == [code], asked
+            lock = sb.status()["lock"]
+            assert lock["quiet"] is False, "a phone in the account and the lock still unseen"
+            tk_rows, web_rows = rows_of(lock)
+            assert any("Galaxy S26 asks to join your account" in t and code in t for t in tk_rows), tk_rows
+            assert any("Galaxy S26 asks to join your account" in t and code in t for t in web_rows), web_rows
+            assert any(t.startswith("Make a recovery key") for t in tk_rows), "the row did not come with the phone"
+            assert any(t.startswith("Make a recovery key") for t in web_rows)
+
+            # Approve: under `account`, and the phone opens what it got
+            before = len(net_mod.rows())
+            assert sb.approve_pairing(pid) == "Galaxy S26"
+            row = next(r for r in fake.tables["pairings"] if r["id"] == pid)
+            assert vault.take(pid, row["handed"], vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=pid)) == key
+            paired = fake.broadcasts[-1]["messages"][0]
+            assert paired["event"] == "paired" and paired["payload"]["id"] == pid, paired
+            assert not any(r.status == "refused" for r in net_mod.rows()[before:]), net_mod.rows()[before:]
+            assert {r.purpose for r in net_mod.rows()[before:]} == {"account"}, "the answer needed a sync"
+
+            # no phone, a sync on: the recovery row comes with the sync
+            fake.tables["devices"][:] = [r for r in fake.tables["devices"] if r["id"] != _PHONE]
+            sb._device_names.update(at=0.0, phone=False)
+            sb.account_pass("test")
+            assert sb.status()["lock"]["quiet"] is True
+            with _consented("settings_sync"):
+                assert sb.status()["lock"]["quiet"] is False, "a sync on and the lock still unseen"
+    finally:
+        a.gone()
+
+
+def test_a_further_pc_with_the_syncs_off_asks_to_join_only_once_there_is_a_phone():
+    """A PC with both syncs off that does not hold the key holds nothing,
+    and asks for nothing: no "Waiting for your other PC" lands on the
+    Home of someone who asked for nothing. It asks once the account has a
+    phone (a row whose platform starts with android-, or web), because
+    then the join is what lets the phone reach it, and the phone is what
+    can approve a PC with nobody else. A forgotten phone is no phone. An
+    explicit answer is asking too: [It was me] on a changed lock does not
+    wait for a phone. And a broadcast naming `devices` is read: a phone
+    appearing makes the waiting PC ask at once, with no 15-minute wait."""
+    import net as net_mod
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+                key = vault.key(fake.UID)
+            with b:
+                _sign_in_pc(fake, "laptop")
+                out = sb.account_pass("test")
+                assert out["lock"] == "not asked", out
+                assert sb.status()["lock"]["state"] == "" and sb.status()["lock"]["code"] == ""
+                assert not fake.tables.get("pairings"), "a PC with its syncs off asked to join"
+                assert not [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
+                assert vault.key(fake.UID) is None
+
+                # a forgotten phone is no phone
+                _a_phone_row(fake)
+                sb._keep_forgotten([{"device": _PHONE, "cert": _PHONE_CERT, "at": "2026-11-06"}])
+                sb._device_names["at"] = 0.0
+                sb.account_pass("test")
+                assert not fake.tables.get("pairings"), "a forgotten phone made this PC ask"
+                sb._forgotten_file().unlink()
+
+                # a phone: the broadcast is read, the request goes out at once
+                sb._device_names["at"] = 0.0
+                sb._live_stop.clear()
+                sb._live_state.update(on=False, error="")
+                sb._wake.clear()
+                server = _FakeRealtime()
+                with _patched(net_mod, "_ws_connect", server.connect), \
+                        _patched(sb, "LIVE_RETRY_S", (0.2,)), _patched(sb, "LIVE_ENABLED", True):
+                    thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                    thread.start()
+                    assert server.joined.wait(5), "no socket with both syncs off"
+                    server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                                 "payload": {"type": "broadcast", "event": "changed",
+                                             "payload": {"stores": ["devices"], "device": _PHONE}}})
+                    assert _until(sb._wake.is_set), "the worker was left on its 15-minute wait"
+                    sb._wake.clear()
+                    assert fake.tables.get("pairings"), "the phone did not make it ask"
+                    sb._live_stop.set()
+                    thread.join(5)
+                sb._live_stop.clear()
+                lock = sb.status()["lock"]
+                assert lock["state"] == "waiting" and lock["code"], lock
+                req = fake.tables["pairings"][0]
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"],
+                                                          vault.fingerprint(key))
+                event = [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
+                assert len(event) == 1, "the request's broadcast did not go out under account"
+                # looking again is the same request, not a new one
+                sb.account_pass("test")
+                assert len(fake.tables["pairings"]) == 1
+
+            # the web page counts too
+            fake.tables["pairings"].clear()
+            fake.tables["devices"][:] = [r for r in fake.tables["devices"] if r["id"] != _PHONE]
+            with b:
+                sb._forget_lock_state()
+                vault.drop(req["id"])
+                sb.account_pass("test")
+                assert not fake.tables["pairings"]
+                _a_phone_row(fake, platform="web")
+                sb._device_names["at"] = 0.0
+                sb.account_pass("test")
+                assert fake.tables["pairings"], "the web page is a phone here"
+                assert sb._is_phone({"platform": "android-26"}) and sb._is_phone({"platform": "web"})
+                assert not sb._is_phone({"platform": "windows-10.0.26200"})
+                assert not sb._is_phone({"platform": ""}) and not sb._is_phone({})
+
+            # a request the person asked for is not held back: It was me
+            fake.tables["pairings"].clear()
+            fake.tables["devices"].clear()
+            with a:
+                sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
+                other = os.urandom(32)
+                fake.tables["profiles"][0]["lock_id"] = vault.fingerprint(other)
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "changed"
+                assert sb.lock_answer(True) == "asked"
+                assert sb.status()["lock"]["state"] == "waiting" and fake.tables["pairings"], \
+                    "It was me on a PC with its syncs off asked nothing"
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_a_pc_with_its_syncs_off_takes_the_key_the_moment_it_is_approved():
+    """`paired` used to go straight to sync_now, which returns at once with
+    both syncs off, so a PC in that state would have sat on an approved
+    request until the next pass. The live channel runs the account pass:
+    the key is taken within the second, and a `paired` naming another
+    request takes nothing."""
+    import net as net_mod
+    import sb
+    import vault
+
+    other = "99999999-8888-7777-6666-555555555555"
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+                key = vault.key(fake.UID)
+            _a_phone_row(fake)
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "waiting"
+                req = fake.tables["pairings"][0]
+                sb._live_stop.clear()
+                sb._live_state.update(on=False, error="")
+                server = _FakeRealtime()
+
+                def paired(ident):
+                    server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                                 "payload": {"type": "broadcast", "event": "paired",
+                                             "payload": {"id": ident, "device": other}}})
+
+                with _patched(net_mod, "_ws_connect", server.connect), \
+                        _patched(sb, "LIVE_RETRY_S", (0.2,)), _patched(sb, "LIVE_ENABLED", True):
+                    thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                    thread.start()
+                    assert server.joined.wait(5), "no socket with both syncs off"
+                    req["handed"] = vault.hand_over(key, req["applicant"],
+                                                    vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=req["id"]))
+                    # another request's answer: nothing is taken
+                    paired("00000000-0000-0000-0000-000000000000")
+                    time.sleep(0.4)
+                    assert vault.key(fake.UID) is None, "a paired for another request took the key"
+                    t0 = time.monotonic()
+                    paired(req["id"])
+                    assert _until(lambda: vault.key(fake.UID) == key), "the approved PC did not take the key"
+                    took = time.monotonic() - t0
+                    assert took < 2.0, f"{took:.2f} s from the approval to the key"
+                    assert _until(lambda: sb.status()["lock"]["state"] == "have")
+                    assert fake.tables["pairings"] == [], "the request stayed after it was answered"
+                    sb._live_stop.set()
+                    thread.join(5)
+                    assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_the_worker_starts_a_whole_pass_with_the_account_and_a_nudge_stays_small():
+    """One turn of the worker (sb._worker_pass). A pass over everything
+    runs the account pass first, and sync_now takes what it found, so a PC
+    waiting to be approved looks at its request once a turn and not twice.
+    A nudge names a store and is that store: a dictation costs no account
+    pass. With both syncs off the turn still reaches the lock, which is
+    the whole point of the pass, and signed out it does nothing."""
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake:
+            with _consented("account"), a:
+                calls = len(fake.calls)
+                sb._worker_pass(None, None, None)
+                assert len(fake.calls) == calls, "a turn with nobody signed in made a request"
+                _sign_in_pc(fake, "desk")
+                sb._worker_pass(None, None, None)
+                assert vault.key(fake.UID) is not None and sb.status()["lock"]["state"] == "have"
+            with _consented("account", "settings_sync", "history_sync"):
+                with a:
+                    # a nudge: the store it named, and no account pass
+                    with _patched(sb, "account_pass", lambda reason="": fake.calls.clear()):
+                        fake.calls.append({"path": "nudge", "url": ""})
+                        sb._worker_pass(None, None, ["history"])
+                    assert any(c["path"] == "nudge" for c in fake.calls), "a nudge ran the account pass"
+                    assert not any(c["path"] == "rest/v1/settings_sync" for c in fake.calls), \
+                        "a nudge touched another store"
+                with b:
+                    _sign_in_pc(fake, "laptop")
+                    sb._worker_pass(None, None, None)
+                    assert sb.status()["lock"]["state"] == "waiting"
+                    # a PC that waits: one look at its request a turn
+                    n = len(fake.calls)
+                    sb._worker_pass(None, None, None)
+                    looks = [c for c in fake.calls[n:] if c["path"] == "rest/v1/pairings"
+                             and c["method"] == "GET"]
+                    assert len(looks) == 1, f"{len(looks)} looks at the request in one turn"
+                    assert sb.status()["lock"]["state"] == "waiting"
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_names_under_a_shut_history_gate_leave_the_socket_up():
+    """Found by notes\\phone-link-probes\\names_probe.py: _names() asked
+    under the purpose `history`, so a copy with the words sync on and the
+    history sync off had every broadcast from another device end in
+    EgressRefused and the socket dropped, 5 s to 5 min of no channel each
+    time. The names are the account's: the broadcast is logged, the store
+    pulled, and the socket stays. A push of history alone goes out under
+    its own gate, which this same copy's mirror image used to have refused."""
+    import net as net_mod
+    import privacy
+    import sb
+    import vocab as vocab_mod
+
+    other = "99999999-8888-7777-6666-555555555555"
+    d = Path(tempfile.mkdtemp(prefix="deskit-names-"))
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"):
+            _sign_in_pc(fake, "desk")
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+            assert not privacy.allowed("history_sync")
+            fake.tables["devices"] = [{"id": other, "name": "laptop", "user_id": fake.UID}]
+            before = len(net_mod.rows())
+            assert sb._names()[other] == "laptop", "the names need the history gate"
+            assert net_mod.rows()[before].purpose == "account"
+            server = _FakeRealtime()
+            vocab = vocab_mod.Vocab(d / "vocab.json")
+            with _patched(net_mod, "_ws_connect", server.connect), _patched(sb, "LIVE_RETRY_S", (0.2,)):
+                thread = threading.Thread(target=sb._live_loop, args=(vocab,), daemon=True)
+                thread.start()
+                assert server.joined.wait(5)
+                assert _until(lambda: sb.status()["live"])
+                sb._device_names.update(at=0.0, names={})        # the line that dropped it
+                server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                             "payload": {"type": "broadcast", "event": "changed",
+                                         "payload": {"stores": ["settings"], "device": other}}})
+                assert _until(lambda: any(c["path"] == "rest/v1/settings_sync" for c in fake.calls)), \
+                    "the store was not pulled"
+                time.sleep(0.5)
+                assert sb.status()["live"] and not server.closed.is_set(), "the socket dropped"
+                assert not any(r.status == "refused" for r in net_mod.rows()[before:]), \
+                    [r for r in net_mod.rows()[before:] if r.status == "refused"]
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+        # history alone: the broadcast under history, with the words gate shut
+        sb._live_stop.clear()
+        with _fixture_project() as fake, _consented("account", "history_sync"):
+            _sign_in_pc(fake, "desk")
+            before = len(net_mod.rows())
+            sb._broadcast(["history"], purpose="history")
+            assert fake.broadcasts, "a push of history alone was refused"
+            assert net_mod.rows()[before].purpose == "history"
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_devices_row_carries_its_session_and_a_link_goes_up_sealed():
+    """What phone.py is offered. ensure_profile writes the session this
+    device runs on beside its row, read off the token's own claim, as soon
+    as it moved and not at the next daily write: it is what Forget ends. A
+    token with no claim writes no column. devices() is every row with link
+    as stored; write_link is this device's row and then one broadcast,
+    `changed` naming `devices`; what is not sealed is refused before it
+    leaves, and so is a device on the forgotten list. The row keeps what
+    ensure_profile wrote."""
+    import sb
+    import vault
+
+    first, second = "aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk", sid=first)
+            sb.ensure_profile()
+            mine = sb.device_id()
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            assert row["session_id"] == first and row["platform"].startswith("windows"), row
+            # once a day...
+            calls = len(fake.calls)
+            sb.ensure_profile()
+            assert len(fake.calls) == calls, "the row was written twice in a day"
+            # ...and at once for a new session under the same row
+            _sign_in_pc(fake, "desk", sid=second)
+            sb.ensure_profile()
+            assert row["session_id"] == second, row
+            # a token with no claim: the column is left alone
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            body = json.loads(next(c for c in reversed(fake.calls) if c["path"] == "rest/v1/devices")["body"])
+            assert "session_id" not in body and row["session_id"] == second, body
+            for bad in ("eyJ.notjson.sig", "nodots", "", "a.!!!.c"):
+                assert sb._session_id({"access_token": bad}) == "", bad
+
+            # the rows, as stored
+            sb.account_pass("test")
+            key = vault.key(fake.UID)
+            sealed = vault.seal_json(key, {"v": 1, "kind": "pc", "cert": "cd" * 32, "addrs": ["192.168.68.50"],
+                                           "port": 8766, "proto": 1, "words_sync": True},
+                                     vault.AAD_DEVICE.format(uid=fake.UID, device_id=mine))
+            told = len(fake.broadcasts)
+            sb.write_link(sealed)
+            assert row["link"] == sealed and row["session_id"] == second and row["name"] == "desk", row
+            msg = fake.broadcasts[-1]["messages"][0]
+            assert len(fake.broadcasts) == told + 1 and msg["event"] == "changed", fake.broadcasts[told:]
+            assert msg["payload"] == {"device": mine, "stores": ["devices"]}, msg
+            _a_phone_row(fake, link=vault.seal_json(key, {"v": 1, "kind": "phone"}, "elsewhere"))
+            rows = {r["id"]: r for r in sb.devices()}
+            assert rows[mine]["link"] == sealed and rows[_PHONE]["link"].startswith("v1."), rows
+            assert sb._device_names["phone"] is True and sb._names()[_PHONE] == "Galaxy S26"
+            # refused before it leaves
+            for bad in ("", "plain text", "gsk_" + "a" * 40):
+                try:
+                    sb.write_link(bad)
+                except sb.AccountError as e:
+                    assert "sealed" in str(e), str(e)
+                else:
+                    raise AssertionError(f"{bad!r} went up as a link")
+            sb._keep_forgotten([{"device": mine, "cert": "", "at": ""}])
+            try:
+                sb.write_link(sealed)
+            except sb.AccountError as e:
+                assert "forgotten" in str(e), str(e)
+            else:
+                raise AssertionError("a forgotten device wrote its row")
+    finally:
+        a.gone()
+
+
+def test_a_pc_signed_in_to_another_account_is_another_device():
+    """devices.id is the whole primary key, across accounts, and a PC kept
+    one id for life. A second account on the same PC (a family PC, a test
+    account and then a real one) had its row refused by row-level security:
+    cosmetic while the row only named a PC, and a silent loss now that the
+    row is how a phone finds it. Under another account the PC takes a new
+    id and its row goes up, its session on it, and the first account's row
+    is left alone. A failed write leaves the next pass to try: the new id
+    is taken before the daily wait can skip it. The same account back
+    keeps its id across a sign-out."""
+    import sb
+
+    second = "22222222-3333-4444-5555-666666666666"
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            first = sb.device_id()
+            sb.sign_out(everywhere=False)
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            assert sb.device_id() == first, "the same account back took a new id"
+
+            # the control: under the old id the second account's row is refused
+            fake.UID = second
+            status, _data = sb._rest("POST", "devices", purpose="account", query="on_conflict=id",
+                                     payload={"id": first, "user_id": second},
+                                     prefer="resolution=merge-duplicates,return=minimal")
+            assert status == 403, status
+
+            sid = "bbbbbbbb-0000-4000-8000-000000000002"
+            sb.sign_out(everywhere=False)
+            _sign_in_pc(fake, "desk", sid=sid)
+            sb.ensure_profile(force=True)
+            mine = sb.device_id()
+            assert mine != first, "another account under the same id"
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            assert row["user_id"] == second and row["session_id"] == sid, row
+            old = next(r for r in fake.tables["devices"] if r["id"] == first)
+            assert old["user_id"] == _FakeSupabase.UID, "the first account's row moved"
+            sb.account_pass("test")
+            assert not sb.status()["last_error"], sb.status()["last_error"]
+
+            # the write fails once: the next, ordinary, pass writes that
+            # same id and does not mint a third
+            sb.sign_out(everywhere=False)
+            fake.UID = _FakeSupabase.UID
+            _sign_in_pc(fake, "desk")
+            fake.script["rest/v1/devices"] = [(500, b'{"message":"no"}')]
+            try:
+                sb.ensure_profile(force=True)
+            except sb.AccountError:
+                pass
+            else:
+                raise AssertionError("a refused row said nothing")
+            mine = sb.device_id()
+            assert mine != first, "another account came between: this is a new device"
+            sb.ensure_profile()
+            assert sb.device_id() == mine, "a failed write minted another id"
+            assert any(r["id"] == mine and r["user_id"] == _FakeSupabase.UID
+                       for r in fake.tables["devices"]), "the row never went up"
+    finally:
+        a.gone()
+
+
+def test_forget_ends_a_device_and_a_row_restored_unchanged_gives_nothing_back():
+    """Forget, from any device that holds the key. The list first, then
+    the row and its session (forget_device(), 0007), then the others are
+    told and the hooks run here. A row that opens is not enough: a
+    forgotten phone still holds the account key and the server could put
+    its row back unchanged, since a seal holds no version. So the target's
+    id and certificate go on the sealed `forgotten` row and in a local
+    list that never shrinks. Here the server restores the row and drops
+    the list, and nothing comes back: sb.forgotten() still names both, the
+    pass writes the list back whole, the phone counts as no phone, and
+    what opens under the key says the same on another PC that reads the
+    row for the first time. A refused forget_device() leaves it listed. The
+    row is one more `vault` row: the cloud keys' sync skips it and an old
+    copy's import_keys does too. A device that is not a uuid, this device,
+    and a PC without the key are refused before anything leaves."""
+    import datetime
+    import sb
+    import sync as sync_mod
+    import vault
+
+    a, b, c = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB"), _pc("C", "DeskIT.testC")
+    keys: list[bytes] = []
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), \
+                _patched(sb, "ACCOUNT_HOOKS", [keys.append]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                aad = vault.AAD_DEVICE.format(uid=fake.UID, device_id=_PHONE)
+                link = vault.seal_json(key, {"v": 1, "kind": "phone", "cert": "AAAA", "proto": 1, "backup": True}, aad)
+                phone_row = _a_phone_row(fake, link=link, session_id="aaaaaaaa-0000-4000-8000-000000000009")
+                sb._device_names["at"] = 0.0
+                assert sb._has_phone()
+                for bad in ("not a uuid", ""):
+                    try:
+                        sb.forget_device(bad, _PHONE_CERT)
+                    except sb.AccountError:
+                        pass
+                    else:
+                        raise AssertionError(f"forgot {bad!r}")
+                try:
+                    sb.forget_device(sb.device_id(), "")
+                except sb.AccountError as e:
+                    assert "sign out" in str(e), str(e)
+                else:
+                    raise AssertionError("a PC forgot itself")
+                assert not fake.tables.get("vault") or not [r for r in fake.tables["vault"] if r["name"] == "forgotten"]
+
+                keys.clear()
+                told = len(fake.broadcasts)
+                sb.forget_device(_PHONE, _PHONE_CERT)
+                assert fake.ended == ["aaaaaaaa-0000-4000-8000-000000000009"], fake.ended
+                assert all(r["id"] != _PHONE for r in fake.tables["devices"]), "the row stayed"
+                row = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")
+                aad = vault.AAD_VAULT.format(uid=fake.UID, name="forgotten")
+                assert aad == f"vault/{fake.UID}/forgotten" and vault.is_sealed(row["cipher"])
+                inside = vault.open_json(key, row["cipher"], aad)
+                assert set(inside) == {"v"} and [(e["device"], e["cert"]) for e in inside["v"]] == \
+                    [(_PHONE, _PHONE_CERT)], inside
+                assert datetime.datetime.fromisoformat(inside["v"][0]["at"]).tzinfo is not None
+                assert sb.forgotten() == {_PHONE, _PHONE_CERT}
+                msg = fake.broadcasts[-1]["messages"][0]
+                assert len(fake.broadcasts) == told + 1 and msg["event"] == "changed"
+                assert msg["payload"]["stores"] == ["devices"]
+                assert keys == [key], "the door on this PC did not hear of it"
+                sb._device_names["at"] = 0.0
+                assert not sb._has_phone()
+                wire = "\n".join(c["url"] + c["body"].decode("utf-8", "replace") for c in fake.to_project())
+                assert _PHONE_CERT not in wire, "the certificate left in the clear"
+
+                # the cloud keys' sync does not take the row for a key
+                sb.sync_now()
+                slots = sync_mod.read_cursor().get("vault_slots") or {}
+                assert not any("forgotten" in (s.get("digest") or {}) for s in slots.values()), slots
+                assert vault.import_keys(key, fake.UID, {"forgotten": row["cipher"]}) == []
+
+                # the server restores the row, unchanged, and drops the list
+                fake.tables["devices"].append(phone_row)
+                fake.tables["vault"][:] = [r for r in fake.tables["vault"] if r["name"] != "forgotten"]
+                sb._device_names["at"] = 0.0
+                assert sb.forgotten() == {_PHONE, _PHONE_CERT}, "the local list shrank"
+                assert not sb._has_phone(), "a restored row made a phone of it"
+                rows = {r["id"]: r for r in sb.devices()}
+                assert rows[_PHONE]["link"] == link, "devices() is the rows as stored"
+                sb.account_pass("test")
+                row = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")
+                assert [e["device"] for e in vault.open_json(key, row["cipher"], aad)["v"]] == [_PHONE], \
+                    "the pass did not write the list back"
+                assert sb.forgotten() == {_PHONE, _PHONE_CERT}
+                # a row that does not open takes nothing away and adds nothing
+                row["cipher"] = vault.seal_json(os.urandom(32), {"v": [{"device": "x", "cert": "y"}]}, aad)
+                sb.account_pass("test")
+                assert sb.forgotten() == {_PHONE, _PHONE_CERT}
+
+                # a refused forget: listed all the same, never the other way round
+                other = "99999999-8888-7777-6666-555555555502"
+                fake.script["rest/v1/rpc/forget_device"] = [(500, b'{"message":"no"}')]
+                try:
+                    sb.forget_device(other, "ef" * 32)
+                except sb.AccountError as e:
+                    assert "refused" in str(e), str(e)
+                else:
+                    raise AssertionError("a refused forget said nothing")
+                assert other in sb.forgotten() and "ef" * 32 in sb.forgotten()
+                # the file never shrinks, not even signed out
+                sb.sign_out(everywhere=False)
+                assert _PHONE in sb.forgotten()
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+
+            # B: holds the key, reads the row for the first time, keeps it
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "waiting"
+                assert sb.forgotten() == set(), "a PC without the key read the list"
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.sync_now()
+                assert vault.key(fake.UID) == key
+                sb.account_pass("test")
+                assert {_PHONE, _PHONE_CERT, other} <= sb.forgotten(), sb.forgotten()
+            # a PC without the key is refused before anything leaves
+            with c:
+                _sign_in_pc(fake, "third")
+                calls = len(fake.calls)
+                try:
+                    sb.forget_device(_PHONE, _PHONE_CERT)
+                except sb.AccountError as e:
+                    assert "does not hold" in str(e), str(e)
+                else:
+                    raise AssertionError("forgot without the key")
+                assert len(fake.calls) == calls
+                # a key the account does not name reads, keeps, and never
+                # seals its own list over the account's: not at a sign-in,
+                # before the lock was looked at, and not after
+                vault.keep(fake.UID, os.urandom(32))
+                sb._keep_forgotten([{"device": "99999999-8888-7777-6666-555555555503",
+                                     "cert": "", "at": ""}])
+                stored = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")["cipher"]
+                sb.ensure_profile(force=True)
+                assert next(r for r in fake.tables["vault"] if r["name"] == "forgotten")["cipher"] == stored
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "changed"
+                assert next(r for r in fake.tables["vault"] if r["name"] == "forgotten")["cipher"] == stored
+    finally:
+        for pc in (a, b, c):
+            pc.gone()
+
+
+def test_a_pc_that_finds_itself_forgotten_leaves_and_asks_as_a_new_device():
+    """A forgotten PC still holds the key, and ensure_profile would bring
+    its row back within a day. So a PC on the list moves its key aside
+    (kept, never deleted), stops writing that row, takes a new device id,
+    tells FORGOTTEN_HOOKS (phone.py's new certificate), and asks to join
+    the same lock like any new device: the request is under the new id, a
+    key for another lock is not taken, the same key is. On the way back
+    what it said under its old id does not come down as another device's
+    lines. A sign-in on a forgotten PC finds out before it writes a row.
+    Delete my account takes the ids it had."""
+    import sb
+    import sync as sync_mod
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    left: list[str] = []
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "FORGOTTEN_HOOKS", [lambda: left.append("left")]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                fp = vault.fingerprint(key)
+            with b:
+                _sign_in_pc(fake, "laptop", sid="bbbbbbbb-0000-4000-8000-000000000001")
+                b.log.write_text("2026-11-06 10:00:00,100 | OK | 1.0s | local | 0.4s latency | מהמחשב השני\n", "utf-8")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.sync_now()
+                assert vault.key(fake.UID) == key
+                old = sb.device_id()
+                assert any(r["device_id"] == old for r in fake.tables["history"]), "B pushed nothing"
+                # the rows B pushed must look newer than its cursor to matter
+                for r in fake.tables["history"]:
+                    r["updated_at"] = "2099-01-01T00:00:00+00:00"
+            with a:
+                sb.forget_device(old, "cd" * 32)
+            assert fake.ended == ["bbbbbbbb-0000-4000-8000-000000000001"], fake.ended
+
+            with b:
+                sb.account_pass("test")
+                assert vault.key(fake.UID) is None, "a forgotten PC kept its key"
+                assert vault.aside(fake.UID) == [fp], "the key was not kept aside"
+                assert vault.confirmed(fake.UID) == fp
+                assert left == ["left"]
+                new = sb.device_id()
+                assert new != old and old in sb.forgotten()
+                assert all(r["id"] != old for r in fake.tables["devices"]), "its row came back"
+                lock = sb.status()["lock"]
+                assert lock["state"] == "waiting" and lock["code"], lock
+                req = fake.tables["pairings"][0]
+                assert req["device_id"] == new, "it asked under the old id"
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"], fp)
+                # the next pass stays gone, and the new row is written under the new id
+                sb.ensure_profile(force=True)
+                assert all(r["id"] != old for r in fake.tables["devices"])
+                assert any(r["id"] == new for r in fake.tables["devices"])
+                assert left == ["left"], "it left twice"
+                # a key for another lock is refused
+                req["handed"] = vault.hand_over(os.urandom(32), req["applicant"],
+                                                vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=req["id"]))
+                sb.account_pass("test")
+                assert vault.key(fake.UID) is None
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.account_pass("test")
+                assert vault.key(fake.UID) == key and sb.status()["lock"]["state"] == "have"
+                out = sb.sync_now(reason="test")
+                assert out["history"].startswith("pulled 0"), out
+                lines = sync_mod.remote_history_path()
+                assert not lines.exists() or "מהמחשב השני" not in lines.read_text("utf-8"), \
+                    "this PC's own words came down as another device's"
+                assert left == ["left"]
+
+            # a sign-in on a forgotten PC: no row is written before it knows
+            with b:
+                now_mine = sb.device_id()
+            with a:
+                sb.forget_device(now_mine, "")
+            with b:
+                left.clear()
+                sb.sign_out(everywhere=False)
+                _sign_in_pc(fake, "laptop")
+                sb.ensure_profile(force=True)
+                assert left == ["left"], "the sign-in wrote its row before it read the list"
+                assert all(r["id"] != now_mine for r in fake.tables["devices"])
+                assert any(r["id"] == sb.device_id() for r in fake.tables["devices"])
+                assert sorted(sb._past_devices()) == sorted([old, now_mine])
+                # Delete my account takes them; the key's aside file goes with it
+                sb.delete_account()
+                assert sb._past_devices() == set()
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_sign_out_of_every_pc_clears_the_other_devices_links_first():
+    """The door checks a certificate and not a session, so ending sessions
+    alone would leave a phone's door open, and this is Home's answer to a
+    stranger. The PC that presses it deletes every other device's `link`
+    first, its own stays, then does what it did. A sign-out on this PC
+    alone touches none. A server that refuses the rows still ends the
+    sessions: the sign-out is never stopped by it."""
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), a:
+            _sign_in_pc(fake, "desk")
+            sb.sync_now()
+            key = vault.key(fake.UID)
+            sealed = vault.seal_json(key, {"v": 1}, "any")
+            mine = sb.device_id()
+            sb.write_link(sealed)
+            phone = _a_phone_row(fake, link=sealed)
+            other = _a_phone_row(fake, phone="99999999-8888-7777-6666-555555555502",
+                                 platform="windows-10.0.26200", link=sealed)
+            sb.sign_out(everywhere=False)
+            assert phone["link"] == sealed and other["link"] == sealed, "this PC's sign-out touched them"
+
+            _sign_in_pc(fake, "desk")
+            n = len(fake.calls)
+            sb.sign_out(everywhere=True)
+            wire = [(c["method"], c["path"]) for c in fake.calls[n:]
+                    if c["path"] in ("rest/v1/devices", "auth/v1/logout")]
+            assert wire == [("PATCH", "rest/v1/devices"), ("POST", "auth/v1/logout"),
+                            ("POST", "auth/v1/logout")], wire
+            assert phone["link"] is None and other["link"] is None, "a link survived"
+            assert next(r for r in fake.tables["devices"] if r["id"] == mine)["link"] == sealed
+            assert not sb.signed_in()
+
+            # a refusal stops nothing
+            phone["link"] = sealed
+            _sign_in_pc(fake, "desk")
+            fake.script["rest/v1/devices"] = [(500, b'{"message":"no"}')]
+            n = len(fake.calls)
+            sb.sign_out(everywhere=True)
+            scopes = [c["query"].get("scope") for c in fake.calls[n:] if c["path"] == "auth/v1/logout"]
+            assert scopes == ["others", "local"], scopes
+            assert not sb.signed_in()
+    finally:
+        a.gone()
+
+
+def test_a_removed_key_reaches_import_keys_through_an_empty_value():
+    """A key removed on another device arrives as a row like any other, the
+    sealed value {"v": ""}: a phone writes it so, and it has to reach
+    import_keys and empty the slot here. A row with no cipher at all, and
+    a row under a name no slot knows, stay out of it."""
+    import sb
+    import secretstore
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    fixture = "gsk_fixture_remove_" + "r" * 30
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), a:
+            _sign_in_pc(fake, "desk")
+            for n in secretstore.CRED_NAMES:
+                secretstore.delete(n)
+            secretstore.set("groq", fixture)
+            assert sb.sync_now()["vault"] == "pulled 0, pushed 1"
+            key = vault.key(fake.UID)
+            row = next(r for r in fake.tables["vault"] if r["name"] == "groq")
+            # another device removes it, the way a phone writes the row
+            row["cipher"] = vault.seal_json(key, {"v": ""}, vault.AAD_VAULT.format(uid=fake.UID, name="groq"))
+            row["updated_at"] = "2099-01-01T00:00:00+00:00"
+            fake.tables["vault"].append({"user_id": fake.UID, "name": "future_thing", "cipher": row["cipher"],
+                                         "updated_at": "2099-01-01T00:00:01+00:00"})
+            got: list[dict] = []
+            real = vault.import_keys
+            with _patched(vault, "import_keys", lambda k, u, rows: got.append(dict(rows)) or real(k, u, rows)):
+                out = sb.sync_now()
+            assert out["vault"] == "pulled 1, pushed 0", out
+            assert list(got[0]) == ["groq"], "a name no slot knows reached import_keys"
+            assert secretstore.get("groq") is None, "the removal did not reach the slot"
+            assert sb.sync_now()["vault"] == "pulled 0, pushed 0"
+    finally:
+        a.gone()
+
+
+def test_a_waiting_pc_says_a_phone_can_approve_it():
+    """Home's lock rows, in both desks, mean any device now: another
+    device asks, a device approves, and the waiting row adds "or open
+    DeskIT on your phone", because a phone is the only other holder a
+    one-PC person has. Nothing else in the rows moved: the buttons, the
+    code, the banner's way home. Nothing on either row says "Home there":
+    a phone has no Home."""
+    import dashboard
+    import deskweb
+
+    board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    board.running = True
+    board.screen = "Said"
+    lock = {"state": "waiting", "id": "", "code": "H7QM3-K2P9X", "pending": [], "recovery": None,
+            "error": "", "changed": None}
+    board.status = {"account": {"signed_in": True, "lock": lock}}
+    model = deskweb.Model.__new__(deskweb.Model)
+    model.running = True
+    model.status = board.status
+    model._lock_fresh, model._lock_typing, model._lock_asking = "", False, False
+    rows = {"tk": board._waiting_lock(), "web": model._lock_rows()}
+    for desk, got in rows.items():
+        assert len(got) == 1, (desk, got)
+        text, note = got[0]["text"], got[0]["note"]
+        assert "another device of yours" in text and "H7QM3-K2P9X" in text, (desk, text)
+        assert "or open DeskIT on your phone" in note, (desk, note)
+        assert "Home there" not in text and "No other PC" not in note, (desk, text, note)
+    assert [b[0] for b in rows["tk"][0]["buttons"]] == ["Type the recovery key"]
+    assert [b["label"] for b in rows["web"][0]["buttons"]] == ["Type the recovery key"]
+    assert "another device of yours" in model._banner()["text"]
+    # the question and the changed lock say device too
+    ask = dict(lock, state="have", code="", pending=[{"id": "p", "name": "", "code": "AAAAA-BBBBB", "created_at": ""}])
+    board.status["account"]["lock"] = ask
+    assert board._waiting_lock()[0]["text"].startswith("Another device asks to join")
+    assert model._lock_rows()[0]["text"].startswith("Another device asks to join")
+    changed = dict(lock, state="changed", changed={"server": "00ff00ff", "mine": "d8de920c", "refused": False})
+    board.status["account"]["lock"] = changed
+    assert "another device of yours" in board._waiting_lock()[0]["note"]
+    assert "another device of yours" in model._lock_rows()[0]["note"]
+
+
+def test_migration_0007_gives_a_device_its_link_and_forget_its_limits():
+    """Static, and the coordinator dry-runs it before it is applied. The
+    columns are under is_sealed() and a type, so no regex bound can hit
+    Postgres' cap of 255 (the trap 0005 records). forget_device() is a
+    definer function with an empty search_path that ends a session only
+    where both the row and the session belong to auth.uid(), granted to
+    authenticated alone."""
+    sql = (REPO / "supabase" / "migrations" / "0007_the_phone_is_a_device.sql").read_text("utf-8")
+    tables = _sql_tables()
+    defs = {d.split()[0]: d for d in tables["devices"]}
+    assert defs["link"] == "link text check (link is null or public.is_sealed(link))", defs["link"]
+    assert defs["session_id"] == "session_id uuid", defs["session_id"]
+    assert not re.search(r"\{\d+,\d{3,}\}", sql), "a repetition bound Postgres refuses"
+    fn = sql[sql.index("create or replace function public.forget_device(target uuid)"):]
+    head, body, _tail = fn.split("$$", 2)
+    assert "security definer" in head and "set search_path = ''" in head and "language plpgsql" in head
+    assert "uid uuid := auth.uid();" in body and "if uid is null then" in body
+    assert re.search(r"delete from public\.devices d\s+where d\.id = target\s+and d\.user_id = uid\s+"
+                     r"returning d\.session_id into sid;", body), body
+    assert re.search(r"delete from auth\.sessions s\s+where s\.id = sid\s+and s\.user_id = uid;", body), body
+    assert "revoke all on function public.forget_device(uuid) from public;" in fn
+    assert "revoke all on function public.forget_device(uuid) from anon;" in fn
+    assert "grant execute on function public.forget_device(uuid) to authenticated;" in fn
+    readme = (REPO / "supabase" / "README.md").read_text("utf-8")
+    assert "0007_the_phone_is_a_device.sql" in readme and "forget_device()" in readme
 
 
 def test_a_history_row_past_the_seal_cap_still_travels_and_frees_its_batch():
@@ -47275,24 +48321,25 @@ def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
     import vault
 
     uid = _FakeSupabase.UID
+    lock_id = "0123456789abcdef"
     pub1, pub2 = vault.applicant("code-1"), vault.applicant("code-2")
     try:
-        c1 = vault.pairing_code(uid, "code-1", pub1)
+        c1 = vault.pairing_code(uid, "code-1", pub1, lock_id)
         assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", c1), c1
         vault._codes.clear()
         t0 = time.perf_counter()
-        assert vault.pairing_code(uid, "code-1", pub1) == c1, "the approver computes another code"
+        assert vault.pairing_code(uid, "code-1", pub1, lock_id) == c1, "the approver computes another code"
         assert time.perf_counter() - t0 < 2.0, "the code's hash is too slow for a poll"
         assert vault.CODE_ROUNDS >= 2 ** 17 and 5 * vault.CODE_CHARS >= 50, "the code got cheap to grind"
-        assert vault.pairing_code(uid, "code-1", pub2) != c1, "another key, the same code"
-        assert vault.pairing_code(uid, "code-2", pub1) != c1, "another request, the same code"
-        assert vault.pairing_code("another-uid", "code-1", pub1) != c1
+        assert vault.pairing_code(uid, "code-1", pub2, lock_id) != c1, "another key, the same code"
+        assert vault.pairing_code(uid, "code-2", pub1, lock_id) != c1, "another request, the same code"
+        assert vault.pairing_code("another-uid", "code-1", pub1, lock_id) != c1
         hint = vault.code_hint(c1)
         assert hint == c1.replace("-", "")[:8] and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{8}", hint), hint
         sql = (REPO / "supabase" / "migrations" / "0004_account_lock.sql").read_text("utf-8")
         assert "code ~ '^[0-9A-HJKMNP-TV-Z]{8}$'" in sql, "the column's check moved: the hint must follow it"
         try:
-            vault.pairing_code(uid, "code-3", "p1.AAAA")
+            vault.pairing_code(uid, "code-3", "p1.AAAA", lock_id)
         except vault.VaultError:
             pass
         else:
@@ -47708,7 +48755,8 @@ def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him(
             assert vault.confirmed(uid) == vault.fingerprint(other)
             lock = sb.status()["lock"]
             req = fake.tables["pairings"][-1]
-            assert lock["state"] == "waiting" and lock["code"] == vault.pairing_code(uid, req["id"], req["applicant"]), lock
+            assert lock["state"] == "waiting" and lock["code"] == vault.pairing_code(
+                uid, req["id"], req["applicant"], vault.fingerprint(other)), lock
             # a key handed over for ANOTHER lock than the one he confirmed: refused
             req["handed"] = vault.hand_over(attacker, req["applicant"],
                                             vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"]))
@@ -48134,7 +49182,7 @@ def test_migration_has_no_key_column():
         and not vault.is_sealed("v1." + "A" * 15 + "_") and not vault.is_sealed("gsk_" + "A" * 30) \
         and vault.is_sealed("v1." + "A" * 7600) and not vault.is_sealed("v1." + "A" * 7601)
     sealed_columns = {("vault", "cipher"), ("history", "cipher"), ("recovery", "wrapped"),
-                      ("pairings", "applicant"), ("pairings", "handed")}
+                      ("pairings", "applicant"), ("pairings", "handed"), ("devices", "link")}
     for table, defs in tables.items():
         for d in defs:
             name, typ = d.split()[0], d.split()[1]
@@ -48661,6 +49709,7 @@ def test_sb_refuses_when_gate_shut():
         assert sb.sync_now(None) == {}
         assert sb.drain_outbox() == {}
         assert len(fake.calls) == n, fake.calls[n:]
+        assert sb.account_pass() == {} and len(fake.calls) == n, "a pass with its gate shut"
         # the net gate is the second lock: a call made anyway is refused
         # before a socket, and the refusal is a row that names the purpose
         import net as net_mod
@@ -50310,7 +51359,8 @@ def test_the_lock_card_on_the_privacy_tab():
             board._lock_tick()
             words = [w.cget("text") for w in board._lock_banner_card.body.winfo_children()
                      if w.winfo_class() == "Label"]
-            assert any("Waiting for your other PC" in t and "H7QM-3K2P" in t for t in words), words
+            assert any("Waiting for another device of yours" in t and "H7QM-3K2P" in t
+                       for t in words), words
             account["lock"]["state"] = "have"
             board._lock_tick()
             assert board._lock_banner_card is None, "the banner stayed after the approval"

@@ -56,8 +56,10 @@ def _rows(url: str, key: str) -> list[Row]:
     people = _count(url, key, "profiles")
     anon = _count(url, key, "profiles", "is_anonymous=is.true")
     newest = _newest(url, key, "profiles", "created_at")
-    devices = _count(url, key, "devices")
-    seen = _newest(url, key, "devices", "last_seen")
+    # installs: a phone or the web page is a row of this table too
+    # (PHONE_LINK_PLAN.md), and neither is a computer
+    devices = _count(url, key, "devices", "platform=like.windows*")
+    seen = _newest(url, key, "devices", "last_seen", "platform=like.windows*")
     said = _count(url, key, "history")
     words = _count(url, key, "vocab_sync")
     settings = _count(url, key, "settings_sync")
@@ -176,13 +178,14 @@ def _count(url: str, key: str, table: str, where: str = "") -> int:
     return int(tail) if tail.isdigit() else 0
 
 
-def _newest(url: str, key: str, table: str, column: str) -> str:
+def _newest(url: str, key: str, table: str, column: str, where: str = "") -> str:
     """The newest stamp in one column, said as "2 hours ago" — one row,
     one column, no words of anybody's in it."""
     import urllib.error                                 # noqa: PLC0415
     import urllib.request                               # noqa: PLC0415
     req = urllib.request.Request(
-        f"{url}/rest/v1/{table}?select={column}&order={column}.desc&limit=1",
+        f"{url}/rest/v1/{table}?select={column}&order={column}.desc&limit=1"
+        + (f"&{where}" if where else ""),
         headers=_headers(key))
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:

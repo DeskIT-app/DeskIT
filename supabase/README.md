@@ -2,10 +2,13 @@
 
 DeskIT runs exactly one server of its own: a Supabase project in
 Frankfurt, on the Free plan, and the app talks to it only when you have
-an account — anonymous, or your Google sign-in — and only for what you
-turned on: sending a problem report, syncing your learned words and
-changed settings, syncing what you said. A copy of DeskIT with no account
-never contacts it (the weekly update check goes to GitHub).
+an account — anonymous, or your Google sign-in. What a signed-in copy
+always does there is small: it keeps its own row and the account's lock
+(a fingerprint, and any device asking to join), and it holds one socket
+on the account's channel, which carries nothing personal. The rest is
+only what you turned on: sending a problem report, syncing your learned
+words and changed settings, syncing what you said. A copy of DeskIT with
+no account never contacts it (the weekly update check goes to GitHub).
 
 This folder is the whole of that server's shape. There is nothing else:
 no edge function, no dashboard setting the files do not mention, and
@@ -60,6 +63,15 @@ one Realtime topic per account that carries nothing but "go and pull".
   (`pgrst.db_pre_request`, HTTP 401 when the session is gone) and the
   policies Realtime and Storage read carry it too. It reads nothing of
   your data; a lookup costs about 19 microseconds.
+- `migrations/0007_the_phone_is_a_device.sql` — a phone joins the account
+  the way a second PC does. `devices.link` is what the devices need of
+  each other, sealed under the account key: a device's certificate, its
+  private addresses, its port. A row that does not open is ignored, so
+  this server cannot add a device. `devices.session_id` is the session a
+  device runs on, in the clear, so that `forget_device()` can end it: the
+  one new RPC, which deletes a device's row and its session, and ends
+  only a session that belongs to the caller. Who was forgotten is one
+  more sealed `vault` row, named `forgotten`, so there is no new table.
 
 ## How to read it in ten minutes
 
@@ -74,8 +86,8 @@ one Realtime topic per account that carries nothing but "go and pull".
    Since 0004 your cloud keys DO travel — to the `vault` table, sealed
    under your account's key, which the server never sees; that column
    and the other opaque ones (`history.cipher`, `recovery.wrapped`,
-   `pairings.applicant` and `handed`) carry `is_sealed()` instead,
-   which admits only a version tag and standard base64.
+   `pairings.applicant` and `handed`, `devices.link`) carry `is_sealed()`
+   instead, which admits only a version tag and standard base64.
 2. **Every table has row-level security on, and every policy is
    `to authenticated` with `(select auth.uid()) = user_id`.** You can
    see only your own rows. The `anon` role — what a client holding the

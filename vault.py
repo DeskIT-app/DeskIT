@@ -24,10 +24,12 @@ backups, 2026-09-21):
   history line cannot be moved under another row. ``seal``/``open_``.
 - A NEW DEVICE never types a secret. It makes a key pair of its own
   (ECDH P-256, CNG again), publishes the public half, and shows a short
-  code COMPUTED FROM that public half (``pairing_code``); a device that
-  already holds the account key computes the code again from the public
-  key it is about to wrap to — never from anything the server says the
-  code is — and the person, having compared the two, presses Approve:
+  code COMPUTED FROM that public half and the lock it read
+  (``pairing_code``); a device that already holds the account key
+  computes the code again from the public key it is about to wrap to and
+  from the fingerprint of the key it holds — never from anything the
+  server says the code or the lock is — and the person, having compared
+  the two, presses Approve:
   the approving device wraps the account key to the applicant's public
   key (``hand_over``), the applicant unwraps it (``take``), and the
   server only ever carried a public key and a wrapped one. Apple and
@@ -37,7 +39,12 @@ backups, 2026-09-21):
   (bitwarden.com/help/log-in-with-device, and the phrase's inputs in
   github.com/bitwarden/android/issues/5856); until 2026-09-23 the code
   here was random, so a twin request with the same code and another key
-  passed the comparison (the audit's A35/A74).
+  passed the comparison (the audit's A35/A74). The lock went into the
+  code on 2026-11-06 (PHONE_LINK_PLAN.md): until then nothing proved the
+  approver to the asking device, ``hand_over`` being unauthenticated and
+  ``profiles.lock_id`` being the server's word, so a dishonest server
+  could hand a joining device a key of its own. Now it gets two
+  different codes on two screens, and nobody presses Approve.
 - THE PC IS THE TRUST ANCHOR, not the server (2026-09-23, the audit's
   A15: one write of ``profiles.lock_id`` used to make every PC delete
   its key and take the next one handed to it). A PC that holds a key
@@ -127,6 +134,11 @@ CODE_GROUP = 5
 #: 2^17 rounds: 50 ms on the owner's PC (measured 2026-09-23), paid
 #: once per request on each side (``_codes`` remembers it).
 CODE_ROUNDS = 2 ** 17
+#: The code's own label, in its material and as its salt. A Kotlin test
+#: holds the same worked examples (PHONE_LINK_PLAN.md chapter 12): every
+#: copy changes together, and an older copy shows another code, which
+#: fails safe.
+CODE_LABEL = b"deskit pairing code v2"
 #: The ``pairings.code`` column: 0004's check is eight characters of the
 #: alphabet. It carries the first eight of the code, a lookup hint only
 #: — the approver never shows it and never trusts it.
@@ -148,6 +160,14 @@ AAD_HISTORY = "history/{uid}/{device_id}/{ts}/{kind}"
 AAD_VAULT = "vault/{uid}/{name}"
 AAD_PAIRING = "pairing/{uid}/{pairing_id}"
 AAD_RECOVERY = "recovery/{uid}"
+#: A device's ``link`` row (migration 0007): its certificate, its
+#: addresses, what it speaks. A row that does not open under the account
+#: key is ignored, which is why the server cannot add a device.
+AAD_DEVICE = "device/{uid}/{device_id}"
+#: The ``vault`` row that names the forgotten devices, under AAD_VAULT.
+#: Not a cloud key: ``import_keys`` skips a name it does not know, and an
+#: older copy pulling this row skips it the same way.
+FORGOTTEN_NAME = "forgotten"
 
 
 class VaultError(Exception):
@@ -483,17 +503,18 @@ def _put_aside(held: dict | None, *, for_lock: str, why: str, uid: str = "") -> 
     secretstore.set(ASIDE_NAME, json.dumps({"keys": rows}))
 
 
-def set_aside(uid: str, for_lock: str) -> bool:
+def set_aside(uid: str, for_lock: str, why: str = "the lock changed") -> bool:
     """The person confirmed that the account's lock changed to
-    ``for_lock`` (Home's [It was me]): this PC's key for ``uid`` moves
-    into the file of keys set aside — kept, never deleted — and the
-    confirmation is written with it, so the key handed over for the new
-    lock is taken and no other. With no key here, the confirmation
-    alone. True when a key was moved."""
+    ``for_lock`` (Home's [It was me]), or this PC found itself on the
+    account's forgotten list (sb._leave, ``for_lock`` the lock it holds):
+    this PC's key for ``uid`` moves into the file of keys set aside —
+    kept, never deleted — and the confirmation is written with it, so the
+    key handed over for that lock is taken and no other. With no key
+    here, the confirmation alone. True when a key was moved."""
     with _lock:
         held = _read()
         mine = held if held and held["uid"] == str(uid) else None
-        _put_aside(mine, for_lock=for_lock, why="the lock changed", uid=str(uid))
+        _put_aside(mine, for_lock=for_lock, why=why, uid=str(uid))
         if mine is not None:
             secretstore.delete(KEY_NAME)
         return mine is not None
@@ -569,19 +590,23 @@ def _random(n: int) -> str:
     return "".join(_secrets.choice(ALPHABET) for _ in range(n))
 
 
-#: (uid, pairing id, public key) -> its code: 50 ms each, and the desk
-#: asks for the same request's code on every poll. Public values only.
-_codes: dict[tuple[str, str, str], str] = {}
+#: (uid, pairing id, public key, lock) -> its code: 50 ms each, and the
+#: desk asks for the same request's code on every poll. Public values
+#: only.
+_codes: dict[tuple[str, str, str, str], str] = {}
 
 
-def pairing_code(uid: str, pairing_id: str, public: str) -> str:
+def pairing_code(uid: str, pairing_id: str, public: str, lock_id: str) -> str:
     """The code a request to join is compared by, ``XXXXX-XXXXX``,
-    computed from the request itself: the account, the request's id and
-    the applicant's public key (``p1.…``) — the applicant from the key
-    it made, the approver from the key it is about to wrap to. Another
-    key, or the same key under another request, is another code.
+    computed from the request itself and the lock it is for: the account,
+    the request's id, the applicant's public key (``p1.…``) and the
+    lock's fingerprint — the applicant from the key it made and the
+    ``lock_id`` it read, the approver from the key it is about to wrap to
+    and ``fingerprint(key)`` of the key it holds, never the server's
+    column. Another key, the same key under another request, or a server
+    that named another lock to the applicant is another code.
     VaultError when ``public`` is not a public key."""
-    ident = (str(uid), str(pairing_id), str(public))
+    ident = (str(uid), str(pairing_id), str(public), str(lock_id))
     with _lock:
         known = _codes.get(ident)
     if known:
@@ -589,10 +614,9 @@ def pairing_code(uid: str, pairing_id: str, public: str) -> str:
     point = _unb64("p1", public)
     if len(point) != _ECC_POINT_BYTES:
         raise VaultError("the applicant's public key has the wrong length")
-    material = b"\0".join((b"deskit pairing code v1", ident[0].encode("utf-8"),
-                           ident[1].encode("utf-8"), point))
-    digest = hashlib.pbkdf2_hmac("sha256", material, b"deskit pairing code v1",
-                                 CODE_ROUNDS, dklen=32)
+    material = b"\0".join((CODE_LABEL, ident[0].encode("utf-8"), ident[1].encode("utf-8"),
+                           point, ident[3].encode("utf-8")))
+    digest = hashlib.pbkdf2_hmac("sha256", material, CODE_LABEL, CODE_ROUNDS, dklen=32)
     bits = int.from_bytes(digest[:8], "big") >> (64 - 5 * CODE_CHARS)
     flat = "".join(ALPHABET[(bits >> (5 * (CODE_CHARS - 1 - i))) & 31]
                    for i in range(CODE_CHARS))
@@ -804,5 +828,6 @@ __all__ = [
     "CODE_GROUP", "HINT_CHARS", "RECOVERY_CHARS",
     "applicant", "drop", "hand_over", "take", "wrap_recovery", "unwrap_recovery",
     "export_keys", "digest_keys", "import_keys",
-    "AAD_HISTORY", "AAD_VAULT", "AAD_PAIRING", "AAD_RECOVERY",
+    "AAD_HISTORY", "AAD_VAULT", "AAD_PAIRING", "AAD_RECOVERY", "AAD_DEVICE",
+    "FORGOTTEN_NAME",
 ]
