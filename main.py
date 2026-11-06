@@ -2502,6 +2502,7 @@ class App:
         # costs nothing and takes the whole risk off the table.
         threading.Thread(target=self._warm_feature_keys, daemon=True,
                          name="feature-warmup").start()
+        self._settle_left()
         self._doors()
         threading.Thread(target=self._watch_hook, daemon=True, name="hook-watch").start()
         self._start_learning()
@@ -3588,8 +3589,19 @@ class App:
         pipe's handlers must not wait for a socket to close."""
         def work() -> None:
             self._doors()
-            self._phone_publish()
+            self._phone_row()
         threading.Thread(target=work, daemon=True, name="doors").start()
+
+    def _settle_left(self) -> None:
+        """A leaving the desk or the wizard noticed waits in state.json for a
+        process with hooks (sb.settle_left). It finishes here, before the
+        door binds: the worker's first turn is 30 s off, and until then the
+        door would show the certificate the list names."""
+        try:
+            import sb
+            sb.settle_left()
+        except Exception:                                    # noqa: BLE001
+            log.warning("the account's leaving was not finished", exc_info=True)
 
     def _watch_hook(self) -> None:
         """The hook's lines are written by the desk or the wizard, in another
@@ -3617,6 +3629,22 @@ class App:
         approved finds them on its first read."""
         server = self.cfg.server
         return bool(server.enabled and (server.phone_allowed or self._approved))
+
+    def _phone_read(self) -> None:
+        """The devices' rows from the account. This comes before anything
+        that decides on them or on this PC's row: Sign out of every PC clears
+        a PC's `link` from another PC, and the kept copy would go on saying
+        nothing changed. Offline, the kept rows stand."""
+        try:
+            phone_mod.refresh()
+        except Exception as e:                               # noqa: BLE001
+            log.debug("the devices' rows were not read (%s)", type(e).__name__)
+
+    def _phone_row(self) -> None:
+        """A press's way to this PC's row: the rows first, as an account
+        pass does."""
+        self._phone_read()
+        self._phone_publish()
 
     def _phone_publish(self, key: bytes | None = None) -> None:
         """This PC's `link` row as things stand; phone.publish writes only
@@ -3650,16 +3678,15 @@ class App:
         the person is there for. Approving another PC opens nothing."""
         if device:
             self._approved.add(device)
-        threading.Thread(target=self._phone_publish, daemon=True, name="phone-row").start()
+        threading.Thread(target=self._phone_row, daemon=True, name="phone-row").start()
 
     def _phone_account(self, key: bytes) -> None:
         """sb.ACCOUNT_HOOKS: at every account pass and when a device of the
-        account changed. The rows are read and kept, the doors follow, and
-        this PC's own row goes out if anything in it moved."""
-        try:
-            phone_mod.refresh()
-        except Exception as e:                               # noqa: BLE001
-            log.debug("the devices' rows were not read (%s)", type(e).__name__)
+        account changed. The rows are read and kept, the certificate is
+        checked against the list, the doors follow, and this PC's own row
+        goes out if anything in it moved."""
+        self._phone_read()
+        self._phone_check_certificate()
         view = phone_mod.view()
         phones = {d["id"] for d in view["phones"]}
         if self._approved & phones:
@@ -3668,20 +3695,52 @@ class App:
         self._doors()
         self._phone_publish(key)
 
+    def _phone_check_certificate(self) -> None:
+        """Replace the certificate if the account's list names it. A lost
+        state.json with the secrets folder intact gives this PC a new id and
+        leaves a stale row with the live certificate in it, and a Forget of
+        that row bans the certificate while this PC stays in the account. sb
+        cannot see inside a row, so the check is here. The pass's publish
+        then says the new one. The worker and the live thread both come
+        through here, so the look and the replacement are one step."""
+        import sb
+        try:
+            with self._doors_lock:
+                if phone_mod.identity() in sb.forgotten():
+                    log.warning("phone: the account forgot this PC's certificate — a new one")
+                    self._phone_reissue()
+        except Exception as e:                               # noqa: BLE001
+            log.warning("phone: the certificate was not checked (%s)", type(e).__name__)
+
+    def _phone_reissue(self) -> None:
+        """A new certificate and the door under it. Door.admit changes who
+        may come in, never who the door says it is, so it closes first."""
+        with self._doors_lock:
+            phone_mod.rotate()
+            self.phone_door.stop()
+            self._doors()
+
     def _phone_signed_out(self) -> None:
         """sb.SIGNED_OUT_HOOKS: the door checks a certificate, not a session,
-        so what it opened from goes with the session."""
+        so what it opened from goes with the session, and so does any Approve
+        still waiting for its row."""
+        self._approved.clear()
         phone_mod.drop_rows()
         self._doors()
 
     def _phone_forgotten(self) -> None:
-        """sb.FORGOTTEN_HOOKS: this PC is on the account's forgotten list and
-        comes back as a new device, so the certificate goes too: the list
-        never lets the old one back."""
-        phone_mod.drop_rows()
-        phone_mod.rotate()
-        self.phone_door.stop()
-        self._doors()
+        """sb.FORGOTTEN_HOOKS, through sb.settle_left: this PC is on the
+        account's forgotten list and comes back as a new device, so the
+        certificate goes too, because the list never lets the old one back.
+
+        This can run twice: when it trips, or a hook after it does, the mark
+        stands and every hook runs again next turn. The second run finds
+        nothing left to drop, and its certificate replaces one nobody has
+        seen, because sb.write_link refuses until the mark is gone."""
+        with self._doors_lock:
+            self._approved.clear()
+            phone_mod.drop_rows()
+            self._phone_reissue()
 
     def _phone_status(self) -> dict:
         """status()["phone"]: what Settings > Phone and Home's row draw.

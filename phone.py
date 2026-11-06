@@ -453,13 +453,19 @@ def anchors(key: bytes | None = None) -> dict[str, dict]:
 def refresh() -> None:
     """Read the account's rows and keep them. An account that cannot be read
     raises and leaves the file as it is: a door must not close because the
-    internet went."""
+    internet went.
+
+    The read is outside the lock. The desk's poll takes that lock through
+    view(), on the pipe, whose handlers must never wait on a network. An
+    answer that lands after a sign-in to another account is dropped."""
     import sb
 
+    uid = _uid()
+    if not uid:
+        return
+    rows = sb.devices()
     with _lock:
-        rows = sb.devices()
-        uid = _uid()
-        if not uid:
+        if _uid() != uid:
             return
         kept = _read_rows()
         same = str(kept.get("uid") or "") == uid
@@ -486,7 +492,8 @@ def view() -> dict:
     """{"phones": [...], "pcs": [...]}: the devices of the account that open
     and are not forgotten, for the desk, off the kept rows with no network.
     Each is {"id", "name", "cert"}, and a phone has "reached" and "dictated"
-    too, 0 until it has. This PC is not among them."""
+    too, 0 until it has. This PC is not among them, so with its id unknown
+    (a state file that will not read) no PC is, until a later poll knows."""
     global _view_kept
     import sb
     import vault
@@ -499,10 +506,14 @@ def view() -> dict:
         out: dict[str, list] = {"phones": [], "pcs": []}
         kept = _read_rows()
         key = vault.key(uid) if uid and str(kept.get("uid") or "") == uid else None
+        mine = None
         if key is not None:
             gone = _forgotten(kept)
             seen = kept.get("seen") or {}
-            mine = sb.device_id()
+            try:
+                mine = sb.device_id()
+            except sb.AccountError as e:
+                log.debug("phone: this PC's id is not known (%s)", e)
             for row in _open_rows(key, uid, kept.get("rows") or [], gone):
                 link, ident = row["link"], str(row["id"])
                 name = str(row.get("name") or "")
@@ -514,10 +525,12 @@ def view() -> dict:
                         out["phones"].append({"id": ident, "name": name, "cert": cert,
                                               "reached": int(one.get("reached") or 0),
                                               "dictated": int(one.get("dictated") or 0)})
-                elif link.get("kind") == "pc" and ident != mine:
-                    out["pcs"].append({"id": ident, "name": name,
-                                       "cert": str(link.get("cert") or "")})
-        _view_kept = (mark, out)
+                elif link.get("kind") == "pc" and mine is not None and ident != mine:
+                    cert = str(link.get("cert") or "")
+                    if cert not in gone:
+                        out["pcs"].append({"id": ident, "name": name, "cert": cert})
+        if key is None or mine is not None:
+            _view_kept = (mark, out)
         return out
 
 
@@ -560,26 +573,47 @@ def drop_rows() -> None:
 def publish(key: bytes, *, port: int, listening: bool, words_sync: bool) -> bool:
     """This PC's ``link`` row, when anything in it changed; True when one
     went out. ``listening`` is whether a phone should try here at all: a
-    PC that said no, or has the switch off, names no address."""
+    PC that said no, or has the switch off, names no address.
+
+    False is also "not yet", and the next account pass looks again: a PC
+    leaving the account (sb.write_link refuses until sb.settle_left has
+    changed its certificate), an id a state file will not say, a row the
+    account refused. And a row never carries what the forgotten list names,
+    the id or the certificate. sb cannot see inside a row, so this is the
+    one place that can keep a certificate out (main.App._phone_account
+    replaces it).
+
+    The row is sealed under the id as it stands now: the id is per account,
+    a leaving changes it, and one kept from before would seal a row that
+    opens for nobody. The write is outside the lock, like refresh()'s read."""
     import sb
     import vault
 
-    with _lock:
-        uid = _uid()
+    uid = _uid()
+    if not uid:
+        return False
+    addrs = addresses() if listening else []
+    try:
         mine = sb.device_id()
-        kept = _read_rows()
-        if not uid or mine in _forgotten(kept):
-            return False
-        row = {"v": 1, "kind": "pc", "cert": identity(),
-               "addrs": addresses() if listening else [], "port": int(port), "proto": PROTO,
-               "words_sync": bool(words_sync)}
-        here = [r for r in kept.get("rows") or [] if str(r.get("id") or "") == mine]
-        opened = _open_rows(key, uid, here, set())
-        if opened and opened[0]["link"] == row:
-            return False
-        sb.write_link(vault.seal_json(key, row, vault.AAD_DEVICE.format(uid=uid, device_id=mine)))
-        log.info("phone: this PC's row went out (%d address(es), port %d)", len(row["addrs"]), port)
-        return True
+        with _lock:
+            kept = _read_rows()
+            gone = _forgotten(kept if str(kept.get("uid") or "") == uid else {})
+            cert = identity()
+            if mine in gone or cert in gone:
+                return False
+            row = {"v": 1, "kind": "pc", "cert": cert, "addrs": addrs, "port": int(port),
+                   "proto": PROTO, "words_sync": bool(words_sync)}
+            here = [r for r in kept.get("rows") or [] if str(r.get("id") or "") == mine]
+            opened = _open_rows(key, uid, here, set())
+            if opened and opened[0]["link"] == row:
+                return False
+            sealed = vault.seal_json(key, row, vault.AAD_DEVICE.format(uid=uid, device_id=mine))
+        sb.write_link(sealed)
+    except sb.AccountError as e:
+        log.info("phone: this PC's row waits (%s)", e)
+        return False
+    log.info("phone: this PC's row went out (%d address(es), port %d)", len(addrs), port)
+    return True
 
 
 # ------------------------------------------------------------ the addresses

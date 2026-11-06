@@ -6490,9 +6490,14 @@ def test_the_door_on_the_real_sb_over_the_fake_server() -> None:
                     assert app._phone_status()["ask"] is True, "Home did not ask"
 
                     app._phone_no = False
-                    app._phone_approved(_PHONE)
+                    pid, _public = _a_phone_asks(fake)
+                    sb.account_pass("test")
+                    assert app._account_command("approve", pid)["ok"] is True
+                    assert app._approved == {_PHONE}, "the press did not name the phone that asked"
                     sb.account_pass("test")
                     assert app.phone_door.running, "Approve here, the row arrived, the door stayed shut"
+                    assert app.cfg.server.phone_allowed and app._approved == set()
+                    _until(lambda: not any(t.name == "phone-row" for t in threading.enumerate()), 5)
                     assert _ask_door(app.phone_door.port, phone["chain"], "GET", "/health")[0] == 200
                     assert _knock(app.phone_door.port) is None
                     status = app._phone_status()
@@ -6543,11 +6548,31 @@ def test_approve_names_the_device_that_asked() -> None:
             assert app._account_command("approve", "r1")["ok"] is True
     assert app._approved == {"d1"} and app._phone_listening()
 
+    app._doors = lambda: None
+    app._phone_signed_out()
+    assert app._approved == set(), "an Approve outlived the session it was pressed in"
+
+
+def _server_on(app) -> None:
+    """The switch on and this PC's yes given, for this App alone."""
+    app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+        app.cfg.server, enabled=True, phone_allowed=True))
+
+
+def _door_shows(port: int, chain) -> str:
+    """The fingerprint of the certificate the door shows: what a phone pins."""
+    import phone as phone_mod
+
+    with _dial(port, chain) as tls:
+        return phone_mod.fingerprint(tls.getpeercert(binary_form=True))
+
 
 def test_a_forgotten_pc_comes_back_with_a_new_certificate() -> None:
     """sb.FORGOTTEN_HOOKS: the list never lets the old certificate back, so
     a PC that finds itself on it makes a new one, and what its door opened
-    from goes with it."""
+    from, and any Approve still waiting for its row, go with it. The hook
+    runs again when it trips (sb.settle_left), so twice must end where once
+    does: and the key of the last run is the one the door opens with."""
     import phone as phone_mod
 
     with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
@@ -6556,10 +6581,270 @@ def test_a_forgotten_pc_comes_back_with_a_new_certificate() -> None:
         phone_mod.refresh()
         before = phone_mod.identity()
         app = _door_app()
-        app._phone_forgotten()
-        assert phone_mod.identity() != before and not phone_mod.rows_path().exists()
-        assert not app.phone_door.running
-        _shut_doors(app)
+        _server_on(app)
+        app._doors()
+        try:
+            assert _door_shows(app.phone_door.port, phone["chain"]) == before
+            app._approved.add("a device whose row never came")
+            for _ in range(2):
+                app._phone_forgotten()
+                assert phone_mod.identity() != before and not phone_mod.rows_path().exists()
+                assert not app.phone_door.running and app._approved == set()
+            phone_mod.refresh()
+            app._doors()
+            assert _door_shows(app.phone_door.port, phone["chain"]) == phone_mod.identity()
+        finally:
+            _shut_doors(app)
+
+
+def test_a_certificate_on_the_list_is_replaced_and_its_row_says_so() -> None:
+    """A state.json lost with the secrets folder intact: a new id, the old
+    certificate, and a stale row someone may Forget, which bans the live
+    certificate while this PC stays in the account. sb cannot see inside a
+    row, so the account pass looks: a new certificate, the door under it, the
+    row says it. Until that pass no row carries what the list names, and it
+    happens once."""
+    import phone as phone_mod
+    import vault
+
+    stale = "dddddddd-0000-0000-0000-000000000004"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box, \
+            _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        app = _door_app()
+        _server_on(app)
+        aad = vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC)
+        try:
+            app._phone_account(box["key"])
+            old = phone_mod.identity()
+            assert vault.open_json(box["key"], box["written"][-1], aad)["cert"] == old
+            assert _door_shows(app.phone_door.port, phone["chain"]) == old
+
+            box["gone"] = {stale, old}
+            count = len(box["written"])
+            assert phone_mod.publish(box["key"], port=8766, listening=True, words_sync=False) is False
+            assert len(box["written"]) == count, "a row went out with a certificate the list names"
+
+            app._phone_account(box["key"])
+            new = phone_mod.identity()
+            assert new != old
+            assert vault.open_json(box["key"], box["written"][-1], aad)["cert"] == new
+            assert _door_shows(app.phone_door.port, phone["chain"]) == new
+
+            app._phone_account(box["key"])
+            assert phone_mod.identity() == new, "a new certificate at every pass"
+
+            # the worker and the live thread both run this: one replacement
+            box["gone"] = {new}
+            made: list[str] = []
+            real = phone_mod.rotate
+
+            def counted():
+                made.append("one")
+                time.sleep(0.05)
+                return real()
+
+            with _patched(phone_mod, "rotate", counted):
+                both = [threading.Thread(target=app._phone_check_certificate, daemon=True)
+                        for _ in range(2)]
+                for one in both:
+                    one.start()
+                for one in both:
+                    one.join(10)
+            assert made == ["one"], "two passes each made a certificate"
+        finally:
+            _shut_doors(app)
+
+
+def test_a_leaving_waits_for_the_app_and_finishes_before_the_door_binds() -> None:
+    """The real sb over the fake server. A leaving noticed where no hook is
+    registered (the desk, the wizard) leaves the mark, and while it stands
+    this PC's row is "not yet": nothing written, nothing raised. The app
+    settles it before its door binds, because the worker's first turn is 30 s
+    off: a new certificate, the mark gone, and the row out under the new id
+    and the new certificate. One device id twice on the list changes none
+    of that."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    args = {"port": 8766, "listening": False, "words_sync": False}
+
+    def posts(fake) -> int:
+        return sum(1 for c in fake.calls if c["path"] == "rest/v1/devices" and c["method"] == "POST")
+
+    started = (REPO / "main.py").read_text("utf-8")
+    started = started[started.index("    def start(self) -> None:"):]
+    assert started.index("self._settle_left()") < started.index("self._doors()")
+
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            key = vault.key(fake.UID)
+            old, before = sb.device_id(), phone_mod.identity()
+            sb._keep_forgotten(fake.UID, [{"device": old, "cert": "", "at": ""},
+                                          {"device": old, "cert": "ab" * 32, "at": ""}])
+            with _patched(sb, "FORGOTTEN_HOOKS", []):
+                assert sb._forgotten_pass(fake.UID) is True
+                sent = posts(fake)
+                assert phone_mod.publish(key, **args) is False, "a row before the certificate changed"
+                assert posts(fake) == sent
+                assert config_mod.read_state(paths.STATE_FILE)["account.left"] == old
+
+            app = _door_app()
+            with _patched(sb, "FORGOTTEN_HOOKS", [app._phone_forgotten]):
+                app._settle_left()
+            assert not config_mod.read_state(paths.STATE_FILE).get("account.left")
+            new, mine = phone_mod.identity(), sb.device_id()
+            assert new != before and mine != old
+
+            assert phone_mod.publish(key, **args) is True
+            assert posts(fake) == sent + 1
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            opened = vault.open_json(key, row["link"], vault.AAD_DEVICE.format(uid=fake.UID, device_id=mine))
+            assert opened["cert"] == new, opened
+            _shut_doors(app)
+    finally:
+        a.gone()
+        phone_mod.drop_rows()
+        phone_mod._view_kept = None
+
+
+def test_every_road_to_this_pcs_row_reads_the_account_first() -> None:
+    """Sign out of every PC clears the other PCs' `link` from one of them,
+    and the copy kept here still has it, so a publish on its word would say
+    nothing changed and leave the row empty. The account pass reads first,
+    and so does a press, here or on the switch."""
+    import phone as phone_mod
+
+    def cleared(box, mine) -> None:
+        box["rows"] = [dict(mine, link=box["written"][-1])]
+        phone_mod.refresh()
+        box["rows"] = [dict(mine, link=None)]
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        app = _door_app()
+        try:
+            app._phone_account(box["key"])
+            mine = {"id": _THIS_PC, "name": "me", "link": box["written"][-1]}
+            box["rows"] = [mine]
+            app._phone_account(box["key"])
+            assert len(box["written"]) == 1, "an unchanged row went out"
+
+            cleared(box, mine)
+            app._phone_account(box["key"])
+            assert len(box["written"]) == 2, "the pass left the row cleared"
+
+            cleared(box, mine)
+            app._phone_approved("")
+            assert _until(lambda: len(box["written"]) == 3, 5), "an Approve left the row cleared"
+
+            cleared(box, mine)
+            app._doors_soon()
+            assert _until(lambda: len(box["written"]) == 4, 5), "the switch left the row cleared"
+        finally:
+            _until(lambda: not any(t.name in ("doors", "phone-row") for t in threading.enumerate()), 5)
+            _shut_doors(app)
+
+
+def test_the_desks_poll_never_waits_on_the_network_behind_the_rows() -> None:
+    """view() answers status() on the pipe, whose handlers must never block,
+    and it shares a lock with what reads and writes the rows. Held across
+    the account's answer, a stalled network would stall the desk. A sign-in
+    to another account meanwhile drops the answer instead of keeping it."""
+    import phone as phone_mod
+    import sb
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: []):
+        stuck, free = threading.Event(), threading.Event()
+
+        def stall(*_args):
+            stuck.set()
+            free.wait(10)
+            return []
+
+        for name, call in (("devices", phone_mod.refresh),
+                           ("write_link", lambda: phone_mod.publish(box["key"], port=8766, listening=False,
+                                                                    words_sync=False))):
+            stuck.clear()
+            free.clear()
+            answered = threading.Event()
+            with _patched(sb, name, stall):
+                worker = threading.Thread(target=call, daemon=True)
+                worker.start()
+                assert stuck.wait(5), f"sb.{name} was never reached"
+                threading.Thread(target=lambda: (phone_mod.view(), phone_mod.anchors(), answered.set()),
+                                 daemon=True).start()
+                try:
+                    assert answered.wait(3), f"the poll waited on sb.{name}"
+                finally:
+                    free.set()
+                    worker.join(5)
+
+        phone_mod.drop_rows()
+        stuck.clear()
+        free.clear()
+        with _patched(sb, "devices", stall):
+            worker = threading.Thread(target=phone_mod.refresh, daemon=True)
+            worker.start()
+            assert stuck.wait(5)
+            box["uid"] = "22222222-3333-4444-5555-666666666666"
+            free.set()
+            worker.join(5)
+        assert not phone_mod.rows_path().exists(), "one account's rows kept under another's sign-in"
+
+
+def test_this_pcs_id_is_asked_for_each_time_and_may_not_be_known() -> None:
+    """device_id() is per account, a leaving changes it, and it raises while
+    a state file will not read. So a row is sealed under the id as it stands,
+    a row with no id waits, and the card keeps the phones it can show: only
+    the PCs need to know which one is this one, and a later poll does. A PC
+    under a forgotten certificate is forgotten, whatever id it came back on."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    laptop = "cccccccc-0000-0000-0000-000000000003"
+    other = "eeeeeeee-0000-0000-0000-000000000005"
+    handset = "bbbbbbbb-0000-0000-0000-000000000002"
+    args = {"port": 8766, "listening": False, "words_sync": False}
+
+    def unknown():
+        raise sb.AccountError("this PC's state file will not read")
+
+    def door_aad(box, ident):
+        return vault.AAD_DEVICE.format(uid=box["uid"], device_id=ident)
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        cert = "ef" * 32
+        link = {"v": 1, "kind": "pc", "cert": cert, "addrs": [], "port": 8766, "proto": 1,
+                "words_sync": False}
+        box["rows"] = [_phone_row(box, _a_phone(Path(tmp), "S26 Ultra"), handset),
+                       {"id": laptop, "name": "laptop", "platform": "windows",
+                        "link": vault.seal_json(box["key"], link, door_aad(box, laptop))}]
+        phone_mod.refresh()
+
+        assert phone_mod.publish(box["key"], **args) is True
+        assert vault.open_json(box["key"], box["written"][-1], door_aad(box, _THIS_PC))["kind"] == "pc"
+        with _patched(sb, "device_id", lambda: other):
+            assert phone_mod.publish(box["key"], **args) is True
+        assert vault.open_json(box["key"], box["written"][-1], door_aad(box, other))["kind"] == "pc"
+
+        count = len(box["written"])
+        phone_mod._view_kept = None
+        with _patched(sb, "device_id", unknown):
+            assert phone_mod.publish(box["key"], **args) is False
+            seen = phone_mod.view()
+        assert len(box["written"]) == count
+        assert [d["id"] for d in seen["phones"]] == [handset] and seen["pcs"] == [], seen
+        assert [d["id"] for d in phone_mod.view()["pcs"]] == [laptop], "the poll kept the blind answer"
+
+        box["gone"] = {cert}
+        phone_mod._view_kept = None
+        assert phone_mod.view()["pcs"] == [], "a PC back on a forgotten certificate"
 
 
 def test_phone_py_imports_stay_narrow() -> None:
