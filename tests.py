@@ -44878,6 +44878,7 @@ class _FakeSupabase:
         self.deleted = False
         self.ended: list = []              # the sessions forget_device() ended
         self.sessions: dict = {}           # session id -> the account that owns it
+        self.rls = False                   # each account reads its own rows (see _answer)
 
     def session(self, email: str = "", token: str | None = None) -> dict:
         return {"access_token": token or self.TOKEN, "token_type": "bearer",
@@ -44965,6 +44966,10 @@ class _FakeSupabase:
                 # PostgREST's filters, the ones the client uses: eq, neq,
                 # gt, is.null — a PATCH and a DELETE act on what matches
                 hit = list(rows)
+                if self.rls:
+                    # row-level security, for a test that walks two accounts
+                    # over one fake: UID is whoever signed in last
+                    hit = [r for r in hit if r.get("user_id", self.UID) == self.UID]
                 for k, v in query.items():
                     if k in ("select", "order", "limit", "on_conflict") or "." not in v:
                         continue
@@ -45094,7 +45099,8 @@ class _fixture_project:
         config_mod.save({"account.device_id": None, "account.device_seen_at": None,
                          "account.device_name": None, "account.device_session": None,
                          "account.device_ids": None, "account.past_devices": None,
-                         "account.history_floor": None, "account.left": None})
+                         "account.history_floor": None, "account.left": None,
+                         self.sb.LAST_ACCOUNT: None, self.sb.HELD_BACK: None})
 
     def __exit__(self, *exc):
         try:
@@ -45663,7 +45669,8 @@ class _pc:
     def __enter__(self):
         import history as history_mod
         import secretstore
-        self._saved = {"paths": {k: getattr(paths, k) for k in ("SECRETS_DIR", "SYNC_DIR", "STATE_FILE", "SETTINGS_FILE")},
+        self._saved = {"paths": {k: getattr(paths, k) for k in ("SECRETS_DIR", "SYNC_DIR", "STATE_FILE", "SETTINGS_FILE",
+                                                                "VOCAB_FILE", "OUTBOX_DIR")},
                        "prefix": secretstore.TARGET_PREFIX, "log": history_mod.LOG,
                        "sb": {k: getattr(self._sb, k) for k in self.FIELDS},
                        "vault": {"_applicants": self._vault._applicants}}
@@ -45671,6 +45678,8 @@ class _pc:
         paths.SYNC_DIR = self.home / "sync"
         paths.STATE_FILE = self.home / "state.json"
         paths.SETTINGS_FILE = self.home / "settings.toml"
+        paths.VOCAB_FILE = self.home / "vocab.json"
+        paths.OUTBOX_DIR = self.home / "outbox"
         history_mod.LOG = self.log = self.home / "transcripts.log"
         secretstore.TARGET_PREFIX = self.prefix
         for k, v in self.state["sb"].items():
@@ -46846,6 +46855,380 @@ def test_a_key_moved_aside_by_another_account_comes_back_with_its_account():
             assert vault.fingerprint(first) != lock_two
     finally:
         a.gone()
+
+
+_ONE = "aaaaaaaa-1111-4111-8111-111111111111"
+_TWO = "bbbbbbbb-2222-4222-8222-222222222222"
+_THREE = "cccccccc-3333-4333-8333-333333333333"
+_FOUR = "dddddddd-4444-4444-8444-444444444444"
+
+
+def _signs_in(fake, uid: str) -> None:
+    """The real road in, the one every desk takes: Google, the code back on
+    the loopback listener, the exchange, the session, and what sign_in_google
+    does after it. `fake.UID` is whoever signs in."""
+    import sb
+
+    def browser(url: str) -> bool:
+        redirect = dict(urllib_parse.parse_qsl(urllib_parse.urlsplit(url).query))["redirect_to"]
+
+        def come_back():
+            time.sleep(0.05)
+            import urllib.request as ur
+            with ur.urlopen(redirect + "?code=fixture-code", timeout=5) as r:
+                r.read()
+        threading.Thread(target=come_back, daemon=True).start()
+        return True
+
+    fake.UID = uid
+    sb.sign_in_google(open_browser=browser, timeout_s=10)
+
+
+def _says(pc, text: str) -> None:
+    """One dictation into this PC's log, stamped now, as the app writes it."""
+    from datetime import datetime
+    time.sleep(0.01)
+    now = datetime.now()
+    with pc.log.open("a", encoding="utf-8") as f:
+        f.write(f"{now:%Y-%m-%d %H:%M:%S},{now.microsecond // 1000:03d} | OK | 1.0s | local"
+                f" | 0.4s latency | {text}\n")
+
+
+def _history_of(fake, uid: str, key: bytes) -> list[str]:
+    """What an account holds of what was said, opened under its own key."""
+    import sb
+    return [sb._open_history(key, uid, r)["text"] for r in fake.tables.get("history", [])
+            if r["user_id"] == uid]
+
+
+def test_what_one_account_said_never_goes_up_as_anothers():
+    """The family PC, on a fake with row-level security, through the real
+    sign-in. transcripts.log names no owner and a sign-out takes the cursors,
+    so until 2026-11-06 a second account's first sync sealed every line the
+    first had said into its own account, and the first, back again, took the
+    second's. The first account a PC ever has takes what is here; the same
+    account back loses nothing; a different one starts past everything, in
+    both directions, however often they take turns. What was said stays on
+    this PC's Said page: this is about what leaves."""
+    import history as history_mod
+    import sb
+    import vault
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            _says(pc, "before any account")
+            _signs_in(fake, _ONE)
+            _says(pc, "said by one")
+            sb.sync_now()
+            one = vault.key(_ONE)
+            assert _history_of(fake, _ONE, one) == ["before any account", "said by one"]
+
+            # the same account back: nothing lost, nothing held
+            sb.sign_out(everywhere=False)
+            _says(pc, "said while away")
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            assert _history_of(fake, _ONE, one)[-1] == "said while away"
+            assert len(_history_of(fake, _ONE, one)) == 3, "the same rows went up twice"
+            sb.sign_out(everywhere=False)
+
+            # forward: the second account's first sync pushes nothing
+            _signs_in(fake, _TWO)
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 0", out
+            assert not any(r["user_id"] == _TWO for r in fake.tables["history"])
+            _says(pc, "said by two")
+            assert sb.sync_now()["history"] == "pulled 0, pushed 1"
+            two = vault.key(_TWO)
+            assert _history_of(fake, _TWO, two) == ["said by two"]
+            sb.sign_out(everywhere=False)
+
+            # back: what the second said sits above the first's old rows
+            _signs_in(fake, _ONE)
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 0", out
+            assert vault.key(_ONE) == one
+            _says(pc, "said by one again")
+            sb.sync_now()
+            assert "said by two" not in _history_of(fake, _ONE, one)
+            assert _history_of(fake, _ONE, one)[-1] == "said by one again"
+            sb.sign_out(everywhere=False)
+
+            # and round again
+            _signs_in(fake, _TWO)
+            sb.sync_now()
+            assert _history_of(fake, _TWO, two) == ["said by two"]
+            said = [ev.text for ev in history_mod.all_events()]
+            assert "said by one" in said and "said by two" in said, "the Said page lost a line"
+    finally:
+        pc.gone()
+
+
+def test_the_line_between_two_accounts_outlives_forget_all_a_sign_out_and_a_crash():
+    """The record is in state.json, written before the session is, so nothing
+    that takes the cursors takes it. A crash straight after a sign-in finds
+    it; a line said before the first sync is the new account's and goes up;
+    a sign-out and back loses the line nowhere. A door that tripped at the
+    sign-in costs no sign-in, and the first sync is the door. A state file
+    that will not read cannot say who was here, so nothing moves at all."""
+    import sb
+    import sync as sync_mod
+    import vault
+
+    def boom(uid):
+        raise OSError("no")
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            _says(pc, "said by one")
+            sb.sync_now()
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            sb.forget_cache()                  # the crash: nothing in memory
+            sb._forget_lock_state()
+            sync_mod.forget_all()
+            _says(pc, "right after the sign-in")
+            sb.sync_now()
+            two = vault.key(_TWO)
+            assert _history_of(fake, _TWO, two) == ["right after the sign-in"]
+
+            sb.sign_out(everywhere=False)
+            assert not sync_mod.cursor_path().exists()
+            _signs_in(fake, _TWO)
+            sb.sync_now()
+            assert _history_of(fake, _TWO, two) == ["right after the sign-in"]
+            sb.sign_out(everywhere=False)
+
+            with _patched(sb, "_take_over", boom):
+                _signs_in(fake, _THREE)
+            assert sb.signed_in(), "a sign-in failed over the record"
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            assert not any(r["user_id"] == _THREE for r in fake.tables["history"])
+            sb.sign_out(everywhere=False)
+
+            good = paths.STATE_FILE.read_text("utf-8")
+            paths.STATE_FILE.write_text("{ this is not json", "utf-8")
+            _signs_in(fake, _FOUR)
+            fake.calls.clear()
+            assert sb.sync_now() == {}
+            assert not [c for c in fake.to_project() if c["method"] == "POST"], "a store moved"
+            assert "will not read" in sb.status()["last_error"]
+            paths.STATE_FILE.write_text(good, "utf-8")
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            assert not any(r["user_id"] == _FOUR for r in fake.tables["history"])
+    finally:
+        pc.gone()
+
+
+def test_a_copy_from_before_the_record_counts_the_way_the_evidence_does():
+    """An update finds no record. A live session is the account whose lines
+    these are, so nothing is held and it is written down. Nobody signed in
+    and a device id on file means somebody was here, and the next person
+    takes nothing of theirs."""
+    import sb
+    import vault
+
+    live, out = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            fake.rls = True
+            with live:
+                _says(live, "said before the update")
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                assert _history_of(fake, fake.UID, vault.key(fake.UID)) == ["said before the update"]
+                assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == fake.UID
+            with out:
+                config_mod.save({"account.device_id": "eeeeeeee-5555-4555-8555-555555555555"})
+                _says(out, "said by somebody")
+                _signs_in(fake, _TWO)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+    finally:
+        live.gone()
+        out.gone()
+
+
+def test_one_accounts_words_stay_out_of_anothers_account():
+    """vocab.json is one file too, and vocab_changed sends every row on a
+    first sync, in the clear: a person's names on another's account. A pair
+    left here stays out of the rows and out of the snapshot, so its heard
+    form cannot leave as a tombstone either, and a tombstone cannot take the
+    account's own meaning of the same heard form. A pair the account holds
+    too is its own from then on. Dictation here still has every word."""
+    import sb
+    import vocab as vocab_mod
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+
+            def rows(uid):
+                return {r["heard"]: r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == uid}
+
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            for heard, meant in (("grandma heard", "grandma meant"), ("grandpa heard", "grandpa meant"),
+                                 ("both heard", "both meant"), ("clash heard", "meaning of one")):
+                v.learn_by_hand(heard, meant)
+            _signs_in(fake, _ONE)
+            sb.sync_now(v)
+            assert len(rows(_ONE)) == 4, rows(_ONE)
+            sb.sign_out(everywhere=False)
+
+            stamp = "2026-09-18T11:00:00+00:00"
+            fake.tables["vocab_sync"] += [
+                {"user_id": _TWO, "heard": "both heard", "meant": "both meant", "hits": 1,
+                 "last_used": None, "deleted": False, "updated_at": stamp},
+                {"user_id": _TWO, "heard": "clash heard", "meant": "meaning of two", "hits": 1,
+                 "last_used": None, "deleted": False, "updated_at": stamp}]
+            _signs_in(fake, _TWO)
+            assert sb.sync_now(v)["vocab"].endswith("pushed 0")
+            assert set(rows(_TWO)) == {"both heard", "clash heard"}, rows(_TWO)
+            assert v.find("grandma heard"), "the words here went"
+            sb.sync_now(v)
+            assert rows(_TWO)["clash heard"]["meant"] == "meaning of two"
+            assert not rows(_TWO)["clash heard"]["deleted"], "a tombstone took the account's own"
+
+            v.learn_by_hand("heard by two", "meant by two")
+            assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+            v.forget("grandpa heard")
+            sb.sync_now(v)
+            assert "grandpa heard" not in rows(_TWO), "a tombstone named a word it never held"
+            v.forget("both heard")
+            sb.sync_now(v)
+            assert rows(_TWO)["both heard"]["deleted"], "a pair the account holds is its own"
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            assert sb.sync_now(v)["vocab"].endswith("pushed 0")
+            assert "heard by two" not in rows(_ONE)
+            assert v.find("grandpa heard"), "the first account's word did not come back"
+            v.learn_by_hand("heard by one", "meant by one")
+            assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+    finally:
+        pc.gone()
+
+
+def test_one_accounts_settings_stay_out_of_anothers_blob():
+    """vocab.terms is "the people you mention", and it syncs. An account with
+    no blob used to take the whole file as its own. Now what was here stays
+    out and an empty blob is not sent, because it would empty the settings of
+    that account's next PC; what the person sets goes up alone; a pull makes
+    the file the account's, so everything in it syncs again."""
+    import sb
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+
+            def blob(uid):
+                return next((r["json"] for r in fake.tables.get("settings_sync", [])
+                             if r["user_id"] == uid), None)
+
+            theirs = {"vocab.terms": ["a name of the first"], "translate.target": "Hebrew"}
+            config_mod.save(theirs)
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            assert blob(_ONE) == theirs
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            assert sb.sync_now()["settings"] == "same"
+            assert blob(_TWO) is None, "an account with nothing to say got a blob"
+            assert config_mod.read_settings(paths.SETTINGS_FILE)["vocab.terms"] == theirs["vocab.terms"]
+            config_mod.save({"polish.when": "never"})
+            assert sb.sync_now()["settings"] == "pushed"
+            assert blob(_TWO) == {"polish.when": "never"}
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            assert sb.sync_now()["settings"] == "pulled"
+            assert blob(_ONE) == theirs
+            config_mod.save({"polish.when": "never"})
+            assert sb.sync_now()["settings"] == "pushed"
+            assert blob(_ONE) == {**theirs, "polish.when": "never"}, "the pull did not lift the marks"
+    finally:
+        pc.gone()
+
+
+def test_a_cloud_key_left_on_this_pc_is_never_sealed_into_another_account():
+    """One slot, and a slot with no record is a fresh PC's, so the first
+    account's API key went up sealed for the second and reached all its
+    devices: the road of 2026-10-03 in AGENTS.md by another door. A key left
+    here stays here and keeps working on this PC; one pasted since is the
+    account's own; one the account holds comes down; and the second's key
+    does not reach the first on the way back."""
+    import secretstore
+    import sb
+    import vault
+
+    first, second = "first-account-key-0123456789", "second-account-key-0123456789"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+
+            def names(uid):
+                return {r["name"] for r in fake.tables.get("vault", []) if r["user_id"] == uid}
+
+            def opened(key, uid, name):
+                row = next(r for r in fake.tables["vault"] if r["user_id"] == uid and r["name"] == name)
+                return vault.open_json(key, row["cipher"], vault.AAD_VAULT.format(uid=uid, name=name))["v"]
+
+            secretstore.set("groq", first)
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            one = vault.key(_ONE)
+            assert opened(one, _ONE, "groq") == first
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            assert sb.sync_now()["vault"].endswith("pushed 0")
+            assert names(_TWO) == set(), names(_TWO)
+            assert secretstore.get("groq") == first, "the key stopped working here"
+            secretstore.set("groq", second)
+            secretstore.set("gemini", second)
+            assert sb.sync_now()["vault"].endswith("pushed 2")
+            assert opened(vault.key(_TWO), _TWO, "groq") == second
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            assert secretstore.get("groq") == first, "the account's own did not come down"
+            assert names(_ONE) == {"groq"}, "the second's key reached the first"
+    finally:
+        pc.gone()
+
+
+def test_delete_my_account_leaves_the_next_account_nothing_of_it():
+    """The files stay after Delete my account, so the record must too, or
+    the next person is this PC's first and takes everything. It stays as a
+    word: no account key is left in state.json, and no id."""
+    import sb
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            _says(pc, "said by one")
+            sb.sync_now()
+            sb.delete_account()
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert not any(k.startswith("account.") for k in state), state
+            assert state[sb.LAST_ACCOUNT] == sb.SOMEBODY
+            assert _ONE not in paths.STATE_FILE.read_text("utf-8")
+            _signs_in(fake, _TWO)
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+    finally:
+        pc.gone()
 
 
 def test_forget_ends_a_device_and_a_row_restored_unchanged_gives_nothing_back():

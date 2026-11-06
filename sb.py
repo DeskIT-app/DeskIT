@@ -319,6 +319,13 @@ def _store_session(data: dict) -> dict:
             "name": str(meta.get("name") or meta.get("full_name") or "")[:NAME_MAX],
         },
     }
+    # before the session: a crash between the two leaves a record and no
+    # session, and the next sign-in of anybody reads that correctly
+    try:
+        _take_over(session["user"]["id"])
+    except Exception as e:                                   # noqa: BLE001
+        log.warning("account: the stores did not change hands at the sign-in (%s) — "
+                    "the first sync does it", e)
     secretstore.set(SESSION_NAME, json.dumps(session))
     with _lock:
         _cache.update(loaded=True, session=session)
@@ -498,6 +505,141 @@ def _per_account(name: str) -> dict:
     import config
     data = config.read_state(paths.STATE_FILE).get(name)
     return dict(data) if isinstance(data, dict) else {}
+
+
+#: Whose the stores on this PC are (``_take_over``), and what each other
+#: account has to leave where it is. Not ``account.``: Delete my account
+#: takes those, and the next person must not look like this PC's first.
+LAST_ACCOUNT = "sync.last_account"
+HELD_BACK = "sync.held_back"
+#: What LAST_ACCOUNT says once that account is deleted, and of a copy from
+#: before it was kept that somebody signed out of: not an id, and not nobody.
+SOMEBODY = "somebody"
+#: What ``vault.digest_keys`` hashes under at the door. No account's key,
+#: because the new account's may not be on this PC yet; these are hashes of
+#: long random keys, only ever compared with each other.
+KEYS_LEFT = b"what another account left in this slot"
+
+
+def _end_of_log() -> str:
+    """A stamp nothing said so far is past: the newest row the log would
+    make or this moment, whichever is later. The moment because what was
+    asked before it is stamped with the asking once the answer lands
+    (a translation's ``-IN`` and ``-OUT``), and because a log that will not
+    read must not leave the floor where it was."""
+    import history
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    try:
+        return _later(now, sync.history_floor(history.all_events())) or now
+    except (OSError, ValueError) as e:
+        log.info("account: the log's end was not read (%s)", e)
+        return now
+
+
+def _words_here() -> list[dict]:
+    """vocab.json as it stands, or its last good copy: from a file that will
+    not read that is what the app loads (Vocab.load), and would go on to send."""
+    import vocab
+    for path in (paths.VOCAB_FILE, paths.VOCAB_FILE.with_name(paths.VOCAB_FILE.name + ".bak")):
+        try:
+            found = vocab._read_store(path).get("corrections")
+        except (OSError, ValueError):
+            continue
+        return [c for c in found or [] if isinstance(c, dict)]
+    return []
+
+
+def _what_is_here() -> dict:
+    """What would go up as the new account's, as marks (sync.py)."""
+    import config
+    digests, present = vault.digest_keys(KEYS_LEFT)
+    return {"vocab": sorted({sync.word_mark(c) for c in _words_here()}),
+            "settings": sync.setting_marks(config.read_settings(paths.SETTINGS_FILE)),
+            "keys": {name: digests[name] for name in present}}
+
+
+def _take_over(uid: str) -> None:
+    """One account's stores are never another's. transcripts.log, vocab.json,
+    settings.toml and the cloud keys' slot are one of each on a PC and name
+    no owner, and every sign-out takes the cursors, so to a second account
+    all of it was new: its first sync sealed everything the first had said
+    into its own account, with the first's words, its names (``vocab.terms``)
+    and its cloud keys, and the first, back again, took the second's the same
+    way. A family PC, or one person with a work account and a private one.
+
+    This is the line between them, at every sign-in and at the head of every
+    sync. The first account a PC ever has takes what is here, because it is
+    that person's, said before they signed in. The same account back loses
+    nothing. A different one starts past everything: its history floor goes
+    to the end of the log, and what the other stores hold is marked, to stay
+    on this PC until the person changes it or the account turns out to hold
+    it too (``_sync_settings``, ``_sync_vocab``, ``_sync_vault``). What was
+    said and learned stays readable here, on the Said page and in dictation:
+    this is only about what leaves. The cost, in the direction a mistake
+    should fall: what an account said offline and had not pushed when
+    another took over stays on this PC, and whoever moves to a new account
+    takes nothing along with them.
+
+    All of it goes down in one write, in state.json, where neither a sign-out
+    nor ``sync.forget_all`` reaches it. The cursors go first: they are the
+    other account's. Raises when state.json will not read, because {} from a
+    damaged file would look like a first account, and ``sync_now`` then moves
+    nothing."""
+    if not uid:
+        return
+    import config
+    with _lock:
+        state = config.read_state(paths.STATE_FILE)
+        last = str(state.get(LAST_ACCOUNT) or "")
+        if last == uid:
+            return
+        if not _state_reads():
+            raise AccountError("this PC's state file will not read, so whose words are here is not known")
+        here = ((_load_session() or {}).get("user") or {}).get("id")
+        before = last or str(here or "") or (SOMEBODY if state.get("account.device_id") else "")
+        updates: dict = {LAST_ACCOUNT: uid}
+        if before and before != uid:
+            log.info("account: another account on this PC — what is here stays here")
+            sync.forget_all()
+            floors = _per_account("account.history_floor")
+            updates["account.history_floor"] = {**floors, uid: _later(floors.get(uid), _end_of_log())}
+            updates[HELD_BACK] = {**_per_account(HELD_BACK), uid: _what_is_here()}
+        config.save(updates)
+
+
+def _held_back(uid: str, store: str):
+    """What ``uid`` leaves where it is in one store: marks, or for the
+    cloud keys {name: hash}. Empty for an account that took nothing over."""
+    record = _per_account(HELD_BACK).get(uid)
+    return (record.get(store) if isinstance(record, dict) else None) or ()
+
+
+def _let_go(uid: str, store: str, marks) -> None:
+    """These turned out to be the account's own: from here on they sync."""
+    import config
+    held = _per_account(HELD_BACK)
+    record = dict(held.get(uid) or {})
+    left = [m for m in record.get(store) or () if m not in marks]
+    if left:
+        record[store] = left
+    else:
+        record.pop(store, None)
+    if record:
+        held[uid] = record
+    else:
+        held.pop(uid, None)
+    config.save({HELD_BACK: held or None})
+
+
+def _keys_left_here(uid: str) -> set[str]:
+    """The cloud keys in this slot that are still what was here when this
+    account took over. A key pasted since hashes to something else and is
+    this account's, and so is one the account itself sent down."""
+    held = dict(_held_back(uid, "keys"))
+    if not held:
+        return set()
+    digests, present = vault.digest_keys(KEYS_LEFT)
+    return {name for name in present if held.get(name) == digests[name]}
 
 
 def device_id() -> str:
@@ -1017,7 +1159,9 @@ def delete_account() -> None:
     """"Delete my account": this PC removes its own storage folder (it
     holds the delete policy), then calls ``delete_me()`` — rows, the
     auth user, every refresh token — then wipes the session, the
-    account keys in state.json, the cursors and the outbox (8.5)."""
+    account keys in state.json, the cursors and the outbox (8.5). The
+    files stay, so LAST_ACCOUNT stays too, as a word and no longer an id:
+    what this account left here must not become the next account's."""
     session = _fresh()
     uid = session["user"]["id"]
     try:
@@ -1037,9 +1181,11 @@ def delete_account() -> None:
         log.info("account: the list of forgotten devices stayed (%s)", e)
     import config
     maps = {name: {k: v for k, v in _per_account(name).items() if k != uid} or None
-            for name in ("account.device_ids", "account.past_devices", "account.history_floor")}
+            for name in ("account.device_ids", "account.past_devices", "account.history_floor",
+                         HELD_BACK)}
     config.save({"account.device_id": None, "account.device_seen_at": None,
-                 "account.device_name": None, "account.device_session": None, **maps})
+                 "account.device_name": None, "account.device_session": None,
+                 LAST_ACCOUNT: SOMEBODY, **maps})
     _clear_outbox()
     _status["last_error"] = ""
     log.info("account: deleted on the server and forgotten here")
@@ -1097,10 +1243,17 @@ def _now_iso() -> str:
 def _sync_settings(cursor: dict, push: bool = True) -> str:
     """Pull or push the settings blob (last writer wins). Returns one
     word for the log: pulled, pushed, same. ``push=False`` is a live
-    pass: only what the other PC just wrote comes down."""
+    pass: only what the other PC just wrote comes down. What another
+    account left in the file stays out of the blob (``_take_over``: the
+    names in ``vocab.terms`` are in it) until a pull makes the file this
+    account's, and with nothing else to say no blob goes up at all: an
+    empty one would empty the settings of this account's next PC."""
     import config
     overrides = config.read_settings(paths.SETTINGS_FILE)
-    payload = sync.settings_payload(overrides)
+    uid = _fresh()["user"]["id"]
+    left = set(_held_back(uid, "settings"))
+    payload = {k: v for k, v in sync.settings_payload(overrides).items()
+               if sync.mark(k, v) not in left}
     local_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False)
                                 .encode("utf-8")).hexdigest()
     status, data = _rest("GET", "settings_sync", purpose="sync",
@@ -1133,9 +1286,12 @@ def _sync_settings(cursor: dict, push: bool = True) -> str:
         cursor["settings_hash"] = hashlib.sha256(
             json.dumps(sync.settings_payload(merged), sort_keys=True,
                        ensure_ascii=False).encode("utf-8")).hexdigest()
+        if left:
+            _let_go(uid, "settings", left)
         return "pulled"
+    if left and not payload and not remote:
+        return "same"
     if push and (local_changed or not remote):
-        uid = _fresh()["user"]["id"]
         status, data = _rest("POST", "settings_sync", purpose="sync",
                              query="on_conflict=user_id",
                              payload={"user_id": uid, "json": payload},
@@ -1161,9 +1317,15 @@ def _remote_is_newer(remote_at: str) -> bool:
 def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
     """Pull the other PCs' rows into the live vocabulary, push what
     changed here. ``vocab`` is the app's Vocab (or None to skip);
-    ``push=False`` is a live pass, the pull alone."""
+    ``push=False`` is a live pass, the pull alone. A pair another account
+    left in the file (``_take_over``) is not this account's to send or to
+    forget: it stays out of the rows and out of the snapshot, so its heard
+    form cannot leave as a tombstone either, until the account turns out
+    to hold that very pair."""
     if vocab is None:
         return "skipped"
+    uid = _fresh()["user"]["id"]
+    left = set(_held_back(uid, "vocab"))
     # A word list that could not be read at start (vocab.Vocab.broken)
     # tells the account nothing: every word it lacks would go out as a
     # tombstone and come off every PC. It pulls the whole list back
@@ -1184,9 +1346,13 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
             if pulled:
                 vocab.corrections[:] = merged
                 vocab.save()
+            theirs = left & {sync.word_mark(r) for r in rows if not r.get("deleted")}
+            left -= theirs
             # what just came down counts as seen: it is not pushed back
             for entry in vocab.corrections:
                 heard = str(entry.get("heard") or "").strip()
+                if sync.word_mark(entry) in left:
+                    continue          # another meaning under the same heard form
                 if any(str(r.get("heard") or "").strip().lower() == heard.lower() for r in rows):
                     snapshot[heard] = {"hits": int(entry.get("hits", 1) or 0),
                                        "meant": str(entry.get("meant") or "").strip()}
@@ -1195,6 +1361,8 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
             gone = {str(r.get("heard") or "").strip().lower() for r in rows if r.get("deleted")}
             for key in [k for k in snapshot if k.strip().lower() in gone]:
                 snapshot.pop(key, None)
+        if theirs:
+            _let_go(uid, "vocab", theirs)
         cursor["vocab_pulled_at"] = str(rows[-1].get("updated_at") or since)
     if broken:
         cursor["vocab_snapshot"] = snapshot
@@ -1205,7 +1373,7 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
                     "" if mended else " (the unreadable file is still in the way)")
         return f"pulled {pulled}, pushed 0"
     with vocab._write_lock:
-        corrections = [dict(c) for c in vocab.corrections]
+        corrections = [dict(c) for c in vocab.corrections if sync.word_mark(c) not in left]
     to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot) if push else []
     pushed = 0
     if not push:
@@ -1232,7 +1400,6 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
                     "were never forgotten on this PC — not deleted from the "
                     "account; the next pass brings them back", held, len(snapshot))
     if to_push:
-        uid = _fresh()["user"]["id"]
         for row in to_push:
             row["user_id"] = uid
         status, data = _rest("POST", "vocab_sync", purpose="sync",
@@ -1468,7 +1635,10 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     PC. A slot with no record at all is a fresh PC's: everything the
     account holds comes down, and only a name the account has never had
     goes up. Two programs that share one data folder under different
-    prefixes keep a record each."""
+    prefixes keep a record each. A slot with no record may also hold what
+    another account left in it, which is no name of this one's to send
+    (``_take_over``): that was the second road by which a foreign key got
+    into an account, after the one of 2026-10-03 in AGENTS.md."""
     uid = _fresh()["user"]["id"]
     key = _lock_key(uid)
     if key is None:
@@ -1506,8 +1676,9 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     pushed = 0
     if push:
         digests, present = vault.digest_keys(key)
+        stays = _keys_left_here(uid)
         to_push = [n for n, d in digests.items()
-                   if known.get(n) != d and (n in present or n in known)]
+                   if known.get(n) != d and (n in present or n in known) and n not in stays]
         if to_push:
             sealed = vault.export_keys(key, uid, only=to_push)
             payload = [{"user_id": uid, "name": n, "cipher": c} for n, c in sealed.items()]
@@ -1619,6 +1790,10 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
         with _lock:
             _status["busy"] = "syncing"
         try:
+            # a session this PC's record has not met (a copy from before
+            # the record, a sign-in whose door tripped) stops here and not
+            # at a push; if it cannot be told, nothing below runs
+            _take_over((user() or {}).get("id", ""))
             cursor = sync.read_cursor()
             if not after_pass:
                 try:

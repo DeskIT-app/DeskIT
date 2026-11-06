@@ -31,11 +31,17 @@ Three stores, three shapes:
     into ``sync\\history.log`` as REMOTE lines that history.py folds into
     the Said page with the other machine's name on the row.
 
+These files are one of each on a PC and name no owner, so what a store
+may send also depends on who was here before: sb._take_over marks what
+another account left behind, and the marks here are how it is recognised
+without being kept a second time.
+
 The cursors — what was last pushed and pulled — live in ``sync\\cursor.json``
 under DATA_DIR, never in settings.toml (they are this PC's alone).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -244,6 +250,28 @@ def vocab_changed(rows: list[dict], snapshot: dict | None) -> list[dict]:
     return out
 
 
+# ------------------------------------------- what another account left here
+
+def mark(*parts) -> str:
+    """One setting or one word pair as 16 hex digits: state.json keeps a
+    list to look things up in (sb._take_over), and a list that only has to
+    answer "was this here?" need not say any of it."""
+    body = json.dumps(parts, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
+def word_mark(entry: dict) -> str:
+    """A learned pair, or a row of one. ``hits`` is left out: the same pair
+    with another count is still the same word."""
+    return mark(str(entry.get("heard") or "").strip().lower(),
+                str(entry.get("meant") or "").strip())
+
+
+def setting_marks(overrides: dict[str, object]) -> list[str]:
+    """Every key of the override set that may travel, with its value."""
+    return sorted(mark(k, v) for k, v in overrides.items() if syncable(k))
+
+
 # ---------------------------------------------------------------- history
 
 #: The event kinds that travel (history.KINDS minus errors and discards,
@@ -414,7 +442,8 @@ def forget_all() -> list[str]:
 __all__ = [
     "syncable", "settings_payload", "merge_settings",
     "vocab_rows", "merge_vocab", "vocab_snapshot", "vocab_changed",
-    "history_rows", "remote_line", "HISTORY_KINDS", "HISTORY_BATCH",
+    "mark", "word_mark", "setting_marks",
+    "history_rows", "history_floor", "remote_line", "HISTORY_KINDS", "HISTORY_BATCH",
     "read_cursor", "write_cursor", "append_remote_history", "forget_all", "forget_remote",
     "cursor_path", "remote_history_path",
 ]
