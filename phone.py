@@ -23,7 +23,7 @@ reaches server.py or main.py.
 
 ``publish(key, ...)`` writes this PC's ``link`` row when anything in it
 changed. ``anchors()`` opens the phones' rows and leaves out the forgotten.
-``refresh(key)`` reads them from the account. The sealed
+``refresh()`` reads them from the account. The sealed
 rows are kept in ``secrets\\phone_rows.json``, because a PC restarted with the
 house's internet down must still open its door (§3's "Home: nobody" rests on
 this), and opening them needs only the account key, which is local.
@@ -362,7 +362,7 @@ def _uid() -> str:
 
 def _read_rows() -> dict:
     """The file: {"uid", "rows": [the devices' rows, sealed], "forgotten",
-    "known": [the ids of the phones seen]}; {} when there is none."""
+    "seen": {certificate: what it did here}}; {} when there is none."""
     try:
         data = json.loads(rows_path().read_text("utf-8"))
     except (OSError, ValueError):
@@ -450,30 +450,23 @@ def anchors(key: bytes | None = None) -> dict[str, dict]:
         return out
 
 
-def refresh(key: bytes) -> list[str]:
-    """Read the account's rows and keep them; the ids of the phones this PC
-    has not seen before. An account that cannot be read raises and leaves
-    the file as it is: a door must not close because the internet went."""
+def refresh() -> None:
+    """Read the account's rows and keep them. An account that cannot be read
+    raises and leaves the file as it is: a door must not close because the
+    internet went."""
     import sb
 
     with _lock:
         rows = sb.devices()
         uid = _uid()
         if not uid:
-            return []
+            return
         kept = _read_rows()
         same = str(kept.get("uid") or "") == uid
-        gone = _forgotten(kept if same else {})
-        known = {str(i) for i in kept.get("known") or []} if same else set()
         keep = [{k: r.get(k) for k in ("id", "name", "platform", "last_seen", "link")}
                 for r in rows]
-        phones = [str(r["id"]) for r in _open_rows(key, uid, keep, gone)
-                  if _phone_cert(r["link"]) is not None]
-        fresh = [i for i in phones if i not in known]
-        _write_rows({"uid": uid, "rows": keep, "forgotten": sorted(gone),
-                     "known": sorted(known | set(phones)), "at": int(time.time()),
-                     "seen": (kept.get("seen") or {}) if same else {}})
-        return fresh
+        _write_rows({"uid": uid, "rows": keep, "forgotten": sorted(_forgotten(kept if same else {})),
+                     "at": int(time.time()), "seen": (kept.get("seen") or {}) if same else {}})
 
 
 #: (the rows file's stamp, the session's id) -> view(), so the status poll

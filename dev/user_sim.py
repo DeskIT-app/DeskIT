@@ -453,7 +453,7 @@ class Sim:
         try:
             app._phone_account(key)
             assert not app.phone_door.running, "a door with no phone in the account"
-            app._phone_approved()
+            app._phone_approved(ident)
             rows.append({"id": ident, "name": "Sim phone", "platform": "android-34",
                          "link": vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1,
                                                        "cert": base64.b64encode(der).decode()},

@@ -6210,7 +6210,7 @@ def _door_app(cfg=None):
     app.phone_door = server_mod.PhoneDoor(cfg, app.phone.routes)
     app._doors_lock = threading.RLock()
     app._phone_no = False
-    app._approved_at = -main_mod.PHONE_APPROVE_WINDOW_S
+    app._approved = set()
     app._loopback_first = lambda: None
     app._hook_connected = lambda: False
     app._say = lambda *a, **k: None
@@ -6241,16 +6241,15 @@ def test_a_link_row_that_does_not_open_adds_no_anchor() -> None:
                        {"id": _THIS_PC, "name": "this PC", "link": vault.seal_json(
                            box["key"], {"v": 1, "kind": "pc", "cert": "ab"},
                            vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC))}]
-        fresh = phone_mod.refresh(box["key"])
-        assert fresh == ["bbbbbbbb-0000-0000-0000-000000000002"], fresh
+        phone_mod.refresh()
+        assert [d["id"] for d in phone_mod.view()["phones"]] == ["bbbbbbbb-0000-0000-0000-000000000002"]
         assert list(phone_mod.anchors()) == [real["fingerprint"]]
         assert phone_mod.anchors()[real["fingerprint"]]["der"] == real["der"]
         # moved under another row's id, a seal does not open either: the
         # device's id is in what it was sealed with
         box["rows"][0]["id"] = "eeeeeeee-0000-0000-0000-000000000005"
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         assert phone_mod.anchors() == {}
-        assert phone_mod.refresh(box["key"]) == []
 
 
 def test_a_forgotten_device_stays_out_after_its_row_comes_back_unchanged() -> None:
@@ -6264,19 +6263,19 @@ def test_a_forgotten_device_stays_out_after_its_row_comes_back_unchanged() -> No
     with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
         phone = _a_phone(Path(tmp), "lost")
         box["rows"] = [_phone_row(box, phone, ident)]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         assert phone["fingerprint"] in phone_mod.anchors()
 
         box["gone"] = {ident, phone["fingerprint"]}
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         assert phone_mod.anchors() == {}, "the row came back and the phone with it"
 
         box["rows"] = [_phone_row(box, phone, "cccccccc-0000-0000-0000-000000000003")]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         assert phone_mod.anchors() == {}, "a new id under a forgotten certificate"
 
         box["gone"] = set()                # a server that forgets the list
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         assert phone_mod.anchors() == {}, "the kept list shrank"
         assert not phone_mod.view()["phones"]
 
@@ -6294,11 +6293,11 @@ def test_a_restart_with_no_network_still_opens_the_door() -> None:
     with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
         phone = _a_phone(Path(tmp), "S26 Ultra")
         box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
 
         box["offline"] = True
         try:
-            phone_mod.refresh(box["key"])
+            phone_mod.refresh()
         except OSError:
             pass
         else:
@@ -6339,7 +6338,7 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
                        "port": 8766, "proto": 1, "words_sync": True}, row
 
         box["rows"] = [{"id": _THIS_PC, "name": "me", "link": box["written"][-1]}]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         assert phone_mod.publish(box["key"], **args) is False, "an unchanged row went out"
 
         assert phone_mod.publish(box["key"], **dict(args, port=8767)) is True
@@ -6426,7 +6425,7 @@ def test_no_secret_reaches_a_log_the_status_or_a_report() -> None:
     with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
         phone = _a_phone(Path(tmp), "S26 Ultra")
         box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         app = _door_app()
         config_mod.save({"server.phone_allowed": True})
         app.cfg = config_mod.load_layered()
@@ -6454,6 +6453,113 @@ def test_no_secret_reaches_a_log_the_status_or_a_report() -> None:
             del secrets_here
     logger.removeHandler(keep)
     logger.setLevel(level)
+
+
+def test_the_door_on_the_real_sb_over_the_fake_server() -> None:
+    """The two halves together: Approve here for a device, its row arrives,
+    the door opens, a phone comes in over TLS, this PC's own row is up and
+    opens, nothing is written twice, Forget closes it, and the row restored
+    unchanged brings nothing back. Real sb, real vault, real TLS; only the
+    server is the fake."""
+    import base64
+
+    import phone as phone_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with _fixture_project() as fake, _consented("account", "settings_sync"), a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                assert key is not None
+                app = _door_app()
+                with _patched(sb, "ACCOUNT_HOOKS", [app._phone_account]), \
+                        _patched(sb, "SIGNED_OUT_HOOKS", [app._phone_signed_out]):
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "a door with no phone"
+                    phone = _a_phone(Path(tmp), "S26 Ultra")
+                    link = vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1, "backup": True,
+                                                 "cert": base64.b64encode(phone["der"]).decode()},
+                                           vault.AAD_DEVICE.format(uid=fake.UID, device_id=_PHONE))
+                    row = _a_phone_row(fake, link=link, session_id="aaaaaaaa-0000-4000-8000-000000000009")
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "nobody pressed anything on this PC"
+                    assert app._phone_status()["ask"] is True, "Home did not ask"
+
+                    app._phone_no = False
+                    app._phone_approved(_PHONE)
+                    sb.account_pass("test")
+                    assert app.phone_door.running, "Approve here, the row arrived, the door stayed shut"
+                    assert _ask_door(app.phone_door.port, phone["chain"], "GET", "/health")[0] == 200
+                    assert _knock(app.phone_door.port) is None
+                    status = app._phone_status()
+                    assert status["on"] and status["phones"][0]["id"] == _PHONE, status
+
+                    _until(lambda: any(r.get("link") for r in fake.tables["devices"]
+                                       if r["id"] == sb.device_id()), 5)
+                    mine = next(r for r in fake.tables["devices"] if r["id"] == sb.device_id())
+                    opened = vault.open_json(key, mine["link"], vault.AAD_DEVICE.format(
+                        uid=fake.UID, device_id=sb.device_id()))
+                    assert opened["kind"] == "pc" and opened["cert"] == phone_mod.identity(), opened
+                    assert opened["port"] == app.phone_door.port, opened
+                    writes = sum(1 for c in fake.calls if c["path"] == "rest/v1/devices"
+                                 and c.get("method") == "POST")
+                    sb.account_pass("test")
+                    assert writes == sum(1 for c in fake.calls if c["path"] == "rest/v1/devices"
+                                         and c.get("method") == "POST"), "an unchanged row went out"
+
+                    sb.forget_device(_PHONE, phone["fingerprint"])
+                    assert not app.phone_door.running, "Forget left the door open"
+                    fake.tables["devices"].append(row)
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "a row restored unchanged brought the phone back"
+                _shut_doors(app)
+        finally:
+            phone_mod.drop_rows()
+            phone_mod._view_kept = None
+
+
+def test_approve_names_the_device_that_asked() -> None:
+    """The press on Home is for one request, and the request says which
+    device it came from: that is how this PC knows the phone whose row
+    arrives next is the one it said yes to. A refused approval names nobody."""
+    import sb
+
+    app = _door_app()
+    app._phone_publish = lambda key=None: None
+    asking = {"state": "have", "pending": [{"id": "r1", "name": "A phone", "device": "d1"}]}
+
+    def refused(pid):
+        raise sb.AccountError("that request is gone")
+
+    with _patched(sb, "configured", lambda: True), _patched(sb, "lock_status", lambda: asking):
+        with _patched(sb, "approve_pairing", refused):
+            assert app._account_command("approve", "r1")["ok"] is False
+            assert app._approved == set()
+        with _patched(sb, "approve_pairing", lambda pid: "A phone"):
+            assert app._account_command("approve", "r1")["ok"] is True
+    assert app._approved == {"d1"} and app._phone_listening()
+
+
+def test_a_forgotten_pc_comes_back_with_a_new_certificate() -> None:
+    """sb.FORGOTTEN_HOOKS: the list never lets the old certificate back, so
+    a PC that finds itself on it makes a new one, and what its door opened
+    from goes with it."""
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        before = phone_mod.identity()
+        app = _door_app()
+        app._phone_forgotten()
+        assert phone_mod.identity() != before and not phone_mod.rows_path().exists()
+        assert not app.phone_door.running
+        _shut_doors(app)
 
 
 def test_phone_py_imports_stay_narrow() -> None:
@@ -6491,7 +6597,7 @@ def test_a_door_opens_with_a_phone_the_switch_and_this_pcs_yes_and_never_otherwi
             assert app.phone.running and not app.phone_door.running, "a door with no phone"
 
             box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
-            phone_mod.refresh(box["key"])
+            phone_mod.refresh()
             server(phone_allowed=False)
             app._doors()
             assert not app.phone_door.running, "no yes from this PC, and the door opened"
@@ -6562,7 +6668,7 @@ def test_a_busy_port_lands_in_state_json_for_both_doors() -> None:
             socket.socket() as one, socket.socket() as two:
         phone = _a_phone(Path(tmp), "S26 Ultra")
         box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         for sock in (one, two):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             sock.bind(("127.0.0.1", 0))
@@ -6625,20 +6731,22 @@ def test_an_approve_here_is_this_pcs_yes_and_any_other_pc_asks_on_home() -> None
         app = _door_app()
         app._phone_publish = lambda key=None: None
         try:
-            app._approved_at = time.monotonic()
+            app._approved = {ident}
             box["rows"] = [_phone_row(box, phone, ident)]
             app._phone_account(box["key"])
             assert app.cfg.server.phone_allowed and app.phone_door.running, "Approve here"
-            assert not app._phone_status()["ask"]
+            assert not app._approved and not app._phone_status()["ask"]
             app.phone_door.stop()
             config_mod.save({"server.phone_allowed": None}, derived=True)
             phone_mod.drop_rows()
 
             further = _door_app()
             further._phone_publish = lambda key=None: None
+            further._approved = {"cccccccc-0000-0000-0000-000000000003"}    # another PC, approved here
             box["rows"] = [_phone_row(box, phone, ident)]
             further._phone_account(box["key"])
             assert not further.phone_door.running, "a door with nobody having pressed anything"
+            assert further._phone_listening(), "the approved device's row has not come back yet"
             assert further._phone_status()["ask"] is True, "Home did not ask"
 
             assert further.control_command("phone", {"do": "notnow"})["ok"]
@@ -6668,7 +6776,7 @@ def test_forget_goes_to_the_account_and_a_failure_is_said_in_words() -> None:
     with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
         phone = _a_phone(Path(tmp), "S26 Ultra")
         box["rows"] = [_phone_row(box, phone, ident)]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         app = _door_app()
         asked: list = []
         had = getattr(sb, "forget_device", None)
@@ -6709,7 +6817,7 @@ def test_a_phone_on_the_door_dictating_is_what_the_card_says() -> None:
     with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
         phone = _a_phone(Path(tmp), "S26 Ultra")
         box["rows"] = [_phone_row(box, phone, ident)]
-        phone_mod.refresh(box["key"])
+        phone_mod.refresh()
         assert "hasn't reached this PC yet" in desk_settings.device_rows(
             {"phone": phone_mod.view()})[0]["meta"]
         cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")

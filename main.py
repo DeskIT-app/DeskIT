@@ -171,11 +171,6 @@ LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
                  # the doors where it stands (App._doors).
                  "server": None}
 LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
-#: How long an Approve pressed on this PC counts as this PC's yes to its
-#: phone door, for a phone whose row arrives after it: a request's own life
-#: (sb.PAIRING_TTL_S). The first listen raises Windows' dialog, so it follows
-#: a press or it does not happen: any other PC asks with a row on Home.
-PHONE_APPROVE_WINDOW_S = 15 * 60.0
 #: Connect Claude is written from the desk straight into Claude Code's own
 #: settings.json, so nothing tells the app. A stat this often is how it hears.
 HOOK_WATCH_S = 5.0
@@ -927,7 +922,11 @@ class App:
         self._doors_lock = threading.RLock()
         # [Not now] on Home's row: until the next start, like a consent's.
         self._phone_no = False
-        self._approved_at = -PHONE_APPROVE_WINDOW_S
+        # The devices Approve was pressed for on this PC, until their rows
+        # arrive. The first listen raises Windows' dialog, so it follows a
+        # press or it does not happen: a phone among these is this PC's yes
+        # (_phone_account), and any other PC asks with a row on Home.
+        self._approved: set[str] = set()
 
     @property
     def vqa(self):
@@ -3326,11 +3325,13 @@ class App:
         if do == "approve":
             if not kind:
                 return {"ok": False, "error": "which request?"}
+            asking = next((str(r.get("device") or "") for r in sb.lock_status()["pending"]
+                           if r.get("id") == kind), "")
             try:
                 name = sb.approve_pairing(kind)
             except Exception as e:                           # noqa: BLE001
                 return {"ok": False, "error": str(e)[:200]}
-            self._phone_approved()
+            self._phone_approved(asking)
             self._say(f"{name} is in — your account opens there too")
             return {"ok": True, "message": f"{name} is in"}
         if do == "decline":
@@ -3602,11 +3603,10 @@ class App:
     def _phone_listening(self) -> bool:
         """Should a phone try this PC at all? This PC's row names its
         addresses only then: the switch on, and its yes given, or an Approve
-        just pressed here, so the phone that was approved finds them on its
-        first read, before its own row has come back."""
+        pressed here whose row has not come back yet, so the phone that was
+        approved finds them on its first read."""
         server = self.cfg.server
-        return bool(server.enabled and (server.phone_allowed or (
-            time.monotonic() - self._approved_at < PHONE_APPROVE_WINDOW_S)))
+        return bool(server.enabled and (server.phone_allowed or self._approved))
 
     def _phone_publish(self, key: bytes | None = None) -> None:
         """This PC's `link` row as things stand; phone.publish writes only
@@ -3633,12 +3633,13 @@ class App:
         self.cfg = dataclasses.replace(
             self.cfg, server=dataclasses.replace(self.cfg.server, phone_allowed=True))
 
-    def _phone_approved(self) -> None:
-        """Approve was pressed on this PC. That press is this PC's yes to a
-        phone whose row arrives in the next minutes (_phone_account), so the
-        door opens right after it and the dialog Windows raises is one he is
-        there for. Approving another PC opens nothing."""
-        self._approved_at = time.monotonic()
+    def _phone_approved(self, device: str) -> None:
+        """Approve was pressed on this PC for ``device``. If its row turns
+        out to be a phone's, that press is this PC's yes (_phone_account), so
+        the door opens right after it and the dialog Windows raises is one
+        the person is there for. Approving another PC opens nothing."""
+        if device:
+            self._approved.add(device)
         threading.Thread(target=self._phone_publish, daemon=True, name="phone-row").start()
 
     def _phone_account(self, key: bytes) -> None:
@@ -3646,12 +3647,14 @@ class App:
         account changed. The rows are read and kept, the doors follow, and
         this PC's own row goes out if anything in it moved."""
         try:
-            fresh = phone_mod.refresh(key)
+            phone_mod.refresh()
         except Exception as e:                               # noqa: BLE001
             log.debug("the devices' rows were not read (%s)", type(e).__name__)
-            fresh = []
-        if fresh and (time.monotonic() - self._approved_at < PHONE_APPROVE_WINDOW_S):
+        view = phone_mod.view()
+        phones = {d["id"] for d in view["phones"]}
+        if self._approved & phones:
             self._phone_yes()
+        self._approved -= phones | {d["id"] for d in view["pcs"]}
         self._doors()
         self._phone_publish(key)
 
