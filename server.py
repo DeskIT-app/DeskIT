@@ -21,9 +21,9 @@ other address would put a token-guarded, un-throttled socket in front of
 the house.
 
 The PHONE door, `PhoneDoor`: every interface, TLS, a client certificate the
-account lists. net.serve_tls opens it, because no module but net.py may
-import ssl or socket (this one's own `import socket` is the loopback
-listener's exclusive-bind option), and it has checked the peer before a
+account lists. net.serve_tls opens it, because net.py alone may use ssl
+and socket (the one `import socket` here is the loopback listener's
+exclusive-bind option), and it has checked the peer before a
 line of http.server runs: no unauthenticated byte ever reaches this file.
 There is no bearer on it and no `/notify`; the phone has never called that
 route. It opens only once the account has a phone, the switch is on and
