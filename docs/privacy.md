@@ -137,7 +137,12 @@ as the account exists; idle anonymous accounts 12 months; the owner's
 monthly backup 3 months. "Delete my account" in the app deletes
 everything at once — rows, files and the account; "Sign out" ends
 the session on that PC, and "Sign out of every PC" revokes every
-session of the account. Rights: access, rectification and
+session of the account. Two accounts on one PC stay apart: when a
+different account signs in, nothing the last one said, learned or set,
+none of its cloud keys and none of its unsent reports goes up to the new
+account. They are not removed either: they stay in that PC's files, the
+Said page there still shows them, and dictation there goes on using
+those words and keys. Rights: access, rectification and
 deletion through the app and by e-mail. The whole database schema is
 published at `supabase/migrations/` in the repository; no table in it
 has a column the server could read an API key from — the one table that
