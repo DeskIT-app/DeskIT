@@ -65,14 +65,25 @@ object Account {
         val uid: String, val email: String, val name: String,
     )
 
-    /** What the server answered: the status, and the body if it is JSON. */
-    class Reply(val status: Int, val body: String) {
+    /**
+     * What the server answered: the status, the body, and the server's own
+     * clock ([date], epoch seconds, 0 without the header).
+     */
+    class Reply(val status: Int, val body: String, val date: Long = 0) {
         val ok: Boolean get() = status in 200..299
 
+        /** "Now", as the server has it: a phone's own clock can be anywhere. */
+        val now: Long get() = if (date > 0) date else System.currentTimeMillis() / 1000
+
+        /**
+         * The rows. An answer that is not rows is a [Failed] and never an
+         * empty list: "no row" means a request was declined or a lock is not
+         * there, and a garbled answer must decide neither.
+         */
         fun rows(): JSONArray = try {
             JSONArray(body)
         } catch (e: Exception) {
-            JSONArray()
+            throw Failed("Your account answered with something unreadable. Try again.")
         }
 
         fun obj(): JSONObject? = try {
@@ -123,11 +134,17 @@ object Account {
 
     fun signedIn(c: Context): Boolean = session(c) != null
 
-    /** sb._store_session: an absolute expiry, because a phone sleeps through timers. */
+    /**
+     * sb._store_session, with one difference: the hour is counted from
+     * `expires_in`, on this phone's own clock. `expires_at` is the server's,
+     * and a phone whose clock is off (they are, and not only by minutes)
+     * would refresh on every call, or never.
+     */
     private fun store(c: Context, data: JSONObject): Session {
         val now = System.currentTimeMillis() / 1000
-        val expires = data.optLong("expires_at", 0).takeIf { it > 0 }
-            ?: (now + data.optLong("expires_in", 3600))
+        val expires = data.optLong("expires_in", 0).takeIf { it > 0 }?.let { now + it }
+            ?: data.optLong("expires_at", 0).takeIf { it > 0 }
+            ?: (now + 3600)
         val user = data.optJSONObject("user") ?: JSONObject()
         val meta = user.optJSONObject("user_metadata") ?: JSONObject()
         val name = meta.optString("name", "").ifEmpty { meta.optString("full_name", "") }.take(40)
@@ -164,12 +181,8 @@ object Account {
         ""
     }
 
-    /** Why the phone was signed out, for the sign-in screen. Read once. */
-    fun takeGoneWords(c: Context): String {
-        val words = sp(c).getString(KEY_WORDS, "") ?: ""
-        if (words.isNotEmpty()) sp(c).edit().remove(KEY_WORDS).apply()
-        return words
-    }
+    /** Why the phone was signed out, until the next sign-in clears it. */
+    fun goneWords(c: Context): String = sp(c).getString(KEY_WORDS, "") ?: ""
 
     /** sb._account_gone: the session goes, and the key and everything else stay. */
     private fun gone(c: Context, words: String) {
@@ -201,7 +214,8 @@ object Account {
             }
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
-            return Reply(status, stream?.bufferedReader()?.use { it.readText() } ?: "")
+            return Reply(status, stream?.bufferedReader()?.use { it.readText() } ?: "",
+                         conn.getHeaderFieldDate("Date", 0L) / 1000)
         } catch (e: IOException) {
             throw Failed("Can't reach your account. Check the connection.", offline = true)
         } finally {
@@ -290,7 +304,11 @@ object Account {
         val url = base(a) + "/auth/v1/authorize?provider=google" +
             "&redirect_to=" + enc(REDIRECT) +
             "&code_challenge=" + Crypt.pkceChallenge(verifier) +
-            "&code_challenge_method=s256"
+            "&code_challenge_method=s256" +
+            // The chooser, every time. "Use another account" means nothing if
+            // the browser's Google session answers by itself, and the tap on it
+            // is the gesture a browser wants before it hands a redirect to an app.
+            "&prompt=select_account"
         try {
             a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 .addCategory(Intent.CATEGORY_BROWSABLE))
@@ -326,18 +344,19 @@ object Account {
             throw Failed("The sign-in code was refused (${r.said()}).")
         }
         Sealed.delete(c, PKCE)
+        sp(c).edit().remove(KEY_WORDS).apply()
         return store(c, data)
     }
 
     /** This session and nothing else: scope=local, then forgotten here. */
     fun endSession(c: Context) {
-        val s = session(c)
-        if (s != null) {
-            try {
-                call(c, "POST", "/auth/v1/logout?scope=local", "{}", s.access)
-            } catch (e: Failed) {
-                // it dies at its hour; it is forgotten here either way
-            }
+        try {
+            val s = session(c)
+            if (s != null) call(c, "POST", "/auth/v1/logout?scope=local", "{}", s.access)
+        } catch (e: Failed) {
+            // it dies at its hour; it is forgotten here either way
+        } catch (e: Sealed.NotNow) {
+            // the same
         }
         clear(c)
     }

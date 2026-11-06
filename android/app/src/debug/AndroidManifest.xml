@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only. ProtoActivity shows the account's screens with made-up
+     data, for the pictures. No button on it does anything. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".ProtoActivity"
+            android:exported="true"
+            android:label="Prototype" />
+        <!-- Whether a locked phone can use what is sealed: one log line. -->
+        <receiver
+            android:name=".ProbeReceiver"
+            android:exported="true" />
+    </application>
+</manifest>

@@ -3,12 +3,11 @@ package io.github.deskit_app.deskit
 import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.util.Log
+import java.io.IOException
 import java.math.BigInteger
 import java.security.GeneralSecurityException
-import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -92,57 +91,41 @@ object ClientKey {
         return Pair(make(alias, unlockedOnly = false), false)
     }
 
+    /** Keystore's refusals, as the one thing a caller has to handle. */
+    private inline fun <T> asked(c: Context, what: () -> T): T = try {
+        what()
+    } catch (e: GeneralSecurityException) {
+        throw Sealed.NotNow("the client key: ${e.javaClass.simpleName}", Sealed.locked(c), e)
+    } catch (e: ProviderException) {
+        throw Sealed.NotNow("the client key: ${e.javaClass.simpleName}", Sealed.locked(c), e)
+    } catch (e: IOException) {
+        throw Sealed.NotNow("the client key: ${e.javaClass.simpleName}", Sealed.locked(c), e)
+    }
+
     /** This device's certificate, as DER, making the key the first time. */
     @Synchronized
-    fun ensure(c: Context, deviceId: String): ByteArray {
+    fun ensure(c: Context, deviceId: String): ByteArray = asked(c) {
         val a = alias(deviceId)
-        keystore().getCertificate(a)?.let { return it.encoded }
-        made(c, a)
-        return (keystore().getCertificate(a) as X509Certificate).encoded
+        keystore().getCertificate(a)?.encoded ?: run {
+            made(c, a)
+            (keystore().getCertificate(a) as X509Certificate).encoded
+        }
     }
 
     /** The certificate if there is one; no key is made. */
-    fun certificate(deviceId: String): ByteArray? =
+    fun certificate(c: Context, deviceId: String): ByteArray? = asked(c) {
         keystore().getCertificate(alias(deviceId))?.encoded
+    }
 
     /** The key, for the door's KeyManager (next lane). */
-    fun privateKey(deviceId: String): PrivateKey? =
+    fun privateKey(c: Context, deviceId: String): PrivateKey? = asked(c) {
         keystore().getKey(alias(deviceId), null) as? PrivateKey
+    }
 
     /** Every client key on this phone: what leaving, or being forgotten, wipes. */
     @Synchronized
-    fun wipe() {
+    fun wipe(c: Context) = asked(c) {
         val ks = keystore()
         for (a in ks.aliases().toList()) if (a.startsWith("deskit.client.")) ks.deleteEntry(a)
-    }
-
-    /**
-     * One throwaway key, made, used and deleted: where it lives and how long
-     * it took. For M16: "The S26's own Keystore is still the first thing to try".
-     */
-    fun probe(c: Context): String {
-        val a = "deskit.probe"
-        keystore().deleteEntry(a)
-        val t0 = System.nanoTime()
-        val (pair, strict) = made(c, a)
-        val makeMs = (System.nanoTime() - t0) / 1_000_000
-        val t1 = System.nanoTime()
-        val signed = signs(pair.private)
-        val signMs = (System.nanoTime() - t1) / 1_000_000
-        val info = KeyFactory.getInstance(pair.private.algorithm, STORE)
-            .getKeySpec(pair.private, KeyInfo::class.java)
-        val where = if (Build.VERSION.SDK_INT >= 31) when (info.securityLevel) {
-            KeyProperties.SECURITY_LEVEL_STRONGBOX -> "StrongBox"
-            KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "secure hardware"
-            KeyProperties.SECURITY_LEVEL_SOFTWARE -> "software"
-            else -> "level ${info.securityLevel}"
-        } else {
-            @Suppress("DEPRECATION")
-            if (info.isInsideSecureHardware) "secure hardware" else "software"
-        }
-        keystore().deleteEntry(a)
-        return "made in $makeMs ms, signs in $signMs ms, in $where, " +
-            (if (strict) "unlocked only" else "NOT unlocked only") +
-            (if (signed) "" else ", DID NOT SIGN")
     }
 }

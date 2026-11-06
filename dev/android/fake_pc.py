@@ -19,6 +19,7 @@ Writes what it was told to fake_pc.log, never a key.
 import base64
 import hashlib
 import http.server
+import inspect
 import json
 import logging
 import os
@@ -34,6 +35,8 @@ from pathlib import Path
 
 os.environ.setdefault("DESKIT_SUITE", "1")      # the test slots, never a real one
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+if os.environ.get("DESKIT_VAULT_FROM"):          # another lane's vault.py, before it is merged
+    sys.path.insert(0, os.environ["DESKIT_VAULT_FROM"])
 import vault                                     # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -63,13 +66,16 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def takes_the_lock() -> bool:
+    """Has this vault.py the code of §12, with the lock in it?"""
+    return "lock_id" in inspect.signature(vault.pairing_code).parameters
+
+
 def pairing_code(uid: str, pairing_id: str, public: str, lock_id: str) -> str:
     """The code as PHONE_LINK_PLAN §12 gives it: vault.pairing_code once the
     phone-account lane has landed, its text by hand until then."""
-    try:
+    if takes_the_lock():
         return vault.pairing_code(uid, pairing_id, public, lock_id)
-    except TypeError:
-        pass
     label = b"deskit pairing code v2"
     point = vault._unb64("p1", public)
     material = b"\0".join((label, uid.encode(), pairing_id.encode(), point, lock_id.encode()))
@@ -103,11 +109,20 @@ class _Door(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8" if html is not None
                          else "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # One request per connection: a browser or a client holding a
+        # keep-alive socket would otherwise go on talking to the fake of the
+        # flow before, whose thread is still serving it.
+        self.send_header("Connection", "close")
+        self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
     def _go(self, method: str):
         account = self.server.account
+        if account is None:                     # stopped: as good as no server
+            self.close_connection = True
+            self.connection.close()
+            return
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         try:
@@ -139,10 +154,13 @@ class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = False
 
 
+_LISTENERS: dict[int, _Server] = {}
+
+
 class FakeAccount:
     """One account, one server, one PC of it. Everything in memory."""
 
-    def __init__(self, port: int = 8791, email: str = "you@example.com", name: str = "Yoav"):
+    def __init__(self, port: int = 8791, email: str = "you@example.com", name: str = "Dana Levi"):
         self.port = port
         self.email = email
         self.name = name
@@ -159,7 +177,7 @@ class FakeAccount:
         self.tables: dict[str, list[dict]] = {t: [] for t in COLUMNS}
         # the PC of this account
         self.pc_id = str(uuid.uuid4())
-        self.pc_name = "YOAV"
+        self.pc_name = "HOME-PC"
         self.key = os.urandom(32)
         self.tables["profiles"].append({
             "user_id": self.uid, "lock_id": vault.fingerprint(self.key),
@@ -170,23 +188,29 @@ class FakeAccount:
     # ---- running ----
 
     def start(self):
-        self._server = _Server(("127.0.0.1", self.port), _Door)
-        self._server.account = self
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        """One listener per port for the life of the process, and each new
+        account takes it over. A browser keeps idle sockets open, so a server
+        stopped between two flows would go on answering on them."""
+        server = _LISTENERS.get(self.port)
+        if server is None:
+            server = _LISTENERS[self.port] = _Server(("127.0.0.1", self.port), _Door)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        server.account = self
+        self._server = server
         log.info("the fake account is up on %s", self.port)
         return self
 
     def stop(self):
+        """Nobody home: every request is refused the way a dead server's would be."""
         if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
+            self._server.account = None
             self._server = None
 
     # ---- the PC ----
 
     def pc_link(self) -> dict:
         return {"v": 1, "kind": "pc", "cert": hashlib.sha256(b"fake pc cert").hexdigest(),
-                "addrs": ["192.168.68.50"], "port": 8766, "proto": 1, "words_sync": True}
+                "addrs": ["192.168.1.20"], "port": 8766, "proto": 1, "words_sync": True}
 
     def write_pc_row(self, *, device: str | None = None, name: str | None = None,
                      link: dict | None = None):
@@ -500,7 +524,8 @@ class FakeAccount:
                 row = dict(body or {})
                 if row.get("user_id") != uid:
                     raise Refuse(403, "42501", f"new row violates row-level security for {table}")
-                row.setdefault("created_at", now_iso())
+                if "created_at" in COLUMNS[table]:
+                    row.setdefault("created_at", now_iso())
                 if table == "pairings":
                     row.setdefault("expires_at",
                                    (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat())

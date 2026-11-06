@@ -53,7 +53,10 @@ object Crypt {
     /** The longest sealed value the server takes (migration 0005). */
     const val SEALED_MAX = 7603
 
-    /** 2^17: 50 ms on the owner's PC, 1.7-5.1 s on the emulator. On a thread. */
+    /** vault.PLAIN_MAX: the most plain bytes that seal within [SEALED_MAX]. */
+    const val PLAIN_MAX = (SEALED_MAX - 3) / 4 * 3 - NONCE_BYTES - TAG_BYTES
+
+    /** 2^17: 50 ms on a good PC, seconds on a slow phone. Always on a thread. */
     const val CODE_ROUNDS = 1 shl 17
 
     /** The first eight characters of the code: `pairings.code`, a hint nobody compares. */
@@ -75,7 +78,15 @@ object Crypt {
 
     private fun utf8(s: String): ByteArray = s.toByteArray(Charsets.UTF_8)
 
-    fun hex(raw: ByteArray): String = raw.joinToString("") { "%02x".format(it) }
+    /** No formatter in the way: this goes on the wire, whatever language the phone speaks. */
+    fun hex(raw: ByteArray): String {
+        val digits = "0123456789abcdef"
+        val out = StringBuilder(raw.size * 2)
+        for (b in raw) {
+            out.append(digits[(b.toInt() shr 4) and 15]).append(digits[b.toInt() and 15])
+        }
+        return out.toString()
+    }
 
     fun sha256(raw: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(raw)
 

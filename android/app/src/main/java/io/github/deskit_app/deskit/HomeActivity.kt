@@ -53,6 +53,9 @@ class HomeActivity : Activity() {
     private var latestSeen = 0
     /** True while this build is below the PC's ime_min: the card blocks. */
     private var mustUpdate = false
+    /** The account's line among the steps, as the last look left it. */
+    private var accountStep = R.string.step_sign_in
+    private var accountDone = false
 
     private val version: String
         get() = try {
@@ -199,9 +202,34 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        accountDone = Lock.holdsKey(this)
+        if (accountDone) accountStep = R.string.step_signed_in
         buildSteps()
         buildSaid()
         check()
+        lookAtAccount()
+    }
+
+    /** Where the account stands, on a thread: the first step's words and dot. */
+    private fun lookAtAccount() {
+        thread {
+            val st = Lock.look(this)
+            // No answer, or Keystore said no: that says nothing about the
+            // account, so the step keeps its words. The page says what is wrong.
+            if (st is Lock.State.NotNow || st is Lock.State.Trouble) return@thread
+            runOnUiThread {
+                accountDone = st is Lock.State.Ready
+                accountStep = when (st) {
+                    is Lock.State.Ready -> R.string.step_signed_in
+                    is Lock.State.SignedOut -> R.string.step_sign_in
+                    is Lock.State.NoLock -> R.string.no_lock_title
+                    is Lock.State.Changed -> R.string.step_changed
+                    is Lock.State.Declined -> R.string.declined_title
+                    else -> R.string.approve_title
+                }
+                buildSteps()
+            }
+        }
     }
 
     private fun wordmark(): CharSequence {
@@ -296,6 +324,9 @@ class HomeActivity : Activity() {
     private fun buildSteps() {
         stepsCard.removeAllViews()
         val steps = ArrayList<Triple<String, Boolean, () -> Unit>>()
+        steps.add(Triple(getString(accountStep), accountDone) {
+            startActivity(Intent(this, AccountActivity::class.java))
+        })
         steps.add(Triple(getString(R.string.step_mic), hasMic()) {
             requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 1)
         })

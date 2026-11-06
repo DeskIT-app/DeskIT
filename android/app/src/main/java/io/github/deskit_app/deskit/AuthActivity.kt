@@ -41,10 +41,10 @@ class AuthActivity : Activity() {
             } catch (e: Account.Failed) {
                 e.message.orEmpty()
             } catch (e: Sealed.NotNow) {
-                getString(R.string.phone_locked)
+                Sealed.words(this, e)
             }
             runOnUiThread {
-                startActivity(Intent(this, SettingsActivity::class.java)
+                startActivity(Intent(this, AccountActivity::class.java)
                     .putExtra(EXTRA_WORD, word)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
                 finish()

@@ -40,6 +40,7 @@ class SettingsActivity : Activity() {
     private lateinit var switchBack: Switch
     private lateinit var result: TextView
     private lateinit var updateResult: TextView
+    private lateinit var accountBox: LinearLayout
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
@@ -70,7 +71,8 @@ class SettingsActivity : Activity() {
             setLineSpacing(0f, 1.25f)
         })
 
-        col.addView(kitCard())
+        accountBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(accountBox)
 
         // ---- the PC ----
         val pc = Skin.card(this)
@@ -162,116 +164,154 @@ class SettingsActivity : Activity() {
         urlField.setOnFocusChangeListener { _, focused -> if (!focused) splitPastedUrl() }
     }
 
-    // ---- M16: the sign-in on a real phone, and nothing else ----
+    // ---- the account ----
 
-    private lateinit var kitState: TextView
-    private lateinit var kitDetail: TextView
+    private var drawnDevices: List<Lock.Device> = emptyList()
+    private var drawnAsking: List<Lock.Asking> = emptyList()
+    private var drawnState: Lock.State? = null
+    private var drawnWord = ""
+    /** The device whose Forget is being asked, in its own row. */
+    private var askingForget = ""
+    private var askingSignOut = false
 
-    private fun kitCard(): LinearLayout {
-        val card = Skin.card(this)
-        card.addView(Skin.eyebrow(this, "Account test"))
-        card.addView(Skin.gap(this, 10))
-        kitState = Skin.text(this, "", 15f, Skin.FG).apply {
-            setLineSpacing(0f, 1.25f)
-            setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 12))
-        }
-        card.addView(kitState)
-        card.addView(Skin.button(this, "Sign in with Google", primary = true) {
-            kitSay("Opening the browser…", Skin.DIM)
-            try {
-                Account.beginSignIn(this)
-            } catch (e: Account.Failed) {
-                kitSay(e.message.orEmpty(), Skin.RED)
-            } catch (e: Sealed.NotNow) {
-                kitSay(getString(R.string.phone_locked), Skin.RED)
-            }
-        })
-        card.addView(Skin.gap(this, 10))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(Skin.button(this, "Refresh") { kitRefresh() }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                .apply { marginEnd = Skin.dp(this@SettingsActivity, 10) }
-        })
-        row.addView(Skin.button(this, "Sign out") { kitSignOut() }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        card.addView(row)
-        kitDetail = Skin.text(this, "", 13f, Skin.DIM).apply {
-            setLineSpacing(0f, 1.25f)
-            setPadding(0, Skin.dp(this@SettingsActivity, 12), 0, 0)
-        }
-        card.addView(kitDetail)
-        kitShow(intent?.getStringExtra(AuthActivity.EXTRA_WORD).orEmpty())
-        return card
+    override fun onResume() {
+        super.onResume()
+        readAccount()
     }
 
-    private fun kitSay(s: String, colour: Int) {
-        kitState.text = s
-        kitState.setTextColor(colour)
-    }
-
-    private fun kitShow(word: String) {
-        if (word.isNotEmpty()) { kitSay(word, Skin.RED); return }
-        val s = try {
-            Account.session(this)
-        } catch (e: Sealed.NotNow) {
-            kitSay(getString(R.string.phone_locked), Skin.RED)
-            return
-        }
-        if (s == null) {
-            kitSay(Account.takeGoneWords(this).ifEmpty { "Not signed in." }, Skin.DIM)
-            return
-        }
-        val left = (s.expiresAt - System.currentTimeMillis() / 1000) / 60
-        kitSay("Signed in as ${s.email}. Good for $left more minutes. Sealed on this phone.",
-               Skin.GREEN)
-        kitDetail.text = "Measuring this phone…"
+    /** Whoever opens Settings sees who is asking: the plan's one read, here. */
+    private fun readAccount() {
         thread {
-            val t0 = System.nanoTime()
-            Crypt.pairingCode("11111111-2222-3333-4444-555555555555",
-                              "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                              ByteArray(Crypt.POINT_BYTES) { 0x41 }, "0123456789abcdef")
-            val code = (System.nanoTime() - t0) / 1_000_000
-            val keystore = try {
-                ClientKey.probe(this)
-            } catch (e: Exception) {
-                "failed: ${e.javaClass.simpleName}"
+            val st = Lock.look(this)
+            var devices = emptyList<Lock.Device>()
+            var asking = emptyList<Lock.Asking>()
+            var word = if (st is Lock.State.Ready) st.word else ""
+            if (st is Lock.State.Ready) {
+                try {
+                    devices = Lock.devices(this)
+                    asking = Lock.asking(this)
+                } catch (e: Account.Failed) {
+                    word = e.message.orEmpty()
+                    devices = cached()
+                } catch (e: Sealed.NotNow) {
+                    word = Sealed.words(this, e)
+                }
             }
             runOnUiThread {
-                kitDetail.text = "Join code: $code ms\nClient key: $keystore\nAndroid ${Build.VERSION.SDK_INT}"
+                drawnState = st
+                drawnDevices = devices
+                drawnAsking = asking
+                drawnWord = word
+                if (!isFinishing) drawAccount()
             }
         }
     }
 
-    private fun kitRefresh() {
-        kitSay(getString(R.string.checking), Skin.DIM)
+    private fun cached(): List<Lock.Device> = try {
+        Lock.cachedDevices(this)
+    } catch (e: Account.Failed) {
+        emptyList()
+    } catch (e: Sealed.NotNow) {
+        emptyList()
+    }
+
+    private fun openAccount() {
+        startActivity(Intent(this, AccountActivity::class.java))
+    }
+
+    private fun seenWords(d: Lock.Device): String {
+        val days = ((System.currentTimeMillis() / 1000 - d.seen) / 86400).toInt()
+        return when {
+            days <= 0 -> getString(R.string.seen_today)
+            days == 1 -> getString(R.string.seen_yesterday)
+            else -> resources.getQuantityString(R.plurals.seen_days, days, days)
+        }
+    }
+
+    private fun rowOf(d: Lock.Device): AccountScreens.Row = AccountScreens.Row(
+        d.id, d.name, getString(if (d.isPc) R.string.kind_pc else R.string.kind_phone),
+        if (d.seen > 0) seenWords(d) else "", d.mine, d.linked)
+
+    private fun drawAccount() {
+        accountBox.removeAllViews()
+        val st = drawnState ?: return
+        val a = AccountScreens(this)
+        if (st !is Lock.State.Ready) {
+            val line = when (st) {
+                is Lock.State.SignedOut -> R.string.sign_in_line
+                is Lock.State.Changed -> R.string.step_changed
+                is Lock.State.NoLock -> R.string.no_lock_title
+                is Lock.State.Declined -> R.string.declined_title
+                else -> R.string.approve_title
+            }
+            accountBox.addView(Skin.card(this).apply {
+                addView(Skin.eyebrow(this@SettingsActivity, getString(R.string.your_account)))
+                addView(Skin.gap(this@SettingsActivity, 10))
+                addView(Skin.text(this@SettingsActivity, getString(line), 15f, Skin.FG).apply {
+                    setLineSpacing(0f, 1.25f)
+                    setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 14))
+                })
+                addView(Skin.button(this@SettingsActivity,
+                    getString(if (st is Lock.State.SignedOut) R.string.sign_in_google
+                              else R.string.continue_),
+                    primary = st is Lock.State.SignedOut) { openAccount() })
+            })
+            return
+        }
+        for (ask in drawnAsking) {
+            accountBox.addView(a.asking(AccountScreens.Ask(ask.id, ask.name, ask.code),
+                                        { approve(ask) }, { decline(ask) }))
+        }
+        val rows = drawnDevices.map { d ->
+            if (d.id == askingForget) a.forgetQuestion(d.name, { forget(d) },
+                                                       { askingForget = ""; drawAccount() })
+            else a.deviceRow(rowOf(d), if (d.mine) null else ({
+                askingForget = d.id
+                drawAccount()
+            }))
+        }
+        val foot: View =
+            if (askingSignOut) a.signOutQuestion(Lock.recordings(this), { signOut() },
+                                                 { askingSignOut = false; drawAccount() })
+            else Skin.button(this, getString(R.string.sign_out)) {
+                askingSignOut = true
+                drawAccount()
+            }
+        accountBox.addView(a.accountCard(st.email, drawnWord, rows, foot))
+    }
+
+    /** One action on a thread, then the card read again. */
+    private fun act(work: () -> Unit) {
         thread {
             val word = try {
-                Account.refreshNow(this)
+                work()
                 ""
             } catch (e: Account.Failed) {
                 e.message.orEmpty()
             } catch (e: Sealed.NotNow) {
-                getString(R.string.phone_locked)
+                Sealed.words(this, e)
             }
-            runOnUiThread { kitShow(word) }
+            runOnUiThread {
+                if (word.isNotEmpty()) {
+                    android.widget.Toast.makeText(this, word, android.widget.Toast.LENGTH_LONG).show()
+                }
+                readAccount()
+            }
         }
     }
 
-    private fun kitSignOut() {
-        kitSay(getString(R.string.checking), Skin.DIM)
-        thread {
-            val word = try {
-                Account.endSession(this)
-                ""
-            } catch (e: Sealed.NotNow) {
-                getString(R.string.phone_locked)
-            }
-            runOnUiThread {
-                kitDetail.text = ""
-                kitShow(word)
-            }
-        }
+    private fun approve(ask: Lock.Asking) = act { Lock.approve(this, ask.id) }
+
+    private fun decline(ask: Lock.Asking) = act { Lock.decline(this, ask.id) }
+
+    private fun forget(d: Lock.Device) {
+        askingForget = ""
+        act { Lock.forget(this, d) }
+    }
+
+    private fun signOut() {
+        askingSignOut = false
+        act { if (!Lock.signOut(this)) throw Account.Failed(getString(R.string.sign_out_unreached)) }
     }
 
     private fun label(s: String): TextView = Skin.text(this, s, 13f, Skin.DIM).apply {

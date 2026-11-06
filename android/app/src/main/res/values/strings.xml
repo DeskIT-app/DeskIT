@@ -158,9 +158,83 @@
     <string name="nothing_waiting">Nothing waiting.</string>
     <string name="close">Close</string>
 
-    <!-- The account. -->
+    <!-- The account. The words on the lock are the desk's own, Home's rows
+         (deskweb.py), so one thing has one name on both screens. -->
+    <string name="your_account">Your account</string>
+    <string name="your_devices">Your devices</string>
     <string name="signing_in">Signing in…</string>
+    <string name="sign_in_title">Sign in</string>
+    <string name="sign_in_line">Use the same Google account as your PC. That\'s all it takes to connect them.</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="sign_in_note">Your browser opens, and you come straight back here.</string>
+    <string name="signed_in_as">Signed in as %1$s</string>
+    <string name="use_another_account">Use another account</string>
+    <string name="preparing">Preparing…</string>
+    <string name="approve_title">Approve this phone on your PC</string>
+    <string name="approve_line">Open DeskIT on your PC. On Home, check that this code is the one it shows, then press Approve.</string>
+    <string name="approve_wait">Waiting for your PC…</string>
+    <string name="approve_note">This code lasts 15 minutes, then a new one appears here by itself.</string>
+    <string name="no_lock_title">Open DeskIT on your PC</string>
+    <string name="no_lock_line">Your PC sets up your account the first time it opens. This phone carries on by itself after that.</string>
+    <string name="declined_title">Your PC said Not now</string>
+    <string name="declined_line">This phone isn\'t part of your account yet. Ask again when you\'re at your PC.</string>
+    <string name="ask_again">Ask again</string>
+    <string name="removed_word">This phone was removed from your account. Approve it on your PC to bring it back.</string>
+    <string name="ready_title">This phone is ready</string>
+    <string name="ready_line">It\'s part of your account now.</string>
+    <string name="ready_pcs">Your PCs: %1$s</string>
+    <string name="done">Done</string>
+    <string name="changed_title">The lock of your account changed. Was it you?</string>
+    <string name="changed_line">It didn\'t change on this phone. Until you answer, this phone stops using your keys and your PCs. If it was you, this phone asks to join the new lock and you approve it on your PC. If it wasn\'t, nothing here changes.</string>
+    <string name="it_wasnt_me">It wasn\'t me</string>
+    <string name="it_was_me">It was me</string>
+    <string name="refused_title">Not you. This phone kept its key</string>
+    <string name="refused_line">Your keys and your PCs stay paused here.</string>
+    <string name="refused_note">On your PC, open Settings, Account, and press Sign out of every PC. It ends every session of your account, anyone else\'s too.</string>
+    <string name="asking_title">%1$s asks to join your account</string>
+    <string name="asking_line">Its screen must show this code:</string>
+    <string name="asking_note">Approve only if the code is exactly that. It then gets your account\'s key: your cloud keys and what you said open there too, and the key crosses sealed, so the server can\'t read it.</string>
+    <string name="approve">Approve</string>
+    <string name="not_now">Not now</string>
+    <string name="twins_title">Two requests say they are %1$s. Neither can be approved</string>
+    <string name="twins_line">One of them isn\'t yours. On %1$s, sign out and sign in again to ask afresh.</string>
+    <string name="this_phone">This phone</string>
+    <string name="device_seen">%1$s · seen %2$s</string>
+    <string name="device_not_linked">%1$s · not linked yet</string>
+    <string name="kind_pc">PC</string>
+    <string name="kind_phone">Phone</string>
+    <string name="seen_today">today</string>
+    <string name="seen_yesterday">yesterday</string>
+    <plurals name="seen_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <string name="forget">Forget</string>
+    <string name="keep_it">Keep it</string>
+    <string name="forget_title">Forget %1$s?</string>
+    <string name="forget_line">It stops being part of your account until you approve it again.</string>
+    <string name="sign_out">Sign out</string>
+    <string name="stay_signed_in">Stay signed in</string>
+    <string name="sign_out_title">Sign out of this phone?</string>
+    <string name="sign_out_line">This phone leaves your account and forgets its key. To come back, sign in and approve it on your PC again.</string>
+    <plurals name="sign_out_recordings">
+        <item quantity="one">%1$d recording hasn\'t reached your PC yet. Signing out deletes it.</item>
+        <item quantity="other">%1$d recordings haven\'t reached your PC yet. Signing out deletes them.</item>
+    </plurals>
+    <string name="try_again">Try again</string>
+    <string name="continue_">Continue</string>
+    <string name="request_gone">That request is gone.</string>
+    <string name="request_expired">%1$s\'s request expired. It asks again on its own.</string>
+    <string name="request_not_shown">That isn\'t the request on screen. Look again.</string>
+    <string name="request_no_key">%1$s\'s request carries no usable key.</string>
+    <string name="request_changed">%1$s\'s request changed after it was shown. Not approved.</string>
+    <string name="approved">%1$s can open your account now.</string>
+    <string name="step_sign_in">Sign in with Google</string>
+    <string name="step_signed_in">Signed in</string>
+    <string name="step_changed">Your account\'s lock changed</string>
+    <string name="sign_out_unreached">Signed out here, but your account couldn\'t be reached. On your PC, forget this phone.</string>
     <string name="phone_locked">Unlock the phone and try again.</string>
+    <string name="keystore_busy">This phone\'s secure storage isn\'t answering. Restart the phone and try again.</string>
 
     <!-- The lookup box. -->
     <string name="lookup_title">DeskIT · look up</string>

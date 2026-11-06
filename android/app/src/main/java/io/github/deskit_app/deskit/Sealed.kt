@@ -41,8 +41,13 @@ object Sealed {
     private const val TAG_BITS = 128
     private const val IV_BYTES = 12
 
-    /** The phone is locked, or Keystore said no for now. Ask again later. */
-    class NotNow(why: String, cause: Throwable? = null) : Exception(why, cause) {
+    /**
+     * The phone is locked, or Keystore said no for now. Ask again later.
+     * [locked] is which of the two, because they are different sentences: a
+     * phone that is open in the person's hand must not be told to unlock.
+     */
+    class NotNow(why: String, val locked: Boolean = false, cause: Throwable? = null) :
+        Exception(why, cause) {
         init {
             // Class names and Keystore's own words, never a value: this is
             // what a phone we have never held will say when it refuses.
@@ -50,13 +55,17 @@ object Sealed {
         }
     }
 
+    /** What a screen says for a [NotNow]. */
+    fun words(c: Context, e: NotNow): String =
+        c.getString(if (e.locked) R.string.phone_locked else R.string.keystore_busy)
+
     private fun dir(c: Context) = File(c.noBackupFilesDir, "sealed").apply { mkdirs() }
 
     private fun file(c: Context, name: String) = File(dir(c), "$name.bin")
 
     fun has(c: Context, name: String): Boolean = file(c, name).exists()
 
-    private fun locked(c: Context): Boolean =
+    fun locked(c: Context): Boolean =
         (c.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceLocked
 
     /**
@@ -69,7 +78,7 @@ object Sealed {
         (c.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceSecure
 
     private fun make(c: Context): SecretKey {
-        if (locked(c)) throw NotNow("the phone is locked")
+        if (locked(c)) throw NotNow("the phone is locked", locked = true)
         if (lockable(c)) {
             try {
                 val strict = makeOne(unlockedOnly = true)
@@ -134,11 +143,11 @@ object Sealed {
                 seal(make(c))
             }
         } catch (e: GeneralSecurityException) {
-            throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", e)
+            throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", locked(c), e)
         } catch (e: ProviderException) {
-            throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", e)
+            throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", locked(c), e)
         } catch (e: IOException) {
-            throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", e)
+            throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", locked(c), e)
         }
         val f = file(c, name)
         val tmp = File(f.path + ".tmp")
@@ -166,16 +175,18 @@ object Sealed {
             cipher.updateAAD(name.toByteArray(Charsets.UTF_8))
             cipher.doFinal(raw, IV_BYTES, raw.size - IV_BYTES)
         } catch (e: AEADBadTagException) {
-            if (locked(c)) throw NotNow("the phone is locked", e)
+            if (locked(c)) throw NotNow("the phone is locked", true, e)
             null
         } catch (e: KeyPermanentlyInvalidatedException) {
             null
         } catch (e: GeneralSecurityException) {
-            throw NotNow(if (locked(c)) "the phone is locked" else e.javaClass.simpleName, e)
+            val now = locked(c)
+            throw NotNow(if (now) "the phone is locked" else e.javaClass.simpleName, now, e)
         } catch (e: ProviderException) {
-            throw NotNow(if (locked(c)) "the phone is locked" else e.javaClass.simpleName, e)
+            val now = locked(c)
+            throw NotNow(if (now) "the phone is locked" else e.javaClass.simpleName, now, e)
         } catch (e: IOException) {
-            throw NotNow(e.javaClass.simpleName, e)
+            throw NotNow(e.javaClass.simpleName, false, e)
         }
     }
 

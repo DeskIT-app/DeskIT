@@ -42,6 +42,13 @@
             </intent-filter>
         </activity>
 
+        <!-- The road into the account: sign in, approve, ready, the lock. -->
+        <activity
+            android:name=".AccountActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="@string/your_account" />
+
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
