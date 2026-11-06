@@ -226,8 +226,9 @@ holds what the others need, sealed under the account key, which the server canno
 1. Install the keyboard. A QR on Settings > Phone points at the download; it is only an address and holds no secret.
 2. Open it and sign in with Google, in the phone's browser, the same account as the PC.
 3. The phone asks to join the lock. Home on every PC that holds the key shows the row it already shows for a new PC:
-   the device's name, a code, **Approve** / **Not now**. The phone shows the same code. He presses Approve. The code
-   binds the phone's key and the account's lock together (stage 1), so this one look protects both directions.
+   the device's name, a code, **Approve** / **Not now**. The phone shows the same code. He presses Approve on the PC and
+   **Same code** on the phone, one press on each side, the way Bluetooth pairs. The code binds the phone's key and the
+   account's lock together (stage 1), so that one look protects both directions.
 4. The account key crosses wrapped to the phone's own key pair. The phone writes its `link` row, the PCs add it, the
    phone reads theirs. Done for the account: the PC he pressed Approve on opens its door at once, and any other PC
    asks with one row on its own Home, because Windows wants its own yes on each PC that listens (stage 1).
@@ -246,8 +247,8 @@ Today: twelve steps, two apps, an extra account, a terminal, and an APK that doe
 
 | Road | Steps |
 |---|---|
-| Keyboard | Install the APK (Auto Blocker off, once). Sign in with Google. Approve on the PC. Enable the keyboard in Android's settings, allow the microphone |
-| Web page (stage 4) | Open the address. Sign in with Google. Approve on the PC. Allow the microphone |
+| Keyboard | Install the APK (Auto Blocker off, once). Sign in with Google. Compare the code: Approve on the PC, Same code on the phone. Enable the keyboard in Android's settings, allow the microphone |
+| Web page (stage 4) | Open the address. Sign in with Google. Compare the code: Approve on the PC, Same code in the page. Allow the microphone |
 
 No second account, no second app, no terminal, no address, no port. The cloud key, if the person has one, is already
 there. A second PC of the account needs one press on its own Home before it listens, because Windows asks each PC, and
@@ -289,19 +290,19 @@ is stage 2b's, a few minutes each. M4, M11 and M13 are checked while stage 1 is 
 |---|---|---|---|
 | M1 | He, 1 min | Tailscale on the phone, on mobile data, away from the Wi-Fi. I run `tailscale ping` and read `tailscale status` on the PC: direct or relayed? | Whether a direct path exists from his carrier at all (Tailscale tries harder than WebRTC, so a direct here does not prove stage 3, while a relay here nearly disproves it) |
 | M2 | He, 1 min | On mobile data, the WebRTC project's Trickle ICE page with two STUN servers: do the two reflexive ports match? A screenshot is enough | Whether his carrier's NAT is the hard kind (§3.1) |
-| M3 | He, 1 min | At home: the phone's Wi-Fi address. `192.168.68.x` is the PC's network; `10.100.102.x` is the first router's | Whether stage 1 works as it stands in his own home |
+| M3 | Done 2026-11-06 | At home: the phone's Wi-Fi address. His phone is on `192.168.68.x`, the PC's network, not on the first router's | Stage 1 works as it stands in his own home. This is a check of one home; nothing in the product depends on it |
 | M4 | Me, with his UAC yes | A throwaway TLS listener on the LAN and the phone's browser opening it: what the firewall dialog offers on a Public network, and what a Cancel leaves behind. Beside it, on a self-signed Store package: which executable the manifest rule must name | Stage 1's wording and whether `netsh` is needed |
 | M6 | Done 2026-11-06 | `RTCPeerConnection` in a WebView owned by the keyboard, to a hidden WebView2 on the PC: works on the emulator (§6.3) | Stage 3 can stay free of native libraries, pending M8 |
 | M7 | Done 2026-11-06 | A browser page meeting a hidden WebView2 through Realtime and STUN, the whole road in 1.06 s (§6.2). A public topic, for the probe; the real one is private | The hello's road |
 | M8 | Me and his phone | The first real direct connection: phone on mobile data, a throwaway page, hidden WebView2 at home. Nothing is published for it: the page loads over Tailscale one last time (`tailscale serve --set-path`), Tailscale goes off, the page connects. Also watched for: no firewall dialog on his screen from the engine | The proof of stage 3, or its end |
 | M9 | Me, at night | Opus 16/24/32 kbps against WAV on the six public sets, more than one run each | Stage 2's compression |
 | M10 | He, 2 min | The Deco app's IPv6 setting: is it off? With another router in front, TP-Link's FAQ for its routers says Pass-Through (Bridge); it does not name the Deco, so the app's words may differ. I re-run `tailscale netcheck` | Whether his home has IPv6. If it does, most Israeli mobile networks reach it directly with no NAT at all (§3.1) |
-| M11 | He, 1 min | With Auto Blocker's state noted: the keyboard's APK installs on the S26 under One UI 9, and the mic works in it with no extra step | Whether the road to install is what the guide will say |
+| M11 | Partly done 2026-11-06 | Auto Blocker was on and stopped the APK with its own message, naming where to turn it off (Settings > Security and privacy > Auto Blocker). With it off the APK installed, and One UI asked nothing more. The mic in it is still to check | The guide's first step on a Galaxy is Auto Blocker, as written |
 | M12 | A borrowed iPhone, 10 min | The throwaway page, tab and Home Screen, on plain Wi-Fi and on mobile data: does the channel open, does the mic ask every launch, does the text copy | Whether stage 4's iPhone promise is true |
 | M13 | He, 2 min | The second router's uplink unplugged, mobile data on: does the keyboard still reach the PC over Wi-Fi | Whether "no internet needed" is true on his phone (stage 1, the bound Wi-Fi network) |
 | M14 | Done 2026-11-06 | A phone (Kotlin, no library) and a page (WebCrypto only) joining the lock against the real `vault.py`: same code on both sides, the key out of the hand-over, a vault row opened, an edit the PC could read. Not run: a removal, and the code as stage 1 changes it; test vectors hold both | The whole account road of stages 1, 2b and 4 (§1) |
 | M15 | He and I, with his yes | One real Hebrew clip from the phone through his Groq key, the free tier's real limits read off his console, `language` set and unset, and a real POST from a browser origin (the preflight already passes) | Stage 2b's words and the web page's backup |
-| M16 | Me and his phone | The Google sign-in on the S26: the browser, the return to the app through `deskit://`, a session. Needs that address on the project's allowed list | Stage 1's first step |
+| M16 | Done 2026-11-06 | The Google sign-in on his S26 (Android 17, SDK 37), debug build: the browser, the return through `deskit://auth`, a session sealed on the phone. The join's code in 146 ms. The client key made in 9 ms, signing in 4 ms, in secure hardware, unlocked only | Stage 1's first step stands. `deskit://auth` is on the project's allowed list |
 
 M1, M2 and M10 take him five minutes and decide stage 3. They do not hold up stages 1, 2 and 2b.
 
@@ -325,16 +326,20 @@ All in Kotlin with no library: REST through `HttpURLConnection` and the platform
   compute the code, and only then write the `pairings` row (`p1.` + the raw X‖Y point), because its `code` column is not
   null (`code_hint` of the code) and `device_name` stops at 40 characters, so the name is clipped. Post the `pairing`
   broadcast, or a PC hears of the request only at its next pass, up to 15 minutes later, just as the request expires.
-  Poll the row every 3 s, take the key out of `handed`, check it against the `lock_id` the code was made with, delete the
-  row, and keep the key wrapped by the Keystore. Every format is `vault.py`'s; M14 ran them all against the real thing.
+  Poll the row every 3 s. Once the person has pressed **Same code**, take the key out of `handed`, check it against the
+  `lock_id` the code was made with, delete the row, and keep the key wrapped by the Keystore. Every format is `vault.py`'s; M14 ran them all against the real thing.
 - **The code binds the lock.** Today the code proves the asking device to the approver, and nothing proves the approver
   to the asking device. `hand_over` is unauthenticated, the only check afterwards is the fingerprint against `lock_id`,
   and the server writes both of those. So a dishonest server could hand a joining device a key of its own, then forge
   `link` rows and read any key typed there; a PC joining today has the same hole. `vault.pairing_code` gains the lock in
   its material: the asking device uses the `lock_id` it read, the approver the fingerprint of the key it holds, never
-  the server's column. If the server lied to the device, the two screens differ and nobody presses Approve. If it told
-  the truth, a key of its own fails the fingerprint, unless it finds a second key with the same 64 bits. No second code
-  and no second step. Every copy changes together; an older copy shows another code, which fails safe.
+  the server's column. If the server lied to the device, the two screens differ; if it told the truth, a key of its own
+  fails the fingerprint, unless it finds a second key with the same 64 bits. That is worth something only if the asking
+  device waits for its person: otherwise a dishonest server writes `handed` itself, with no PC at all, under a lock it
+  named. So both sides press, as in Bluetooth pairing. The approver presses Approve; the asking device presses **Same
+  code** on the screen that shows the code, and it neither opens nor keeps what it received until then. The press may
+  come before or after the Approve. One code, one press on each side. Every copy changes together; an older copy shows
+  another code, which fails safe.
 - **The request survives the process.** He walks away from the phone to press Approve, and Android may kill a keyboard
   meanwhile. The PC keeps the private half in memory because its process stays up; the phone keeps it sealed by a
   Keystore AES-GCM key for the request's 15 minutes, beside the request's id and code, so the same code is on screen
@@ -345,7 +350,7 @@ All in Kotlin with no library: REST through `HttpURLConnection` and the platform
   holds it, because nothing else would say why a join fails.
 - **The code takes a moment.** PBKDF2 at 2^17 rounds is 50 ms on his PC and took 1.7-5.1 s on the emulator, through a
   hand loop over `Mac` (`PBEKeySpec` takes characters and the material is binary). It runs on a thread, behind a
-  "preparing" line. A real phone should be far quicker; M16 says.
+  "preparing" line. On his S26 it took 146 ms (M16).
 - **`devices.link`, migration 0007.** One sealed column on the table that already exists, under `is_sealed()` and
   a new AAD, `device/{uid}/{device_id}`. JSON inside: for a PC its certificate's SHA-256, its addresses, its port, the
   protocol, and whether its words sync is on; for a phone its client certificate, the protocol, and whether its backup
@@ -496,8 +501,9 @@ every new network Public unless told otherwise, so most strangers will be there 
   an all-accepting verifier, and a real check is also simply correct.
 - The client key: an EC key in Android Keystore with `PURPOSE_SIGN` and `DIGEST_NONE`, which gets a self-signed
   certificate by itself, handed over by a small custom `X509KeyManager`. No page documents this with
-  `HttpsURLConnection`, so it was run: it works on the emulator (§1). The S26's own Keystore is still the first thing to
-  try on the real phone. If it fails, a software key sealed by a Keystore AES-GCM key (no library) does the same job.
+  `HttpsURLConnection`, so it was run: it works on the emulator (§1), and on his S26 the key is made and signs in secure
+  hardware (M16); TLS with it on a real phone is the next lane's first test. If a phone refuses, a software key sealed by a
+  Keystore AES-GCM key (no library) does the same job.
   `EncryptedSharedPreferences` (D22) is not used: `androidx.security-crypto` is deprecated, whole. The key is created
   with `setUnlockedDeviceRequired(true)` where the phone has it (API 28+), so a stolen, locked phone cannot use it.
 - `Transcriber.kt` keeps every route but opens connections through `Link`. The address that answered is remembered per
@@ -868,7 +874,8 @@ not named).
 - **The account server learns:** that a device joined, its name and platform, when devices spoke, sizes, and IP addresses
   as any server does. Of what this plan carries it never learns a key, a dictated word, a certificate's meaning, or a
   private address: all of that is sealed. (The learned words and settings that sync are plain there today; §3.) It cannot
-  hand a joining device a lock of its own, since the code on both screens binds the lock (stage 1). It cannot swap the
+  hand a joining device a lock of its own, since the device waits for its person's press on a code that binds the lock
+  (stage 1). It cannot swap the
   lock later, since a device never trusts a changed `lock_id` without asking the person (2026-09-23). It cannot add a
   device, since a row that does not open is ignored, and it cannot bring back a forgotten one past a PC that saw the
   Forget. A PC that was off through a Forget learns of it from the server, so there a dishonest server could hide it: a
@@ -1043,7 +1050,7 @@ Every way this can fail that we could think of, with what happens. "Stage" says 
 |---|---|---|
 | Lost or stolen phone | It holds the account key and a key to the dictation door | Both are unusable while the phone is locked (`setUnlockedDeviceRequired`, API 28+). **Forget** from any device of the account deletes its row and session at once: the door closes and the account stops answering it. What it already holds cannot be un-held: there is no way today to change the account key, so a phone taken while unlocked is a real loss, and the cloud keys should then be changed. Forget stops the app, not someone who took the key out of the phone and also holds his Google sign-in, so then his Google password changes too |
 | Someone else asks to join | They need his Google sign-in first, and then his Approve against a code | Not me (**Not now**), as between PCs; the twin check holds |
-| A dishonest server at the join | It could hand the new device a key of its own | The code binds the lock, so the two screens differ (stage 1). This closes it for a PC joining too |
+| A dishonest server at the join | It could hand the new device a key of its own | The code binds the lock, so the two screens differ, and the new device keeps nothing until its person presses Same code (stage 1). This closes it for a PC joining too |
 | A forgotten phone signs in again, or the server restores its row | The row still opens | The `forgotten` list, kept on every PC and never shrinking, and the phone wipes itself (stage 1) |
 | The phone is sold or lent | The key and the door's certificate would stay on it | Sign out on a phone wipes both, and recordings still waiting are named first (stage 1) |
 | Android kills the keyboard while he walks to the PC | The join's private half would be gone | Sealed by the Keystore for the request's 15 minutes, so the same code and the answer survive; the phone sweeps its own requests, so no twin appears |
@@ -1180,7 +1187,7 @@ stage 1 does. Immich and Moonlight tell the user to bring a VPN. Home Assistant 
 | The phone holds the account key, wrapped by its hardware | His word of 2026-09-20, and the only way the key can open with the PC off |
 | The web page is a full device of the account, not a lighter one | The iPhone has no other road, and a lighter key would mean a second sealed copy of every cloud key. The risk has the same root as the PC's updater (§6.1) |
 | No secret QR; one Approve per device, never per PC | §4.2 |
-| The join's code also binds the lock, for PCs too | One look protects both directions, with no second code |
+| The join's code also binds the lock, and both sides press, for PCs too | One look protects both directions, as in Bluetooth pairing. One press on the joining device is the price |
 | A phone can press Approve | The only way back for a person with one PC who never made a recovery key |
 | Every signed-in PC keeps the account's socket, whatever its syncs say | A phone's request must reach a person with both syncs off, and the socket carries nothing personal |
 | Groq first in the backup, Gemini only if it is the one key there | Groq was measured here; Gemini's Hebrew on phone audio was not (M15) |
@@ -1266,9 +1273,8 @@ Windows: [new networks are Public](https://support.microsoft.com/en-us/windows/e
 [`DnsServiceRegister`](https://learn.microsoft.com/en-us/windows/win32/api/Windns/nf-windns-dnsserviceregister).
 
 **Not verified, and said so where it matters:** the carrier NAT of any Israeli network; Israel's month for
-developer verification; the sign-in's return through `deskit://` on the S26; whether Auto Blocker is
-on by default on the S26; whether One UI 9 flags a sideloaded microphone keyboard; the Keystore road on a real
-phone (it works on the emulator) and the join surviving a killed keyboard there; Opus's effect on Hebrew Whisper; the 66M model's speed on a
+developer verification; whether Auto Blocker is on by default on the S26 (it was on, on his); TLS with the
+Keystore key on a real phone, and the join surviving a killed keyboard there; Opus's effect on Hebrew Whisper; the 66M model's speed on a
 phone; the free tier's real Groq limits, Hebrew on its current page, and whether its API answers a browser;
 Android routing on a Wi-Fi with no internet on his S26;
 whether Cloudflare's sign-up really needs no card (its Workers pages say so, nobody walked it); Google's STUN terms; a real iPhone or Android Chrome
@@ -1308,7 +1314,7 @@ Stages 2 and 2b follow as lanes of their own once stage 1 stands.
   made from this text on 2026-11-06, with the unchanged half checked against `vault.py`: `uid`
   `11111111-2222-3333-4444-555555555555`, `pairing_id` `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`, `point` 64 bytes of `0x41`.
   With `lock_id` `0123456789abcdef` the code is `WK0MS-7HN8C`; with `fedcba9876543210` it is `R85CJ-HRE9H`. A Python test and
-  a Kotlin test hold both.
+  a Kotlin test hold both. The asking device opens nothing from `handed` until its person has pressed **Same code**.
 - **`devices`, migration 0007.** `link text`, nullable, under `is_sealed()`. `session_id uuid`, nullable.
   `forget_device(target uuid)` deletes the row and the session its `session_id` names, only where both belong to
   `auth.uid()`. `platform` is `windows-…` as today, `android-<sdk>` on a phone, later `web`.
