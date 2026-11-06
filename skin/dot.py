@@ -403,6 +403,12 @@ def run(status_dot) -> None:
         status_dot.rect = (glass.x, glass.y,
                            glass.x + glass.width, glass.y + glass.height)
     placed_at[0], placed_at[1] = glass.x, glass.y
+    # The z-order rescue (overlay.dig_out, the owner's "the dot disappears
+    # behind the windows"): when the next check is due, and whether the
+    # last one found the dot buried — so a burial is logged once rather
+    # than once a second.
+    next_check = [0.0]
+    buried = [False]
     status_dot._alive.set()
     start = time.perf_counter()
     try:
@@ -424,6 +430,10 @@ def run(status_dot) -> None:
                         glass.move(at_x, at_y)
                         placed_at[0], placed_at[1] = at_x, at_y
                         glass.show()
+                        # SW_SHOWNOACTIVATE keeps the z-order the window
+                        # had, and a dot hidden for an hour may have been
+                        # pushed under in the meantime
+                        glass.raise_()
                         status_dot.rect = (at_x, at_y, at_x + BOX, at_y + BOX)
                         continue
                     dot.set(item)
@@ -449,6 +459,14 @@ def run(status_dot) -> None:
             dot.moving = status_dot.moving()
             if dot.moving and not was_moving:
                 glass.raise_()
+            now = time.monotonic()
+            if now >= next_check[0]:
+                next_check[0] = now + overlay.DOT_ON_TOP_S
+                over = overlay.dig_out(glass.hwnd)
+                if over and not buried[0]:
+                    _log.info("the dot was under %s — put back on top",
+                              overlay.window_owner(over))
+                buried[0] = bool(over)
             if status_dot._replace.is_set():
                 # A drop that had to be clamped, or "Back to the corner"
                 # from the dashboard. UpdateLayeredWindow moves the
