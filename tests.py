@@ -5762,6 +5762,44 @@ def test_phone_routes_no_apk_no_web_page() -> None:
         srv.stop()
 
 
+# ---------------------------------------------------------- the phone's door
+# PHONE_LINK_PLAN.md stage 1: the phone reaches this PC straight over the
+# house's network. Every socket here is on loopback and on a port the system
+# picked: 8756 is his running app's, and a bind on 0.0.0.0 would put Windows'
+# firewall dialog on his screen.
+
+
+def test_a_pc_makes_its_identity_once_and_a_lost_passphrase_is_a_new_one() -> None:
+    """identity() answers the same fingerprint for as long as the key is
+    there; the file holds no private key in the clear. DPAPI that cannot
+    open the passphrase (a Windows account reset) is not a crash, it is a
+    new identity, load_token's pattern."""
+    import ssl
+
+    import phone as phone_mod
+    import secretstore
+
+    first = phone_mod.identity()
+    assert len(first) == 64 and phone_mod.identity() == first
+    text = phone_mod.key_path().read_text("ascii")
+    assert "BEGIN ENCRYPTED PRIVATE KEY" in text and "BEGIN EC PRIVATE KEY" not in text
+    assert "BEGIN PRIVATE KEY" not in text
+    der = ssl.PEM_cert_to_DER_cert(text[:text.index("-----END CERTIFICATE-----") + 25])
+    assert phone_mod.fingerprint(der) == first
+    assert phone_mod.key_path().parent == paths.SECRETS_DIR
+
+    secretstore.delete(phone_mod.PASS_NAME)
+    second = phone_mod.identity()
+    assert second != first and phone_mod.identity() == second
+
+    def refused(name):
+        raise secretstore.SecretError("another account's blob")
+
+    with _patched(secretstore, "get", refused):
+        third = phone_mod.identity()
+    assert third not in (first, second)
+
+
 def test_phone_api_version_fields() -> None:
     """12.9: `/api/version` wants the bearer (a GET without one is 401
     and says nothing) and answers the six fields — pc, ime_min,
