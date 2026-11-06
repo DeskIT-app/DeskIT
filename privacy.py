@@ -88,7 +88,11 @@ TEXT_VERSIONS: dict[str, str] = {
     "cloud_screenshots": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
     # 2026-09-23: the words stop promising the keys never travel there
     # (they go sealed, through the syncs); carried forward, see below.
-    "account": "deskit-terms-0+en-2026-09-23",
+    # 2026-11-06: the words name the id of a device's session and the one
+    # connection a signed-in copy keeps, syncs on or off. Both are new under
+    # this gate, so the old rows go stale and it asks once more; never
+    # carried forward.
+    "account": "deskit-terms-0+en-2026-11-06",
     "report_upload": "deskit-terms-0+en-2026-09-19",
     "settings_sync": "deskit-terms-0+en-2026-09-21",
     "history_sync": "deskit-terms-0+en-2026-09-21",
@@ -393,12 +397,14 @@ def _write_gate(kind: str, value: bool) -> None:
                  kind, value, e)
 
 
-def carry_forward(kind: str, old_versions) -> bool:
+def carry_forward(kind: str, old_versions, to: str | None = None) -> bool:
     """A row given under one of ``old_versions`` becomes a row of the
     current version — migrations.py's door for a card whose new words
     promise less than the old (the lock, 2026-09-21): the date and the
     app version of the original press stay, ``carried_from`` names the
-    words it was given under. True if a row was rewritten. A row of any
+    words it was given under. ``to`` stops it at the version a step was
+    written for, so a row never claims words later than the ones that
+    step said nothing new about. True if a row was rewritten. A row of any
     other version, or none, is left alone."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
@@ -407,7 +413,7 @@ def carry_forward(kind: str, old_versions) -> bool:
         row = next((r for r in current if r.get("kind") == kind), None)
         if row is None or row.get("text_version") not in tuple(old_versions):
             return False
-        moved = {**row, "text_version": TEXT_VERSIONS[kind],
+        moved = {**row, "text_version": to or TEXT_VERSIONS[kind],
                  "carried_from": row.get("text_version")}
         kept = [r for r in current if r.get("kind") != kind] + [moved]
         _write_file(kept)
@@ -415,7 +421,7 @@ def carry_forward(kind: str, old_versions) -> bool:
         _gates[kind] = True
     _write_gate(kind, True)
     log.info("consent carried forward: %s (%s -> %s)", kind, row.get("text_version"),
-             TEXT_VERSIONS[kind])
+             to or TEXT_VERSIONS[kind])
     return True
 
 

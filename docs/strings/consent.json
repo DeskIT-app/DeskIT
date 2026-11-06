@@ -85,12 +85,12 @@
   },
   "account": {
     "kind": "account",
-    "text_version": "deskit-terms-0+en-2026-09-23",
+    "text_version": "deskit-terms-0+en-2026-11-06",
     "title": "Open an account?",
     "blocks": [
       [
         "What leaves",
-        "An account id — anonymous, or the e-mail of the Google account you chose; this PC's name; the app, Windows and hardware versions."
+        "An account id — anonymous, or the e-mail of the Google account you chose; this device's name; the app, Windows and hardware versions; the id of this device's session, so another device of yours can end it."
       ],
       [
         "To whom",
@@ -98,7 +98,7 @@
       ],
       [
         "On whose account",
-        "DeskIT's project. Signing in also keeps your learned words and settings there, and what you said and your cloud keys, locked with a key only your own PCs hold."
+        "DeskIT's project. Signing in also keeps your learned words and settings there, and what you said and your cloud keys, locked with a key only your own devices hold. While you are signed in, one open connection stays up, syncs on or off; it carries nothing you said."
       ],
       [
         "The providers say",

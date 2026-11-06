@@ -89,9 +89,12 @@ def _the_account_words_ask_nothing_new() -> None:
     Nothing new leaves under the account gate itself, so a row given
     under the 2026-09-19 words is rewritten to the new version rather
     than going stale and turning every signed-in copy's account off
-    until someone presses Turn on (privacy.CARRIED_FORWARD["account"])."""
+    until someone presses Turn on (privacy.CARRIED_FORWARD["account"]).
+    To those words and no further: the card's 2026-11-06 words do name
+    something new, and a row must not claim them unasked."""
     import privacy
-    privacy.carry_forward("account", privacy.CARRIED_FORWARD["account"])
+    privacy.carry_forward("account", privacy.CARRIED_FORWARD["account"],
+                          to="deskit-terms-0+en-2026-09-23")
 
 
 def _each_copy_its_own_key_slot() -> None:

@@ -29,7 +29,7 @@ backups, 2026-09-21):
   computes the code again from the public key it is about to wrap to and
   from the fingerprint of the key it holds — never from anything the
   server says the code or the lock is — and the person, having compared
-  the two, presses Approve:
+  the two, presses Approve there and Same code here:
   the approving device wraps the account key to the applicant's public
   key (``hand_over``), the applicant unwraps it (``take``), and the
   server only ever carried a public key and a wrapped one. Apple and
@@ -43,8 +43,11 @@ backups, 2026-09-21):
   code on 2026-11-06 (PHONE_LINK_PLAN.md): until then nothing proved the
   approver to the asking device, ``hand_over`` being unauthenticated and
   ``profiles.lock_id`` being the server's word, so a dishonest server
-  could hand a joining device a key of its own. Now it gets two
-  different codes on two screens, and nobody presses Approve.
+  could hand a joining device a key of its own, with no other device
+  involved at all. So the lock is in the code and both sides press, as
+  Bluetooth pairing does: a server that names a lock of its own gets two
+  different codes on two screens, and the joining device opens nothing
+  until its own person says the codes are the same (sb.same_code).
 - THE PC IS THE TRUST ANCHOR, not the server (2026-09-23, the audit's
   A15: one write of ``profiles.lock_id`` used to make every PC delete
   its key and take the next one handed to it). A PC that holds a key
@@ -113,6 +116,11 @@ KEY_NAME = "account_key"
 #: {"keys": [{"uid", "key" (base64, or "" for a confirmation alone),
 #: "lock", "created", "aside_at", "for_lock", "why"}]}, oldest first.
 ASIDE_NAME = "account_key_aside"
+#: The ``why`` of a key moved aside because ANOTHER account took the slot:
+#: the one kind that comes back by itself, when its account signs in here
+#: again. A key set aside for a lock that changed, or by a PC the account
+#: forgot, was given up on purpose and never does.
+OTHER_ACCOUNT = "another account"
 
 #: Crockford's base32 alphabet without I, L, O and U — nothing that reads
 #: like something else on a screen or on paper.
@@ -450,11 +458,50 @@ def _now() -> str:
 
 
 def key(uid: str) -> bytes | None:
-    """This device's copy of the account key for ``uid``, or None — a key
-    of another account is None too, and stays where it is."""
+    """This device's copy of the account key for ``uid``, or None. A key
+    of another account is None too, and stays. One slot holds one key, so
+    a second account on this PC moves the first one's aside (``keep``):
+    that key comes back here the moment its account signs in again, the
+    other going aside in its place. A person with the syncs off has no
+    other device to be approved from, and now makes a lock of their own at
+    the first pass, so without this the first account's key would have no
+    way back."""
     with _lock:
         held = _read()
-        return held["key"] if held and held["uid"] == str(uid) else None
+        if held and held["uid"] == str(uid):
+            return held["key"]
+        return _bring_back(held, str(uid))
+
+
+def _bring_back(held: dict | None, uid: str) -> bytes | None:
+    """``uid``'s key out of the file of keys set aside, into the slot."""
+    try:
+        rows = _aside()
+    except VaultError:
+        return None
+    mine = [r for r in rows if r.get("uid") == uid and r.get("key") and r.get("why") == OTHER_ACCOUNT]
+    if not mine:
+        return None
+    row = mine[-1]
+    try:
+        back = base64.b64decode(str(row["key"]), validate=True)
+    except (ValueError, TypeError):
+        log.warning("lock: a key set aside here is not what it should be — left where it is")
+        return None
+    if len(back) != KEY_BYTES:
+        return None
+    # in this order, so a stop half way leaves a key in two places and
+    # never in none
+    if held is not None:
+        _put_aside(held, for_lock="", why=OTHER_ACCOUNT)
+    _write({"uid": uid, "key": back, "created": str(row.get("created") or _now()), "refused": ""})
+    left = [r for r in _aside() if not (r.get("uid") == uid and r.get("key") == row["key"])]
+    if left:
+        secretstore.set(ASIDE_NAME, json.dumps({"keys": left}))
+    else:
+        secretstore.delete(ASIDE_NAME)
+    log.info("lock: this account's key is back on this PC (%s)", fingerprint(back))
+    return back
 
 
 def have(uid: str) -> bool:
@@ -479,7 +526,7 @@ def keep(uid: str, new: bytes) -> None:
     with _lock:
         held = _read()
         if held is not None and held["key"] != new:
-            _put_aside(held, for_lock="", why="replaced")
+            _put_aside(held, for_lock="", why=OTHER_ACCOUNT if held["uid"] != str(uid) else "replaced")
         _write({"uid": str(uid), "key": new, "created": _now(), "refused": ""})
 
 

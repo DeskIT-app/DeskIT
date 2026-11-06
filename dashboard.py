@@ -8015,7 +8015,8 @@ class Dashboard:
         approve card beside the dot: "not outside DeskIT — inside, on
         Home"): another device asking to join, with its code and Approve /
         Not now; this PC waiting for another device of the account, with
-        the code it shows; a fresh recovery key, until Done; and — while
+        the code it shows and Same code, the joining side's own press; a
+        fresh recovery key, until Done; and — while
         the account has none, and once a sync is on or the account has a
         phone (a lock held with both syncs off asks nothing: ``quiet``) —
         the one thing worth doing before a PC is lost."""
@@ -8065,16 +8066,26 @@ class Dashboard:
                              lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))],
             })
         if lock.get("state") == "waiting":
+            code = lock.get("code") or "…"
+            same = bool(lock.get("same"))
+            buttons = [("Type the recovery key", "quiet", self._lock_go_type)]
+            if not same:
+                buttons.insert(0, ("Same code", "gold",
+                                   lambda c=lock.get("code"): self._lock_do("same_code", "noted", kind=c)))
             rows.append({
                 "at": now, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your account", "eyebrow_right": False,
-                "text": f"Waiting for another device of yours to approve this PC — its "
-                        f"screen must show {lock.get('code') or '…'}",
-                "note": "Open the desk on your other PC and press Approve, or open DeskIT on "
-                        "your phone. Until then this PC has your words and settings; what you "
-                        "said and your cloud keys stay locked. No other device at hand? Type "
-                        "the recovery key DeskIT made for you.",
-                "buttons": [("Type the recovery key", "quiet", self._lock_go_type)],
+                "text": (f"You pressed Same code for {code} — waiting for your other device to "
+                         "approve this PC" if same else
+                         f"Waiting for another device of yours to approve this PC — its "
+                         f"screen must show {code}"),
+                "note": ("Now press Approve there: the desk on your other PC, or DeskIT on your "
+                         "phone. Until then what you said and your cloud keys stay locked."
+                         if same else
+                         "Open the desk on your other PC, or open DeskIT on your phone. If it "
+                         "shows this code, press Approve there and Same code here, in either "
+                         "order."),
+                "buttons": buttons,
             })
         elif lock.get("state") == "have" and lock.get("recovery") is False \
                 and getattr(self, "_lock_mode", "") != "shown" and not lock.get("quiet"):
@@ -8200,8 +8211,8 @@ class Dashboard:
         elif waiting:
             text = (f"Waiting for another device of yours to approve this PC — its screen "
                     f"must show  {lock.get('code') or '…'}")
-            buttons = []
-            key = ("waiting", lock.get("code"))
+            buttons = [] if lock.get("same") else [("Home", lambda: self._show("Home"))]
+            key = ("waiting", lock.get("code"), bool(lock.get("same")))
         else:
             text, buttons, key = "", [], None
         if key == getattr(self, "_lock_banner_key", None):
@@ -8311,7 +8322,7 @@ class Dashboard:
         elif self._lock_mode == "shown":
             said = "Your recovery key. Keep it somewhere safe — it is shown once."
             said_code = self._lock_fresh
-            said_sub = ("With it, a PC with no other PC of yours at hand can open your "
+            said_sub = ("With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.")
             colour = ui.AMBER
             buttons = [("Copy", self._lock_copy), ("Done", self._lock_done)]
@@ -8335,15 +8346,15 @@ class Dashboard:
                 said_sub += f"  ·  on the server: lock {ch['server']}, here: lock {ch.get('mine') or '—'}"
         elif lock.get("pending") and lock["pending"][0].get("twins"):
             ask = lock["pending"][0]
-            said = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            said = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     "neither can be approved.")
-            said_sub = (f"One of them is not your PC. On {ask.get('name') or 'that PC'}, sign out "
-                        "and sign in again to ask afresh.")
+            said_sub = (f"One of them is not yours. On {ask.get('name') or 'that device'}, sign "
+                        "out and sign in again to ask afresh.")
             colour = ui.RED
             buttons = [("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
         elif lock.get("pending"):
             ask = lock["pending"][0]
-            said = f"{ask.get('name') or 'Another PC'} signed in to your account and asks to join."
+            said = f"{ask.get('name') or 'Another device'} signed in to your account and asks to join."
             said_code = str(ask.get("code") or "")
             said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
                         "It then gets your account's key: your cloud keys and what you "
@@ -8351,17 +8362,23 @@ class Dashboard:
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                        ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
         elif lock.get("state") == "waiting":
-            said = "Waiting for your other PC to approve this one."
+            said = "Waiting for another device of yours to approve this PC."
             said_code = str(lock.get("code") or "")
             typing = self._lock_mode == "typing"
             if typing:
                 said_sub = "Your recovery key — 24 letters and digits in six groups:"
                 buttons = [("Open", self._lock_recover), ("Cancel", self._lock_done)]
             else:
-                said_sub = ("Open the desk on your other PC: Home there shows this code — press "
-                            "Approve. Until then this PC has your words and settings; "
-                            "what you said and your cloud keys stay locked.")
+                said_sub = ("Open the desk on your other PC, or DeskIT on your phone. If it "
+                            "shows this code, press Approve there and Same code here. Until "
+                            "then this PC has your words and settings; what you said and your "
+                            "cloud keys stay locked.")
                 buttons = [("Type the recovery key", self._lock_type)]
+                if lock.get("same"):
+                    said = "You pressed Same code — waiting for your other device to approve this PC."
+                else:
+                    buttons.insert(0, ("Same code", lambda c=lock.get("code"):
+                                       self._lock_do("same_code", "noted", kind=c)))
             if lock.get("error"):
                 said_sub = f"{lock['error']}  ·  {said_sub}"
         elif lock.get("state") == "have":

@@ -229,20 +229,23 @@ WORDS = {
     "account.failed": "Not signed in: {why}",
     "account.terms": "Terms",
     "account.continue": "Continue",
-    "account.link.title": "One more step: approve this PC on your other one",
-    "account.link.line": ("Your other PC holds the key to your account — what you said and "
-                          "your cloud keys are locked with it. Open the desk there: Home "
-                          "shows this code. If it is the same, press Approve."),
+    "account.link.title": "One more step: approve this PC from another device of yours",
+    "account.link.line": ("Another device of yours holds the key to your account — what you said "
+                          "and your cloud keys are locked with it. Open DeskIT there: it shows "
+                          "this code. If it is the same, press Approve there and Same code "
+                          "here, in either order."),
+    "account.link.same": "Same code",
+    "account.link.same.done": "You pressed Same code — now press Approve on the other device.",
     "account.link.waiting": "Waiting for the approval…",
     "account.link.approved": "Approved — what you said and your cloud keys are on their way.",
-    "account.link.recovery": "No other PC at hand? Type your recovery key",
+    "account.link.recovery": "No other device at hand? Type your recovery key",
     "account.link.recovery.help": ("24 letters and digits in six groups — shown once, when it was made, "
-                                   "and never again. Lost it? Make a new one on your other PC: "
+                                   "and never again. Lost it? Make a new one on a PC that is in: "
                                    "Settings > Account > Replace the recovery key."),
     "account.link.recovery.button": "Open",
     "account.link.failed": "Not opened: {why}",
     "account.link.later": "Later",
-    "account.link.later.line": ("You can do this later from Settings > Account, on either PC. "
+    "account.link.later.line": ("You can do this later from Settings > Account. "
                                 "Until then DeskIT works here with your words and settings; what "
                                 "you said and your cloud keys stay locked."),
     "mic.title": "Which microphone?",
@@ -1856,8 +1859,10 @@ class Wizard:
     # other PC's card works the same code out from that key and the
     # person presses Approve there. This page waits
     # (sb.poll_lock every LINK_POLL_S), offers the recovery key for the
-    # day no other PC is at hand, and Later for now — the desk's Account
-    # card carries the request on.
+    # day no other device is at hand, and Later for now — the desk's Account
+    # card carries the request on. Same code is this page's own press: until
+    # it, nothing handed over is opened (sb.same_code), so a dishonest server
+    # cannot answer the request by itself.
     LINK_POLL_S = 3.0
 
     def _link_open(self) -> None:
@@ -1878,6 +1883,9 @@ class Wizard:
         self.link_code = tk.Label(f, text=lock.get("code") or "…", bg=bg, fg=ui.FG,
                                   font=(ui.MEDIUM, 26), anchor="w")
         self.link_code.pack(fill="x", pady=(0, 6))
+        self.same_button = tklook.Button(f, WORDS["account.link.same"], self._link_same, bg=bg,
+                                         primary=True, w=132, h=34)
+        self.same_button.pack(anchor="w", pady=(0, 8))
         self.link_line = self._line(WORDS["account.link.waiting"], parent=f, bg=bg,
                                     colour=ui.DIM, size=9, width=INNER - 40, pady=(0, 16))
         self._line(WORDS["account.link.recovery"], parent=f, bg=bg, colour=ui.FG, size=10,
@@ -1940,13 +1948,31 @@ class Wizard:
         if lock.get("state") == "have":
             self._link_done(approved=True)
             return
+        same = bool(lock.get("same"))
+        button = getattr(self, "same_button", None)
+        if button is not None and button.winfo_exists():
+            button.enable(not same)      # a request made afresh asks again
         line = getattr(self, "link_line", None)
         if line is not None and line.winfo_exists():
             if lock.get("error"):
                 line.configure(text=WORDS["account.link.failed"].format(why=lock["error"])[:160], fg=ui.AMBER)
             else:
-                line.configure(text=WORDS["account.link.waiting"], fg=ui.DIM)
+                line.configure(text=WORDS["account.link.same.done" if same else "account.link.waiting"],
+                               fg=ui.DIM)
         self._link_poll_later()
+
+    def _link_same(self) -> None:
+        """[Same code]: the code this page shows is the one on the other
+        device. No request and no wait in it; what was handed over is
+        taken at the next poll, before or after the Approve."""
+        import sb
+        try:
+            sb.same_code(self.link_code.cget("text"))
+        except Exception as e:                             # noqa: BLE001
+            self.link_line.configure(text=WORDS["account.link.failed"].format(why=e)[:160], fg=ui.AMBER)
+            return
+        self.same_button.enable(False)
+        self.link_line.configure(text=WORDS["account.link.same.done"], fg=ui.DIM)
 
     def _link_recover(self) -> None:
         """[Open] beside the recovery key: sb.recover on a thread (half
