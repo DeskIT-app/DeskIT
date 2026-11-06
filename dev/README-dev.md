@@ -2731,8 +2731,11 @@ showing to that session. The uuid in the link is NOT the `session_id` a
 hook is handed (that names the current CLI transcript, and a resume
 starts a new one); it is the desktop app's own id, joined to ours
 through the app's own store —
-`%APPDATA%\Claude\claude-code-sessions\<account>\<org>\local_<id>.json`,
-which names `sessionId`, `cliSessionId` and every `priorCliSessionIds`,
+`%LOCALAPPDATA%\Claude-Data\claude_<hash>\claude-code-sessions\<account>\<org>\local_<id>.json`
+since the app moved it on 2026-10-21 (before that
+`%APPDATA%\Claude\claude-code-sessions\…`, still looked at; the list of
+places is `notify_hook.session_roots()`, which the arrival watcher reads
+too), which names `sessionId`, `cliSessionId` and every `priorCliSessionIds`,
 so a notification from the fourth episode of a session still opens that
 session. Nothing is written there and nothing is asked of the app. A
 notification that named no session, a store that has moved or will not

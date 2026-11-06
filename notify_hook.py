@@ -359,20 +359,76 @@ def owner_window(depth: int = WALK_DEPTH) -> tuple[int, str]:
 # will not parse, or that has never heard of this session is no link at
 # all — and no link is the behaviour this hook had before: raise the
 # window and let the owner find the tab.
+#
+# THE STORE MOVED (2026-10-21). The desktop app (3.6556) now keeps all
+# of its data — this store included, same `<account>\<org>\local_<id>.json`
+# layout, same field names — in
+#
+#   %LOCALAPPDATA%\Claude-Data\claude_<publisher hash>\claude-code-sessions
+#
+# ("the data Claude keeps for this Windows account", says the README.txt
+# it leaves one level up). That folder is REAL: a cmd started through WMI,
+# outside every container, lists the same 192 files a shell inside Claude
+# Code does (2026-10-24), and neither of the two old places — %APPDATA%
+# here, the package's LocalCache\Roaming copy outside — exists any more
+# from either side. Nothing said so: from 2026-10-21 09:12 every card
+# carried no link (a click raised the window and stopped there) and the
+# engine's arrival watcher logged "found NO session store" 154 times.
+# So the roots are LISTED, new layout first, the old two after it for a
+# machine on an older app, and session_roots() is the one list both
+# this hook and notify.py's watcher read — two copies of it are how one
+# of them stayed broken.
 
-SESSIONS = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
+STORE_UNDER = Path("claude-code-sessions")
 LOCAL = "local_"
 STORE_MAX = 40                    # session files opened before giving up
 UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
                   r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
+def session_roots(local=None, appdata=None) -> list[Path]:
+    """Every folder the desktop app's session store may be in, that
+    exists, the current layout first (see "THE STORE MOVED"):
+
+        %LOCALAPPDATA%\\Claude-Data\\claude_*\\claude-code-sessions
+        %APPDATA%\\Claude\\claude-code-sessions                (before)
+        %LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude\\…
+                                                              (before, outside)
+
+    The two `*` are the publisher hash, globbed so a reinstall under
+    another identity does not move the store out from under this.
+    `local` and `appdata` stand in for the environment in a test. Never
+    raises; [] when nothing is there."""
+    local = os.environ.get("LOCALAPPDATA", "") if local is None else str(local)
+    appdata = os.environ.get("APPDATA", "") if appdata is None else str(appdata)
+    found: list[Path] = []
+    try:
+        if local:
+            found += [p / STORE_UNDER for p in
+                      sorted((Path(local) / "Claude-Data").glob("claude_*"))]
+        if appdata:
+            found.append(Path(appdata) / "Claude" / STORE_UNDER)
+        if local:
+            found += [p / "LocalCache" / "Roaming" / "Claude" / STORE_UNDER
+                      for p in sorted((Path(local) / "Packages").glob("Claude_*"))]
+    except OSError:
+        pass
+    out: list[Path] = []
+    for root in found:
+        try:
+            if root.is_dir() and root not in out:
+                out.append(root)
+        except OSError:
+            continue
+    return out
+
+
 def session_link(session_id, root=None) -> str:
     """`claude://resume?session=<uuid>` for one CLI session, or "".
 
     `root` is the store's folder, a parameter only so a test can hand
-    over one it built; left None it is the app's own. The files are read
-    newest first — a live session's file is written constantly — and the
+    over one it built; left None it is every folder session_roots()
+    finds, read as one store. The files are read newest first — a live session's file is written constantly — and the
     id is looked for as text before anything is parsed, because these
     are 400 KB documents and the id is a 36-character needle. A text hit
     is not the answer, though: the id can appear anywhere in the file,
@@ -388,8 +444,8 @@ def session_link(session_id, root=None) -> str:
     if not UUID.match(ident):
         return ""
     try:
-        root = Path(root) if root is not None else SESSIONS
-        files = sorted(root.glob(f"*/*/{LOCAL}*.json"),
+        roots = [Path(root)] if root is not None else session_roots()
+        files = sorted((p for r in roots for p in r.glob(f"*/*/{LOCAL}*.json")),
                        key=lambda p: p.stat().st_mtime, reverse=True)
         for path in files[:STORE_MAX]:
             try:
