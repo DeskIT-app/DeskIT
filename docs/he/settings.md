@@ -27,7 +27,7 @@ title: הגדרות
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
 |---|---|---|---|
-| `local.load_at_start` — Have it ready to dictate the moment it starts | Off, DeskIT starts light — every key that does not need the speech model works at once, and Start on the desk gets it ready when you want to dictate. | on | on / off |
+| `local.load_at_start` — Have it ready to dictate the moment it starts | Every key that does not need the speech model works at once either way. Off, the model waits until you press Start on the desk. | on | on / off |
 | `awake.hold` — Keep the computer awake while DeskIT runs | The machine will not fall asleep on its own timer while the app is running. The screens may still go dark. | on | on / off |
 | `privacy.update_check` — Look for a newer version every week | Once a week DeskIT asks GitHub whether a newer version is out. Nothing about you is sent, and nothing is installed without your press. | on | on / off |
 

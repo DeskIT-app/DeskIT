@@ -2324,6 +2324,11 @@ class Dashboard:
           Pause, where it used to be 8.
         - Stop is not there at all while there is nothing to stop.
 
+        SCREENS OFF ASKS FOR NO MODEL, so since 2026-11-06 it no longer
+        leaves with Stop: his word, "features like taking a screenshot,
+        sleep mode ... need no model at all". With the model off the bar
+        is Screens off and Start; it goes only when no app answers.
+
         STOP TESTS USED TO BE HERE — in the bar for exactly as long
         as a nightly run had something to stop, with the uptime
         stepping aside for its 108 px. It left with the rest of the
@@ -2341,9 +2346,10 @@ class Dashboard:
         # available at the same moment, so three buttons would be two
         # lies — and it is the same key in the same pixels either way.
         model = self.status.get("model") or "on"
-        run.configure_text("Start" if not self.status or model == "off" else
-                           "Loading…" if model in ("loading", "unloading") else
-                           "Resume" if self.status.get("paused")
+        run.configure_text("Start" if not self.status else
+                           "Resume" if self.status.get("paused") else
+                           "Start" if model == "off" else
+                           "Loading…" if model in ("loading", "unloading")
                            else "Pause")
         # `awake` only ever comes back from a running app, so the word is
         # "Screens off" through a startup whatever the screens are doing.
@@ -2355,17 +2361,18 @@ class Dashboard:
         x = W - PAD
         run.place(x=x, y=12, anchor="ne")
         x -= BAR_RUN_W + BAR_GAP
-        # HIS RULE AGAIN with the model off and the process up: one
-        # button, Start. Stop has nothing left to unload, and Screens off
-        # goes with it so the bar reads the same way it does with nothing
-        # running — the key still works, and Settings > General has it.
-        if self.status and model not in ("off", "unloading"):
+        # HIS RULE AGAIN with the model off and the process up: Stop has
+        # nothing left to unload. Screens off stays while an app answers.
+        has_stop = bool(self.status) and model not in ("off", "unloading")
+        if has_stop or self.running:
             screens.place(x=x, y=12, anchor="ne")
             x -= self._screens_w + BAR_KEEP
+        else:
+            screens.place_forget()
+        if has_stop:
             stop.place(x=x, y=12, anchor="ne")
             x -= BAR_STOP_W + BAR_GAP
         else:
-            screens.place_forget()
             stop.place_forget()
         chip.show_meta(True)
         chip.place(x=x, y=TOP // 2, anchor="e")
@@ -9427,6 +9434,11 @@ class Dashboard:
             self._start()
             return
         model = self.status.get("model") or "on"
+        if self.status.get("paused"):
+            self._busy_until = time.monotonic() + 1
+            self._ask("toggle", then=lambda r: self._announce(
+                r, "paused" if (r or {}).get("paused") else "listening again"))
+            return
         if model in ("loading", "unloading"):
             self._note("the model is on its way — a moment")
             return

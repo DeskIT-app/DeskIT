@@ -138,10 +138,11 @@ class Sim:
         def slow_get(cfg, hotwords=None, **kw):
             # **kw: main.py passes english_later= since 3f57289; a fake
             # that refused it made every Start scenario fail (2026-09-21)
-            time.sleep(LOAD_S)
+            time.sleep(self.load_s)
             return real_get(cfg, hotwords, **kw)
 
         main_mod.get_transcriber = slow_get
+        self.load_s = LOAD_S
         self.app: main_mod.App | None = None
         self.results: list[tuple[str, str]] = []
 
@@ -161,6 +162,81 @@ class Sim:
         self.app._say = self.said.append
         self.app.start()
         time.sleep(THINK_S)
+
+    def windows_starts_the_app(self) -> None:
+        """A process start with the model wanted, the order main() runs:
+        the App without it, start(then_load=True). The load is the fake's
+        second; the keys must not wait for it."""
+        self.app = main_mod.App(self.cfg, model=False)
+        self._tame(self.app)
+        self.app._say = self.said.append
+        self.app.start(then_load=True)
+
+    def tap_binding(self, binding) -> None:
+        """Any key the app binds, modifiers down first, the way a hand
+        does it. An unsided modifier is its left key."""
+        sided = {0x11: VK_LCTRL, 0x12: VK_LALT, 0x10: VK_LSHIFT}
+        mods = [sided.get(vk, vk) for vk in sorted(binding.mods)]
+        m = self.app.machine
+        for vk in mods:
+            m.handle("down", vk, injected=False)
+        m.handle("down", binding.trigger, injected=False)
+        time.sleep(0.01)
+        m.handle("up", binding.trigger, injected=False)
+        for vk in reversed(mods):
+            m.handle("up", vk, injected=False)
+
+    def every_tap_fires(self, where: str) -> None:
+        """Every key on the keyboard that is not a hold key, pressed here
+        and now: each must reach the app's own handler. The handler is
+        swapped for a list so the camera is not opened; what the keys
+        then do is the next scenario's question."""
+        app = self.app
+        _hold, taps, _latch, _pause = app.bindings(self.cfg)
+        assert len(taps) >= 11, f"only {len(taps)} tap keys bound: {taps}"
+        reached: list[str] = []
+        real, app.machine._on_tap = app.machine._on_tap, reached.append
+        try:
+            for binding, action in taps.items():
+                n = len(reached)
+                self.tap_binding(binding)
+                assert self.until(lambda: len(reached) > n, 1.0), \
+                    f"{action}: pressed {where}, and nothing happened"
+                assert reached[-1] == action, (action, reached[-1], where)
+        finally:
+            app.machine._on_tap = real
+
+    def what_needs_no_model_works(self, where: str) -> None:
+        """The screen, the shelf and the cards, for real, in this state."""
+        app = self.app
+        # the screens, both roads the desk and the key take
+        r = app.control_command("screens", {"do": "off"})
+        assert r["ok"] and app.awake.dark, (where, r)
+        r = app.control_command("screens", {"do": "on"})
+        assert r["ok"] and not app.awake.dark, (where, r)
+        self.tap_screens_key()
+        assert self.until(lambda: app.awake.dark), f"screens key dead {where}"
+        self.tap_screens_key()
+        assert self.until(lambda: not app.awake.dark), f"screens key stuck {where}"
+        # a screenshot gets as far as asking for the part of the screen
+        n = len(self.log.lines)
+        self.tap_screenshot()
+        assert self.log.wait("drag the part of the screen to capture", n), \
+            f"screenshot dead {where}"
+        app.capture._cancel.set()
+        time.sleep(THINK_S)
+        # the shelf opens and says what is true
+        app._on_tap("shelf")
+        assert self.until(lambda: app.shelf.visible(), 3.0), f"no shelf {where}"
+        word = app._shelf_state()["mode"]
+        want = {"off": "off", "loading": "loading", "on": "listening"}[app._model_state]
+        assert word == want, (where, word, want)
+        app._on_tap("shelf")
+        assert self.until(lambda: not app.shelf.visible(), 3.0), f"shelf stuck {where}"
+        # the notify key, with nothing to dismiss, and the desk's own verbs
+        app._on_tap("notify_dismiss")
+        assert app.control_command("copy_last", {}) is not None
+        assert app.control_command("status", {})["stage"] == "running"
 
     def tap_screens_key(self, app=None) -> None:
         """ctrl+alt+n, the way the hook feeds it to the state machine."""
@@ -406,6 +482,141 @@ class Sim:
             raise AssertionError("the phone dictated into an unloaded model")
         assert not self.dot_on_screen()
 
+    def s_every_key_works_with_the_model_off(self) -> None:
+        assert self.app._model_state == "off"
+        self.every_tap_fires("with the model off")
+        self.what_needs_no_model_works("with the model off")
+
+    def s_every_key_works_with_the_model_on(self) -> None:
+        """His word, 2026-11-06: not by accident broken the other way."""
+        assert self.press("Start")["ok"] and self.wait_model("on")
+        time.sleep(THINK_S)
+        self.every_tap_fires("with the model on")
+        self.what_needs_no_model_works("with the model on")
+        assert self.press("Stop")["ok"] and self.wait_model("off", 10)
+        time.sleep(THINK_S)
+
+    def s_every_key_works_while_the_model_loads(self) -> None:
+        self.load_s = 12.0
+        try:
+            assert self.press("Start")["ok"]
+            assert self.wait_model("loading", 1)
+            self.every_tap_fires("while the model loads")
+            self.what_needs_no_model_works("while the model loads")
+            assert self.app._model_state == "loading", "the load was over too soon"
+            n = len(self.said)
+            self.hold_key(True)
+            self.hold_key(False)
+            assert self.said[n:] == [main_mod.App.MODEL_LOADING_WORDS], self.said[n:]
+            assert self.wait_model("on"), "the model never came"
+            assert self.press("Stop")["ok"] and self.wait_model("off", 10)
+        finally:
+            self.load_s = LOAD_S
+        time.sleep(THINK_S)
+
+    def s_the_dot_can_be_moved_with_the_model_off(self) -> None:
+        app = self.app
+        assert not self.dot_on_screen()
+        r = app.control_command("dot", {"do": "move"})
+        assert r["ok"], r
+        assert self.until(lambda: self.dot_on_screen(), 2.0), \
+            "Move the dot, and no dot came up to move"
+        app._set_state("ready")           # a worker finishing mid-move
+        time.sleep(THINK_S)
+        assert self.dot_on_screen(), "the dot left his hand mid-move"
+        app._dot_move_end(True)
+        assert self.until(lambda: not self.dot_on_screen(), 2.0), \
+            "the dot stayed with no model behind it"
+
+    def s_a_word_answered_with_the_model_off_is_learned_now(self) -> None:
+        app = self.app
+        real_wanted, real_engine = app._review_wanted, app._review_engine
+        taught: list = []
+
+        class Engine:
+            @staticmethod
+            def absorb_decisions() -> None:
+                taught.append(app._model_state)
+
+        app._review_wanted = lambda: True
+        app._review_engine = lambda: Engine
+        try:
+            assert app._review is None and app._model_state == "off"
+            assert app.control_command("review_absorb", {})["ok"]
+            assert self.until(lambda: taught == ["off"], 2.0), taught
+        finally:
+            app._review_wanted, app._review_engine = real_wanted, real_engine
+
+    def s_a_start_brings_the_keys_up_before_the_model(self) -> None:
+        """The owner, 2026-11-06. Everything here happens inside the first
+        moments of a process start, the model still on its way."""
+        self.app.stop()
+        self.load_s = 12.0
+        try:
+            began = time.monotonic()
+            self.windows_starts_the_app()
+            app = self.app
+            up = time.monotonic() - began
+            st = app.status()
+            assert st["stage"] == "running" and st["model"] == "loading", st
+            assert up < 5.0, f"{up:.1f} s before a key worked"
+            assert not self.dot_on_screen(), "a dot before the model"
+            assert not app._load_settled.is_set(), "the warm-ups were let through"
+            self.every_tap_fires("during a start")
+            self.what_needs_no_model_works("during a start")
+            assert app._model_state == "loading", "the load was over too soon"
+            # a game takes the screen in the middle of the load
+            app.set_paused(True)
+            assert self.wait_model("on", 20), "the model never came"
+            assert app._load_settled.is_set()
+            assert app.status()["activity"] == "paused", "paused, and the dot says ready"
+            assert not app._room_keep_speech, "the start spoke for the person"
+            app.set_paused(False)
+            time.sleep(THINK_S)
+            assert self.dot_on_screen(), "no dot with the model loaded"
+            n = len(self.pasted)
+            self.hold_key(True)
+            time.sleep(THINK_S)
+            self.hold_key(False)
+            assert self.until(lambda: len(self.pasted) > n, 10.0), \
+                "the first dictation after a start never landed"
+        finally:
+            self.load_s = LOAD_S
+        assert self.press("Stop")["ok"] and self.wait_model("off", 10)
+
+    def s_quit_during_a_start_takes_the_load_with_it(self) -> None:
+        self.app.stop()
+        self.load_s = 3.0
+        try:
+            self.windows_starts_the_app()
+            app = self.app
+            n = len(self.log.lines)
+            app.stop()
+            assert not app._load_thread.is_alive(), "the load outlived the app"
+            assert self.log.saw("quit while the model loaded", n), self.log.lines[n:]
+            assert app._model_state == "loading" and app.transcriber.name == "off"
+        finally:
+            self.load_s = LOAD_S
+        self.open_the_desk()
+
+    def s_a_load_that_fails_leaves_the_keys_alone(self) -> None:
+        self.app.stop()
+        real = main_mod.get_transcriber
+
+        def refuses(*a, **k):
+            raise main_mod.TranscriptionError("no such model")
+
+        main_mod.get_transcriber = refuses
+        try:
+            self.windows_starts_the_app()
+            assert self.wait_model("off", 5), "a failed load stayed loading"
+            app = self.app
+            assert app._load_settled.is_set(), "the warm-ups wait for a dead load"
+            assert any("did not load" in s for s in self.said[-3:]), self.said[-3:]
+            self.every_tap_fires("after a failed load")
+        finally:
+            main_mod.get_transcriber = real
+
     def s_quit_takes_everything(self) -> None:
         self.app.stop()
         thread = self.app.dot._thread
@@ -452,6 +663,14 @@ class Sim:
              "screenshot_works_without_the_model",
              "hold_key_is_refused_without_the_model",
              "screens_card_with_the_model_off",
+             "every_key_works_with_the_model_off",
+             "every_key_works_with_the_model_on",
+             "every_key_works_while_the_model_loads",
+             "the_dot_can_be_moved_with_the_model_off",
+             "a_word_answered_with_the_model_off_is_learned_now",
+             "a_start_brings_the_keys_up_before_the_model",
+             "quit_during_a_start_takes_the_load_with_it",
+             "a_load_that_fails_leaves_the_keys_alone",
              "start_then_stop_at_once",
              "screens_card_button",
              "stop_while_recording_is_refused_then_the_dictation_lands",
