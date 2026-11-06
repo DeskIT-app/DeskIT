@@ -515,6 +515,8 @@ HELD_BACK = "sync.held_back"
 #: What LAST_ACCOUNT says once that account is deleted, and of a copy from
 #: before it was kept that somebody signed out of: not an id, and not nobody.
 SOMEBODY = "somebody"
+#: The outbox's folder for reports whose account has left this PC.
+REPORTS_WAITING = "waiting"
 #: What ``vault.digest_keys`` hashes under at the door. No account's key,
 #: because the new account's may not be on this PC yet; these are hashes of
 #: long random keys, only ever compared with each other.
@@ -578,13 +580,15 @@ def _take_over(uid: str) -> None:
     this is only about what leaves. The cost, in the direction a mistake
     should fall: what an account said offline and had not pushed when
     another took over stays on this PC, and whoever moves to a new account
-    takes nothing along with them.
+    takes nothing along with them. A report queued by the account that left
+    waits for it (``_reports_wait``).
 
     All of it goes down in one write, in state.json, where neither a sign-out
-    nor ``sync.forget_all`` reaches it. The cursors go first: they are the
-    other account's. Raises when state.json will not read, because {} from a
-    damaged file would look like a first account, and ``sync_now`` then moves
-    nothing."""
+    nor ``sync.forget_all`` reaches it, and last: what can raise is worked out
+    before anything moves, and a crash after the cursors and the reports went
+    finds the same door next time. Raises when state.json will not read,
+    because {} from a damaged file would look like a first account, and
+    ``sync_now`` then moves nothing."""
     if not uid:
         return
     import config
@@ -600,11 +604,50 @@ def _take_over(uid: str) -> None:
         updates: dict = {LAST_ACCOUNT: uid}
         if before and before != uid:
             log.info("account: another account on this PC — what is here stays here")
-            sync.forget_all()
             floors = _per_account("account.history_floor")
             updates["account.history_floor"] = {**floors, uid: _later(floors.get(uid), _end_of_log())}
             updates[HELD_BACK] = {**_per_account(HELD_BACK), uid: _what_is_here()}
+            sync.forget_all()
+            _reports_wait(before, uid)
         config.save(updates)
+
+
+def _reports_folder(uid: str):
+    """Where ``uid``'s reports wait. By a mark and not by the id: the id is
+    the server's word, and this is a path."""
+    return paths.OUTBOX_DIR / REPORTS_WAITING / sync.mark(uid)
+
+
+def _move_reports(source, target) -> None:
+    try:
+        entries = [e for e in source.iterdir() if e.name != REPORTS_WAITING]
+    except OSError:
+        return                                               # nothing waits
+    for entry in entries:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            os.replace(entry, target / entry.name)
+        except OSError as e:
+            log.warning("report: %s did not move (%s)", entry.name, e)
+
+
+def _reports_wait(old: str, new: str) -> None:
+    """A report goes out under whoever is signed in when the outbox drains
+    (``_send_report``), and it carries that person's last dictation and a
+    picture of their screen: one queued offline by one account went out as
+    another's, whose session can read the row. So the outbox moves aside
+    with the account that left, and what the new account left comes back,
+    at the very paths its files were named by. A report that will not move
+    is a log line. ``queued()`` and ``drain_outbox`` read the top of the
+    outbox alone, so what waits is neither counted nor sent."""
+    _move_reports(paths.OUTBOX_DIR, _reports_folder(old))
+    mine = _reports_folder(new)
+    _move_reports(mine, paths.OUTBOX_DIR)
+    for folder in (mine, paths.OUTBOX_DIR / REPORTS_WAITING):
+        try:
+            folder.rmdir()
+        except OSError:
+            pass                       # another account's are still in it
 
 
 def _held_back(uid: str, store: str):
@@ -1186,7 +1229,7 @@ def delete_account() -> None:
     config.save({"account.device_id": None, "account.device_seen_at": None,
                  "account.device_name": None, "account.device_session": None,
                  LAST_ACCOUNT: SOMEBODY, **maps})
-    _clear_outbox()
+    _clear_outbox(uid)
     _status["last_error"] = ""
     log.info("account: deleted on the server and forgotten here")
     _signed_out()
@@ -1214,12 +1257,16 @@ def _purge_storage(uid: str) -> int:
     return len(files)
 
 
-def _clear_outbox() -> None:
+def _clear_outbox(uid: str) -> None:
+    """This account's reports, wherever they are: the ones another account
+    left waiting are that account's (``_reports_wait``)."""
     try:
         for entry in paths.OUTBOX_DIR.iterdir():
-            _drop(entry)
+            if entry.name != REPORTS_WAITING:
+                _drop(entry)
     except OSError:
         pass
+    _drop(_reports_folder(uid))
 
 
 def _drop(entry) -> None:

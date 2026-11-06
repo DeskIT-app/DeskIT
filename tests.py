@@ -46884,14 +46884,17 @@ def _signs_in(fake, uid: str) -> None:
     sb.sign_in_google(open_browser=browser, timeout_s=10)
 
 
-def _says(pc, text: str) -> None:
-    """One dictation into this PC's log, stamped now, as the app writes it."""
-    from datetime import datetime
+def _logs(pc, line: str, ahead_s: float = 0.0) -> None:
+    """One line into this PC's log, stamped now, as the app writes it."""
+    from datetime import datetime, timedelta
     time.sleep(0.01)
-    now = datetime.now()
+    now = datetime.now() + timedelta(seconds=ahead_s)
     with pc.log.open("a", encoding="utf-8") as f:
-        f.write(f"{now:%Y-%m-%d %H:%M:%S},{now.microsecond // 1000:03d} | OK | 1.0s | local"
-                f" | 0.4s latency | {text}\n")
+        f.write(f"{now:%Y-%m-%d %H:%M:%S},{now.microsecond // 1000:03d} | {line}\n")
+
+
+def _says(pc, text: str, ahead_s: float = 0.0) -> None:
+    _logs(pc, f"OK | 1.0s | local | 0.4s latency | {text}", ahead_s)
 
 
 def _history_of(fake, uid: str, key: bytes) -> list[str]:
@@ -46973,6 +46976,7 @@ def test_the_line_between_two_accounts_outlives_forget_all_a_sign_out_and_a_cras
     a sign-out and back loses the line nowhere. A door that tripped at the
     sign-in costs no sign-in, and the first sync is the door. A state file
     that will not read cannot say who was here, so nothing moves at all."""
+    import secretstore
     import sb
     import sync as sync_mod
     import vault
@@ -46984,7 +46988,16 @@ def test_the_line_between_two_accounts_outlives_forget_all_a_sign_out_and_a_cras
     try:
         with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
             fake.rls = True
-            _signs_in(fake, _ONE)
+            door = sb._take_over
+            seen: list = []
+
+            def spy(uid):
+                seen.append(secretstore.get("supabase_session"))
+                door(uid)
+
+            with _patched(sb, "_take_over", spy):
+                _signs_in(fake, _ONE)
+            assert seen and seen[0] is None, "the session went down before the record"
             _says(pc, "said by one")
             sb.sync_now()
             sb.sign_out(everywhere=False)
@@ -47022,6 +47035,49 @@ def test_the_line_between_two_accounts_outlives_forget_all_a_sign_out_and_a_cras
             paths.STATE_FILE.write_text(good, "utf-8")
             assert sb.sync_now()["history"] == "pulled 0, pushed 0"
             assert not any(r["user_id"] == _FOUR for r in fake.tables["history"])
+
+            # a crash inside a sign-out leaves that account's cursor here
+            sb.sign_out(everywhere=False)
+            sync_mod.write_cursor({"history_pushed_ts": "the last account's"})
+            fake.UID = _ONE
+            _sign_in_pc(fake, "desk", uid=_ONE)
+            sb.sync_now()
+            assert sync_mod.read_cursor().get("history_pushed_ts") != "the last account's"
+    finally:
+        pc.gone()
+
+
+def test_the_floor_stands_past_an_open_question_and_a_clock_that_was_ahead():
+    """The end of the log is more than its last line. A translation asked
+    under one account lands under the next with the stamp of the asking, so
+    the floor is at least this moment. A line from a clock that was ahead is
+    past this moment, so the floor is at least the log's end. And a floor
+    never comes down."""
+    import sb
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            _says(pc, "said by one")
+            sb.sync_now()
+            _logs(pc, "TRANSLATE-IN | 1.0s | asked by one")
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _TWO)
+            _logs(pc, "TRANSLATE-OUT | 1.0s | cloud | answered for one")
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            sb.sign_out(everywhere=False)
+
+            _says(pc, "from a clock that was ahead", ahead_s=3600)
+            _signs_in(fake, _THREE)
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            sb.sign_out(everywhere=False)
+
+            later = "2099-01-01T00:00:00.000+00:00"
+            config_mod.save({"account.history_floor": {_TWO: later}})
+            _signs_in(fake, _TWO)
+            assert config_mod.read_state(paths.STATE_FILE)["account.history_floor"][_TWO] == later
     finally:
         pc.gone()
 
@@ -47039,6 +47095,7 @@ def test_a_copy_from_before_the_record_counts_the_way_the_evidence_does():
         with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
             fake.rls = True
             with live:
+                config_mod.save({"account.device_id": "ffffffff-6666-4666-8666-666666666666"})
                 _says(live, "said before the update")
                 _sign_in_pc(fake, "desk")
                 sb.sync_now()
@@ -47094,9 +47151,13 @@ def test_one_accounts_words_stay_out_of_anothers_account():
             sb.sync_now(v)
             assert rows(_TWO)["clash heard"]["meant"] == "meaning of two"
             assert not rows(_TWO)["clash heard"]["deleted"], "a tombstone took the account's own"
+            assert not rows(_TWO)["both heard"]["deleted"], "a pair let go came back as held"
 
             v.learn_by_hand("heard by two", "meant by two")
             assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+            v.edit("grandma heard", "grandma heard", "grandma meant by two")
+            assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+            assert rows(_TWO)["grandma heard"]["meant"] == "grandma meant by two"
             v.forget("grandpa heard")
             sb.sync_now(v)
             assert "grandpa heard" not in rows(_TWO), "a tombstone named a word it never held"
@@ -47111,6 +47172,35 @@ def test_one_accounts_words_stay_out_of_anothers_account():
             assert v.find("grandpa heard"), "the first account's word did not come back"
             v.learn_by_hand("heard by one", "meant by one")
             assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+    finally:
+        pc.gone()
+
+
+def test_a_word_list_that_will_not_read_is_still_what_the_last_account_left():
+    """From a vocab.json that will not read the app takes its last good copy
+    (Vocab.load), and a pass after the mending would send it, so the door
+    marks what the app will go on with and not an empty list."""
+    import sb
+    import vocab as vocab_mod
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            v.learn_by_hand("a name heard", "a name meant")
+            v.learn_by_hand("another heard", "another meant")
+            _signs_in(fake, _ONE)
+            sb.sync_now(v)
+            sb.sign_out(everywhere=False)
+            paths.VOCAB_FILE.write_text("{ cut in half", "utf-8")
+            _signs_in(fake, _TWO)
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            assert v.broken and v.find("a name heard"), "the fixture is not the case"
+            sb.sync_now(v)
+            assert not v.broken
+            sb.sync_now(v)
+            assert not [r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == _TWO]
     finally:
         pc.gone()
 
@@ -47207,6 +47297,68 @@ def test_a_cloud_key_left_on_this_pc_is_never_sealed_into_another_account():
         pc.gone()
 
 
+def test_a_report_waits_for_the_account_that_queued_it():
+    """A report goes out as whoever is signed in when the outbox drains, with
+    that person's dictation and a picture of their screen. One queued offline
+    went out as the next account's. It waits, uncounted, and goes as its own
+    account's, with its file, when that account is back; another account's
+    waiting reports survive a Delete my account; a report queued here and
+    now goes as usual."""
+    import sb
+
+    def queue(rid: str) -> None:
+        folder = paths.OUTBOX_DIR / rid
+        folder.mkdir(parents=True)
+        shot = folder / "shot.jpg"
+        shot.write_bytes(b"\xff\xd8fixture")
+        (paths.OUTBOX_DIR / f"{rid}.json").write_text(json.dumps({
+            "id": rid, "kind": "wrong", "text": "the word came out wrong",
+            "dictation_raw": "said by whoever queued it",
+            "attachments": [{"name": "shot.jpg", "path": str(shot)}]}), "utf-8")
+
+    of_one = "aaaaaaaa-bbbb-cccc-dddd-000000000001"
+    of_two = "aaaaaaaa-bbbb-cccc-dddd-000000000002"
+    waits = "aaaaaaaa-bbbb-cccc-dddd-000000000003"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "report_upload"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            queue(of_one)
+            assert sb.queued() == 1
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            assert sb.queued() == 0, "another account's report on this one's row"
+            assert sb.drain_outbox() == {}, "another account's report went out"
+            queue(of_two)
+            assert sb.drain_outbox() == {of_two: "sent"}
+            queue(waits)
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            assert sb.queued() == 1
+            assert sb.drain_outbox() == {of_one: "sent"}
+            rows = {r["id"]: r for r in fake.tables["problem_reports"]}
+            assert rows[of_two]["user_id"] == _TWO and rows[of_one]["user_id"] == _ONE, rows
+            assert rows[of_one]["attachments"] == [f"{_ONE}/{of_one}/shot.jpg"], rows[of_one]
+
+            # one that did not make it back is still this account's to delete
+            stuck = sb._reports_folder(_ONE)
+            stuck.mkdir(parents=True)
+            (stuck / "stuck.json").write_text("{}", "utf-8")
+            sb.delete_account()
+            assert not stuck.exists(), "Delete left a report of this account's"
+            assert (sb._reports_folder(_TWO) / f"{waits}.json").exists(), "Delete took another account's"
+            assert not [e for e in paths.OUTBOX_DIR.iterdir() if e.name != sb.REPORTS_WAITING]
+            fake.tables.setdefault("problem_reports", [])
+            _signs_in(fake, _TWO)
+            assert sb.drain_outbox() == {waits: "sent"}, "it never came back"
+            assert not (paths.OUTBOX_DIR / sb.REPORTS_WAITING).exists()
+    finally:
+        pc.gone()
+
+
 def test_delete_my_account_leaves_the_next_account_nothing_of_it():
     """The files stay after Delete my account, so the record must too, or
     the next person is this PC's first and takes everything. It stays as a
@@ -47227,6 +47379,13 @@ def test_delete_my_account_leaves_the_next_account_nothing_of_it():
             assert _ONE not in paths.STATE_FILE.read_text("utf-8")
             _signs_in(fake, _TWO)
             assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+
+            # an account with a record of its own takes that and no other's
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _THREE)
+            sb.delete_account()
+            left = paths.STATE_FILE.read_text("utf-8")
+            assert _THREE not in left and _TWO in left, left
     finally:
         pc.gone()
 
