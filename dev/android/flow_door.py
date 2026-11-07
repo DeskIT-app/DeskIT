@@ -693,6 +693,17 @@ def flow_no_address():
         out = ask("reach")
         check("an empty row sends the phone back to the account, and it finds the door",
               "reach=" in out and "nobody" not in out, out)
+        # No door at all, as an older DeskIT has: nothing was there to reach, and
+        # Home says not connected yet, not "can't reach".
+        pc.down()
+        with acct.mutex:
+            for row in acct.tables["devices"]:
+                if row["id"] == pc.device:
+                    row["link"] = None
+        drive.kill()
+        drive.home()
+        check("no PC of the account has a door: Not connected yet",
+              until(lambda: drive.find("^Not connected yet$") is not None, 30), drive.screen()[:300])
     finally:
         acct._door_pc.down()
         acct.stop()

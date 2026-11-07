@@ -253,11 +253,20 @@ class HomeActivity : Activity() {
         val wipes = Traces.wipes
         thread {
             var word = getString(R.string.unreachable_line)
+            var locked = false
             val reached = try {
                 Link.reach(this)
             } catch (e: Sealed.NotNow) {
                 word = Sealed.words(this, e)    // the phone, and nothing about the PC
+                locked = true
                 null
+            }
+            // In the account, and no PC of it has a door for this phone yet: there
+            // was nothing to reach, which is not connected yet, not can't reach.
+            val none = reached == null && !locked && Link.pasted(this) == null && try {
+                Link.pcs(this).isEmpty()
+            } catch (e: Sealed.NotNow) {
+                false
             }
             val versions = if (reached != null) Link.versions(this) else null
             val pending = if (reached != null) Notify.poll(this) else null
@@ -266,7 +275,8 @@ class HomeActivity : Activity() {
             runOnUiThread {
                 if (wipes != Traces.wipes) return@runOnUiThread
                 if (reached == null) {
-                    state(Skin.PAUSED, false, getString(R.string.unreachable_title), word)
+                    if (none) state(Skin.PAUSED, false, getString(R.string.no_token_title), "")
+                    else state(Skin.PAUSED, false, getString(R.string.unreachable_title), word)
                     if (!isFinishing) col.postDelayed(again, AGAIN_MS)
                 } else {
                     state(Skin.LISTENING, true, getString(R.string.connected_title), "")
