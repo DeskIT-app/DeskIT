@@ -209,7 +209,10 @@ def _write_file(rows: list[dict]) -> None:
 def rows() -> list[dict]:
     """The consent rows on disk, re-read when the file changed. A row
     that disappeared since the last read — withdrawn from the dashboard,
-    another process — runs this process's tear-downs for its kind."""
+    another process — runs this process's tear-downs for its kind, and so
+    does one whose words moved: a Turn on on Home answers a row that was
+    already there, and in the desk's process, so nothing else tells the
+    app that its gate just opened."""
     with _lock:
         try:
             mtime = paths.CONSENT_FILE.stat().st_mtime_ns
@@ -217,10 +220,14 @@ def rows() -> list[dict]:
             mtime = None
         if mtime == _rows_cache["mtime"]:
             return list(_rows_cache["rows"])
-        before = {r["kind"] for r in _rows_cache["rows"]}
+        was = {r["kind"]: r.get("text_version") for r in _rows_cache["rows"]}
         fresh = _read_file()
         _rows_cache.update(mtime=mtime, rows=fresh)
-        now = {r["kind"] for r in fresh}
+        words = {r["kind"]: r.get("text_version") for r in fresh}
+        before, now = set(was), set(words)
+        for kind in before & now:
+            if kind in KINDS and was[kind] != words[kind]:
+                _run_resets(kind)
         for kind in before - now:
             _gates[kind] = False
             _run_resets(kind)

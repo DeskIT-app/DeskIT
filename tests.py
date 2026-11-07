@@ -47837,7 +47837,10 @@ def test_with_the_account_gate_shut_nothing_leaves():
 
 def test_turn_on_wakes_the_worker():
     """The account's own card was not among the gates that nudge the worker,
-    so after Turn on the rest waited for the next dictation or 15 minutes."""
+    so after Turn on the rest waited for the next dictation or 15 minutes.
+    And Home's Turn on is in the desk's process, answering a row that was
+    already there: the app sees only the file change, and a list of kinds
+    does not change when a row's words do, so it has to compare those too."""
     import main
     import privacy
     import sb
@@ -47854,6 +47857,14 @@ def test_turn_on_wakes_the_worker():
             sb._pending.clear()
             with _consented("account"):
                 assert "*" in sb._pending, "Turn on left the worker asleep"
+                # another process answers a stale row: only the file changes
+                row = next(r for r in privacy.rows() if r["kind"] == "account")
+                privacy._write_file([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+                assert privacy.rows() and not privacy.allowed("account")
+                sb._pending.clear()
+                privacy._write_file([row])
+                assert privacy.allowed("account")
+                assert "*" in sb._pending, "a yes given on Home never reached the app's worker"
     finally:
         pc.gone()
 
