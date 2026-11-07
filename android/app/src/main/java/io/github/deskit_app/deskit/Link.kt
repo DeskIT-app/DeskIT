@@ -359,15 +359,11 @@ object Link {
 
     /**
      * A PC that answers, leaving out [skip]: first the address that answered last,
-     * then all of them, then, if the rows might have moved, all of them again.
+     * then all of them, then, if the rows might have moved, all of them again. A
+     * row with no address, or no row yet, is a race of nobody and the same read.
      */
     private fun find(c: Context, skip: Set<String>, wipes: Int): Door? {
-        var pcs = pcs(c)
-        var read = false
-        if (pcs.isEmpty() || pcs.any { it.addrs.isEmpty() }) {
-            read = read(c)
-            if (read) pcs = pcs(c)
-        }
+        val pcs = pcs(c)
         val nets = nets(c)
         val doors = doors(c, pcs, nets).filter { it.pc.id !in skip }
         remembered(c, doors)?.let { last ->
@@ -385,8 +381,9 @@ object Link {
         if (wipes != Traces.wipes) return null
         val t0 = SystemClock.elapsedRealtime()
         race(doors)?.let { return won(c, it, t0, wipes) }
-        if (wipes != Traces.wipes || read || !read(c)) return null
-        // Nobody answered, and the rows may say why: a new address, a new certificate.
+        // Nobody answered, and the rows may say why: an address written since, a
+        // new certificate, a PC this phone has not read yet.
+        if (wipes != Traces.wipes || !read(c)) return null
         val fresh = pcs(c)
         if (fresh.map { it.sig } == pcs.map { it.sig }) return null
         return race(doors(c, fresh, nets).filter { it.pc.id !in skip })?.let { won(c, it, t0, wipes) }
