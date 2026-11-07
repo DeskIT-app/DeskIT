@@ -24,7 +24,7 @@ class ProtoActivity : Activity() {
         val col = Skin.page(this)
         val screen = intent.getStringExtra("screen") ?: "signin"
         val onSettings = screen in setOf("devices", "asking", "twins", "forget", "signout",
-                                         "signingout")
+                                         "signingout", "oldercopy")
         col.addView(Skin.header(this, getString(if (onSettings) R.string.settings
                                                 else R.string.your_account)) { })
         val phone = AccountScreens.Row("1", "Dana's phone", false, getString(R.string.this_phone))
@@ -63,6 +63,8 @@ class ProtoActivity : Activity() {
                                        a.deviceRow(home, none)), signOut)
             "signout" -> account(devices.take(2), a.signOutQuestion(2, none, none))
             "signingout" -> account(devices.take(2), a.leavingLine())
+            "oldercopy" -> col.addView(a.accountCard(email, getString(R.string.older_copy),
+                                                     devices.take(2), signOut))
         }
     }
 }

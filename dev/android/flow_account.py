@@ -512,6 +512,71 @@ def flow_forget():
         acct.stop()
 
 
+def flow_forget_older_copy():
+    """Forget takes a device's row and the session the row names, and the server says
+    whether one was ended. Where none was, that device goes on working, and whoever
+    pressed Forget has to hear it, in the PC's own sentence. One case each."""
+    words = "off your list but still signed in"
+
+    def forget(name: str) -> None:
+        """The Forget on that device's row, and then the one in its question."""
+        def nearest(y: int) -> dict:
+            return min((n for n in drive.nodes() if n["text"] == "Forget"), key=lambda n: abs(n["y"] - y))
+        to_settings()
+        target = nearest(drive.wait(f"^{name}$", 20)["y"])
+        drive.shell("input", "tap", target["x"], target["y"])
+        drive.wait(f"^Forget {name}\\?$", 10)
+        target = nearest(drive.wait("^Keep it$", 10)["y"])
+        drive.shell("input", "tap", target["x"], target["y"])
+
+    def row(device: str, name: str, sid) -> None:
+        # each its own certificate: Forget bans a certificate too
+        acct.write_pc_row(device=device, name=name, link=dict(
+            acct.pc_link(), cert=hashlib.sha256(name.encode()).hexdigest()))
+        with acct.mutex:
+            next(r for r in acct.tables["devices"] if r["id"] == device)["session_id"] = sid
+
+    acct = fresh()
+    try:
+        join(acct)
+        other = "11111111-1111-4111-8111-111111111111"
+        acct.others.add(other)
+        for name, device, sid in (("OLD-PC", "71111111-7777-4777-8777-777777777777", None),
+                                  ("THEIRS-PC", "72222222-7777-4777-8777-777777777777", other)):
+            row(device, name, sid)
+            forget(name)
+            check(f"{name}: its row goes", until(lambda: acct.row_of(device) is None, 15))
+            drive.gone(f"^{name}$", 15)
+            drive.wait(words, 15)
+            check(f"{name}: and the phone says it is still signed in", True)
+            check(f"{name}: on the account's list all the same",
+                  any(e.get("device") == device for e in acct.forgotten()))
+            back()
+        to_settings()
+        drive.wait("HOME-PC", 20)
+        check("the sentence does not outlive the page", drive.find(words) is None, drive.screen()[:300])
+        back()
+
+        with acct.mutex:
+            before = set(acct.sessions)
+            acct._new_session()
+            live = (set(acct.sessions) - before).pop()
+        for name, device, sid in (("LIVE-PC", "73333333-7777-4777-8777-777777777777", live),
+                                  ("OVER-PC", "74444444-7777-4777-8777-777777777777",
+                                   "22222222-2222-4222-8222-222222222222")):
+            row(device, name, sid)
+            forget(name)
+            check(f"{name}: its row goes", until(lambda: acct.row_of(device) is None, 15))
+            drive.gone(f"^{name}$", 15)
+            drive.wait("HOME-PC", 10)
+            time.sleep(1)
+            check(f"{name}: and nothing more is said", drive.find(words) is None, drive.screen()[:300])
+            back()
+        check("the session a row named is ended", live not in acct.sessions)
+    finally:
+        acct.stop()
+
+
 def flow_forgotten():
     """Forgotten from a PC while this phone slept: it finds out, wipes, starts over."""
     acct = fresh()

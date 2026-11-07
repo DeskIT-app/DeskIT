@@ -218,6 +218,8 @@ class FakeAccount:
         self.short_tokens = False
         #: refreshes that presented a token behind the active one
         self.behind = 0
+        #: session ids alive on the server under another account
+        self.others: set[str] = set()
         self.calls: list[tuple[str, str]] = []
         self.stops: list[Stop] = []
         self.broadcasts: list[dict] = []
@@ -668,9 +670,13 @@ class FakeAccount:
         raise Refuse(405, "PGRST117", f"{method} on {table}")
 
     def _forget(self, h, body, session: dict):
+        """0007's forget_device, a JSON boolean: true when no session of that row is
+        left, ended here or already over; false when there was no row, the row named
+        none, or it named one that is not this account's."""
         target = str((body or {}).get("target") or "")
         if not UUID_RE.match(target):
             raise Refuse(400, "22P02", "target is not a uuid")
+        ended = False
         with self.mutex:
             row = next((r for r in self.tables["devices"]
                         if r["id"] == target and r["user_id"] == self.uid), None)
@@ -678,8 +684,8 @@ class FakeAccount:
                 self.tables["devices"] = [r for r in self.tables["devices"] if r["id"] != target]
                 sid = row.get("session_id")
                 if sid:
-                    self.sessions.pop(sid, None)
-        h._send(204)
+                    ended = self.sessions.pop(sid, None) is not None or sid not in self.others
+        h._send(200, ended)
 
     def _pc_door(self, h, path: str):
         """The PC's old door, as far as Home asks it on the way up."""

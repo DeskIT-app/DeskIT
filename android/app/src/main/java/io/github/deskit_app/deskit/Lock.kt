@@ -1012,18 +1012,24 @@ object Lock {
      * Forget, from this phone: the target goes on the account's list first, so
      * a failure further on leaves it forgotten and never the other way round;
      * then its row and session go (0007, effective at once through 0006); then
-     * the others are told.
+     * the others are told. As sb.forget_device: true when no session of that
+     * device is left, ended here or already over. False is a device that never
+     * said which session it runs on, or named one that is not this account's: its
+     * row goes, it goes on working until Sign out of every PC, and whoever pressed
+     * Forget has to be told.
      */
     @Synchronized
-    fun forget(c: Context, d: Device) {
+    fun forget(c: Context, d: Device): Boolean {
         val s = Account.fresh(c)
-        keyed(c, s.uid) { key ->
+        val ended = keyed(c, s.uid) { key ->
             addForgotten(c, s.uid, key, d.id, d.cert)
             val r = Account.rest(c, "POST", "rpc/forget_device", JSONObject().put("target", d.id))
             if (!r.ok) refused(r)
+            r.body.trim() == "true"
         }
         sp(c).edit().putStringSet(PREF_FORGOTTEN, forgotten(c) + setOf(d.id, d.cert) - "").commit()
         changedDevices(c, deviceId(c, s.uid))
+        return ended
     }
 
     /** How many recordings no PC has yet. Named before Sign out deletes them. */
