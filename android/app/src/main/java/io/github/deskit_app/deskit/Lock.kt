@@ -242,13 +242,7 @@ object Lock {
      * phones under one id would write over each other's row for good.
      */
     fun deviceId(c: Context, uid: String): String {
-        known?.takeIf { it.first == uid }?.let { return it.second }
-        val had = try {
-            JSONObject(Sealed.getText(c, DEVICE) ?: "{}")
-        } catch (e: JSONException) {
-            JSONObject()
-        }
-        val id = had.text("id").takeIf { it.isNotEmpty() && had.text("uid") == uid } ?: run {
+        val id = heldDeviceId(c, uid) ?: run {
             val fresh = UUID.randomUUID().toString()
             Sealed.putText(c, DEVICE, JSONObject().put("uid", uid).put("id", fresh).toString())
             sp(c).edit().remove(PREF_ROW_SIG).remove(PREF_ROW_AT).commit()
@@ -260,6 +254,17 @@ object Lock {
 
     /** (uid, device id): a Keystore call is not free and this is asked constantly. */
     @Volatile private var known: Pair<String, String>? = null
+
+    /** The id if it has one. Leaving reads this: it must never need a write. */
+    private fun heldDeviceId(c: Context, uid: String): String? {
+        known?.takeIf { it.first == uid }?.let { return it.second }
+        val had = try {
+            JSONObject(Sealed.getText(c, DEVICE) ?: "{}")
+        } catch (e: JSONException) {
+            JSONObject()
+        }
+        return had.text("id").takeIf { it.isNotEmpty() && had.text("uid") == uid }
+    }
 
     /** At most [n] characters, the way Postgres counts them, never half of one. */
     fun clip(text: String, n: Int): String =
@@ -385,7 +390,12 @@ object Lock {
             dropRequest(c)
             refused(r)
         }
-        saveRequest(c, req.with(posted = true))
+        try {
+            saveRequest(c, req.with(posted = true))
+        } catch (e: Sealed.NotNow) {
+            // The phone locked under the POST. The row is there and the PC must
+            // hear of it; the next look sees the row and writes this down.
+        }
         Account.broadcast(c, "pairing", JSONObject().put("device", device).put("id", id)
             .put("code", code).put("name", name))
         return State.Waiting(code, s.email, removedWord(c), false)
@@ -427,6 +437,10 @@ object Lock {
                 }
                 req = null
             } else {
+                if (!req.posted) {
+                    req = req.with(posted = true)
+                    saveRequest(c, req)
+                }
                 val handed = rows.getJSONObject(0).text("handed")
                 if (handed.isNotEmpty() && req.pressed) {
                     val got = taken(c, req, handed, remote, was)
@@ -567,7 +581,8 @@ object Lock {
         } catch (e: Sealed.NotNow) {
             return State.NotNow(Sealed.words(c, e))
         }
-        if (req != null && nowS() < req.expires) {
+        // A request that never reached the server has a code no PC can show.
+        if (req != null && req.posted && nowS() < req.expires) {
             return State.Waiting(req.code, s.email, word, req.pressed)
         }
         return State.Trouble(s.email, word)
@@ -581,9 +596,11 @@ object Lock {
      */
     @Synchronized
     fun look(c: Context, progress: (State) -> Unit = {}): State {
+        Account.settle(c)
         if (sp(c).getBoolean(PREF_LEAVING, false)) {
             Log.w("DeskIT", "lock: a sign out was cut short: finishing it")
-            if (!signOut(c)) Account.sayGone(c, c.getString(R.string.sign_out_unreached))
+            val told = finishLeaving(c) ?: return State.NotNow(c.getString(R.string.phone_locked))
+            if (!told) Account.sayGone(c, c.getString(R.string.sign_out_unreached))
             return State.SignedOut(Account.goneWords(c))
         }
         val s = try {
@@ -995,18 +1012,24 @@ object Lock {
      * Forget, from this phone: the target goes on the account's list first, so
      * a failure further on leaves it forgotten and never the other way round;
      * then its row and session go (0007, effective at once through 0006); then
-     * the others are told.
+     * the others are told. As sb.forget_device: true when no session of that
+     * device is left, ended here or already over. False is a device that never
+     * said which session it runs on, or named one that is not this account's: its
+     * row goes, it goes on working until Sign out of every PC, and whoever pressed
+     * Forget has to be told.
      */
     @Synchronized
-    fun forget(c: Context, d: Device) {
+    fun forget(c: Context, d: Device): Boolean {
         val s = Account.fresh(c)
-        keyed(c, s.uid) { key ->
+        val ended = keyed(c, s.uid) { key ->
             addForgotten(c, s.uid, key, d.id, d.cert)
             val r = Account.rest(c, "POST", "rpc/forget_device", JSONObject().put("target", d.id))
             if (!r.ok) refused(r)
+            r.body.trim() == "true"
         }
         sp(c).edit().putStringSet(PREF_FORGOTTEN, forgotten(c) + setOf(d.id, d.cert) - "").commit()
         changedDevices(c, deviceId(c, s.uid))
+        return ended
     }
 
     /** How many recordings no PC has yet. Named before Sign out deletes them. */
@@ -1049,17 +1072,32 @@ object Lock {
      * the Wi-Fi was off. False when the account could not be told.
      *
      * What the calls need stays until they are done: the session, the key, who
-     * this device is. The rest goes before the first of them. Each step here is
-     * safe to run twice, because a process that dies in the middle leaves the
-     * mark, and [look] runs the whole of this again.
+     * this device is. Each step here is safe to run twice, because a process
+     * that dies in the middle leaves the mark, and [look] runs the whole of this
+     * again. So does a phone that locks: the mark stands, nothing is lost by
+     * waiting, and what a locked phone cannot open it could not tell the account.
      */
     @Synchronized
-    fun signOut(c: Context): Boolean {
+    fun signOut(c: Context): Boolean = finishLeaving(c) != false
+
+    /**
+     * The half of leaving that needs nobody, for the press itself. Quick, and off
+     * this object's lock, which a look holds across the network: behind that, up
+     * to 40 s a call could pass with "Signing out…" on screen and nothing written.
+     * The mark comes first, so that whatever stops it after that is finished later.
+     */
+    fun leaving(c: Context) {
         sp(c).edit().putBoolean(PREF_LEAVING, true).commit()
         Traces.wipe(c)
         dropRecordings(c)
+    }
+
+    /** True or false as [signOut], null when it has to wait for the phone to be unlocked. */
+    private fun finishLeaving(c: Context): Boolean? {
+        leaving(c)
         var told = true
         var reached = true
+        var waits = false
         fun step(work: () -> Unit) {
             if (!reached) return        // no answer once: the next call waits as long
             try {
@@ -1069,40 +1107,39 @@ object Lock {
                 reached = !e.offline
             } catch (e: Sealed.NotNow) {
                 told = false
+                reached = false
+                waits = e.locked
             } catch (e: JSONException) {
                 told = false
             }
         }
-        val s = try {
-            Account.fresh(c)
-        } catch (e: Account.Failed) {
-            told = false
-            reached = !e.offline
-            null
-        } catch (e: Sealed.NotNow) {
-            told = false
-            null
-        }
-        if (s != null) {
-            val device = deviceId(c, s.uid)
-            step { Account.rest(c, "DELETE", "pairings?device_id=eq.${enc(device)}") }
+        var s: Account.Session? = null
+        step { s = Account.fresh(c) }
+        var device: String? = null
+        s?.let { session -> step { device = heldDeviceId(c, session.uid) } }
+        val uid = s?.uid
+        val id = device
+        // No id: nothing of this phone is on the account to take off it.
+        if (uid != null && id != null) {
+            step { Account.rest(c, "DELETE", "pairings?device_id=eq.${enc(id)}") }
             step {
-                val key = usable(c, s.uid)
+                val key = usable(c, uid)
                 if (key != null) {
                     try {
-                        addForgotten(c, s.uid, key, device, ownCert(c, s.uid))
+                        addForgotten(c, uid, key, id, ownCert(c, uid))
                     } finally {
                         key.fill(0)
                     }
-                    changedDevices(c, device)
+                    changedDevices(c, id)
                 }
             }
             step {
                 val r = Account.rest(c, "POST", "rpc/forget_device",
-                                     JSONObject().put("target", device))
+                                     JSONObject().put("target", id))
                 if (!r.ok) told = false
             }
         }
+        if (waits) return null
         Account.endSession(c, tell = reached)
         wipe(c)
         Sealed.dropKey()

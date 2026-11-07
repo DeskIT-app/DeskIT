@@ -11,7 +11,7 @@ from PIL import Image
 
 MAIN = ["signin", "waiting", "pressed", "ready", "devices", "asking", "changed"]
 MORE = ["preparing", "removed", "nolock", "declined", "refused", "forget", "signout", "signingout",
-        "leaving", "twins", "signin_gone"]
+        "leaving", "oldercopy", "twins", "signin_gone"]
 NARROW = ["signin", "waiting", "asking", "changed", "forget", "signout"]
 
 

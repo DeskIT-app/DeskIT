@@ -155,10 +155,17 @@ class SettingsActivity : Activity() {
     private var askingSignOut = false
     /** Sign out is under way, on a thread: the card says so from the press on. */
     @Volatile private var leaving = false
+    /** What the last Forget left to say, on the card until this page is left. */
+    @Volatile private var forgetWord = ""
 
     override fun onResume() {
         super.onResume()
         readAccount()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        forgetWord = ""
     }
 
     /** Whoever opens Settings sees who is asking: the plan's one read, here. */
@@ -190,7 +197,7 @@ class SettingsActivity : Activity() {
                 drawnState = st
                 drawnDevices = devices
                 drawnAsking = asking
-                drawnWord = word
+                drawnWord = word.ifEmpty { forgetWord }
                 if (!isFinishing) drawAccount()
             }
         }
@@ -305,10 +312,12 @@ class SettingsActivity : Activity() {
 
     private fun forget(d: Lock.Device) {
         askingForget = ""
-        act { Lock.forget(this, d) }
+        forgetWord = ""
+        act { if (!Lock.forget(this, d)) forgetWord = getString(R.string.older_copy) }
     }
 
     private fun signOut() {
+        Lock.leaving(this)              // here: a look may hold Lock across the network
         askingSignOut = false
         leaving = true
         drawAccount()

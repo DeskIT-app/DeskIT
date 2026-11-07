@@ -104,6 +104,9 @@ def boot():
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
     adb("shell", "svc", "power", "stayon", "true")
     adb("shell", "input", "keyevent", "82")
+    # A crash dialog of anybody's stands in front of every flow after it. The
+    # flows read a crash of ours from the log and the process, not from a dialog.
+    adb("shell", "settings", "put", "global", "hide_error_dialogs", "1")
     # A browser's own first-run wall stands in front of the page on a fresh
     # image, and it is not what these checks are about.
     adb("shell", "am", "set-debug-app", "--persistent", "com.android.chrome", check=False)
