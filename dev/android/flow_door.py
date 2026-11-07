@@ -931,8 +931,7 @@ class NoInternet:
         drive.shell("cmd", "wifi", "set-wifi-enabled", "enabled", check=False)
         self.server.shutdown()
         self.server.server_close()
-        until(lambda: not _on_mobile() and "MOBILE" in drive.shell("dumpsys", "connectivity")
-              and "1 received" in drive.shell("ping", "-c", "1", "-W", "2", ADDRESS, check=False), 60)
+        settled()
 
 
 def flow_bound_wifi():
@@ -986,6 +985,25 @@ def _wifi_caps() -> str:
         if "NetworkAgentInfo{" in line and "WIFI CONNECTED" in line:
             return line[line.find("nc{"):]
     return ""
+
+
+def _wifi_default() -> bool:
+    """The emulator as it boots: the Wi-Fi up and the default, mobile data beside it."""
+    out = drive.shell("dumpsys", "connectivity")
+    m = re.search(r"Active default network: (\d+)", out)
+    agents = [ln for ln in out.splitlines() if "NetworkAgentInfo{" in ln]
+    default = [ln for ln in agents if m and f"network{{{m.group(1)}}}" in ln]
+    return bool(default) and "WIFI CONNECTED" in default[0] and any("MOBILE" in ln for ln in agents)
+
+
+def settled() -> None:
+    """Both networks back as they boot, or a reboot: a flow after this one must not
+    sign in through a phone whose networks are still moving under its browser."""
+    if until(lambda: _wifi_default() and "1 received" in drive.shell(
+            "ping", "-c", "1", "-W", "2", ADDRESS, check=False), 60):
+        return
+    print("      the emulator's networks did not come back: a reboot", flush=True)
+    reboot()
 
 
 def reboot() -> None:
@@ -1073,6 +1091,8 @@ def main() -> None:
                  "gradle assembleDebug -PdeskitAccount=http://10.0.2.2:18791")
     drive.adb("install", "-r", "-g", apk, timeout=300)
     drive.adb("logcat", "-G", "8M", check=False)
+    if fa.sdk() >= WIFI_ONLY:
+        settled()
     names = sys.argv[1:] or list(FLOWS)
     try:
         for name in names:
