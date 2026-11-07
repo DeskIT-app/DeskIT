@@ -3804,7 +3804,8 @@ class App:
         must not go on admitting a phone this PC already forgot."""
         import sb
         try:
-            sb.forget_device(ident, cert)
+            if sb.forget_device(ident, cert) is False:
+                self._phone_error = sb.OLDER_COPY_WORDS
         except Exception as e:                               # noqa: BLE001
             self._phone_error = f"that did not go through ({type(e).__name__}) — try again"
             log.info("phone: Forget failed (%s)", type(e).__name__)

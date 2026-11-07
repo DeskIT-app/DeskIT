@@ -7382,7 +7382,13 @@ def test_the_stranger_asks_for_ports_of_its_own() -> None:
 
     spec = importlib.util.spec_from_file_location("stranger_under_test", REPO / "dev" / "stranger.py")
     stranger = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(stranger)
+    # its first lines put dev\ in front of the path, and sixteen tests after
+    # this one read defaults.toml from sys.path[0]
+    path_before = list(sys.path)
+    try:
+        spec.loader.exec_module(stranger)
+    finally:
+        sys.path[:] = path_before
 
     devs = set(range(8756, 8756 + server_mod.PORT_TRIES)) | set(range(8766, 8766 + server_mod.PORT_TRIES))
     assert not devs & set(stranger.PORTS.values()), stranger.PORTS
@@ -7914,6 +7920,13 @@ def test_forget_goes_to_the_account_and_a_failure_is_said_in_words() -> None:
             assert reply["ok"] and "S26 Ultra" in reply["message"], reply
             assert _until(lambda: bool(asked), 5) and asked == [(ident, phone["fingerprint"])]
             assert app.control_command("phone", {"do": "forget", "id": "nobody"})["ok"] is False
+
+            # off the list and still signed in: the person who pressed it is
+            # looking at this card, not at the account's
+            sb.forget_device = lambda d, c: False
+            app.control_command("phone", {"do": "forget", "id": ident})
+            assert _until(lambda: app._phone_status()["error"] == sb.OLDER_COPY_WORDS, 5), \
+                app._phone_status()
 
             def refused(d, c):
                 raise OSError("no network")
