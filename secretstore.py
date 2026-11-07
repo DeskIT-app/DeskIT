@@ -58,8 +58,8 @@ CRED_NAMES: tuple[str, ...] = ("groq", "gemini")
 
 #: Names kept as DPAPI files under DATA_DIR\secrets\: blobs and tokens.
 FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
-                               "supabase_session", "phone_key", "phone_tokens",
-                               "account_key", "account_key_aside")
+                               "supabase_session", "phone_key", "phone_key_pass",
+                               "phone_tokens", "account_key", "account_key_aside")
 
 #: The Credential Manager target is ``<prefix>/<name>``, and no two copies
 #: share a prefix. Until 2026-10-04 every copy that was not a hatch — the

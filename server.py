@@ -8,18 +8,28 @@ It runs as a thread inside the running app and borrows the transcriber
 that is already loaded. A separate process would load the same two models
 again — about 3.2 GB of VRAM and ~25 s of startup for no benefit.
 
-Reachability is Tailscale's job, not ours. The socket binds to LOOPBACK
-and `tailscale serve` fronts it: no port forwarding, no public IP, and
-nothing listening on any interface a stranger could reach — not even the
-home LAN. Tailscale terminates TLS with a real certificate. A bearer
-token sits behind all that, because a private network is a wall, not a
-lock. (DISTRIBUTION_PLAN.md chapter 12 moves the transport to the
-person's own Wi-Fi with a PC-generated certificate the keyboard pins,
-and per-phone tokens; this file is the PC side that work lands on.)
+TWO DOORS, EACH WITH ONE JOB, one set of routes behind them (`Routes`,
+PHONE_LINK_PLAN.md §6.4), so `/translate` and the rest exist once and
+each door has a table of what it answers.
 
-Binding loopback rather than the Tailscale address is load-bearing:
-`tailscale serve` proxies to localhost, so a server bound only to
-100.x.y.z is invisible to it.
+The LOOPBACK door, `PhoneServer`: 127.0.0.1, plain HTTP, the bearer token.
+It is this PC's own: the Claude hook's `/notify`, and `tailscale serve`
+until the phone plan's stage 6. It runs while the phone switch is on OR the
+hook is connected, so a stranger's hook does not post into nothing, and with
+the switch off it answers the hook and nothing else (`HOOK_ROUTES`). Binding
+loopback is load-bearing: `tailscale serve` proxies to localhost, and any
+other address would put a token-guarded, un-throttled socket in front of
+the house.
+
+The PHONE door, `PhoneDoor`: every interface, TLS, a client certificate the
+account lists. net.serve_tls opens it, because net.py alone may use ssl
+and socket (the one `import socket` here is the loopback listener's
+exclusive-bind option), and it has checked the peer before a
+line of http.server runs: no unauthenticated byte ever reaches this file.
+There is no bearer on it and no `/notify`; the phone has never called that
+route. It opens only once the account has a phone, the switch is on, this
+PC gave its one yes and the person's yes to the account stands
+(main.App._doors).
 
 The client is the Android keyboard (android/), and only that. There used
 to be a Hebrew web page at `/` that drove the same routes from a phone
@@ -30,19 +40,23 @@ context), and an end user has no Gradle to build an APK from — the
 keyboard is a release asset on GitHub, later Play. Anything asking for
 either is a 404 now.
 
-One GET is open without the token — `/health`, which says `{ok,
-version}` and nothing else (which engine is loaded is not for whoever can
-reach the port). `/api/version` (12.9), the keyboard-build facts, wants
-the bearer like every other route, and `/review` always did.
+One GET is open without the token on the loopback door — `/health`, which
+says `{ok, version}` and nothing else (which engine is loaded is not for
+whoever can reach the port). `/api/version` (12.9), the keyboard-build
+facts, wants the bearer like every other route, and `/review` always did.
+
+A BUSY PORT FALLS THROUGH, PORT_TRIES of them, and lands in state.json.
+Nothing else in the app knows a port by heart: notify_hook reads the state
+file, and a phone reads its `link` row.
 """
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import os
 import secrets
 import socket
-import subprocess
-import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -51,27 +65,6 @@ from pathlib import Path
 import paths
 
 log = logging.getLogger("app")
-
-# tailscale.exe is a CONSOLE program and this app runs under pythonw,
-# which has no console: without this flag every spawn ALLOCATES ONE, and
-# on Windows 11 that is a WINDOWS TERMINAL window (class
-# CASCADIA_HOSTING_WINDOW_CLASS), not the conhost the older comments in
-# this repo describe — which is why it reads as a terminal flashing open
-# and shut rather than a flicker. Probed under a parent with no console
-# anywhere in its chain: seven top-level windows created without this
-# flag, none with it, and tailscale still answers.
-#
-# HOW LONG IT WAS UP is the command's own runtime, about 110 ms warm —
-# which is exactly the "it appears for a split second" this was reported
-# as. An earlier note here said 0.7-2.1 s, read off the gap in app.log
-# between "phone endpoint on ..." and the URL line. That gap is
-# tailscale's cold start, NOT the window: it fell to ~110 ms on its own,
-# on boots that still predate this flag. The window is the finding; the
-# gap never measured it.
-#
-# Same reason and same constant as versions._CREATE_NO_WINDOW and
-# awake.CREATE_NO_WINDOW; the rule is in AGENTS.md.
-_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 APP_DIR = Path(__file__).resolve().parent
 #: Where the token lived until 2026-09-17, a plaintext file beside the
@@ -177,57 +170,6 @@ def load_token() -> str:
     return token
 
 
-def _tailscale_exe() -> str | None:
-    """The Windows installer does not put tailscale.exe on PATH."""
-    import shutil
-    found = shutil.which("tailscale")
-    if found:
-        return found
-    for guess in (r"C:\Program Files\Tailscale\tailscale.exe",
-                  r"C:\Program Files (x86)\Tailscale\tailscale.exe"):
-        if Path(guess).exists():
-            return guess
-    return None
-
-
-def run_utf8(cmd: list[str], timeout: float = 10) -> str | None:
-    """Run a command and return its stdout as text, or None on any failure.
-
-    `encoding` is the entire point. subprocess's text=True decodes with the
-    LOCALE code page, which on this machine is cp1255 (Hebrew) — so any
-    tool that emits UTF-8 blows up with UnicodeDecodeError inside
-    subprocess's reader thread and hands back stdout=None. That exception
-    is a ValueError, so a broad `except` swallows it and the caller
-    concludes the tool is missing or the service is down. Cost real
-    debugging time: the app reported Tailscale as offline while it was up.
-
-    `creationflags` is the second point: see _CREATE_NO_WINDOW above.
-    """
-    try:
-        out = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                             errors="replace", timeout=timeout, check=False,
-                             creationflags=_CREATE_NO_WINDOW)
-    except (OSError, subprocess.SubprocessError) as e:
-        log.debug("command %r failed: %r", cmd[:1], e)
-        return None
-    return out.stdout
-
-
-def tailscale_name() -> str | None:
-    """This machine's MagicDNS name, which is the host `tailscale serve`
-    publishes it under. None when Tailscale is not up — used only to print
-    a URL, never to decide what to bind."""
-    exe = _tailscale_exe()
-    if not exe:
-        return None
-    raw = run_utf8([exe, "status", "--json"])
-    try:
-        self_node = json.loads(raw or "{}").get("Self") or {}
-    except ValueError:
-        return None
-    return (self_node.get("DNSName") or "").strip(". ") or None
-
-
 def to_wav(raw: bytes) -> tuple[bytes, float]:
     """Whatever the phone posted -> (16 kHz mono WAV, seconds), what the
     transcriber and its language detector expect. The keyboard posts
@@ -245,12 +187,331 @@ def to_wav(raw: bytes) -> tuple[bytes, float]:
     return frames_to_wav([samples], 16000), len(samples) / 16000.0
 
 
+#: route -> the method of Routes that answers it, one table per door: a
+#: route that is not in a door's table does not exist there. A table rather
+#: than a chain of `if route ==`, because the chain was already carrying its
+#: own bugs by the third entry: the allow-list and the dispatch were two
+#: separate lists that had to agree, and the 401 named /transcribe whatever
+#: had actually been called.
+LOOPBACK_ROUTES: dict[str, str] = {
+    "/health": "_do_health",
+    "/api/version": "_do_version",
+    "/review": "_do_review_pending",
+    "/transcribe": "_do_transcribe",
+    "/translate": "_do_translate",
+    "/punctuate": "_do_punctuate",
+    "/notify": "_do_notify",
+    "/review/decide": "_do_review_decide",
+    "/lookup": "_do_lookup",
+}
+#: The phone door's: everything but /notify, which the keyboard has never
+#: called and which puts a card on his screen.
+PHONE_ROUTES: dict[str, str] = {r: n for r, n in LOOPBACK_ROUTES.items() if r != "/notify"}
+#: The loopback door's with the phone switch off: it stands then only for
+#: Claude's hook, and everything else that comes to it, the old road through
+#: `tailscale serve` included, finds nothing.
+HOOK_ROUTES: dict[str, str] = {r: LOOPBACK_ROUTES[r] for r in ("/health", "/notify")}
+#: The routes that take no body.
+GET_ROUTES: frozenset[str] = frozenset({"/health", "/api/version", "/review"})
+#: The one route open without the bearer on the loopback door.
+OPEN_ROUTES: frozenset[str] = frozenset({"/health"})
+
+
+class _Answer(Exception):
+    """A route's answer from the middle of it: a body that was not JSON."""
+
+    def __init__(self, status: int, payload: dict) -> None:
+        super().__init__(status)
+        self.status, self.payload = status, payload
+
+
+def _text_body(raw: bytes) -> dict:
+    """The JSON body of a text route, or the 400 that says it is not."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise _Answer(400, {"error": "expected JSON with a text field"}) from None
+    if not isinstance(payload, dict):
+        raise _Answer(400, {"error": "expected JSON with a text field"})
+    return payload
+
+
+class Routes:
+    """Every route, once. ``handle(route, body, phone)`` answers ``(status,
+    payload)``: nothing here reads a socket, so the two HTTP doors call it
+    and the phone's direct road can too (§6.4). ``phone`` is who came in,
+    `net.Peer`, or None on the loopback door. Each callable is optional: a
+    caller without one gets a 503 on its route and everything else
+    unchanged."""
+
+    def __init__(self, transcribe, translate=None, *, punctuate=None, notify=None,
+                 review_pending=None, review_decide=None, lookup=None,
+                 max_chars: int = 5000, review_scope: str = "phone") -> None:
+        self.transcribe = transcribe
+        self.translate = translate
+        self.punctuate = punctuate
+        self.notify = notify
+        self.review_pending = review_pending
+        self.review_decide = review_decide
+        self.lookup = lookup
+        self.max_chars = max_chars
+        self.review_scope = review_scope
+
+    def handle(self, route: str, body: bytes = b"", phone=None) -> tuple[int, dict]:
+        name = (LOOPBACK_ROUTES if phone is None else PHONE_ROUTES).get(route)
+        if name is None:
+            return 404, {"error": "not found"}
+        try:
+            return getattr(self, name)(body, phone)
+        except _Answer as answer:
+            return answer.status, answer.payload
+
+    def _do_health(self, raw: bytes, phone) -> tuple[int, dict]:
+        """Up, and which DeskIT — nothing more to whoever can reach the
+        port (12.3): the engine's name rides on each transcript."""
+        return 200, {"ok": True, "version": pc_version()}
+
+    def _do_version(self, raw: bytes, phone) -> tuple[int, dict]:
+        """The keyboard-build facts (12.9)."""
+        return 200, api_version()
+
+    def _do_transcribe(self, raw: bytes, phone) -> tuple[int, dict]:
+        try:
+            wav, seconds = to_wav(raw)
+        except Exception as e:
+            log.warning("phone sent audio we could not decode: %s", e)
+            return 400, {"error": f"could not decode the audio: {e}"}
+        try:
+            result = self.transcribe(wav)
+        except Exception as e:
+            log.warning("phone transcription failed: %s", e)
+            return 503, {"error": str(e)}
+        # (text, backend) or (text, backend, warning) — the warning came
+        # later and the test fakes still return pairs.
+        text, backend = result[0], result[1]
+        warning = result[2] if len(result) > 2 else None
+        log.info("phone: %.1f s -> %d chars via %s", seconds, len(text),
+                 backend)
+        if phone is not None:
+            import phone as phone_mod
+
+            phone_mod.saw(phone.fingerprint, dictated=True)
+        payload = {"text": text, "seconds": round(seconds, 2),
+                   "backend": backend}
+        if warning:
+            payload["warning"] = warning
+        return 200, payload
+
+    def _do_translate(self, raw: bytes, phone) -> tuple[int, dict]:
+        """Same job as the desktop's F9 key, for text already typed on the
+        phone: hand back the English of whatever is in the field."""
+        if self.translate is None:
+            return 503, {"error": "translation is not available"}
+        payload = _text_body(raw)
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            return 400, {"error": "nothing to translate"}
+        # The desktop guard applies here too: a phone field can hold a
+        # whole document, and translating one is never what was meant.
+        if len(text) > self.max_chars:
+            return 400, {"error": f"too long "
+                                  f"({len(text)} chars) to translate"}
+        # REFUSE RATHER THAN SPEND, which the desktop already does and the
+        # phone did not: "text with no Hebrew in it is skipped rather than
+        # spending a request". Without this, tapping the key on a field
+        # that is already English burns one of the ~80 free Gemini requests
+        # a day AND overwrites the whole field with the model's rewording
+        # of English that needed nothing done to it.
+        import translate as translate_mod
+        if not translate_mod.needs_translation(text):
+            return 400, {"error": "no Hebrew in it — nothing to translate"}
+        try:
+            out, backend = self.translate(text)
+        except Exception as e:
+            log.warning("phone translation failed: %s", e)
+            return 503, {"error": str(e)}
+        log.info("phone: translated %d chars via %s", len(text), backend)
+        return 200, {"text": out, "backend": backend}
+
+    def _do_punctuate(self, raw: bytes, phone) -> tuple[int, dict]:
+        """The phone twin of the desktop's F2 key.
+
+        This is the one the phone needs most after dictation itself: the
+        local Hebrew model returns a run of words with barely a comma in
+        it, [polish] is forbidden from adding any, and on a phone there is
+        no practical way to put them in by hand.
+
+        The words are guaranteed untouched — punctuate.py strips every
+        non-letter from the reply AND from the input and demands they be
+        identical — so the only interesting failure is the one where the
+        model rewrote something. That comes back as 409 rather than 503,
+        deliberately: the phone shows either verbatim, but the status code
+        is what tells "your text is fine, the reply was thrown away" apart
+        from "the backend is down", in app.log and to anything else reading
+        this endpoint later.
+        """
+        if self.punctuate is None:
+            return 503, {"error": "punctuation is not available"}
+        payload = _text_body(raw)
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            return 400, {"error": "nothing to punctuate"}
+        if len(text) > self.max_chars:
+            return 400, {"error": f"too long "
+                                  f"({len(text)} chars) to punctuate"}
+        import punctuate as punctuate_mod
+        if not punctuate_mod.needs_punctuation(text):
+            return 400, {"error": "no words to punctuate"}
+        # Nikud is deliberately NOT a per-request field. The prompt is built
+        # from cfg.punctuate.nikud through a callable the backends read at
+        # request time, so a per-call override would race the desktop key
+        # rather than override it. It stays one setting for both.
+        try:
+            out, backend = self.punctuate(text)
+        except punctuate_mod.UnsafeReply as e:
+            # Told apart from every other failure on purpose, exactly as
+            # the desktop key does it. "It could not be reached" sends
+            # someone to check Ollama; this means the model answered and
+            # rewrote their words, and the app threw that away — which is
+            # the guard working, not breaking.
+            # The phone's reply names the word; app.log does not (D8).
+            log.error("phone punctuation discarded: %s. Text untouched.",
+                      getattr(e, "logged", "the words changed"))
+            return 409, {"error": f"left it alone — the model rewrote "
+                                  f"your words ({e})", "unsafe": True}
+        except Exception as e:
+            log.warning("phone punctuation failed: %s", e)
+            return 503, {"error": str(e)}
+        log.info("phone: punctuated %d chars via %s", len(text), backend)
+        return 200, {"text": out, "backend": backend,
+                     "changed": out != text}
+
+    def _do_notify(self, raw: bytes, phone) -> tuple[int, dict]:
+        """A notification from another program (notify.py).
+
+        The body is a JSON object with any of source / kind / title /
+        body / project / session, all optional — the engine's clean()
+        decides what each becomes, and this handler decides nothing
+        about the content. It only sorts the answers: 503 when the app
+        was built without the engine or the engine refused ([notify]
+        enabled = false), 400 when the body was not an object, 200 with
+        the engine's reply otherwise. The callable runs on this request
+        thread and is written to return in milliseconds; there is no
+        per-request timeout to hide behind.
+        """
+        if self.notify is None:
+            return 503, {"error": "notifications are not available"}
+        payload = _text_body(raw)
+        try:
+            result = self.notify(payload)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            log.warning("notify failed: %s", e)
+            return 503, {"error": str(e)}
+        if isinstance(result, dict) and result.get("ok") is False:
+            return 503, result
+        if not isinstance(result, dict):
+            result = {"ok": True}
+        log.info("phone: notification #%s from %s", result.get("id"),
+                 payload.get("source", "?"))
+        return 200, result
+
+
+    # ---- the second reading, read and answered from the phone ----
+
+    def _do_review_pending(self, raw: bytes, phone) -> tuple[int, dict]:
+        """GET /review: the proposals still waiting for a verdict.
+
+        A proposal quotes what was said. Each item carries the sentence,
+        the proposed sentence, the changes, a `snippets` list shaped by
+        review.snippet() so the phone paints the same three parts the
+        desktop card does, and `source` — "phone" or "desktop".
+
+        ONLY THE PHONE'S OWN PROPOSALS, as D22 asked: what was said at the
+        desk stays at the desk. `[server] review_scope = "all"` is the
+        developer line that answers every one, which his own Dev sets to
+        keep answering desk proposals from the sofa.
+        """
+        if self.review_pending is None:
+            return 503, {"error": "the second reading is not available"}
+        try:
+            items = self.review_pending()
+        except Exception as e:            # noqa: BLE001 — the store, not us
+            log.warning("phone asked for the review queue and it failed: %s",
+                        e)
+            return 503, {"error": str(e)}
+        if self.review_scope != "all":
+            items = [i for i in items if str(i.get("source") or "desktop") == "phone"]
+        return 200, {"items": [_review_item(i) for i in items]}
+
+    def _do_review_decide(self, raw: bytes, phone) -> tuple[int, dict]:
+        """POST /review/decide {id, verdict}: the phone's Keep or No.
+
+        The verdict is written to the store as `by="phone"`, and the
+        app's review engine learns it on its next wake exactly as it
+        learns a decision the dashboard took — one path for every
+        answer, whoever gave it. 404 when the proposal is no longer
+        pending: answered elsewhere, or never existed.
+        """
+        if self.review_decide is None:
+            return 503, {"error": "the second reading is not available"}
+        payload = _text_body(raw)
+        sid = str(payload.get("id") or "").strip()
+        verdict = str(payload.get("verdict") or "").strip()
+        if not sid or verdict not in ("accepted", "rejected"):
+            return 400, {"error": "expected an id and a verdict of "
+                                  "accepted or rejected"}
+        try:
+            item = self.review_decide(sid, verdict)
+        except Exception as e:            # noqa: BLE001
+            log.warning("phone verdict on %s failed: %s", sid, e)
+            return 503, {"error": str(e)}
+        if item is None:
+            return 404, {"error": "no pending proposal with that id"}
+        log.info("phone: review %s %s", sid, verdict)
+        return 200, {"ok": True, "id": sid, "status": item.get("status")}
+
+    def _do_lookup(self, raw: bytes, phone) -> tuple[int, dict]:
+        """POST /lookup {text}: the phone twin of the desktop's F8 key.
+
+        Read-only by construction — the phone shows the answer in a box
+        of its own and never writes it anywhere. The far end classifies
+        the selection first (direction, word or phrase) with the same
+        rules as the desk; a selection with nothing to look up — empty,
+        too long, already in both scripts — is a 400 with the reason,
+        so the phone can say so instead of showing an empty box.
+        """
+        if self.lookup is None:
+            return 503, {"error": "lookup is not available"}
+        payload = _text_body(raw)
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            return 400, {"error": "nothing to look up"}
+        try:
+            answer, target, backend, seconds = self.lookup(text)
+        except ValueError as e:
+            # classify() said no: the reason, verbatim, for the box.
+            return 400, {"error": str(e)}
+        except Exception as e:            # noqa: BLE001 — every backend
+            log.warning("phone lookup failed: %s", e)
+            return 503, {"error": str(e)}
+        return 200, {"text": answer, "target": target,
+                     "backend": backend, "seconds": round(seconds, 2)}
+
+
+
 class _Handler(BaseHTTPRequestHandler):
+    """One request on the loopback door: the bearer, the body, the table,
+    and the answer written. Everything else is Routes'."""
+
     server_version = "DeskIT"
     # A peer that opens a socket and then sends nothing must not hold a
     # handler thread forever (a slowloris on the loopback/tailnet). With a
     # timeout the request socket gives up and the thread is freed.
     timeout = 30
+    #: Who came in: nobody the handshake proved, on this door.
+    phone = None
 
     # -- plumbing --
 
@@ -262,10 +523,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.end_headers()
         try:
+            self.end_headers()
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
+        except OSError:
             pass                              # phone walked away mid-reply
 
     def _json(self, code: int, payload: dict) -> None:
@@ -285,26 +546,25 @@ class _Handler(BaseHTTPRequestHandler):
         return secrets.compare_digest(got.encode("utf-8", "ignore"),
                                       want.encode("utf-8"))
 
+    def _route(self) -> str:
+        return self.path.split("?", 1)[0].rstrip("/") or "/"
+
+    def _answers(self) -> dict[str, str]:
+        """What this door answers, as things stand now."""
+        return LOOPBACK_ROUTES if self.server.switch() else HOOK_ROUTES
+
     # -- routes --
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0].rstrip("/") or "/"
-        if path == "/health":
-            # Up, and which DeskIT — nothing more to whoever can reach
-            # the port (12.3): the engine's name rides on each transcript.
-            self._json(200, {"ok": True, "version": pc_version()})
-        elif path == "/api/version":
-            # The keyboard-build facts (12.9), behind the bearer so the
-            # network learns nothing from a GET.
-            if not self._authorised():
-                self._json(401, {"error": "bad token"})
-                return
-            self._json(200, api_version())
-        elif path == "/review":
-            self._do_review_pending()
-        else:
+        route = self._route()
+        if route not in self._answers() or route not in GET_ROUTES:
             # `/` (the retired web page) and `/app.apk` land here too.
             self._json(404, {"error": "not found"})
+            return
+        if route not in OPEN_ROUTES and not self._authorised():
+            self._json(401, {"error": "bad token"})
+            return
+        self._json(*self.server.routes.handle(route, b"", self.phone))
 
     def handle_one_request(self) -> None:
         # BaseHTTPRequestHandler prints tracebacks to stderr, which pythonw
@@ -316,24 +576,9 @@ class _Handler(BaseHTTPRequestHandler):
             log.exception("phone request handler crashed")
             raise
 
-    # route -> handler name. A table rather than a chain of `if route ==`,
-    # because the chain was already carrying its own bugs by the third
-    # entry: the allow-list and the dispatch were two separate lists that
-    # had to agree, and the 401 below named /transcribe whatever had
-    # actually been called.
-    POST_ROUTES = {
-        "/transcribe": "_do_transcribe",
-        "/translate": "_do_translate",
-        "/punctuate": "_do_punctuate",
-        "/notify": "_do_notify",
-        "/review/decide": "_do_review_decide",
-        "/lookup": "_do_lookup",
-    }
-
     def do_POST(self) -> None:
-        route = self.path.split("?", 1)[0].rstrip("/")
-        handler = self.POST_ROUTES.get(route)
-        if handler is None:
+        route = self._route()
+        if route not in self._answers() or route in GET_ROUTES:
             self._json(404, {"error": "not found"})
             return
         if not self._authorised():
@@ -348,275 +593,23 @@ class _Handler(BaseHTTPRequestHandler):
         if not 0 < length <= MAX_BODY:
             self._json(400, {"error": f"body must be 1..{MAX_BODY} bytes"})
             return
-        getattr(self, handler)(self.rfile.read(length))
-
-    def _text_body(self, raw: bytes) -> dict | None:
-        """The JSON body of a text route, or None once an error is sent."""
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            self._json(400, {"error": "expected JSON with a text field"})
-            return None
-        if not isinstance(payload, dict):
-            self._json(400, {"error": "expected JSON with a text field"})
-            return None
-        return payload
-
-    def _do_transcribe(self, raw: bytes) -> None:
-        try:
-            wav, seconds = to_wav(raw)
-        except Exception as e:
-            log.warning("phone sent audio we could not decode: %s", e)
-            self._json(400, {"error": f"could not decode the audio: {e}"})
-            return
-        try:
-            result = self.server.transcribe(wav)
-        except Exception as e:
-            log.warning("phone transcription failed: %s", e)
-            self._json(503, {"error": str(e)})
-            return
-        # (text, backend) or (text, backend, warning) — the warning came
-        # later and the test fakes still return pairs.
-        text, backend = result[0], result[1]
-        warning = result[2] if len(result) > 2 else None
-        log.info("phone: %.1f s -> %d chars via %s", seconds, len(text),
-                 backend)
-        payload = {"text": text, "seconds": round(seconds, 2),
-                   "backend": backend}
-        if warning:
-            payload["warning"] = warning
-        self._json(200, payload)
-
-    def _do_translate(self, raw: bytes) -> None:
-        """Same job as the desktop's F9 key, for text already typed on the
-        phone: hand back the English of whatever is in the field."""
-        if self.server.translate is None:
-            self._json(503, {"error": "translation is not available"})
-            return
-        payload = self._text_body(raw)
-        if payload is None:
-            return
-        text = payload.get("text", "")
-        if not isinstance(text, str) or not text.strip():
-            self._json(400, {"error": "nothing to translate"})
-            return
-        # The desktop guard applies here too: a phone field can hold a
-        # whole document, and translating one is never what was meant.
-        if len(text) > self.server.max_chars:
-            self._json(400, {"error": f"too long "
-                                      f"({len(text)} chars) to translate"})
-            return
-        # REFUSE RATHER THAN SPEND, which the desktop already does and the
-        # phone did not: "text with no Hebrew in it is skipped rather than
-        # spending a request". Without this, tapping the key on a field
-        # that is already English burns one of the ~80 free Gemini requests
-        # a day AND overwrites the whole field with the model's rewording
-        # of English that needed nothing done to it.
-        import translate as translate_mod
-        if not translate_mod.needs_translation(text):
-            self._json(400, {"error": "no Hebrew in it — nothing to translate"})
-            return
-        try:
-            out, backend = self.server.translate(text)
-        except Exception as e:
-            log.warning("phone translation failed: %s", e)
-            self._json(503, {"error": str(e)})
-            return
-        log.info("phone: translated %d chars via %s", len(text), backend)
-        self._json(200, {"text": out, "backend": backend})
-
-    def _do_punctuate(self, raw: bytes) -> None:
-        """The phone twin of the desktop's F2 key.
-
-        This is the one the phone needs most after dictation itself: the
-        local Hebrew model returns a run of words with barely a comma in
-        it, [polish] is forbidden from adding any, and on a phone there is
-        no practical way to put them in by hand.
-
-        The words are guaranteed untouched — punctuate.py strips every
-        non-letter from the reply AND from the input and demands they be
-        identical — so the only interesting failure is the one where the
-        model rewrote something. That comes back as 409 rather than 503,
-        deliberately: the phone shows either verbatim, but the status code
-        is what tells "your text is fine, the reply was thrown away" apart
-        from "the backend is down", in app.log and to anything else reading
-        this endpoint later.
-        """
-        if self.server.punctuate is None:
-            self._json(503, {"error": "punctuation is not available"})
-            return
-        payload = self._text_body(raw)
-        if payload is None:
-            return
-        text = payload.get("text", "")
-        if not isinstance(text, str) or not text.strip():
-            self._json(400, {"error": "nothing to punctuate"})
-            return
-        if len(text) > self.server.max_chars:
-            self._json(400, {"error": f"too long "
-                                      f"({len(text)} chars) to punctuate"})
-            return
-        import punctuate as punctuate_mod
-        if not punctuate_mod.needs_punctuation(text):
-            self._json(400, {"error": "no words to punctuate"})
-            return
-        # Nikud is deliberately NOT a per-request field. The prompt is built
-        # from cfg.punctuate.nikud through a callable the backends read at
-        # request time, so a per-call override would race the desktop key
-        # rather than override it. It stays one setting for both.
-        try:
-            out, backend = self.server.punctuate(text)
-        except punctuate_mod.UnsafeReply as e:
-            # Told apart from every other failure on purpose, exactly as
-            # the desktop key does it. "It could not be reached" sends
-            # someone to check Ollama; this means the model answered and
-            # rewrote their words, and the app threw that away — which is
-            # the guard working, not breaking.
-            # The phone's reply names the word; app.log does not (D8).
-            log.error("phone punctuation discarded: %s. Text untouched.",
-                      getattr(e, "logged", "the words changed"))
-            self._json(409, {"error": f"left it alone — the model rewrote "
-                                      f"your words ({e})", "unsafe": True})
-            return
-        except Exception as e:
-            log.warning("phone punctuation failed: %s", e)
-            self._json(503, {"error": str(e)})
-            return
-        log.info("phone: punctuated %d chars via %s", len(text), backend)
-        self._json(200, {"text": out, "backend": backend,
-                         "changed": out != text})
-
-    def _do_notify(self, raw: bytes) -> None:
-        """A notification from another program (notify.py).
-
-        The body is a JSON object with any of source / kind / title /
-        body / project / session, all optional — the engine's clean()
-        decides what each becomes, and this handler decides nothing
-        about the content. It only sorts the answers: 503 when the app
-        was built without the engine or the engine refused ([notify]
-        enabled = false), 400 when the body was not an object, 200 with
-        the engine's reply otherwise. The callable runs on this request
-        thread and is written to return in milliseconds; there is no
-        per-request timeout to hide behind.
-        """
-        if self.server.notify is None:
-            self._json(503, {"error": "notifications are not available"})
-            return
-        payload = self._text_body(raw)
-        if payload is None:
-            return
-        try:
-            result = self.server.notify(payload)
-        except ValueError as e:
-            self._json(400, {"error": str(e)})
-            return
-        except Exception as e:
-            log.warning("notify failed: %s", e)
-            self._json(503, {"error": str(e)})
-            return
-        if isinstance(result, dict) and result.get("ok") is False:
-            self._json(503, result)
-            return
-        if not isinstance(result, dict):
-            result = {"ok": True}
-        log.info("phone: notification #%s from %s", result.get("id"),
-                 payload.get("source", "?"))
-        self._json(200, result)
+        self._json(*self.server.routes.handle(route, self.rfile.read(length), self.phone))
 
 
-    # ---- the second reading, read and answered from the phone ----
+class _PhoneHandler(_Handler):
+    """One request on the phone door. The handshake proved the certificate
+    before this class saw a byte, so the proof is the connection and there
+    is no bearer to ask for; net.Door checks the leaf against the list."""
 
-    def _do_review_pending(self) -> None:
-        """GET /review: every proposal still waiting for a verdict.
+    def __init__(self, request, client_address, server, peer) -> None:
+        self.phone = peer
+        super().__init__(request, client_address, server)
 
-        The one GET that needs the token: a proposal quotes what was
-        said. Each item carries the sentence, the proposed sentence, the
-        changes, a `snippets` list shaped by review.snippet() so the phone
-        paints the same three parts the desktop card does, and `source`
-        — "phone" or "desktop" — which is what the phone rings on. The
-        list is ALL pending proposals, not only the phone's: the phone is
-        also the way to answer a desk proposal from the sofa.
-        """
-        if not self._authorised():
-            self._json(401, {"error": "bad token"})
-            return
-        if self.server.review_pending is None:
-            self._json(503, {"error": "the second reading is not available"})
-            return
-        try:
-            items = self.server.review_pending()
-        except Exception as e:            # noqa: BLE001 — the store, not us
-            log.warning("phone asked for the review queue and it failed: %s",
-                        e)
-            self._json(503, {"error": str(e)})
-            return
-        self._json(200, {"items": [_review_item(i) for i in items]})
+    def _answers(self) -> dict[str, str]:
+        return PHONE_ROUTES
 
-    def _do_review_decide(self, raw: bytes) -> None:
-        """POST /review/decide {id, verdict}: the phone's Keep or No.
-
-        The verdict is written to the store as `by="phone"`, and the
-        app's review engine learns it on its next wake exactly as it
-        learns a decision the dashboard took — one path for every
-        answer, whoever gave it. 404 when the proposal is no longer
-        pending: answered elsewhere, or never existed.
-        """
-        if self.server.review_decide is None:
-            self._json(503, {"error": "the second reading is not available"})
-            return
-        payload = self._text_body(raw)
-        if payload is None:
-            return
-        sid = str(payload.get("id") or "").strip()
-        verdict = str(payload.get("verdict") or "").strip()
-        if not sid or verdict not in ("accepted", "rejected"):
-            self._json(400, {"error": "expected an id and a verdict of "
-                                      "accepted or rejected"})
-            return
-        try:
-            item = self.server.review_decide(sid, verdict)
-        except Exception as e:            # noqa: BLE001
-            log.warning("phone verdict on %s failed: %s", sid, e)
-            self._json(503, {"error": str(e)})
-            return
-        if item is None:
-            self._json(404, {"error": "no pending proposal with that id"})
-            return
-        log.info("phone: review %s %s", sid, verdict)
-        self._json(200, {"ok": True, "id": sid, "status": item.get("status")})
-
-    def _do_lookup(self, raw: bytes) -> None:
-        """POST /lookup {text}: the phone twin of the desktop's F8 key.
-
-        Read-only by construction — the phone shows the answer in a box
-        of its own and never writes it anywhere. The far end classifies
-        the selection first (direction, word or phrase) with the same
-        rules as the desk; a selection with nothing to look up — empty,
-        too long, already in both scripts — is a 400 with the reason,
-        so the phone can say so instead of showing an empty box.
-        """
-        if self.server.lookup is None:
-            self._json(503, {"error": "lookup is not available"})
-            return
-        payload = self._text_body(raw)
-        if payload is None:
-            return
-        text = payload.get("text", "")
-        if not isinstance(text, str) or not text.strip():
-            self._json(400, {"error": "nothing to look up"})
-            return
-        try:
-            answer, target, backend, seconds = self.server.lookup(text)
-        except ValueError as e:
-            # classify() said no: the reason, verbatim, for the box.
-            self._json(400, {"error": str(e)})
-            return
-        except Exception as e:            # noqa: BLE001 — every backend
-            log.warning("phone lookup failed: %s", e)
-            self._json(503, {"error": str(e)})
-            return
-        self._json(200, {"text": answer, "target": target,
-                         "backend": backend, "seconds": round(seconds, 2)})
+    def _authorised(self) -> bool:
+        return True
 
 
 def _review_item(item: dict) -> dict:
@@ -650,6 +643,49 @@ def _review_item(item: dict) -> dict:
             "snippets": snippets}
 
 
+#: How many ports a busy door tries, its own first.
+PORT_TRIES = 20
+#: WSAEADDRINUSE, and WSAEACCES, which is what Windows answers on a port
+#: another program holds exclusively or that Hyper-V reserved.
+_BUSY_WINERRORS = (10048, 10013)
+
+#: A process the suite started (tests.py sets it before its first import,
+#: and every child inherits it, AGENTS.md) never asks for a door's real
+#: port: 8756 is his running app's, and a test that got there first would
+#: send his app and the hook somewhere else. And it never binds beyond
+#: loopback, because that is what raises Windows' firewall dialog on his
+#: screen.
+_SUITE = os.environ.get("DESKIT_SUITE", "").strip() == "1"
+_REAL_PORTS = (8756, 8766)
+_SUITE_SHIFT = 20000
+
+#: Every interface: a phone comes in on whichever network the PC is on, and
+#: its row names the private addresses. A rule on Public means the door also
+#: stands on a cafe's Wi-Fi, which is what the client certificate is for.
+PHONE_BIND = "127.0.0.1" if _SUITE else "0.0.0.0"
+
+
+def _asked(port: int) -> int:
+    return port + _SUITE_SHIFT if _SUITE and port in _REAL_PORTS else port
+
+
+def _busy(error: OSError) -> bool:
+    return (getattr(error, "winerror", None) in _BUSY_WINERRORS
+            or error.errno in (errno.EADDRINUSE, errno.EACCES))
+
+
+def _first_free(open_at, first: int):
+    """``(open_at(port), port)`` on the first of PORT_TRIES ports that is
+    not taken. Anything but a busy port goes up to the caller."""
+    for port in range(first, first + PORT_TRIES):
+        try:
+            return open_at(port), port
+        except OSError as e:
+            if not _busy(e) or port == first + PORT_TRIES - 1:
+                raise
+    raise OSError(errno.EADDRINUSE, "no port to try")    # PORT_TRIES of nothing
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     # NOT allow_reuse_address. On Windows SO_REUSEADDR lets a DIFFERENT
@@ -668,96 +704,185 @@ class _Server(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, flag, 1)
         super().server_bind()
 
-    def __init__(self, addr, token, transcribe, backend_name, translate=None,
-                 max_chars=5000, punctuate=None, notify=None,
-                 review_pending=None, review_decide=None, lookup=None):
+    def __init__(self, addr, token, routes: Routes, switch):
         super().__init__(addr, _Handler)
         self.token = token
-        self.transcribe = transcribe
-        self.backend_name = backend_name
-        self.translate = translate
-        self.punctuate = punctuate
-        self.notify = notify
-        self.review_pending = review_pending
-        self.review_decide = review_decide
-        self.lookup = lookup
-        self.max_chars = max_chars
+        self.routes = routes
+        #: Is the phone switch on? Asked per request: the door stays up for
+        #: the hook when it goes off, and nothing restarts.
+        self.switch = switch
 
 
 class PhoneServer:
-    """Owns the socket and the thread. Never fatal: if it cannot start,
-    the desktop hotkey must keep working regardless."""
+    """The loopback door: it owns the socket and the thread, and the routes
+    both doors answer with. Never fatal: if it cannot start, the desktop
+    hotkey must keep working regardless."""
 
     def __init__(self, cfg, transcribe, backend_name, translate=None,
                  punctuate=None, notify=None, review_pending=None,
                  review_decide=None, lookup=None):
         self.cfg = cfg
-        self._transcribe = transcribe
         self._backend_name = backend_name
-        self._translate = translate
-        self._punctuate = punctuate
-        self._notify = notify
         # The second reading's queue and its verdicts, and the F8 lookup,
-        # for the phone (2026-09-13). All optional: a caller without them
-        # gets a 503 on those routes and everything else unchanged.
-        self._review_pending = review_pending
-        self._review_decide = review_decide
-        self._lookup = lookup
+        # for the phone (2026-09-13).
+        self.routes = Routes(transcribe, translate, punctuate=punctuate,
+                             notify=notify, review_pending=review_pending,
+                             review_decide=review_decide, lookup=lookup,
+                             max_chars=cfg.translate.max_chars,
+                             review_scope=cfg.server.review_scope)
         self._srv: _Server | None = None
         self._thread: threading.Thread | None = None
-        self.url: str | None = None
+        #: The port it holds, None while it is shut.
+        self.port: int | None = None
 
-    def start(self) -> None:
-        port = self.cfg.server.port
+    @property
+    def running(self) -> bool:
+        return self._srv is not None
+
+    def start(self, first: int | None = None) -> None:
+        """Open the door on ``first`` (the setting's port when left unsaid)
+        or the next free one. A second start is nothing."""
+        if self.running:
+            return
         host = self.cfg.server.host.strip() or "127.0.0.1"
-        # Loopback only, whatever the setting says. The endpoint is reached
-        # through `tailscale serve` proxying to localhost, never by binding
-        # the LAN — and binding a non-loopback interface (0.0.0.0, a LAN
-        # address) would put a token-guarded, un-throttled socket in front
-        # of the whole house network. An unexpected host is refused and we
-        # fall back to loopback with a line in the log, rather than silently
-        # exposing the surface. `server.host`'s help text already says empty
-        # is the private choice; this makes the code enforce it.
+        # Loopback only, whatever the setting says. Binding a non-loopback
+        # interface (0.0.0.0, a LAN address) would put a token-guarded,
+        # un-throttled socket in front of the whole house network; that
+        # is what the phone door's handshake is for. An unexpected host is
+        # refused and we fall back to loopback with a line in the log,
+        # rather than silently exposing the surface. `server.host`'s help
+        # text already says empty is the private choice; this makes the
+        # code enforce it.
         if host.lower() not in ("127.0.0.1", "localhost", "::1"):
             log.warning("server.host=%r would bind a non-loopback interface; "
-                        "the phone is reached over Tailscale, not by opening "
-                        "the LAN. Binding 127.0.0.1 instead.", host)
+                        "the loopback door stays on this PC. Binding "
+                        "127.0.0.1 instead.", host)
             host = "127.0.0.1"
         token = load_token()
-        self._srv = _Server((host, port), token, self._transcribe,
-                            self._backend_name, self._translate,
-                            self.cfg.translate.max_chars, self._punctuate,
-                            notify=self._notify,
-                            review_pending=self._review_pending,
-                            review_decide=self._review_decide,
-                            lookup=self._lookup)
+        self.routes.review_scope = self.cfg.server.review_scope
+        asked = _asked(self.cfg.server.port if first is None else first)
+        self._srv, self.port = _first_free(
+            lambda port: _Server((host, port), token, self.routes,
+                                 lambda: self.cfg.server.enabled), asked)
         self._thread = threading.Thread(target=self._srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()
-        log.info("phone endpoint on %s:%d", host, port)
-        name = tailscale_name()
-        if name:
-            # The line the keyboard's Settings accepts whole (address and
-            # token, Prefs.parsePasted); the web page it once opened is
-            # gone (12.11), the shape stays until QR pairing (12.2).
-            self.url = f"https://{name}/#t={token}"
-            # The host only (D8): the link with the token is on the
-            # dashboard's Phone page, never in app.log.
-            log.info("phone address: https://%s/ — the line with the token "
-                     "for the keyboard's Settings is on the dashboard's "
-                     "Phone page", name)
-            log.info("(needs `tailscale serve --bg %d` once — without it "
-                     "there is no certificate, and the keyboard refuses "
-                     "plain http)", port)
-        else:
-            self.url = f"http://{host}:{port}/#t={token}"
-            log.warning("tailscale is not up — the phone cannot reach this. "
-                        "Log in to Tailscale, then restart. Local address: "
-                        "http://%s:%d/", host, port)
+        log.info("phone endpoint on %s:%d", host, self.port)
+        if self.port != asked:
+            # another copy got here first. In the checkout that is the
+            # Stranger or the released app, and `tailscale serve` and the
+            # phone now reach THAT copy, under a token that is not this one's.
+            (log.warning if paths.DEVELOPER else log.info)(
+                "THE LOOPBACK DOOR MOVED: port %d is taken, so this copy is on %d, and "
+                "whatever still points at %d reaches the other copy", asked, self.port, asked)
 
     def stop(self) -> None:
-        if self._srv is not None:
-            self._srv.shutdown()
-            self._srv.server_close()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
+        srv, thread = self._srv, self._thread
+        self._srv = self._thread = self.port = None
+        if srv is not None:
+            srv.shutdown()
+            srv.server_close()
+        if thread is not None:
+            thread.join(timeout=2)
+
+
+class PhoneDoor:
+    """The phone door: net.Door and the requests that come through it. The
+    list of who may come in is phone.anchors()'s to say; this only holds it
+    open, on whichever port it could have."""
+
+    def __init__(self, cfg, routes: Routes) -> None:
+        self.cfg = cfg
+        self.routes = routes
+        self._door = None
+        self._list: dict = {}
+        #: The certificate the door was opened with.
+        self._cert = ""
+
+    @property
+    def running(self) -> bool:
+        return self._door is not None
+
+    @property
+    def port(self) -> int | None:
+        return self._door.port if self._door is not None else None
+
+    def _serve(self, sock, address, peer) -> None:
+        import phone as phone_mod
+
+        phone_mod.saw(peer.fingerprint)
+        _PhoneHandler(sock, address, self, peer)
+
+    def _open(self, anchors: dict, first: int):
+        import net
+        import phone as phone_mod
+
+        return _first_free(
+            lambda port: net.serve_tls(PHONE_BIND, port, chain=phone_mod.key_path(),
+                                       passphrase=phone_mod.PASS_NAME, anchors=anchors,
+                                       handler=self._serve),
+            first)[0]
+
+    def _same_key(self) -> bool:
+        """Is the key on disk the one this door opened with? A read that
+        fails says yes: it is no reason to close a door that works."""
+        import phone as phone_mod
+        import secretstore
+
+        try:
+            return phone_mod.identity() == self._cert
+        except (OSError, ValueError, secretstore.SecretError) as e:
+            log.info("phone door: its key was not read (%s)", type(e).__name__)
+            return True
+
+    def start(self, anchors: dict) -> int:
+        """Open it for ``anchors``; the port it got. An open door takes the
+        list, and reopens under the key on disk if that is another one: a
+        door shows the certificate it was opened with, and a phone pins what
+        the row says.
+
+        A key that will not open (the file came back from a backup, say) is
+        a new identity and one more try, and the next `link` row carries the
+        new certificate. A key that could not be read just now is neither:
+        the door stays as it is and the next pass tries again."""
+        import net
+        import phone as phone_mod
+        import secretstore
+
+        names = {mark: phone.get("name") for mark, phone in anchors.items()}
+        if self._door is not None and names != self._list:
+            try:
+                self._door.admit(anchors)
+                self._list = names
+            except net.DoorUnread as e:
+                log.warning("phone door: %s; the list stands, the next pass tries again", e)
+            except net.DoorError as e:
+                log.warning("phone door: %s; it opens again", e)
+                self.stop()
+        if self._door is not None and not self._same_key():
+            log.info("phone door: the key changed; it opens again")
+            self.stop()
+        if self._door is not None:
+            return self._door.port
+        first = _asked(self.cfg.server.phone_port)
+        try:
+            cert = phone_mod.identity()
+            door = self._open(anchors, first)
+        except net.DoorUnread:
+            raise
+        except (net.DoorError, ValueError, secretstore.SecretError) as e:
+            log.warning("phone door: the key will not do (%s); a new identity for this PC",
+                        type(e).__name__)
+            cert = phone_mod.rotate()
+            door = self._open(anchors, first)
+        self._door, self._cert, self._list = door, cert, names
+        log.info("phone door open on port %d for %d phone(s)", door.port, len(anchors))
+        return door.port
+
+    def stop(self) -> None:
+        door, self._door = self._door, None
+        self._list = {}
+        self._cert = ""
+        if door is not None:
+            door.stop()
+            log.info("phone door closed")

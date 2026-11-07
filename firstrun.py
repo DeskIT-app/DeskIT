@@ -337,7 +337,7 @@ WORDS = {
     "done.autostart": "Start with Windows",
     "done.autostart.help": "Windows starts it when you sign in; Settings > General turns it off.",
     "done.phone": "Dictate from your phone",
-    "done.phone.help": "This PC listens for the DeskIT keyboard on your Tailscale address (Settings > Phone shows how).",
+    "done.phone.help": "Your phone sends what you say to this PC, and the words come back to it. Settings > Phone shows how.",
     "done.sync": "Keep my words, settings and what I said in my account",
     "done.sync.help": ("On any PC you sign in on, DeskIT then hears you your way from the first "
                        "sentence, and the Said page is the same page: the words it learned "

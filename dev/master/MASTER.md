@@ -345,7 +345,7 @@ in `defaults.toml`, where the developer edits them), and
 **Stays (what he does not see, and must not change):** the portable data
 layout (`DATA_DIR == APP_DIR` in the checkout), `OWNER_DATA` — the checkout
 keeps every transcript line and every clip because they are training data —
-the `.dev` mutex, pipe and AppUserModelID, port 8757, autostart refusing in a
+the `.dev` mutex, pipe and AppUserModelID, autostart refusing in a
 checkout, and updates that look but never install. Those are what make it safe
 to run Dev beside the released copy; they are not surfaces.
 

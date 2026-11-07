@@ -1,7 +1,7 @@
 // The cards of a Settings tab that are not rows of the file — the Tk
 // desk's blocks (dashboard._dot_block, _updates_block, _awake_block, ...),
 // each drawn from what desk_settings answers.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Menu, RowView, Sw, keyOf } from "./controls";
 import { IC } from "../../kit";
 import type { Btn, KeyRow, Press, Section } from "./model";
@@ -26,6 +26,35 @@ function Buttons({ list, press, pressed, go, className }: {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function TroubleCard({ s, press, pressed }: {
+  s: Extract<Section, { kind: "trouble" }>; press: Press; pressed: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const k = keyOf("phone.firewall", "");
+  return (
+    <div className="card glass">
+      <div className="r">
+        <div className="t">
+          <div className="lab">{s.line}</div>
+          <div className="help">{s.said}</div>
+        </div>
+        <div className="ctl">
+          <div className={`btn${pressed === k ? " down" : ""}`}
+               onClick={() => void press({ do: "phone.firewall" }, k)}>{s.button}</div>
+        </div>
+      </div>
+      <div className="r more">
+        <div className="t">
+          <span className="link help" onClick={() => setOpen(!open)}>{open ? "Hide details" : "Details"}</span>
+          {open ? s.details.map((d) => (
+            <div key={d.k} className="kv"><span className="k">{d.k}</span><span className="v">{d.v}</span></div>
+          )) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -114,23 +143,52 @@ export function Card({ s, press, pressed, go }: Props) {
           </div>
         </div>
       );
-    case "phone":
+    case "devices":
       return (
         <div className="card glass">
-          <div className="r">
-            <div className="t">
-              <div className={`url${s.url ? "" : " none"}`}>{s.url || s.none}</div>
-              <div className="help">{s.said}</div>
-            </div>
-            <div className="ctl">
-              <div className={`btn${pressed === keyOf("phone.copy", "") ? " down" : ""}`}
-                   onClick={() => void press({ do: "phone.copy" }, keyOf("phone.copy", ""))}>
-                <i className="ic">{ic("link")}</i>Copy link
+          {s.rows.map((d) => (
+            <div className="r dev" key={d.id || "this"}>
+              <span className="dg"><i className="ic">{ic(d.glyph)}</i></span>
+              <div className="t">
+                <div className="lab">{d.asking ? `Forget ${d.name}?` : d.name}</div>
+                <div className="help">{d.asking ? s.ask : d.meta}</div>
               </div>
+              <div className="ctl">
+                {d.asking ? (
+                  <>
+                    <div className={`btn primary${pressed === keyOf("phone.forget", d.id) ? " down" : ""}`}
+                         onClick={() => void press({ do: "phone.forget", arg: d.id }, keyOf("phone.forget", d.id))}>Forget</div>
+                    <div className={`btn${pressed === keyOf("phone.keep", "") ? " down" : ""}`}
+                         onClick={() => void press({ do: "phone.keep" }, keyOf("phone.keep", ""))}>Keep</div>
+                  </>
+                ) : d.forget ? (
+                  <div className={`btn${pressed === keyOf("phone.ask", d.id) ? " down" : ""}`}
+                       onClick={() => void press({ do: "phone.ask", arg: d.id }, keyOf("phone.ask", d.id))}>Forget</div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+          {s.say ? <div className="r"><div className="t"><div className="help warn">{s.say}</div></div></div> : null}
+        </div>
+      );
+    case "keyboard":
+      return (
+        <div className="card glass">
+          <div className="r qrrow">
+            {s.qr ? (
+              <div className="qr">
+                <svg viewBox={`-3 -3 ${s.n + 6} ${s.n + 6}`} aria-label="The keyboard's download address"><path d={s.qr} /></svg>
+              </div>
+            ) : null}
+            <div className="t">
+              <div className="lab">{s.line}</div>
+              <div className="help">{s.said}</div>
             </div>
           </div>
         </div>
       );
+    case "trouble":
+      return <TroubleCard s={s} press={press} pressed={pressed} />;
     case "lines":
       return <LinesCard s={s} press={press} pressed={pressed} go={go} />;
     case "keys":

@@ -1248,19 +1248,28 @@ PROBLEMS_KEEP_RESOLVED_MAX = 2000
 
 @dataclass(frozen=True)
 class ServerConfig:
-    """The phone endpoint: dictate from the phone, transcribe on this GPU.
+    """The two doors, server.py: dictate from the phone, transcribe on
+    this GPU.
 
-    Off by default — it opens a socket, and that should be a decision.
+    On by default since the phone plan (2026-11-06): the phone door waits
+    for a phone by itself, so this switch no longer has to be what keeps
+    it shut. Each PC keeps its own no (sync.LOCAL_SECTIONS).
     """
-    enabled: bool = False
-    # "" = 127.0.0.1. Loopback is not a limitation, it is the design:
-    # `tailscale serve` proxies to localhost and terminates TLS, so nothing
-    # listens where a stranger — or the home LAN — could reach it, and the
-    # phone still gets the certificate its browser demands for microphone
-    # access. Binding the Tailscale address instead would make the server
-    # invisible to `tailscale serve`.
+    enabled: bool = True
+    # "" = 127.0.0.1, and the loopback door refuses anything else: it is
+    # plain HTTP with a bearer, for this PC's own programs. The door a phone
+    # reaches from the house's network is the other one, behind a client
+    # certificate, and no setting points this one at the LAN.
     host: str = ""
     port: int = 8756
+    # The phone door (server.PhoneDoor): the port it asks for first. Where
+    # it landed goes to state.json and out in this PC's `link` row.
+    phone_port: int = 8766
+    # What GET /review answers: "phone", the phone's own proposals, or
+    # "all", which keeps desk proposals answerable from the sofa.
+    review_scope: str = "phone"
+    # This PC's one yes to its phone door: a state key.
+    phone_allowed: bool = False
 
 
 @dataclass(frozen=True)
@@ -2060,6 +2069,10 @@ def build(data: dict) -> Config:
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
             host=str(server.get("host", ServerConfig.host)).strip(),
             port=int(server.get("port", ServerConfig.port)),
+            phone_port=int(server.get("phone_port", ServerConfig.phone_port)),
+            review_scope=str(server.get("review_scope",
+                                        ServerConfig.review_scope)).strip().lower(),
+            phone_allowed=bool(server.get("phone_allowed", ServerConfig.phone_allowed)),
         ),
         vocab=VocabConfig(
             enabled=bool(vocab.get("enabled", VocabConfig.enabled)),
@@ -2545,6 +2558,11 @@ def build(data: dict) -> Config:
         raise ConfigError("restore_delay_ms must be >= 0")
     if cfg.server.enabled and not (0 < cfg.server.port < 65536):
         raise ConfigError(f"server.port is out of range: {cfg.server.port}")
+    if not 0 < cfg.server.phone_port < 65536:
+        raise ConfigError(f"server.phone_port is out of range: {cfg.server.phone_port}")
+    if cfg.server.review_scope not in ("phone", "all"):
+        raise ConfigError(f"server.review_scope must be phone or all, "
+                          f"not {cfg.server.review_scope!r}")
     if cfg.audio.sample_rate <= 0:
         raise ConfigError("audio.sample_rate must be positive")
     if not cfg.gemini.models:
@@ -2868,7 +2886,8 @@ STATE_KEYS: frozenset[str] = frozenset({
     "shelf.x", "shelf.y", "shelf.scale",
     "review.x", "review.y", "review.scale",
     "audio.device", "camera.device", "visual_qa.voice",
-    "server.port", "setup.done", "setup.tour", "setup.autostart",
+    "server.port", "server.phone_port", "server.phone_allowed",
+    "setup.done", "setup.tour", "setup.autostart",
     "config_version",
     "updates.last_check", "updates.latest_seen", "updates.installed_version",
 })

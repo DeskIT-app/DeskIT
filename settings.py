@@ -603,10 +603,10 @@ TABS: tuple[Tab, ...] = (
         )),
     )),
     Tab(PHONE, (
-        Group("DICTATING FROM THE PHONE", (
+        Group("THE PHONE", (
             Friendly("server.enabled", "Dictate from the phone",
-                     "The phone keyboard sends its recordings here, over "
-                     "your own private network."),
+                     "Your phone sends what you say to this PC, and the "
+                     "words come back to it."),
         )),
     )),
     Tab(ACCOUNT, (

@@ -69,6 +69,12 @@ OWNER_VARS = ("DESKIT_PORTABLE", "GROQ_API_KEY", "GEMINI_API_KEY",
 
 STRANGER_RUN_KEY = r"Software\DeskIT.test\Run"
 
+#: The stranger's own doors. It runs beside DeskIT Dev, and the defaults are
+#: Dev's: started first it would take 8756, Dev would fall through, and
+#: `tailscale serve` and the phone would reach this copy under a token that
+#: is not Dev's. A hundred up, past where either door ever falls through to.
+PORTS = {"server.port": 8856, "server.phone_port": 8866}
+
 
 def environment(home: Path) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in OWNER_VARS}
@@ -139,6 +145,18 @@ def reset(home: Path, mode: str) -> list[str]:
             pass
     home.mkdir(parents=True, exist_ok=True)
     return done
+
+
+def seed_ports(home: Path) -> None:
+    """PORTS in the home's settings.toml, which is where the loopback door
+    asks first (main.App._loopback_first), unless they are there already. A
+    reset empties the folder, so this comes after it, on every start."""
+    import config
+
+    path = home / "settings.toml"
+    have = config.read_settings(path)
+    if any(name not in have for name in PORTS):
+        config.write_settings(path, {**PORTS, **have})
 
 
 def pythonw() -> str:
@@ -301,6 +319,7 @@ def main(argv: list[str]) -> int:
     if not a.run:
         for line in reset(home, "all" if a.all else "keep" if a.keep else "fresh"):
             print(line)
+    seed_ports(home)
     if a.reset_only:
         return 0
     if a.shots:
@@ -308,7 +327,7 @@ def main(argv: list[str]) -> int:
     pid = start(home, env)
     print(f"the stranger's copy is up: pid {pid}, home {home}")
     print("no .env, no key, no model until the wizard downloads one; the kernel names"
-          " carry .test, the phone port is 8758")
+          " carry .test, and a busy port falls through to the next free one")
     print("its hotkeys are the dev copy's hotkeys: both answer while both run")
     print(f"to end it: python dev\\stranger.py --stop" + (f" --home \"{home}\"" if home != DEFAULT_HOME.resolve() else ""))
     return 0

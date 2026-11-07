@@ -35,6 +35,10 @@ APP = HERE.parent
 sys.path.insert(0, str(APP))
 os.chdir(APP)
 os.environ.setdefault("DESKIT_PORTABLE", "1")
+# The suite's mark: the doors stay off 8756 and 8766, which are his running
+# app's, stay on loopback, where Windows raises no dialog, and a key is on
+# DeskIT.test/ (server._SUITE, secretstore).
+os.environ.setdefault("DESKIT_SUITE", "1")
 
 # SILENT, before anything of the app's is imported: a hidden desktop
 # hides the window and not the beep (AGENTS.md rule 8).
@@ -406,6 +410,113 @@ class Sim:
             raise AssertionError("the phone dictated into an unloaded model")
         assert not self.dot_on_screen()
 
+    def s_phone_joins_dictates_and_is_forgotten(self) -> None:
+        """Join, dictate, forget: the account is a fake, everything of this
+        PC's is real. Approve on this PC, the phone's row arrives, the door
+        opens with nothing else pressed, the phone dictates over TLS with a
+        client certificate, Forget closes it on the phone."""
+        import base64
+        import json
+        import socket
+        import ssl
+        import tempfile
+        import wave
+
+        import numpy as np
+
+        import phone as phone_mod
+        import privacy
+        import sb
+        import vault
+
+        app = self.app
+        assert self.press("Start")["ok"] and self.wait_model("on", 15)
+        key, uid = os.urandom(32), "11111111-2222-3333-4444-555555555555"
+        me, sent, gone, rows = "aaaaaaaa-0000-0000-0000-000000000001", [], set(), []
+        der, sec1 = phone_mod.make_pair("CN sim phone")
+        keep = {n: getattr(sb, n, None) for n in ("user", "device_id", "devices", "write_link",
+                                                  "forgotten", "forget_device")}
+        keep_key, keep_aad = vault.key, getattr(vault, "AAD_DEVICE", None)
+        keep_granted = privacy.granted
+        privacy.granted = lambda kind: True
+        sb.user = lambda: {"id": uid}
+        sb.device_id = lambda: me
+        sb.devices = lambda: list(rows)
+        sb.write_link = sent.append
+        sb.forgotten = lambda: set(gone)
+
+        def forget(ident, cert):
+            gone.update({ident, cert})
+            rows[:] = [r for r in rows if r["id"] != ident]
+            app._phone_account()
+        sb.forget_device = forget
+        vault.key = lambda u: key if u == uid else None
+        vault.AAD_DEVICE = "device/{uid}/{device_id}"
+        ident = "bbbbbbbb-0000-0000-0000-000000000002"
+        try:
+            app._phone_account()
+            assert not app.phone_door.running, "a door with no phone in the account"
+            app._phone_approved(ident)
+            rows.append({"id": ident, "name": "Sim phone", "platform": "android-34",
+                         "link": vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1,
+                                                       "cert": base64.b64encode(der).decode()},
+                                                 vault.AAD_DEVICE.format(uid=uid, device_id=ident))})
+            app._phone_account()
+            assert app.phone_door.running, "Approve on this PC did not open the door"
+            with tempfile.TemporaryDirectory() as tmp:
+                chain = os.path.join(tmp, "sim.pem")
+                with open(chain, "w", encoding="ascii") as f:
+                    f.write(phone_mod._pem("CERTIFICATE", der) + phone_mod._pem("EC PRIVATE KEY", sec1))
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ctx.load_cert_chain(chain)
+                port = app.phone_door.port
+                with __import__("io").BytesIO() as buf:
+                    with wave.open(buf, "wb") as w:
+                        w.setnchannels(1)
+                        w.setsampwidth(2)
+                        w.setframerate(16000)
+                        w.writeframes(np.zeros(16000, dtype=np.int16).tobytes())
+                    clip = buf.getvalue()
+                with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=10)) as tls:
+                    tls.settimeout(20)
+                    tls.sendall(f"POST /transcribe HTTP/1.0\r\nContent-Length: {len(clip)}\r\n\r\n".encode()
+                                + clip)
+                    got = b""
+                    while True:
+                        more = tls.recv(65536)
+                        if not more:
+                            break
+                        got += more
+                head, _, body = got.partition(b"\r\n\r\n")
+                assert head.split()[1] == b"200", head[:80]
+                assert "seconds" in json.loads(body), body[:80]
+                status = app.status()["phone"]
+                assert status["on"] and status["phones"][0]["dictated"], status
+                assert app.control_command("phone", {"do": "forget", "id": ident})["ok"]
+                assert self.until(lambda: not app.phone_door.running), "Forget left the door open"
+                try:
+                    with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=3)) as tls:
+                        tls.settimeout(3)
+                        tls.sendall(b"GET /health HTTP/1.0\r\n\r\n")
+                        assert not tls.recv(16), "the forgotten phone got an answer"
+                except OSError:
+                    pass
+        finally:
+            for name, value in keep.items():
+                if value is None:
+                    delattr(sb, name)
+                else:
+                    setattr(sb, name, value)
+            vault.key = keep_key
+            privacy.granted = keep_granted
+            if keep_aad is None:
+                del vault.AAD_DEVICE
+            else:
+                vault.AAD_DEVICE = keep_aad
+            phone_mod.drop_rows()
+
     def s_quit_takes_everything(self) -> None:
         self.app.stop()
         thread = self.app.dot._thread
@@ -457,6 +568,7 @@ class Sim:
              "stop_while_recording_is_refused_then_the_dictation_lands",
              "stop_and_start_hammered",
              "phone_is_refused_with_the_model_off",
+             "phone_joins_dictates_and_is_forgotten",
              "quit_takes_everything",
              "screens_card_with_notifications_off")
 

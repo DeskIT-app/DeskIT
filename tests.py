@@ -4230,16 +4230,16 @@ def test_phone_server_binds_its_port_exclusively() -> None:
     import server as server_mod
 
     assert server_mod._Server.allow_reuse_address is False
-    port = 8791
+    port = _door_port()
 
     def fake(wav):
         return "", "fake"
 
-    first = server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+    first = server_mod._Server(("127.0.0.1", port), "tok", server_mod.Routes(fake), lambda: True)
     try:
         raised = False
         try:
-            server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+            server_mod._Server(("127.0.0.1", port), "tok", server_mod.Routes(fake), lambda: True)
         except OSError:
             raised = True
         assert raised, "a second listener bound a port the first already held"
@@ -5646,28 +5646,6 @@ def test_splash_log_forwards_app_messages_and_trims_long_ones() -> None:
     assert len(seen[1]) <= 110 and seen[1].endswith("…"), len(seen[1])
 
 
-def test_subprocess_output_survives_a_hebrew_locale() -> None:
-    """This machine's locale code page is cp1255. subprocess(text=True)
-    decodes with it, so a tool emitting UTF-8 raises UnicodeDecodeError in
-    the reader thread and returns stdout=None — and because that is a
-    ValueError, a broad except reports the tool as absent. Exactly how the
-    app came to log "tailscale is not up" while Tailscale was up."""
-    import json as json_mod
-
-    import server as server_mod
-
-    # “ is 0x9c in cp1255's undefined range — the real byte that broke it
-    payload = {"Self": {"DNSName": "yoav.example.ts.net."},
-               "note": "עברית “quoted”"}
-    script = ("import sys,io;"
-              "sys.stdout=io.TextIOWrapper(sys.stdout.buffer,encoding='utf-8');"
-              f"print({json_mod.dumps(json_mod.dumps(payload))})")
-    out = server_mod.run_utf8([sys.executable, "-c", script])
-    assert out is not None, "utf-8 stdout came back as None"
-    assert json_mod.loads(out)["Self"]["DNSName"] == "yoav.example.ts.net."
-    assert server_mod.run_utf8(["definitely-not-a-real-binary-xyz"]) is None
-
-
 def test_phone_token_is_generated_once_and_reused() -> None:
     """It travels in a URL the user bookmarks — regenerating it on every
     start would silently break the phone."""
@@ -5692,11 +5670,12 @@ def test_phone_audio_decode_accepts_a_plain_wav() -> None:
 
 
 def test_phone_endpoint_never_binds_anything_but_loopback() -> None:
-    """`tailscale serve` proxies to localhost and terminates TLS. Binding
-    anywhere else both hides the server from it and puts a socket where the
-    home LAN can reach it."""
+    """The loopback door is still loopback. `tailscale serve` proxies to
+    localhost, and it is plain HTTP with a bearer: binding anywhere else
+    would put that where the network can reach it. What a phone reaches
+    from the network is the other door, behind a client certificate."""
     import server as server_mod
-    assert config_mod.ServerConfig.enabled is False   # opt in, not out
+    assert config_mod.ServerConfig.enabled is True    # the phone door waits for a phone itself
     assert config_mod.ServerConfig.host == ""
     cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.server.host in ("", "127.0.0.1", "localhost"), cfg.server.host
@@ -5760,6 +5739,2469 @@ def test_phone_routes_no_apk_no_web_page() -> None:
         assert body["version"] == version_mod.VERSION
     finally:
         srv.stop()
+
+
+# ---------------------------------------------------------- the phone's door
+# PHONE_LINK_PLAN.md stage 1: the phone reaches this PC straight over the
+# house's network. Every socket here is on loopback and on a port the system
+# picked: 8756 is his running app's, and a bind on 0.0.0.0 would put Windows'
+# firewall dialog on his screen.
+
+
+def _door_port() -> int:
+    """A port nothing holds right now, for a test that has to name one."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _a_phone(folder: Path, name: str, subject: str | None = None) -> dict:
+    """A phone as the door sees it: its certificate, and a file a test
+    client can hold it in. A real phone keeps this key in Android Keystore."""
+    import phone as phone_mod
+
+    der, sec1 = phone_mod.make_pair(subject or f"CN test {name}")
+    chain = folder / f"{phone_mod.fingerprint(der)[:12]}.pem"
+    chain.write_text(phone_mod._pem("CERTIFICATE", der) + phone_mod._pem("EC PRIVATE KEY", sec1),
+                     "ascii")
+    return {"name": name, "der": der, "chain": chain,
+            "fingerprint": phone_mod.fingerprint(der)}
+
+
+def _anchors(*phones) -> dict:
+    return {p["fingerprint"]: {"name": p["name"], "der": p["der"]} for p in phones}
+
+
+def _dial(port: int, chain=None, maximum=None):
+    """A TLS connection to the door, the way the keyboard's would be: it
+    trusts by pin, so nothing here checks the PC's certificate."""
+    import socket
+    import ssl
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    if chain is not None:
+        ctx.load_cert_chain(str(chain))
+    if maximum is not None:
+        ctx.maximum_version = maximum
+    return ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5))
+
+
+def _knock(port: int, chain=None, maximum=None) -> bytes | None:
+    """One word to the door and its answer; None when the door dropped us,
+    which TLS 1.3 only says on the first read after the handshake."""
+    import ssl
+
+    try:
+        with _dial(port, chain, maximum) as tls:
+            tls.settimeout(5)
+            tls.sendall(b"hello\n")
+            return tls.recv(64) or None
+    except (ssl.SSLError, OSError):
+        return None
+
+
+def _silent_peer(port: int, ip: str = "127.0.0.2"):
+    """A peer that connects from ``ip`` and says nothing. Loopback answers on
+    the whole of 127/8, so a test has as many addresses as it wants."""
+    import socket
+
+    peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    peer.settimeout(5)
+    peer.bind((ip, 0))
+    peer.connect(("127.0.0.1", port))
+    return peer
+
+
+def _echo_door(anchors: dict, *, port: int = 0):
+    """A door on loopback whose handler says who came in, with what came
+    in kept on the object: the transport alone, no routes."""
+    import net as net_mod
+    import phone as phone_mod
+
+    phone_mod.identity()
+    came: list = []
+
+    def handler(sock, address, peer):
+        came.append(peer)
+        sock.settimeout(10)
+        data = sock.recv(64)
+        if data:
+            sock.sendall(b"in:" + peer.name.encode("utf-8"))
+        sock.recv(64)                      # until the phone hangs up, or is cut
+
+    door = net_mod.serve_tls("127.0.0.1", port, chain=phone_mod.key_path(),
+                             passphrase=phone_mod.PASS_NAME, anchors=anchors,
+                             handler=handler)
+    door.came = came
+    return door
+
+
+def test_the_door_lets_a_listed_phone_in_and_drops_the_rest_in_the_handshake() -> None:
+    """The whole promise of the home road: only a certificate the account
+    lists gets past the handshake, and everybody else is gone before a
+    byte of theirs reaches anything of ours. Over TLS 1.3 and over 1.2,
+    which the keyboard's oldest Android needs."""
+    import ssl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26, stranger = _a_phone(folder, "S26 Ultra"), _a_phone(folder, "stranger")
+        door = _echo_door(_anchors(s26))
+        try:
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra"
+            assert _knock(door.port, s26["chain"], ssl.TLSVersion.TLSv1_2) == b"in:S26 Ultra"
+            assert len(door.came) == 2
+            assert door.came[0].fingerprint == s26["fingerprint"]
+
+            assert _knock(door.port) is None, "a client with no certificate got an answer"
+            assert _knock(door.port, stranger["chain"]) is None, "a stranger got an answer"
+            assert _knock(door.port, stranger["chain"], ssl.TLSVersion.TLSv1_2) is None
+            assert len(door.came) == 2, "a dropped peer reached the handler"
+        finally:
+            door.stop()
+
+
+def test_the_door_refuses_a_leaf_signed_by_a_listed_phone() -> None:
+    """VERIFY_X509_PARTIAL_CHAIN lets a chain end at any anchor, so a
+    certificate that a listed phone's key signed could verify. Only the
+    listed certificate itself is a phone: the door checks the leaf."""
+    import net as net_mod
+
+    door = None
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        listed = _a_phone(folder, "listed")
+        door = _echo_door(_anchors(listed))
+        try:
+            known = dict(door._known)
+            with door._lock:              # the handshake passes, the list says no
+                door._known = {}
+            assert _knock(door.port, listed["chain"]) is None
+            assert not door.came
+            with door._lock:
+                door._known = known
+            assert _knock(door.port, listed["chain"]) == b"in:listed"
+        finally:
+            door.stop()
+    assert net_mod.DOOR_HANDSHAKES == 16 and net_mod.DOOR_HANDSHAKE_S == 10.0
+
+
+def test_two_phones_with_one_subject_both_get_in_and_removing_one_leaves_the_other() -> None:
+    """Android's self-signed certificates may share a subject (CN=fake is
+    its default), and OpenSSL takes the first anchor of a name unless told
+    otherwise: [ok, SSLError, refused], measured 2026-11-06. And a context
+    cannot lose an anchor, so taking a phone off the list has to build a
+    new one and close what that phone already has open."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        one = _a_phone(folder, "one", subject="CN fake")
+        two = _a_phone(folder, "two", subject="CN fake")
+        three = _a_phone(folder, "three", subject="CN fake")
+        door = _echo_door(_anchors(one, two, three))
+        try:
+            for phone in (one, two, three):
+                assert _knock(door.port, phone["chain"]) == f"in:{phone['name']}".encode(), phone["name"]
+
+            held = _dial(door.port, two["chain"])
+            held.settimeout(5)
+            held.sendall(b"hello\n")
+            assert held.recv(64) == b"in:two"
+
+            door.admit(_anchors(one, three))
+            try:
+                assert held.recv(64) == b"", "the removed phone's connection stayed open"
+            except OSError:
+                pass                      # closed under it: as good
+            finally:
+                held.close()
+            assert _knock(door.port, two["chain"]) is None, "the removed phone still gets in"
+            assert _knock(door.port, one["chain"]) == b"in:one", "removing one cost the other"
+            assert _knock(door.port, three["chain"]) == b"in:three"
+        finally:
+            door.stop()
+
+
+def test_a_peer_that_says_nothing_does_not_stop_the_next_phone() -> None:
+    """The handshake runs on the connection's own thread, never in accept.
+    Sixteen peers that connect and say nothing hold the sixteen places, a
+    seventeenth is closed at once, and when one leaves the phone gets in.
+    Ten seconds is the deadline for a whole handshake. It takes four
+    addresses to fill them: one holds four at most."""
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = _echo_door(_anchors(s26))
+        each = net_mod.DOOR_HANDSHAKES_EACH
+        silent = []
+        try:
+            silent.append(_silent_peer(door.port))
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra", \
+                "a silent peer stopped the next phone"
+            for i in range(1, net_mod.DOOR_HANDSHAKES):
+                silent.append(_silent_peer(door.port, f"127.0.0.{2 + i // each}"))
+            assert _until(lambda: door._slots._value == 0, 5), door._slots._value
+
+            late = _silent_peer(door.port, "127.0.0.9")
+            try:
+                assert late.recv(1) == b"", "the seventeenth peer was kept"
+            except OSError:
+                pass
+            finally:
+                late.close()
+
+            for sock in silent:
+                sock.close()
+            silent.clear()
+            assert _until(lambda: door._slots._value == net_mod.DOOR_HANDSHAKES, 5)
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra"
+        finally:
+            for sock in silent:
+                sock.close()
+            door.stop()
+
+
+def test_a_connection_through_the_door_is_a_row_with_a_name_and_no_body() -> None:
+    """One row per connection in the Network log: the phone's name, the
+    bytes, never what was said. A peer that never got in is a row too, by
+    its address, and a scanner does not get to fill the table with them.
+    A name is the account's table talking, so it stays one clean cell."""
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26 = _a_phone(folder, "S26 | Ultra\nforged")
+        door = _echo_door(_anchors(s26))
+        before = len(net_mod.rows())
+        try:
+            assert _knock(door.port, s26["chain"])
+            assert _until(lambda: len(net_mod.rows()) > before, 5)
+            row = net_mod.rows()[-1]
+            assert row.host == "S26 / Ultraforged" and row.purpose == "phone", row
+            assert row.status == "closed" and row.down == 6 and row.up == len("in:S26 / Ultraforged"), row
+            assert row.secret == "-" and row.consent == "-", row
+            line = net_mod.format_row(row)
+            assert net_mod.parse_row(line) == row, line
+            assert "hello" not in line
+
+            count = len(net_mod.rows())
+            for _ in range(5):
+                assert _knock(door.port) is None
+            assert _until(lambda: len(net_mod.rows()) == count + 1, 5)
+            time.sleep(0.2)
+            rows = net_mod.rows()
+            assert len(rows) == count + 1, rows[count:]
+            assert rows[-1].host == "127.0.0.1" and rows[-1].status == "dropped", rows[-1]
+        finally:
+            door.stop()
+
+
+def test_the_door_takes_its_passphrase_by_name_and_says_so_when_the_key_will_not_open() -> None:
+    """The value never travels: serve_tls is handed a NAME, and asks the
+    store inside OpenSSL's callback. Any other name is a programming
+    error. A key that will not open is DoorError, told apart from a busy
+    port (OSError), because the answers are different: a new identity
+    against the next port."""
+    import net as net_mod
+    import phone as phone_mod
+    import secretstore
+
+    phone_mod.identity()
+    try:
+        net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(), passphrase="groq",
+                          anchors={}, handler=print)
+    except ValueError as e:
+        assert "groq" in str(e)
+    else:
+        raise AssertionError("a door took a cloud key's name")
+
+    real = secretstore.get(phone_mod.PASS_NAME)
+    secretstore.set(phone_mod.PASS_NAME, "not the passphrase")
+    try:
+        try:
+            net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(),
+                              passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+        except net_mod.DoorError as e:
+            assert "not the passphrase" not in str(e)
+        else:
+            raise AssertionError("a key opened with the wrong passphrase")
+    finally:
+        secretstore.set(phone_mod.PASS_NAME, real)
+    del real
+
+    holder = net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(),
+                               passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+    try:
+        try:
+            net_mod.serve_tls("127.0.0.1", holder.port, chain=phone_mod.key_path(),
+                              passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+        except net_mod.DoorError:
+            raise AssertionError("a busy port read as a key that will not open") from None
+        except OSError:
+            pass
+        else:
+            raise AssertionError("two doors held one port")
+    finally:
+        holder.stop()
+
+
+def _ask_door(port: int, chain, method: str, route: str, body: bytes = b"") -> tuple[int, dict]:
+    """One HTTP request through the door, the way the keyboard's would go."""
+    with _dial(port, chain) as tls:
+        tls.settimeout(10)
+        tls.sendall(f"{method} {route} HTTP/1.0\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+                    + body)
+        got = b""
+        while True:
+            more = tls.recv(65536)
+            if not more:
+                break
+            got += more
+    head, _, reply = got.partition(b"\r\n\r\n")
+    return int(head.split()[1]), json.loads(reply)
+
+
+def test_the_phone_door_runs_the_routes_for_a_listed_phone_only_and_has_no_notify() -> None:
+    """The door with its routes: a listed certificate reaches them with no
+    bearer, a client with none is dropped before any route runs, and
+    /notify exists on loopback and not here."""
+    import dataclasses
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server,
+                                                              phone_port=_door_port()))
+    lookups, notes = [], []
+
+    def lookup(text):
+        lookups.append(text)
+        return "answer", "en", "fake", 0.1
+
+    routes = server_mod.Routes(lambda wav: ("", "fake"), lookup=lookup,
+                               notify=lambda body: notes.append(body) or {"ok": True, "id": 1})
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26, stranger = _a_phone(folder, "S26 Ultra"), _a_phone(folder, "stranger")
+        door = server_mod.PhoneDoor(cfg, routes)
+        port = door.start(_anchors(s26))
+        try:
+            assert server_mod.PHONE_BIND == "127.0.0.1", "a test bound beyond loopback"
+            assert _ask_door(port, s26["chain"], "GET", "/health")[0] == 200
+            status, reply = _ask_door(port, s26["chain"], "POST", "/lookup", b'{"text": "word"}')
+            assert status == 200 and reply["text"] == "answer" and lookups == ["word"], reply
+
+            status, _reply = _ask_door(port, s26["chain"], "POST", "/notify", b'{"title": "x"}')
+            assert status == 404 and not notes, status
+            assert routes.handle("/notify", b'{"title": "x"}', None)[0] == 200 and notes
+
+            for chain in (None, stranger["chain"]):
+                try:
+                    _ask_door(port, chain, "POST", "/lookup", b'{"text": "nobody"}')
+                except (OSError, ValueError, IndexError):
+                    pass
+                else:
+                    raise AssertionError("a peer with no listed certificate got an answer")
+            assert lookups == ["word"], "a route ran for a client the door should have dropped"
+        finally:
+            door.stop()
+    assert not door.running
+
+
+def test_a_busy_port_falls_through_and_the_real_ports_stay_his() -> None:
+    """A door whose port is taken takes the next one, and a process the
+    suite started never asks for 8756 or 8766: his app is on the first."""
+    import dataclasses
+    import socket
+
+    import server as server_mod
+
+    with socket.socket() as held:
+        held.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        taken = held.getsockname()[1]
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server, enabled=True,
+                                                                  host="127.0.0.1", port=taken))
+        srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake")
+        srv.start()
+        try:
+            assert srv.port is not None and taken < srv.port <= taken + server_mod.PORT_TRIES
+        finally:
+            srv.stop()
+    assert server_mod._asked(8756) != 8756 and server_mod._asked(8766) != 8766
+    assert server_mod._asked(50123) == 50123
+
+
+# -- the account's side of the door, with sb as PHONE_LINK_PLAN.md section 12 says it
+
+
+_ACCOUNT_UID = "11111111-2222-3333-4444-555555555555"
+_THIS_PC = "aaaaaaaa-0000-0000-0000-000000000001"
+
+
+@contextlib.contextmanager
+def _phone_account(key: bytes | None = None):
+    """A signed-in account for phone.py: sb's section 12 functions as fakes
+    over `box["rows"]`, and vault's key. Nothing here reaches a server."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    key = key or os.urandom(32)
+    box = {"rows": [], "gone": set(), "written": [], "key": key, "uid": _ACCOUNT_UID,
+           "offline": False}
+
+    def devices():
+        if box["offline"]:
+            raise OSError("no network")
+        return [dict(r) for r in box["rows"]]
+
+    fakes = {"user": lambda: {"id": box["uid"]}, "device_id": lambda: _THIS_PC,
+             "devices": devices, "write_link": box["written"].append,
+             "forgotten": lambda: set(box["gone"])}
+    kept = {n: getattr(sb, n, None) for n in fakes}
+    real_key, real_aad = vault.key, getattr(vault, "AAD_DEVICE", None)
+    for name, fake in fakes.items():
+        setattr(sb, name, fake)
+    vault.key = lambda uid: box["key"] if uid == box["uid"] else None
+    vault.AAD_DEVICE = "device/{uid}/{device_id}"
+    phone_mod._view_kept = None
+    try:
+        with _consented("account"):
+            yield box
+    finally:
+        for name, value in kept.items():
+            if value is None:
+                delattr(sb, name)
+            else:
+                setattr(sb, name, value)
+        vault.key = real_key
+        if real_aad is None:
+            del vault.AAD_DEVICE
+        else:
+            vault.AAD_DEVICE = real_aad
+        phone_mod.drop_rows()
+        phone_mod._view_kept = None
+
+
+def _phone_row(box: dict, phone: dict, ident: str, *, key: bytes | None = None) -> dict:
+    """A phone's `link` row the way a phone seals it."""
+    import base64
+
+    import vault
+
+    link = {"v": 1, "kind": "phone", "cert": base64.b64encode(phone["der"]).decode("ascii"),
+            "proto": 1, "backup": True, "a field from a later version": 1}
+    sealed = vault.seal_json(key or box["key"], link,
+                             vault.AAD_DEVICE.format(uid=box["uid"], device_id=ident))
+    return {"id": ident, "name": phone["name"], "platform": "android-34", "link": sealed}
+
+
+def _door_app(cfg=None):
+    """An App with its doors and nothing else: start() would bring the
+    hook, the dot and the model. `cfg` is the files' unless said."""
+    import dataclasses
+    import threading
+
+    import main as main_mod
+    import phone as phone_mod
+    import server as server_mod
+
+    cfg = cfg or config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(
+        cfg.server, host="127.0.0.1", port=_door_port(), phone_port=_door_port()))
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg, app.config_path = cfg, None
+    app._stopping = threading.Event()
+    app.phone = server_mod.PhoneServer(cfg, lambda wav: ("שלום", "fake"), lambda: "fake",
+                                       notify=lambda body: {"ok": True, "id": 7})
+    app.phone_door = server_mod.PhoneDoor(cfg, app.phone.routes)
+    app._doors_lock = threading.RLock()
+    app._phone_no = False
+    app._approved = set()
+    app._phone_hook = phone_mod.keyless(app._phone_account)
+    app._loopback_first = lambda: None
+    app._hook_connected = lambda: False
+    app._say = lambda *a, **k: None
+    return app
+
+
+def _shut_doors(app) -> None:
+    app.phone_door.stop()
+    app.phone.stop()
+    config_mod.save({"server.port": None, "server.phone_port": None,
+                     "server.phone_allowed": None}, derived=True)
+
+
+def test_a_link_row_that_does_not_open_adds_no_anchor() -> None:
+    """The server knows only the account, so it could write a row: what
+    keeps it from adding a device is that a row sealed under anything but
+    the account key is nobody. And a PC's own row is no anchor."""
+    import phone as phone_mod
+    import vault
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        folder = Path(tmp)
+        real, planted = _a_phone(folder, "real"), _a_phone(folder, "planted")
+        box["rows"] = [_phone_row(box, real, "bbbbbbbb-0000-0000-0000-000000000002"),
+                       _phone_row(box, planted, "cccccccc-0000-0000-0000-000000000003",
+                                  key=os.urandom(32)),
+                       {"id": "dddddddd-0000-0000-0000-000000000004", "name": "no row", "link": None},
+                       {"id": _THIS_PC, "name": "this PC", "link": vault.seal_json(
+                           box["key"], {"v": 1, "kind": "pc", "cert": "ab"},
+                           vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC))}]
+        phone_mod.refresh()
+        assert [d["id"] for d in phone_mod.view()["phones"]] == ["bbbbbbbb-0000-0000-0000-000000000002"]
+        assert list(phone_mod.anchors()) == [real["fingerprint"]]
+        assert phone_mod.anchors()[real["fingerprint"]]["der"] == real["der"]
+        # moved under another row's id, a seal does not open either: the
+        # device's id is in what it was sealed with
+        box["rows"][0]["id"] = "eeeeeeee-0000-0000-0000-000000000005"
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}
+
+
+def test_a_forgotten_device_stays_out_after_its_row_comes_back_unchanged() -> None:
+    """A forgotten phone still holds the account key, so it could write its
+    row back, and the server could restore a deleted one unchanged. The
+    list says no, by its id, and by its certificate under a new id. It
+    only ever grows, whatever the account says next."""
+    import phone as phone_mod
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "lost")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        assert phone["fingerprint"] in phone_mod.anchors()
+
+        box["gone"] = {ident, phone["fingerprint"]}
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}, "the row came back and the phone with it"
+
+        box["rows"] = [_phone_row(box, phone, "cccccccc-0000-0000-0000-000000000003")]
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}, "a new id under a forgotten certificate"
+
+        box["gone"] = set()                # a server that forgets the list
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}, "the kept list shrank"
+        assert not phone_mod.view()["phones"]
+
+
+def test_a_restart_with_no_network_still_opens_the_door() -> None:
+    """Home needs nobody: the rows are kept, sealed, and opening them takes
+    only the account key, which is local. A pass that cannot reach the
+    account leaves them alone, because a door must not close when the
+    internet goes."""
+    import dataclasses
+
+    import phone as phone_mod
+    import server as server_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+
+        box["offline"] = True
+        try:
+            phone_mod.refresh()
+        except OSError:
+            pass
+        else:
+            raise AssertionError("no network, and refresh pretended it read the account")
+        assert phone_mod.rows_path().is_file()
+        assert "link" not in json.dumps(phone_mod.anchors(), default=str)   # the plain side
+        assert "v1." in phone_mod.rows_path().read_text("utf-8"), "the rows are kept sealed"
+        assert '"kind"' not in phone_mod.rows_path().read_text("utf-8")
+
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server,
+                                                                  phone_port=_door_port()))
+        door = server_mod.PhoneDoor(cfg, server_mod.Routes(lambda wav: ("", "fake")))
+        port = door.start(phone_mod.anchors())
+        try:
+            assert _ask_door(port, phone["chain"], "GET", "/health")[0] == 200
+        finally:
+            door.stop()
+
+        phone_mod.drop_rows()               # signed out: nothing to open from
+        assert phone_mod.anchors() == {}
+
+
+def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None:
+    """The row is §12's, sealed for this device. Nothing leaves when
+    nothing moved; a new address or port does. A PC that said no names no
+    address, so a phone does not take its Not now for a firewall. A PC on
+    the forgotten list writes nothing."""
+    import phone as phone_mod
+    import vault
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        args = {"port": 8766, "listening": True, "words_sync": True}
+        assert phone_mod.publish(**args) is True
+        aad = vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC)
+        row = vault.open_json(box["key"], box["written"][-1], aad)
+        assert row == {"v": 1, "kind": "pc", "cert": phone_mod.identity(), "addrs": ["10.1.2.3"],
+                       "port": 8766, "proto": 1, "words_sync": True}, row
+
+        box["rows"] = [{"id": _THIS_PC, "name": "me", "link": box["written"][-1]}]
+        phone_mod.refresh()
+        assert phone_mod.publish(**args) is False, "an unchanged row went out"
+
+        assert phone_mod.publish(**dict(args, port=8767)) is True
+        assert vault.open_json(box["key"], box["written"][-1], aad)["port"] == 8767
+
+        assert phone_mod.publish(**dict(args, listening=False)) is True
+        assert vault.open_json(box["key"], box["written"][-1], aad)["addrs"] == []
+
+        count = len(box["written"])
+        box["gone"] = {_THIS_PC}
+        assert phone_mod.publish(**dict(args, port=9000)) is False
+        assert len(box["written"]) == count
+
+
+def test_the_addresses_come_from_the_machine_on_any_network() -> None:
+    """A general product: whatever networks a PC is on, the row is its own
+    private addresses, the default route's first. Virtual adapters never,
+    and no address in the code: these fixtures are made-up networks."""
+    import phone as phone_mod
+
+    def adapter(index, name, ips, *, kind=6, up=True, description="Ethernet Controller"):
+        return {"index": index, "name": name, "description": description, "type": kind,
+                "up": up, "ipv4": ips}
+
+    home_router = [adapter(4, "Wi-Fi", ["10.0.0.17"]), adapter(9, "Ethernet", ["172.20.3.9"])]
+    assert phone_mod.pick_addresses(home_router, 9) == ["172.20.3.9", "10.0.0.17"]
+    assert phone_mod.pick_addresses(home_router, 4) == ["10.0.0.17", "172.20.3.9"]
+    assert phone_mod.pick_addresses(home_router, None) == ["10.0.0.17", "172.20.3.9"]
+
+    noise = [adapter(2, "Tailscale", ["100.101.102.103"], kind=53, description="Tailscale Tunnel"),
+             adapter(3, "vEthernet (WSL)", ["172.29.0.1"], description="Hyper-V Virtual Ethernet Adapter"),
+             adapter(5, "vEthernet (Default Switch)", ["172.18.0.1"],
+                     description="Hyper-V Virtual Ethernet Adapter"),
+             adapter(6, "VirtualBox Host-Only Network", ["192.168.56.1"],
+                     description="VirtualBox Host-Only Ethernet Adapter"),
+             adapter(7, "Loopback Pseudo-Interface 1", ["127.0.0.1"], kind=24),
+             adapter(8, "Bluetooth Network Connection", ["169.254.1.2"], up=False),
+             adapter(10, "Wi-Fi 2", ["169.254.7.7"]),
+             adapter(12, "Ethernet 2", ["192.168.200.4"], up=False),
+             adapter(13, "WireGuard", ["10.8.0.2"], kind=53, description="WireGuard Tunnel")]
+    assert phone_mod.pick_addresses(noise + home_router, 2) == ["10.0.0.17", "172.20.3.9"]
+    assert phone_mod.pick_addresses(noise, 2) == []
+    # a network that hands out routable addresses is a network too
+    assert phone_mod.pick_addresses(noise + [adapter(11, "Wi-Fi", ["192.0.2.7"])], 11) == ["192.0.2.7"]
+    many = [adapter(i, f"net{i}", [f"10.0.{i}.1"]) for i in range(1, 20)]
+    assert len(phone_mod.pick_addresses(many, 1)) == phone_mod.MAX_ADDRS
+
+    real = phone_mod.addresses()
+    assert all(phone_mod._reachable(ip) for ip in real), real
+    assert not any(ip.startswith(("127.", "169.254.")) for ip in real)
+
+    # NOTHING TUNED TO ONE PLACE. The owner's rule (2026-11-06): whoever
+    # downloads this, on any router, in any country. Not an address, a
+    # subnet or a router of anybody's in the code that builds the row.
+    for name in ("phone.py", "server.py", "desk_settings.py"):
+        text = (REPO / name).read_text("utf-8")
+        for ip in re.findall(r"(?<![\d.])\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])", text):
+            assert ip in ("127.0.0.1", "0.0.0.0"), f"{name} names the address {ip}"
+
+
+def test_no_secret_reaches_a_log_the_status_or_a_report() -> None:
+    """The door's passphrase and key, the bearer: not in app.log, not in
+    network.log, not in status(), not in what a report carries."""
+    import dataclasses
+    import logging
+
+    import net as net_mod
+    import phone as phone_mod
+    import problems as problems_mod
+    import secretstore
+    import server as server_mod
+
+    lines: list[str] = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    keep = Keep()
+    logger = logging.getLogger("app")
+    level = logger.level
+    logger.addHandler(keep)
+    logger.setLevel(logging.DEBUG)
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        config_mod.save({"server.phone_allowed": True})
+        app.cfg = config_mod.load_layered()
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+            app.cfg.server, host="127.0.0.1", port=_door_port(), phone_port=_door_port()))
+        app._doors()
+        try:
+            assert app.phone_door.running
+            assert _ask_door(app.phone_door.port, phone["chain"], "GET", "/health")[0] == 200
+            status = json.dumps(app._phone_status())
+            secrets_here = [secretstore.get(phone_mod.PASS_NAME), server_mod.load_token(),
+                            box["key"].hex()]
+            text = phone_mod.key_path().read_text("ascii")
+            private = text[text.index("-----BEGIN ENCRYPTED"):]
+            logged = "\n".join(lines)
+            rows = "\n".join(net_mod.format_row(r) for r in net_mod.rows())
+            env = json.dumps(problems_mod.env(), default=str)
+            for value in secrets_here + [private]:
+                for where, said in (("app.log", logged), ("network.log", rows),
+                                    ("status", status), ("a report", env)):
+                    assert value not in said, f"a secret reached {where}"
+            assert "url" not in app._phone_status(), "status still carries a link"
+        finally:
+            _shut_doors(app)
+            del secrets_here
+    logger.removeHandler(keep)
+    logger.setLevel(level)
+
+
+def test_the_door_on_the_real_sb_over_the_fake_server() -> None:
+    """The two halves together: Approve here for a device, its row arrives,
+    the door opens, a phone comes in over TLS, this PC's own row is up and
+    opens, nothing is written twice, Forget closes it, and the row restored
+    unchanged brings nothing back. Real sb, real vault, real TLS; only the
+    server is the fake."""
+    import base64
+
+    import phone as phone_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with _fixture_project() as fake, _consented("account", "settings_sync"), a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                assert key is not None
+                app = _door_app()
+                with _patched(sb, "ACCOUNT_HOOKS", [app._phone_hook]), \
+                        _patched(sb, "SIGNED_OUT_HOOKS", [app._phone_signed_out]):
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "a door with no phone"
+                    phone = _a_phone(Path(tmp), "S26 Ultra")
+                    link = vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1, "backup": True,
+                                                 "cert": base64.b64encode(phone["der"]).decode()},
+                                           vault.AAD_DEVICE.format(uid=fake.UID, device_id=_PHONE))
+                    row = _a_phone_row(fake, link=link, session_id="aaaaaaaa-0000-4000-8000-000000000009")
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "nobody pressed anything on this PC"
+                    assert app._phone_status()["ask"] is True, "Home did not ask"
+
+                    app._phone_no = False
+                    pid, _public = _a_phone_asks(fake)
+                    sb.account_pass("test")
+                    assert app._account_command("approve", pid)["ok"] is True
+                    assert app._approved == {_PHONE}, "the press did not name the phone that asked"
+                    sb.account_pass("test")
+                    assert app.phone_door.running, "Approve here, the row arrived, the door stayed shut"
+                    assert app.cfg.server.phone_allowed and app._approved == set()
+                    _until(lambda: not any(t.name == "phone-row" for t in threading.enumerate()), 5)
+                    assert _ask_door(app.phone_door.port, phone["chain"], "GET", "/health")[0] == 200
+                    assert _knock(app.phone_door.port) is None
+                    status = app._phone_status()
+                    assert status["on"] and status["phones"][0]["id"] == _PHONE, status
+
+                    _until(lambda: any(r.get("link") for r in fake.tables["devices"]
+                                       if r["id"] == sb.device_id()), 5)
+                    mine = next(r for r in fake.tables["devices"] if r["id"] == sb.device_id())
+                    opened = vault.open_json(key, mine["link"], vault.AAD_DEVICE.format(
+                        uid=fake.UID, device_id=sb.device_id()))
+                    assert opened["kind"] == "pc" and opened["cert"] == phone_mod.identity(), opened
+                    assert opened["port"] == app.phone_door.port, opened
+                    writes = sum(1 for c in fake.calls if c["path"] == "rest/v1/devices"
+                                 and c.get("method") == "POST")
+                    sb.account_pass("test")
+                    assert writes == sum(1 for c in fake.calls if c["path"] == "rest/v1/devices"
+                                         and c.get("method") == "POST"), "an unchanged row went out"
+
+                    sb.forget_device(_PHONE, phone["fingerprint"])
+                    assert not app.phone_door.running, "Forget left the door open"
+                    fake.tables["devices"].append(row)
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "a row restored unchanged brought the phone back"
+                _shut_doors(app)
+        finally:
+            phone_mod.drop_rows()
+            phone_mod._view_kept = None
+
+
+def test_approve_names_the_device_that_asked() -> None:
+    """The press on Home is for one request, and the request says which
+    device it came from: that is how this PC knows the phone whose row
+    arrives next is the one it said yes to. A refused approval names nobody."""
+    import sb
+
+    app = _door_app()
+    app._phone_publish = lambda: None
+    asking = {"state": "have", "pending": [{"id": "r1", "name": "A phone", "device": "d1"}]}
+
+    def refused(pid):
+        raise sb.AccountError("that request is gone")
+
+    with _patched(sb, "configured", lambda: True), _patched(sb, "lock_status", lambda: asking):
+        with _patched(sb, "approve_pairing", refused):
+            assert app._account_command("approve", "r1")["ok"] is False
+            assert app._approved == set()
+        with _patched(sb, "approve_pairing", lambda pid: "A phone"):
+            assert app._account_command("approve", "r1")["ok"] is True
+    assert app._approved == {"d1"} and app._phone_listening()
+
+    app._doors = lambda: None
+    app._phone_signed_out()
+    assert app._approved == set(), "an Approve outlived the session it was pressed in"
+
+
+def _server_on(app) -> None:
+    """The switch on and this PC's yes given, for this App alone."""
+    app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+        app.cfg.server, enabled=True, phone_allowed=True))
+
+
+def _door_shows(port: int, chain) -> str:
+    """The fingerprint of the certificate the door shows: what a phone pins."""
+    import phone as phone_mod
+
+    with _dial(port, chain) as tls:
+        return phone_mod.fingerprint(tls.getpeercert(binary_form=True))
+
+
+def test_a_forgotten_pc_comes_back_with_a_new_certificate() -> None:
+    """sb.FORGOTTEN_HOOKS: the list never lets the old certificate back, so
+    a PC that finds itself on it makes a new one, and what its door opened
+    from, and any Approve still waiting for its row, go with it. The hook
+    runs again when it trips (sb.settle_left), so twice must end where once
+    does: and the key of the last run is the one the door opens with."""
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        before = phone_mod.identity()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        try:
+            assert _door_shows(app.phone_door.port, phone["chain"]) == before
+            app._approved.add("a device whose row never came")
+            for _ in range(2):
+                app._phone_forgotten()
+                assert phone_mod.identity() != before and not phone_mod.rows_path().exists()
+                assert not app.phone_door.running and app._approved == set()
+            phone_mod.refresh()
+            app._doors()
+            assert _door_shows(app.phone_door.port, phone["chain"]) == phone_mod.identity()
+        finally:
+            _shut_doors(app)
+
+
+def test_a_certificate_on_the_list_is_replaced_and_its_row_says_so() -> None:
+    """A state.json lost with the secrets folder intact: a new id, the old
+    certificate, and a stale row someone may Forget, which bans the live
+    certificate while this PC stays in the account. sb cannot see inside a
+    row, so the account pass looks: a new certificate, the door under it, the
+    row says it. Until that pass no row carries what the list names, and it
+    happens once."""
+    import phone as phone_mod
+    import vault
+
+    stale = "dddddddd-0000-0000-0000-000000000004"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box, \
+            _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        app = _door_app()
+        _server_on(app)
+        aad = vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC)
+        try:
+            app._phone_account()
+            old = phone_mod.identity()
+            assert vault.open_json(box["key"], box["written"][-1], aad)["cert"] == old
+            assert _door_shows(app.phone_door.port, phone["chain"]) == old
+
+            box["gone"] = {stale, old}
+            count = len(box["written"])
+            assert phone_mod.publish(port=8766, listening=True, words_sync=False) is False
+            assert len(box["written"]) == count, "a row went out with a certificate the list names"
+
+            app._phone_account()
+            new = phone_mod.identity()
+            assert new != old
+            assert vault.open_json(box["key"], box["written"][-1], aad)["cert"] == new
+            assert _door_shows(app.phone_door.port, phone["chain"]) == new
+
+            app._phone_account()
+            assert phone_mod.identity() == new, "a new certificate at every pass"
+
+            # the worker and the live thread both run this: one replacement
+            box["gone"] = {new}
+            made: list[str] = []
+            real = phone_mod.rotate
+
+            def counted():
+                made.append("one")
+                time.sleep(0.05)
+                return real()
+
+            with _patched(phone_mod, "rotate", counted):
+                both = [threading.Thread(target=app._phone_check_certificate, daemon=True)
+                        for _ in range(2)]
+                for one in both:
+                    one.start()
+                for one in both:
+                    one.join(10)
+            assert made == ["one"], "two passes each made a certificate"
+        finally:
+            _shut_doors(app)
+
+
+def test_a_leaving_waits_for_the_app_and_finishes_before_the_door_binds() -> None:
+    """The real sb over the fake server. A leaving noticed where no hook is
+    registered (the desk, the wizard) leaves the mark, and while it stands
+    this PC's row is "not yet": nothing written, nothing raised. The app
+    settles it before its door binds, because the worker's first turn is 30 s
+    off: a new certificate, the mark gone, and the row out under the new id
+    and the new certificate. One device id twice on the list changes none
+    of that."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    args = {"port": 8766, "listening": False, "words_sync": False}
+
+    def posts(fake) -> int:
+        return sum(1 for c in fake.calls if c["path"] == "rest/v1/devices" and c["method"] == "POST")
+
+    started = (REPO / "main.py").read_text("utf-8")
+    started = started[started.index("    def start(self) -> None:"):]
+    assert started.index("self._settle_left()") < started.index("self._doors()")
+
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            key = vault.key(fake.UID)
+            old, before = sb.device_id(), phone_mod.identity()
+            sb._keep_forgotten(fake.UID, [{"device": old, "cert": "", "at": ""},
+                                          {"device": old, "cert": "ab" * 32, "at": ""}])
+            with _patched(sb, "FORGOTTEN_HOOKS", []):
+                assert sb._forgotten_pass(fake.UID) is True
+                vault.keep(fake.UID, key)        # the join came through in the desk too
+                sent = posts(fake)
+                assert phone_mod.publish(**args) is False, "a row before the certificate changed"
+                assert posts(fake) == sent
+                assert config_mod.read_state(paths.STATE_FILE)["account.left"] == old
+
+            app = _door_app()
+            with _patched(sb, "FORGOTTEN_HOOKS", [app._phone_forgotten]):
+                app._settle_left()
+            assert not config_mod.read_state(paths.STATE_FILE).get("account.left")
+            new, mine = phone_mod.identity(), sb.device_id()
+            assert new != before and mine != old
+
+            assert phone_mod.publish(**args) is True
+            assert posts(fake) == sent + 1
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            opened = vault.open_json(key, row["link"], vault.AAD_DEVICE.format(uid=fake.UID, device_id=mine))
+            assert opened["cert"] == new, opened
+            _shut_doors(app)
+    finally:
+        a.gone()
+        phone_mod.drop_rows()
+        phone_mod._view_kept = None
+
+
+def test_every_road_to_this_pcs_row_reads_the_account_first() -> None:
+    """Sign out of every PC clears the other PCs' `link` from one of them,
+    and the copy kept here still has it, so a publish on its word would say
+    nothing changed and leave the row empty. The account pass reads first,
+    and so does a press, here or on the switch."""
+    import phone as phone_mod
+
+    def cleared(box, mine) -> None:
+        box["rows"] = [dict(mine, link=box["written"][-1])]
+        phone_mod.refresh()
+        box["rows"] = [dict(mine, link=None)]
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        app = _door_app()
+        try:
+            app._phone_account()
+            mine = {"id": _THIS_PC, "name": "me", "link": box["written"][-1]}
+            box["rows"] = [mine]
+            app._phone_account()
+            assert len(box["written"]) == 1, "an unchanged row went out"
+
+            cleared(box, mine)
+            app._phone_account()
+            assert len(box["written"]) == 2, "the pass left the row cleared"
+
+            cleared(box, mine)
+            app._phone_approved("")
+            assert _until(lambda: len(box["written"]) == 3, 5), "an Approve left the row cleared"
+
+            cleared(box, mine)
+            app._doors_soon()
+            assert _until(lambda: len(box["written"]) == 4, 5), "the switch left the row cleared"
+        finally:
+            _until(lambda: not any(t.name in ("doors", "phone-row") for t in threading.enumerate()), 5)
+            _shut_doors(app)
+
+
+def test_the_desks_poll_never_waits_on_the_network_behind_the_rows() -> None:
+    """view() answers status() on the pipe, whose handlers must never block,
+    and it shares a lock with what reads and writes the rows. Held across
+    the account's answer, a stalled network would stall the desk. A sign-in
+    to another account meanwhile drops the answer instead of keeping it."""
+    import phone as phone_mod
+    import sb
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: []):
+        stuck, free = threading.Event(), threading.Event()
+
+        def stall(*_args):
+            stuck.set()
+            free.wait(10)
+            return []
+
+        for name, call in (("devices", phone_mod.refresh),
+                           ("write_link", lambda: phone_mod.publish(port=8766, listening=False,
+                                                                    words_sync=False))):
+            stuck.clear()
+            free.clear()
+            answered = threading.Event()
+            with _patched(sb, name, stall):
+                worker = threading.Thread(target=call, daemon=True)
+                worker.start()
+                assert stuck.wait(5), f"sb.{name} was never reached"
+                threading.Thread(target=lambda: (phone_mod.view(), phone_mod.anchors(), answered.set()),
+                                 daemon=True).start()
+                try:
+                    assert answered.wait(3), f"the poll waited on sb.{name}"
+                finally:
+                    free.set()
+                    worker.join(5)
+
+        phone_mod.drop_rows()
+        stuck.clear()
+        free.clear()
+        with _patched(sb, "devices", stall):
+            worker = threading.Thread(target=phone_mod.refresh, daemon=True)
+            worker.start()
+            assert stuck.wait(5)
+            box["uid"] = "22222222-3333-4444-5555-666666666666"
+            free.set()
+            worker.join(5)
+        assert not phone_mod.rows_path().exists(), "one account's rows kept under another's sign-in"
+
+
+def test_this_pcs_id_is_asked_for_each_time_and_may_not_be_known() -> None:
+    """device_id() is per account, a leaving changes it, and it raises while
+    a state file will not read. So a row is sealed under the id as it stands,
+    a row with no id waits, and the card keeps the phones it can show: only
+    the PCs need to know which one is this one, and a later poll does. A PC
+    under a forgotten certificate is forgotten, whatever id it came back on."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    laptop = "cccccccc-0000-0000-0000-000000000003"
+    other = "eeeeeeee-0000-0000-0000-000000000005"
+    handset = "bbbbbbbb-0000-0000-0000-000000000002"
+    args = {"port": 8766, "listening": False, "words_sync": False}
+
+    def unknown():
+        raise sb.AccountError("this PC's state file will not read")
+
+    def door_aad(box, ident):
+        return vault.AAD_DEVICE.format(uid=box["uid"], device_id=ident)
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        cert = "ef" * 32
+        link = {"v": 1, "kind": "pc", "cert": cert, "addrs": [], "port": 8766, "proto": 1,
+                "words_sync": False}
+        box["rows"] = [_phone_row(box, _a_phone(Path(tmp), "S26 Ultra"), handset),
+                       {"id": laptop, "name": "laptop", "platform": "windows",
+                        "link": vault.seal_json(box["key"], link, door_aad(box, laptop))}]
+        phone_mod.refresh()
+
+        assert phone_mod.publish(**args) is True
+        assert vault.open_json(box["key"], box["written"][-1], door_aad(box, _THIS_PC))["kind"] == "pc"
+        with _patched(sb, "device_id", lambda: other):
+            assert phone_mod.publish(**args) is True
+        assert vault.open_json(box["key"], box["written"][-1], door_aad(box, other))["kind"] == "pc"
+
+        count = len(box["written"])
+        phone_mod._view_kept = None
+        with _patched(sb, "device_id", unknown):
+            assert phone_mod.publish(**args) is False
+            seen = phone_mod.view()
+        assert len(box["written"]) == count
+        assert [d["id"] for d in seen["phones"]] == [handset] and seen["pcs"] == [], seen
+        assert [d["id"] for d in phone_mod.view()["pcs"]] == [laptop], "the poll kept the blind answer"
+
+        box["gone"] = {cert}
+        phone_mod._view_kept = None
+        assert phone_mod.view()["pcs"] == [], "a PC back on a forgotten certificate"
+
+
+class _Patient:
+    """A lock that gives up. Two threads deadlocked on a real lock can never
+    be unwound, so a test that drives an inversion hands the code this: the
+    regression is a failure, and not a suite that hangs."""
+
+    def __init__(self, seconds: float) -> None:
+        self._lock = threading.RLock()
+        self.seconds = seconds
+        self.gave_up = False
+
+    def __enter__(self):
+        if not self._lock.acquire(timeout=self.seconds):
+            self.gave_up = True
+            raise TimeoutError("a lock inversion")
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self._lock.release()
+        return False
+
+
+def test_the_signed_out_hook_takes_no_lock_on_the_thread_that_called_it() -> None:
+    """sb.SIGNED_OUT_HOOKS can come with sb._lock held, and phone.py and
+    _doors take their own locks first and sb._lock second. So the hook must
+    return with sb._lock in its caller's hand and both of those held by
+    somebody else, and the door follows once they are free."""
+    import phone as phone_mod
+    import sb
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        assert app.phone_door.running
+        holding, free, returned = threading.Event(), threading.Event(), threading.Event()
+
+        def hold():
+            with phone_mod._lock, app._doors_lock:
+                holding.set()
+                free.wait(10)
+
+        def hook():
+            with sb._lock:
+                app._phone_signed_out()
+            returned.set()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        assert holding.wait(5)
+        threading.Thread(target=hook, daemon=True).start()
+        try:
+            assert returned.wait(3), "the hook waited for a lock on sb._lock's thread"
+        finally:
+            free.set()
+            holder.join(5)
+        try:
+            assert _until(lambda: not app.phone_door.running, 5), "the door stayed open"
+            assert not phone_mod.rows_path().exists()
+        finally:
+            _shut_doors(app)
+
+
+def test_a_refused_refresh_beside_the_desks_poll_is_no_deadlock() -> None:
+    """The inversion itself, on the real sb. A refused refresh holds sb._lock
+    through _fresh, _refresh, _account_gone and SIGNED_OUT_HOOKS, while the
+    desk's poll is inside phone.view with phone._lock in hand, waiting for
+    sb._lock through _uid(). With the hook's work on the calling thread both
+    wait for ever, with status() and locked() behind them and the pause key
+    on the keyboard hook's thread. Here each lock gives up instead."""
+    import base64
+
+    import phone as phone_mod
+    import sb
+    import secretstore
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with _fixture_project() as fake, _consented("account"), a:
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+                key = vault.key(fake.UID)
+                phone = _a_phone(Path(tmp), "S26 Ultra")
+                link = vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1,
+                                             "cert": base64.b64encode(phone["der"]).decode()},
+                                       vault.AAD_DEVICE.format(uid=fake.UID, device_id=_PHONE))
+                _a_phone_row(fake, link=link)
+                app = _door_app()
+                _server_on(app)
+                phone_mod.refresh()
+                app._doors()
+                assert app.phone_door.running
+
+                session = json.loads(secretstore.get("supabase_session"))
+                session["expires_at"] = time.time() - 5
+                secretstore.set("supabase_session", json.dumps(session))
+                sb.forget_cache()
+                fake.script["auth/v1/token"] = [
+                    (400, b'{"error_description":"Invalid Refresh Token: Refresh Token Not Found"}')]
+
+                in_refresh, poll_waits = threading.Event(), threading.Event()
+                real_auth, real_uid = sb._auth, phone_mod._uid
+                rows_lock, doors_lock = _Patient(8), _Patient(8)
+                app._doors_lock = doors_lock
+                refused: list = []
+
+                def held_auth(*args, **kwargs):       # on the thread holding sb._lock
+                    in_refresh.set()
+                    assert poll_waits.wait(8)
+                    time.sleep(0.2)                   # the poll is at sb._lock by now
+                    return real_auth(*args, **kwargs)
+
+                def poll_uid():                       # with phone._lock in hand
+                    poll_waits.set()
+                    return real_uid()
+
+                def refresh():
+                    try:
+                        sb._fresh()
+                    except sb.AccountError as e:
+                        refused.append(e)
+
+                def poll():
+                    assert in_refresh.wait(8)
+                    phone_mod.view()
+
+                with _patched(sb, "_auth", held_auth), _patched(phone_mod, "_uid", poll_uid), \
+                        _patched(phone_mod, "_lock", rows_lock), \
+                        _patched(sb, "SIGNED_OUT_HOOKS", [app._phone_signed_out]):
+                    both = [threading.Thread(target=t, daemon=True) for t in (refresh, poll)]
+                    for thread in both:
+                        thread.start()
+                    for thread in both:
+                        thread.join(25)
+                    assert not any(t.is_alive() for t in both), "the two threads never ended"
+                    assert not rows_lock.gave_up and not doors_lock.gave_up, \
+                        "the hook took a lock against the poll's order"
+                    assert refused, "the refresh was not refused"
+                    assert _until(lambda: not any(t.name == "phone-gone" for t in threading.enumerate()), 10)
+                assert not sb.signed_in()
+                assert not app.phone_door.running, "the session went and the door stayed"
+                assert not phone_mod.rows_path().exists()
+                _shut_doors(app)
+        finally:
+            a.gone()
+            phone_mod.drop_rows()
+            phone_mod._view_kept = None
+
+
+def test_one_address_cannot_hold_every_handshake_place() -> None:
+    """Sixteen places shared by everybody let one host keep a phone out for
+    as long as it liked: connect sixteen times, say nothing, and again ten
+    seconds later. One address holds four at most, whatever it sends past
+    that is closed at once, and a phone at another address walks in."""
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = _echo_door(_anchors(s26))
+        each = net_mod.DOOR_HANDSHAKES_EACH
+        silent = []
+        try:
+            for _ in range(each):
+                silent.append(_silent_peer(door.port))
+            assert _until(lambda: door._shaking.get("127.0.0.2") == each, 5), door._shaking
+            for _ in range(net_mod.DOOR_HANDSHAKES):
+                late = _silent_peer(door.port)
+                try:
+                    assert late.recv(1) == b"", "one address went past its share"
+                except OSError:
+                    pass
+                finally:
+                    late.close()
+            assert door._shaking == {"127.0.0.2": each}, door._shaking
+            assert door._slots._value == net_mod.DOOR_HANDSHAKES - each
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra", "the phone was kept out"
+            for sock in silent:
+                sock.close()
+            silent.clear()
+            assert _until(lambda: not door._shaking
+                          and door._slots._value == net_mod.DOOR_HANDSHAKES, 5), door._shaking
+        finally:
+            for sock in silent:
+                sock.close()
+            door.stop()
+
+
+def _a_door(port: int | None = None):
+    """A PhoneDoor on a free port, with routes that answer /health."""
+    import server as server_mod
+
+    cfg = config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(
+        cfg.server, phone_port=port or _door_port()))
+    return server_mod.PhoneDoor(cfg, server_mod.Routes(lambda wav: ("", "fake")))
+
+
+def test_a_list_that_builds_no_context_still_drops_the_forgotten() -> None:
+    """Door.admit built the new context first, so a key that would not load
+    changed nothing: a forgotten phone stayed on the list and stayed
+    connected. The list moves first. PhoneDoor then opens again for a key
+    that will not open, and keeps the door and tries again for one that was
+    only not read."""
+    import net as net_mod
+
+    def refused(kind, times=10):
+        left = [times]
+        real = net_mod._door_context
+
+        def door_context(*args):
+            if left[0] > 0:
+                left[0] -= 1
+                raise kind("the door's key will not open")
+            return real(*args)
+        return door_context
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stays, goes = _a_phone(Path(tmp), "S26 Ultra"), _a_phone(Path(tmp), "Old phone")
+        door = _echo_door(_anchors(stays, goes))
+        try:
+            inside = _dial(door.port, goes["chain"])
+            inside.settimeout(5)
+            inside.sendall(b"hello\n")
+            assert inside.recv(64) == b"in:Old phone"
+            with _patched(net_mod, "_door_context", refused(net_mod.DoorError)):
+                try:
+                    door.admit(_anchors(stays))
+                except net_mod.DoorError:
+                    pass
+                else:
+                    raise AssertionError("the key's trouble went unsaid")
+            try:
+                assert inside.recv(64) == b"", "a forgotten phone stayed connected"
+            except OSError:
+                pass
+            inside.close()
+            assert _knock(door.port, goes["chain"]) is None, "a forgotten phone still came in"
+            assert _knock(door.port, stays["chain"]) == b"in:S26 Ultra"
+        finally:
+            door.stop()
+
+        door = _a_door()
+        both, one = _anchors(stays, goes), _anchors(stays)
+        try:
+            port = door.start(both)
+            with _patched(net_mod, "_door_context", refused(net_mod.DoorUnread)):
+                assert door.start(one) == port
+            assert door.running and _knock(port, goes["chain"]) is None
+            assert len(door._list) == 2, "a list that never built its context counted as done"
+            assert door.start(one) == port
+            assert len(door._list) == 1
+
+            with _patched(net_mod, "_door_context", refused(net_mod.DoorError, 1)):
+                assert door.start(both) == port, "the door moved"
+            assert door.running and len(door._list) == 2
+            assert _ask_door(port, goes["chain"], "GET", "/health")[0] == 200
+        finally:
+            door.stop()
+
+
+def test_a_forget_that_fails_and_rows_that_will_not_go_still_move_the_door() -> None:
+    """A failure on the way must not leave the door where it was. Forget
+    moves the list first, and a server that then refuses runs no hook, so a
+    door followed only the hooks went on admitting a phone this PC had
+    already forgotten. Rows that cannot be deleted at a sign-out, or at a
+    leaving, are the same case."""
+    import phone as phone_mod
+    import sb
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+
+    def locked():
+        raise PermissionError("the rows file is in use")
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._phone_error = ""
+        app._doors()
+        assert app.phone_door.running
+
+        def refused(device, cert):
+            box["gone"] |= {device, cert}
+            raise sb.AccountError("the server refused to forget it")
+
+        try:
+            with _patched(sb, "forget_device", refused):
+                app._phone_forget(ident, phone["fingerprint"])
+            assert not app.phone_door.running, "a phone this PC forgot kept the door"
+            assert "try again" in app._phone_error
+
+            box["gone"] = set()
+            app._doors()
+            assert app.phone_door.running
+            with _patched(phone_mod, "drop_rows", locked), _patched(sb, "user", lambda: None):
+                app._phone_gone()
+                assert not app.phone_door.running, "the session went and the door stayed"
+
+            app._doors()
+            assert app.phone_door.running
+            before = phone_mod.identity()
+            with _patched(phone_mod, "drop_rows", locked):
+                try:
+                    app._phone_forgotten()
+                except PermissionError:
+                    pass
+                else:
+                    raise AssertionError("the hook hid its failure from settle_left")
+            assert phone_mod.identity() != before
+            assert _door_shows(app.phone_door.port, phone["chain"]) == phone_mod.identity()
+        finally:
+            _shut_doors(app)
+
+
+def test_an_older_read_of_the_rows_does_not_overwrite_a_newer_one() -> None:
+    """refresh() reads outside the lock, so two reads can cross, and the
+    slower answer may be the older one: put back, it takes away a phone a
+    newer read had found, and the door stops for a whole pass. A read still
+    out when the rows are dropped lands on nothing either."""
+    import phone as phone_mod
+    import sb
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        row = _phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")
+        asked, go = threading.Event(), threading.Event()
+        calls: list[int] = []
+
+        def devices():
+            calls.append(1)
+            if len(calls) == 1:
+                answer = [dict(r) for r in box["rows"]]
+                asked.set()
+                go.wait(10)
+                return answer
+            return [dict(r) for r in box["rows"]]
+
+        with _patched(sb, "devices", devices):
+            slow = threading.Thread(target=phone_mod.refresh, daemon=True)
+            slow.start()
+            assert asked.wait(5)
+            box["rows"] = [row]
+            phone_mod.refresh()
+            assert phone["fingerprint"] in phone_mod.anchors()
+            go.set()
+            slow.join(5)
+            assert phone["fingerprint"] in phone_mod.anchors(), "an older answer took a phone away"
+
+            calls.clear()
+            asked.clear()
+            go.clear()
+            slow = threading.Thread(target=phone_mod.refresh, daemon=True)
+            slow.start()
+            assert asked.wait(5)
+            phone_mod.drop_rows()
+            go.set()
+            slow.join(5)
+            assert not phone_mod.rows_path().exists(), "a read came back to rows that had gone"
+
+
+def test_a_handshake_still_running_when_the_door_stops_finds_nobody_home() -> None:
+    """stop() cuts who is inside, and a peer still in the handshake was not
+    inside yet: it finished, found itself on the list and came in, past a
+    door already shut."""
+    import socket
+    import ssl
+
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = _echo_door(_anchors(s26))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.load_cert_chain(str(s26["chain"]))
+        raw = socket.create_connection(("127.0.0.1", door.port), timeout=5)
+        assert _until(lambda: door._slots._value == net_mod.DOOR_HANDSHAKES - 1, 5)
+        door.stop()
+        got = b""
+        try:
+            with ctx.wrap_socket(raw) as tls:
+                tls.settimeout(5)
+                tls.sendall(b"hello\n")
+                got = tls.recv(64)
+        except (ssl.SSLError, OSError):
+            pass
+        assert got == b"" and door.came == [], "a handshake outlived the door"
+
+
+def test_with_the_switch_off_the_loopback_door_answers_only_the_hook() -> None:
+    """The loopback door stays up for Claude's hook with the phone switched
+    off. That is all it stays up for: the old road through `tailscale serve`
+    reached every route on it, so a person who turned the phone off had not.
+    The switch is asked per request, so nothing restarts."""
+    import http.client
+
+    import server as server_mod
+
+    cfg = config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(
+        cfg.server, enabled=False, host="127.0.0.1", port=_door_port()))
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake",
+                                 notify=lambda body: {"ok": True, "id": 7})
+    srv.start()
+    token = server_mod.load_token()
+
+    def ask(method, route, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=5)
+        try:
+            conn.request(method, route, body, {"Authorization": f"Bearer {token}"})
+            return conn.getresponse().status
+        finally:
+            conn.close()
+
+    try:
+        assert ask("GET", "/health") == 200
+        assert ask("POST", "/notify", json.dumps({"title": "done"}).encode()) == 200, \
+            "the hook lost its door"
+        for method, route in (("GET", "/review"), ("GET", "/api/version"), ("POST", "/transcribe"),
+                              ("POST", "/translate"), ("POST", "/punctuate"), ("POST", "/lookup"),
+                              ("POST", "/review/decide")):
+            assert ask(method, route, b"{}" if method == "POST" else None) == 404, route
+        srv.cfg = dataclasses.replace(srv.cfg, server=dataclasses.replace(srv.cfg.server, enabled=True))
+        assert ask("GET", "/api/version") == 200
+        assert ask("POST", "/transcribe", b"{}") != 404
+    finally:
+        srv.stop()
+
+
+def test_review_scope_is_live_on_a_running_door() -> None:
+    """Settings says a [server] change is live, and a running door kept the
+    scope it opened with until the next start."""
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app.phone.routes.review_pending = lambda: [{"id": "1", "text": "שלום", "changes": [],
+                                                    "source": "desktop"}]
+        app._doors()
+        try:
+            status, said = _ask_door(app.phone_door.port, phone["chain"], "GET", "/review")
+            assert status == 200 and said["items"] == [], said
+            app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+                app.cfg.server, review_scope="all"))
+            app._doors()
+            status, said = _ask_door(app.phone_door.port, phone["chain"], "GET", "/review")
+            assert status == 200 and [i["id"] for i in said["items"]] == ["1"], said
+        finally:
+            _shut_doors(app)
+
+
+def test_a_door_that_lost_its_port_says_so_in_the_checkout() -> None:
+    """A copy started first can take 8756, and his Dev then falls through
+    while `tailscale serve` and the phone go on reaching the other copy, under
+    a token that is not this one's. A stranger's copy says it quietly."""
+    import logging
+    import socket
+
+    import server as server_mod
+
+    lines: list[tuple[int, str]] = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append((record.levelno, record.getMessage()))
+
+    port = _door_port()
+    cfg = config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server, host="127.0.0.1", port=port))
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    holder.bind(("127.0.0.1", port))
+    holder.listen(1)
+    keep = Keep()
+    logger = logging.getLogger("app")
+    level = logger.level
+    logger.addHandler(keep)
+    logger.setLevel(logging.INFO)
+    try:
+        for developer, loudness in ((True, logging.WARNING), (False, logging.INFO)):
+            with _patched(server_mod.paths, "DEVELOPER", developer):
+                srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake")
+                srv.start(port)
+                try:
+                    assert srv.port != port
+                finally:
+                    srv.stop()
+            moved = [row for row in lines if "THE LOOPBACK DOOR MOVED" in row[1]]
+            assert moved and moved[-1][0] == loudness, moved
+            lines.clear()
+    finally:
+        logger.removeHandler(keep)
+        logger.setLevel(level)
+        holder.close()
+
+
+def test_the_stranger_asks_for_ports_of_its_own() -> None:
+    """The Stranger runs beside DeskIT Dev, and a default port is Dev's: its
+    own ports are in its own settings.toml, past where either of Dev's doors
+    falls through to, at every start, after a reset and over nothing a
+    person changed."""
+    import importlib.util
+
+    import main as main_mod
+    import server as server_mod
+
+    spec = importlib.util.spec_from_file_location("stranger_under_test", REPO / "dev" / "stranger.py")
+    stranger = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stranger)
+
+    devs = set(range(8756, 8756 + server_mod.PORT_TRIES)) | set(range(8766, 8766 + server_mod.PORT_TRIES))
+    assert not devs & set(stranger.PORTS.values()), stranger.PORTS
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        path = home / "settings.toml"
+        stranger.seed_ports(home)
+        assert config_mod.read_settings(path) == stranger.PORTS
+        bare = main_mod.App.__new__(main_mod.App)
+        bare.config_path = None
+        with _patched(paths, "SETTINGS_FILE", path):
+            assert bare._loopback_first() == stranger.PORTS["server.port"]
+
+        config_mod.write_settings(path, {"server.port": 9100, "hint.enabled": False})
+        stranger.seed_ports(home)
+        after = config_mod.read_settings(path)
+        assert after["server.port"] == 9100 and after["hint.enabled"] is False
+        assert after["server.phone_port"] == stranger.PORTS["server.phone_port"]
+
+    main = (REPO / "dev" / "stranger.py").read_text("utf-8")
+    main = main[main.index("def main("):]
+    assert main.index("reset(home") < main.index("seed_ports(home)") < main.index("start(home, env)")
+
+
+def test_only_a_missing_file_makes_a_new_key() -> None:
+    """A new key means every phone loses its pin, so a read that failed must
+    not make one: a file another program has open, a blob this Windows
+    account cannot open and a file with no certificate in it all say so and
+    change nothing. A file that is gone, the key's or the passphrase's, is
+    the one case with no other way on."""
+    import phone as phone_mod
+    import secretstore
+
+    first = phone_mod.identity()
+    path = phone_mod.key_path()
+    saved = path.read_bytes()
+
+    def raises(kind):
+        try:
+            phone_mod.identity()
+        except kind:
+            return True
+        return False
+
+    def refused(name):
+        raise secretstore.SecretError("a blob from another account")
+
+    real_read = Path.read_text
+
+    def held(self, *args, **kwargs):              # the read alone: a new key could still be written
+        if self == path:
+            raise PermissionError(13, "another program has the file open")
+        return real_read(self, *args, **kwargs)
+
+    with _patched(Path, "read_text", held):
+        assert raises(OSError), "a read that failed did not say so"
+    assert path.read_bytes() == saved, "a failed read made a new key"
+    assert phone_mod.identity() == first
+
+    with _patched(secretstore, "get", refused):
+        assert raises(secretstore.SecretError), "an unreadable passphrase made a new key"
+    assert path.read_bytes() == saved and phone_mod.identity() == first
+
+    path.write_text("not a key", "ascii")
+    try:
+        assert raises(ValueError), "a file with no certificate made a new key"
+    finally:
+        path.write_bytes(saved)
+    assert phone_mod.identity() == first
+
+    secretstore.delete(phone_mod.PASS_NAME)
+    second = phone_mod.identity()
+    assert second != first, "a key with no passphrase can never open"
+    path.unlink()
+    assert phone_mod.identity() != second, "no key file and no new key"
+
+
+def test_a_door_keeps_its_key_through_a_failed_read_and_follows_a_new_one() -> None:
+    """A failed read under a running door costs nothing: same door, same
+    key. A new key under it, by whatever road, reopens it, because a door
+    shows the certificate it opened with and a phone pins what the row says.
+    With the door shut, a read that failed leaves it shut and the key alone;
+    a key that will never open is a new identity, and the door opens."""
+    import net as net_mod
+    import phone as phone_mod
+    import secretstore
+
+    def locked():
+        raise PermissionError("the file is in use")
+
+    def refused(name):
+        raise secretstore.SecretError("a blob from another account")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        anchors = _anchors(s26)
+        door = _a_door()
+        try:
+            port = door.start(anchors)
+            shown = _door_shows(port, s26["chain"])
+            assert shown == phone_mod.identity()
+
+            with _patched(phone_mod, "_on_disk", locked):
+                assert door.start(anchors) == port
+            with _patched(secretstore, "get", refused):
+                assert door.start(anchors) == port
+            assert door.running and _door_shows(port, s26["chain"]) == shown
+
+            new = phone_mod.rotate()
+            assert door.start(anchors) == port, "a new key moved the door"
+            assert _door_shows(port, s26["chain"]) == new, "the door kept the key it opened with"
+
+            door.stop()
+            with _patched(phone_mod, "_on_disk", locked):
+                try:
+                    door.start(anchors)
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("a door opened on a key nobody read")
+            assert not door.running and phone_mod.identity() == new
+
+            def unread(*_args):
+                raise net_mod.DoorUnread("the door's key was not read")
+
+            with _patched(net_mod, "_door_context", unread):
+                try:
+                    door.start(anchors)
+                except net_mod.DoorUnread:
+                    pass
+                else:
+                    raise AssertionError("a door opened on a key nobody read")
+            assert not door.running and phone_mod.identity() == new, "a failed read made a new key"
+
+            junk = Path(tmp) / "junk.pem"
+            junk.write_text("not a key", "ascii")
+            said = []
+            for chain in (Path(tmp) / "nowhere.pem", junk):
+                try:
+                    net_mod._door_context(chain, phone_mod.PASS_NAME, {})
+                except net_mod.DoorError as e:
+                    said.append(type(e))
+            assert said == [net_mod.DoorUnread, net_mod.DoorError], said
+
+            phone_mod.key_path().write_text("not a key", "ascii")
+            assert door.start(anchors) == port
+            again = phone_mod.identity()
+            assert again != new and _door_shows(port, s26["chain"]) == again
+
+            door.stop()
+            secretstore.blob_path(phone_mod.PASS_NAME).write_bytes(b"another account's blob")
+            assert door.start(anchors) == port
+            assert phone_mod.identity() != again and door.running
+            assert _door_shows(port, s26["chain"]) == phone_mod.identity()
+        finally:
+            door.stop()
+
+
+def test_the_elevated_line_takes_only_a_real_program() -> None:
+    """The program comes over the pipe and goes into a line an elevated
+    cmd.exe runs behind the person's yes: a quote in it would be a command of
+    its own. And rules are the machine's, so the first delete names the
+    program: a second Windows user's press must not delete the first one's."""
+    import desk_settings
+    import phone as phone_mod
+
+    ran: list[str] = []
+    netsh = r"C:\Windows\System32\netsh.exe"
+
+    with _patched(phone_mod, "_elevated", lambda system, line, verb="runas": ran.append(line) or "done"), \
+            _patched(phone_mod, "network_profiles", lambda: "any"), \
+            _patched(phone_mod, "block_rules", lambda exe: []):
+        for exe, port in ((r'C:\x" & calc & "y.exe', 8766), (r"C:\there\is\no\such.exe", 8766),
+                          (sys.executable, 0), (sys.executable, 70000), ("", 8766)):
+            assert phone_mod.open_firewall(exe, port) == "failed", exe
+        status = {"phone": {"program": r'C:\x" & calc & "y.exe', "port": 8766}}
+        assert desk_settings.let_it_through(status) == desk_settings.FIREWALL_WORDS["failed"]
+        assert ran == [], "a line went to the elevated shell"
+        assert phone_mod.open_firewall(sys.executable, 8766) == "done"
+        assert len(ran) == 1 and sys.executable in ran[0]
+
+    first = phone_mod.firewall_line(netsh, sys.executable, 8766, "any", []).split(" & ")[0]
+    assert f'delete rule name="{phone_mod.RULE_NAME}"' in first and f'program="{sys.executable}"' in first
+
+
+def test_a_door_shows_a_stranger_nothing_about_what_it_is() -> None:
+    """A door hands its certificate to whoever knocks, before any proof, so
+    what is in it is what a prober on any network learns. A subject is random
+    and says nothing else, and no two PCs share one."""
+    import phone as phone_mod
+
+    def subject(der: bytes) -> str:
+        at = der.index(phone_mod._OID_CN) + len(phone_mod._OID_CN)
+        assert der[at] == 0x0c, hex(der[at])
+        return der[at + 2:at + 2 + der[at + 1]].decode("ascii")
+
+    phone_mod.rotate()
+    door = _echo_door({})
+    try:
+        with _dial(door.port) as tls:
+            der = tls.getpeercert(binary_form=True)
+    finally:
+        door.stop()
+    assert phone_mod.fingerprint(der) == phone_mod.identity()
+    assert b"DeskIT" not in der and b"deskit" not in der.lower(), "the product's name went out"
+    name = subject(der)
+    assert re.fullmatch(r"[0-9a-f]{16}", name), name
+    phone_mod.rotate()
+    assert subject(phone_mod._on_disk()) != name
+
+
+def test_the_account_key_stays_out_of_main() -> None:
+    """A secret goes into a variable in the modules that handle secrets. sb
+    hands every account hook the key, so main's arrives through
+    phone.keyless, which drops it, and phone.py asks vault itself."""
+    import inspect
+
+    import main as main_mod
+    import phone as phone_mod
+
+    assert list(inspect.signature(phone_mod.publish).parameters) == ["port", "listening", "words_sync"]
+    assert not inspect.signature(phone_mod.anchors).parameters
+    assert list(inspect.signature(main_mod.App._phone_account).parameters) == ["self"]
+    assert list(inspect.signature(main_mod.App._phone_publish).parameters) == ["self"]
+    seen: list[tuple] = []
+    phone_mod.keyless(lambda *a: seen.append(a))(b"the account key")
+    assert seen == [()], seen
+    source = (REPO / "main.py").read_text("utf-8")
+    assert re.search(r"^\s*import vault\b|\bvault\.key\b", source, re.M) is None
+    assert "sb.ACCOUNT_HOOKS.append(self._phone_hook)" in source
+
+
+def test_a_person_who_withdraws_closes_the_door_and_the_internet_does_not() -> None:
+    """The door hears a Forget through the account, so with the `account`
+    consent withdrawn it would stand on kept rows, deaf to one. That is a
+    person's act, and it shuts the door. A network's state does not: no
+    internet, or Offline mode, leaves it open on the kept rows, as the
+    Phone card promises. A yes opens it again, with nothing restarted."""
+    import phone as phone_mod
+    import privacy
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        privacy.on_change("account", app._doors_soon)
+        try:
+            assert app.phone_door.running
+            box["offline"] = True
+            app._phone_account()
+            assert app.phone_door.running, "the internet went and the door closed"
+
+            with _patched(privacy, "_gates", dict(privacy._gates, offline=True)):
+                assert not privacy.allowed("account") and privacy.granted("account")
+                app._doors()
+                assert app.phone_door.running, "Offline mode closed the door"
+
+            privacy.withdraw("account")
+            assert _until(lambda: not app.phone_door.running, 5), "the door outlived the consent"
+            app._doors()
+            assert not app.phone_door.running
+
+            privacy.grant("account")
+            assert _until(lambda: app.phone_door.running, 5), "a yes did not open it again"
+        finally:
+            app._stopping.set()
+            _until(lambda: not any(t.name == "doors" for t in threading.enumerate()), 5)
+            _shut_doors(app)
+    assert 'privacy.on_change("account", self._doors_soon)' in (REPO / "main.py").read_text("utf-8")
+
+
+def test_a_door_opened_again_keeps_its_port_with_phones_still_connected() -> None:
+    """A port the door moved off is outside the rule the person let through.
+    Measured 2026-11-07, on loopback: SO_EXCLUSIVEADDRUSE refuses a bind
+    beside a live listener (10048) and not beside what a closed one left, 40
+    rounds of connections ESTABLISHED, closing and in TIME_WAIT, no refusal,
+    the slowest bind 0.15 ms. So no retry: this holds it through the real
+    door, with real phones. Every interface is not measured: that bind raises
+    the firewall dialog, and M4 is where it can be."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s26, a55 = _a_phone(Path(tmp), "S26 Ultra"), _a_phone(Path(tmp), "A55")
+        anchors = _anchors(s26, a55)
+        door = _a_door()
+        left: list = []
+        try:
+            port = door.start(anchors)
+            for _ in range(6):
+                for phone in (s26, a55):
+                    tls = _dial(port, phone["chain"])
+                    tls.settimeout(5)
+                    tls.sendall(b"GET /health HTTP/1.0\r\n\r\n")
+                    assert tls.recv(16).startswith(b"HTTP/")
+                    left.append(tls)
+                closing = _dial(port, s26["chain"])
+                closing.close()
+                door.stop()
+                assert door.start(anchors) == port, "the door moved off its port"
+            assert _ask_door(port, s26["chain"], "GET", "/health")[0] == 200
+        finally:
+            for tls in left:
+                tls.close()
+            door.stop()
+
+
+def test_phone_py_imports_stay_narrow() -> None:
+    """phone.py touches a private key for a moment, as vault.py does, so it
+    is held the same way: no transport, none of the modules that read a
+    cloud key, no environment. The door is reached by name from server.py."""
+    src = (REPO / "phone.py").read_text("utf-8")
+    forbidden = ("apikey", "translate", "polish", "punctuate", "lookup", "visual_qa", "gemini_pool",
+                 "httpx", "requests", "socket", "ssl", "http", "urllib", "net")
+    for m in re.finditer(r"^\s*(?:import|from)\s+([\w.]+)", src, re.M):
+        assert m.group(1).split(".")[0] not in forbidden, f"phone.py imports {m.group(1)}"
+    assert "os.environ" not in src and "getenv" not in src, "phone.py reads the environment"
+    assert re.search(r"\blog\.\w+\([^)]*(passphrase|sec1)", src) is None, "a key near a log line"
+
+
+def test_a_door_opens_with_a_phone_the_switch_and_this_pcs_yes_and_never_otherwise() -> None:
+    """The phone door's three conditions, and the loopback door's two: it
+    runs with the switch on OR the Claude hook connected, the silent hole
+    of today. With no phone in the account nothing listens beyond this PC,
+    whatever the switch says."""
+    import dataclasses
+
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        app = _door_app()
+
+        def server(**changes):
+            app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, **changes))
+
+        try:
+            server(enabled=True, phone_allowed=True)
+            app._doors()
+            assert app.phone.running and not app.phone_door.running, "a door with no phone"
+
+            box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+            phone_mod.refresh()
+            server(phone_allowed=False)
+            app._doors()
+            assert not app.phone_door.running, "no yes from this PC, and the door opened"
+
+            server(phone_allowed=True)
+            app._doors()
+            assert app.phone_door.running
+            status = app._phone_status()
+            assert status["on"] and [p["name"] for p in status["phones"]] == ["S26 Ultra"], status
+
+            server(enabled=False)
+            app._doors()
+            assert not app.phone_door.running and not app.phone.running
+
+            app._hook_connected = lambda: True
+            app._doors()
+            assert app.phone.running and not app.phone_door.running, "the hook's door, and only it"
+            app._hook_connected = lambda: False
+            app._doors()
+            assert not app.phone.running
+        finally:
+            _shut_doors(app)
+
+
+def test_the_hook_works_with_the_phone_switch_off() -> None:
+    """Connect Claude writes the hook's lines and the phone switch is
+    another matter: with the switch off the hook used to post into nothing,
+    in silence. And the hook finds the door where it landed."""
+    import dataclasses
+
+    import net as net_mod
+    import notify_hook
+
+    app = _door_app()
+    app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, enabled=False))
+    app._hook_connected = lambda: True
+    held = None
+    try:
+        app._doors()
+        assert app.phone.running
+        import server as server_mod
+
+        state = json.dumps({"server.port": app.phone.port})
+        paths.STATE_FILE.write_text(state, "utf-8")
+        assert notify_hook.server_port() == app.phone.port
+        status, _h, body = net_mod.request(
+            "POST", notify_hook.server_url(), "notify", body=b'{"title": "done"}',
+            headers={"Authorization": f"Bearer {server_mod.load_token()}",
+                     "Content-Type": "application/json"})
+        assert status == 200 and json.loads(body)["ok"], body
+    finally:
+        _shut_doors(app)
+        paths.STATE_FILE.unlink(missing_ok=True)
+    del held
+
+
+def test_a_busy_port_lands_in_state_json_for_both_doors() -> None:
+    """Both doors fall through and say where. A phone cached the phone
+    door's port, so that one starts from where it landed; nothing outside
+    this PC caches the loopback door's, so that one starts from the
+    setting's again, and one clash does not move it for good."""
+    import dataclasses
+    import socket
+
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box, \
+            socket.socket() as one, socket.socket() as two:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        for sock in (one, two):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(1)
+        loop, door = one.getsockname()[1], two.getsockname()[1]
+        app = _door_app()
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+            app.cfg.server, enabled=True, phone_allowed=True, port=loop, phone_port=door))
+        try:
+            app._doors()
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert app.phone.port != loop and state["server.port"] == app.phone.port, state
+            assert app.phone_door.port != door and state["server.phone_port"] == app.phone_door.port
+            assert app.cfg.server.phone_port == app.phone_door.port, "the phone door's next try"
+        finally:
+            _shut_doors(app)
+
+    import main as main_mod
+
+    bare = main_mod.App.__new__(main_mod.App)
+    bare.config_path = None
+    config_mod.save({"server.port": 40123})
+    try:
+        assert bare._loopback_first() == config_mod.defaults_flat()["server.port"], \
+            "the loopback door starts from last time's clash"
+    finally:
+        config_mod.save({"server.port": None}, derived=True)
+
+
+def test_the_doors_start_and_stop_with_no_restart() -> None:
+    """The switch acts where it stands, on the running app."""
+    import main as main_mod
+
+    assert "server" in main_mod.LIVE_SECTIONS
+    app = _door_app()
+    try:
+        app._doors()
+        assert app.phone.running
+        said = app.set_option("server.enabled", False)
+        assert _until(lambda: not app.phone.running, 10), "the switch did not shut the door"
+        assert "next time" not in said, said
+        app.set_option("server.enabled", True)
+        assert _until(lambda: app.phone.running, 10), "the switch did not open the door"
+    finally:
+        config_mod.save({"server.enabled": True})
+        _shut_doors(app)
+
+
+def test_an_approve_here_is_this_pcs_yes_and_any_other_pc_asks_on_home() -> None:
+    """The first listen raises Windows' dialog, so it follows a press. On
+    the PC he pressed Approve on, the phone's row arriving is enough. On any
+    other, Home asks; Allow is the yes, Not now holds until the next start,
+    and from then on the door binds with nothing asked. Approving another
+    PC gives no yes."""
+    import phone as phone_mod
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        app = _door_app()
+        app._phone_publish = lambda: None
+        try:
+            app._approved = {ident}
+            box["rows"] = [_phone_row(box, phone, ident)]
+            app._phone_account()
+            assert app.cfg.server.phone_allowed and app.phone_door.running, "Approve here"
+            assert not app._approved and not app._phone_status()["ask"]
+            app.phone_door.stop()
+            config_mod.save({"server.phone_allowed": None}, derived=True)
+            phone_mod.drop_rows()
+
+            further = _door_app()
+            further._phone_publish = lambda: None
+            further._approved = {"cccccccc-0000-0000-0000-000000000003"}    # another PC, approved here
+            box["rows"] = [_phone_row(box, phone, ident)]
+            further._phone_account()
+            assert not further.phone_door.running, "a door with nobody having pressed anything"
+            assert further._phone_listening(), "the approved device's row has not come back yet"
+            assert further._phone_status()["ask"] is True, "Home did not ask"
+
+            assert further.control_command("phone", {"do": "notnow"})["ok"]
+            assert further._phone_status()["ask"] is False and not further.phone_door.running
+
+            next_start = _door_app()
+            assert next_start._phone_status()["ask"] is True, "Not now outlived its start"
+
+            further.control_command("phone", {"do": "allow"})
+            assert _until(lambda: further.phone_door.running, 10), "Allow did not open the door"
+            assert config_mod.read_state(paths.STATE_FILE)["server.phone_allowed"] is True
+            assert further._phone_status()["ask"] is False
+            assert further.control_command("phone", {"do": "nonsense"})["ok"] is False
+            _shut_doors(further)
+            _shut_doors(next_start)
+        finally:
+            _shut_doors(app)
+
+
+def test_forget_goes_to_the_account_and_a_failure_is_said_in_words() -> None:
+    """Forget names the device and the app finds its certificate. A row
+    that is gone is an answer, and a failure stays on the card."""
+    import phone as phone_mod
+    import sb
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        app = _door_app()
+        asked: list = []
+        had = getattr(sb, "forget_device", None)
+        sb.forget_device = lambda d, c: asked.append((d, c))
+        try:
+            reply = app.control_command("phone", {"do": "forget", "id": ident})
+            assert reply["ok"] and "S26 Ultra" in reply["message"], reply
+            assert _until(lambda: bool(asked), 5) and asked == [(ident, phone["fingerprint"])]
+            assert app.control_command("phone", {"do": "forget", "id": "nobody"})["ok"] is False
+
+            def refused(d, c):
+                raise OSError("no network")
+            sb.forget_device = refused
+            app.control_command("phone", {"do": "forget", "id": ident})
+            assert _until(lambda: bool(app._phone_status()["error"]), 5)
+            assert "no network" not in app._phone_status()["error"]
+        finally:
+            if had is None:
+                del sb.forget_device
+            else:
+                sb.forget_device = had
+            _shut_doors(app)
+
+
+def test_a_phone_on_the_door_dictating_is_what_the_card_says() -> None:
+    """"Hasn't reached this PC yet" is the one hint a person has that the
+    firewall stands in between, so it must be true: a connection moves it,
+    and a dictation says so."""
+    import dataclasses
+    import io
+    import wave as wave_mod
+
+    import desk_settings
+    import phone as phone_mod
+    import server as server_mod
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        assert "hasn't reached this PC yet" in desk_settings.device_rows(
+            {"phone": phone_mod.view()})[0]["meta"]
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server,
+                                                                  phone_port=_door_port()))
+        door = server_mod.PhoneDoor(cfg, server_mod.Routes(lambda wav: ("שלום", "fake")))
+        port = door.start(phone_mod.anchors())
+        try:
+            assert _ask_door(port, phone["chain"], "GET", "/health")[0] == 200
+            assert _until(lambda: phone_mod.view()["phones"][0]["reached"], 5)
+            assert "reached this PC today" in desk_settings.device_rows(
+                {"phone": phone_mod.view()})[0]["meta"]
+            buf = io.BytesIO()
+            with wave_mod.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(np.zeros(1600, dtype=np.int16).tobytes())
+            status, reply = _ask_door(port, phone["chain"], "POST", "/transcribe", buf.getvalue())
+            assert status == 200 and reply["text"] == "שלום", reply
+            assert "dictated here today" in desk_settings.device_rows(
+                {"phone": phone_mod.view()})[0]["meta"]
+        finally:
+            door.stop()
+
+
+def test_get_review_answers_the_phones_own_unless_the_scope_says_all() -> None:
+    """D22: what was said at the desk stays at the desk. The developer line
+    keeps desk proposals answerable from the sofa."""
+    import server as server_mod
+
+    pending = lambda: [{"id": "1", "text": "מהטלפון", "source": "phone", "changes": []},
+                       {"id": "2", "text": "מהשולחן", "source": "desktop", "changes": []},
+                       {"id": "3", "text": "ישן", "changes": []}]
+    routes = server_mod.Routes(lambda wav: ("", "fake"), review_pending=pending)
+    assert [i["id"] for i in routes.handle("/review")[1]["items"]] == ["1"]
+    routes.review_scope = "all"
+    assert [i["id"] for i in routes.handle("/review")[1]["items"]] == ["1", "2", "3"]
+    try:
+        config_mod.build({"server": {"review_scope": "everyone"}})
+    except config_mod.ConfigError as e:
+        assert "review_scope" in str(e)
+    else:
+        raise AssertionError("a review scope nobody knows was accepted")
+
+
+def test_the_firewall_line_lets_this_program_through_on_this_port() -> None:
+    """One elevated line, whatever the network's profile: this PC's real
+    interpreter and this port, its block rules gone first, because a block
+    rule outranks any allow rule. A rule's name that is not plain is never
+    spelled inside an elevated cmd.exe. The running image is the real
+    program, not a venv's launcher."""
+    import phone as phone_mod
+
+    exe = r"C:\Users\Dana Levi\AppData\Local\Programs\DeskIT\python\pythonw.exe"
+    netsh = r"C:\Windows\System32\netsh.exe"
+    line = phone_mod.firewall_line(netsh, exe, 8801, "public", ["Python", "Python"])
+    steps = line.split(" & ")
+    assert steps[0].endswith(f'delete rule name="{phone_mod.RULE_NAME}" dir=in program="{exe}"'), steps[0]
+    assert steps[1].endswith(f'delete rule name="Python" dir=in program="{exe}"'), steps[1]
+    assert len(steps) == 3, steps                 # one delete per name
+    assert f'add rule name="{phone_mod.RULE_NAME}" dir=in action=allow program="{exe}" ' in steps[2]
+    assert steps[2].endswith("protocol=TCP localport=8801 profile=public"), steps[2]
+    assert all(s.startswith(f'"{netsh}" ') for s in steps), "an elevated netsh by its full path"
+
+    for blocks in (None, ['x" & calc & "']):
+        line = phone_mod.firewall_line(netsh, exe, 8801, "any", blocks)
+        assert f'delete rule name=all dir=in program="{exe}"' in line and "calc" not in line
+    assert phone_mod.firewall_line(netsh, exe, 8801, "private,public", []).endswith(
+        "profile=private,public")
+    assert "name=all" not in phone_mod.firewall_line(netsh, exe, 8801, "any", [])
+
+    me = Path(phone_mod.program())
+    assert me.is_file() and me.name.lower() in ("python.exe", "pythonw.exe"), me
+    assert "Scripts" not in me.parts or ".venv" not in me.parts, f"a launcher: {me}"
+    assert isinstance(phone_mod.block_rules(str(me)), (list, type(None)))
+
+
+def test_the_elevated_call_runs_its_line_and_reads_its_answer() -> None:
+    """Everything of the firewall's press but Windows' prompt, with the verb
+    that raises none: the structure Windows reads, a full path in quotes
+    surviving cmd.exe, nothing on the screen, and the exit code read back."""
+    import ctypes
+
+    import phone as phone_mod
+
+    assert ctypes.sizeof(phone_mod._ExecuteInfo) == 112, "SHELLEXECUTEINFOW on 64 bits"
+    system = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
+    quiet = f'"{os.path.join(system, "hostname.exe")}"'
+    assert phone_mod._elevated(system, f"{quiet} > NUL", "open") == "done"
+    assert phone_mod._elevated(system, f"{quiet} > NUL & exit 3", "open") == "failed"
+    assert phone_mod._elevated(system, "exit 0", "no such verb") == "failed"
+
+
+def test_the_phone_cant_connect_says_what_windows_answered() -> None:
+    """An administrator's yes, a standard user with no administrator to ask,
+    and a failure each get plain words, and the press gets no further than
+    the elevated call. The call sits in one place, so this is the one test
+    that does not raise a dialog by mistake."""
+    import desk_settings
+    import phone as phone_mod
+
+    asked: list = []
+
+    def elevated(system, line):
+        asked.append((system, line))
+        return answers.pop(0)
+
+    answers = ["done", "declined", "failed"]
+    status = {"phone": {"program": sys.executable, "port": 8801, "phones": [{"id": "1"}]}}
+    with _patched(phone_mod, "_elevated", elevated), \
+            _patched(phone_mod, "network_profiles", lambda: "public"), \
+            _patched(phone_mod, "block_rules", lambda exe: []):
+        assert "lets your phone through" in desk_settings.let_it_through(status)
+        assert "administrator" in desk_settings.let_it_through(status)
+        assert "nothing changed" in desk_settings.let_it_through(status)
+        assert "start dictation" in desk_settings.let_it_through({"phone": {}})
+    assert len(asked) == 3 and "localport=8801 profile=public" in asked[0][1]
+
+
+def test_settings_phone_says_it_in_plain_words_and_details_holds_the_numbers() -> None:
+    """The approved cards: the devices with Forget, which asks in its row,
+    the QR, the question, and an address or a port nowhere but Details."""
+    import desk_settings
+
+    status = {"account": {"device_name": "MY-PC"},
+              "phone": {"on": True, "port": 8801, "addrs": ["10.9.8.7"], "error": "",
+                        "phones": [{"id": "p", "name": "A phone", "cert": "c", "reached": 0,
+                                    "dictated": 0}],
+                        "pcs": [{"id": "l", "name": "Laptop", "cert": "d"}]}}
+    rows = desk_settings.device_rows(status, "p")
+    assert [r["name"] for r in rows] == ["A phone", "This PC", "Laptop"]
+    assert rows[0]["asking"] and rows[0]["forget"] and not rows[1]["forget"] and rows[2]["forget"]
+    assert rows[1]["meta"] == "MY-PC"
+    surface = json.dumps(rows)
+    trouble = desk_settings.trouble_card(status)
+    surface += trouble["line"] + trouble["said"] + trouble["button"]
+    card = desk_settings.keyboard_card(status)
+    surface += card["line"] + card["said"]
+    assert "10.9.8.7" not in surface and "8801" not in surface, "a number on the surface"
+    assert trouble["button"] == "Let it through"
+    assert "10.9.8.7" in json.dumps(trouble["details"]) and "8801" in json.dumps(trouble["details"])
+    assert desk_settings.trouble_card({"phone": {"phones": []}}) is None, "no phone, no question"
+    assert len(desk_settings.device_rows({"phone": {}})) == 1
+    first = desk_settings.keyboard_card({"phone": {"phones": []}})
+    assert "get the DeskIT keyboard" in first["line"]
+    google = desk_settings.keyboard_card({"account": {"anonymous": True}})
+    assert google["kind"] == "line" and google["buttons"][0]["arg"] == "google"
+    assert desk_settings.phone_info({"phone": "an older app's string"}) == {}
+    for tab, layout in desk_settings.LAYOUT.items():
+        for entry in layout:
+            assert entry.isupper() or entry in desk_settings.BLOCK_TITLES, entry
+
+
+def test_the_tk_desks_phone_tab_and_home_row_still_work() -> None:
+    """The Tk desk opens where WebView2 cannot, so its card stands on the
+    same words: the devices, the QR, the question, Home's row."""
+    import dashboard as dash
+    import settings as settings_mod
+
+    try:
+        board = dash.Dashboard()
+    except Exception as e:                      # no display: nothing to test
+        print(f"    (skipped: no Tk window — {e})")
+        return
+    try:
+        board.closing = True
+        board.status = {"stage": "running", "account": {"device_name": "MY-PC"},
+                        "phone": {"on": False, "ask": True, "port": 8801, "addrs": [], "error": "",
+                                  "phones": [{"id": "p", "name": "A phone", "cert": "c",
+                                              "reached": 0, "dictated": 0}], "pcs": []}}
+        rows = board._waiting_phone()
+        assert rows[0]["text"] == "Your phone can use this PC too" and rows[0]["eyebrow"] == "A phone"
+        assert [b[0] for b in rows[0]["buttons"]] == ["Allow", "Not now"]
+        board._show("Settings")
+        board._settings_go(settings_mod.PHONE)
+        board._finish_settings()
+        board.root.update()
+        board._phone_ask("p")
+        board._finish_settings()
+        board.root.update()
+        assert board._phone_asking == "p"
+        board._phone_keep()
+        assert board._phone_asking == ""
+        board.status["phone"]["ask"] = False
+        assert board._waiting_phone() == []
+        board.status["phone"] = "an older app's string"
+        assert board._waiting_phone() == []
+    finally:
+        try:
+            board.root.destroy()
+            board._bury()
+        except Exception:
+            pass
+
+
+def test_the_settings_phone_tab_presses_reach_the_app() -> None:
+    """Forget asks first, the app is told by id, and the firewall press
+    leaves the lock so the page's poll does not wait on Windows' prompt."""
+    import desk_settings
+
+    status = dict(_WEB_STATUS, phone={
+        "on": True, "port": 8801, "addrs": [], "error": "", "program": r"C:\x\pythonw.exe",
+        "phones": [{"id": "p", "name": "A phone", "cert": "c", "reached": 0, "dictated": 0}],
+        "pcs": []}, account={"device_name": "MY-PC"})
+    with _web_settings(status=status) as (place, asked, doors, _files):
+        assert place.act("phone.forget", "p")["ok"] is False, "Forget before it asked"
+        assert place.act("phone.ask", "p")["ok"]
+        cards = {s["kind"]: s for s in place.read()["pages"]["phone"]}
+        assert cards["devices"]["rows"][0]["asking"] and cards["keyboard"]["kind"] == "keyboard"
+        assert place.act("phone.keep", None)["ok"] and not place._phone_asking
+        place.act("phone.ask", "p")
+        place.act("phone.forget", "p")
+        assert ("phone", {"do": "forget", "id": "p"}) in asked
+        with _patched(desk_settings, "let_it_through", lambda s: "Windows answered"):
+            assert place.act("phone.firewall", None)["note"] == "Windows answered"
+
+
+def test_home_asks_a_further_pc_with_one_row_and_the_press_reaches_the_app() -> None:
+    """On both desks' pile: the phone's name, one sentence, Allow, Not now."""
+    status = dict(_WEB_STATUS, phone={"on": False, "ask": True, "phones": [{"name": "A phone"}]})
+    with _web_desk(status) as (model, folder, asked):
+        row = next(r for r in model.home()["pile"] if r["id"] == "phone:allow")
+        assert row["text"] == "Your phone can use this PC too" and row["title"] == "A phone"
+        assert [b["label"] for b in row["buttons"]] == ["Allow", "Not now"]
+        model.act("phone.allow")
+        assert ("phone", {"do": "allow"}) in asked
+    status = dict(_WEB_STATUS, phone={"on": False, "ask": False, "phones": []})
+    with _web_desk(status) as (model, folder, asked):
+        assert not [r for r in model.home()["pile"] if r["kind"] == "phone"]
+        assert "not waiting" in model.act("phone.allow")["note"]
+
+
+def test_a_pc_makes_its_identity_once_and_a_lost_passphrase_is_a_new_one() -> None:
+    """identity() answers the same fingerprint for as long as the key is
+    there; the file holds no private key in the clear. A passphrase that
+    is gone is a new identity, because the key could never open again. One
+    that only will not open is another matter: a read that failed is not a
+    missing file (test_only_a_missing_file_makes_a_new_key)."""
+    import ssl
+
+    import phone as phone_mod
+    import secretstore
+
+    first = phone_mod.identity()
+    assert len(first) == 64 and phone_mod.identity() == first
+    text = phone_mod.key_path().read_text("ascii")
+    assert "BEGIN ENCRYPTED PRIVATE KEY" in text and "BEGIN EC PRIVATE KEY" not in text
+    assert "BEGIN PRIVATE KEY" not in text
+    der = ssl.PEM_cert_to_DER_cert(text[:text.index("-----END CERTIFICATE-----") + 25])
+    assert phone_mod.fingerprint(der) == first
+    assert phone_mod.key_path().parent == paths.SECRETS_DIR
+
+    secretstore.delete(phone_mod.PASS_NAME)
+    second = phone_mod.identity()
+    assert second != first and phone_mod.identity() == second
 
 
 def test_phone_api_version_fields() -> None:
@@ -34460,7 +36902,7 @@ _PATHS_PROBE = (
     "print(json.dumps({k: str(getattr(paths, k)) for k in ("
     "'APP_DIR','DATA_DIR','PORTABLE','DEVELOPER','FLAT','RECENT_DIR',"
     "'PENDING_DIR','APP_LOG','TRANSCRIPTS_LOG','PHONE_TOKEN','CUES_DIR',"
-    "'VOCAB_FILE','LEGACY_CONFIG','APP_ID','DEFAULT_PORT')}"
+    "'VOCAB_FILE','LEGACY_CONFIG','APP_ID')}"
     " | {'mutex': paths.kernel_name(r'Local\\DeskIT.instance'),"
     "    'pipe': paths.kernel_name(r'\\\\.\\pipe\\DeskIT.control'),"
     "    'ensured': str(paths.ensure())}))"
@@ -34567,7 +37009,7 @@ def test_paths_portable_marker_env_and_default_home():
         assert got["DATA_DIR"] == str(local / "DeskIT"), got
         assert got["RECENT_DIR"] == str(local / "DeskIT" / "audio" / "recent")
         assert (local / "DeskIT" / "logs").is_dir(), "ensure() made the tree"
-        assert got["APP_ID"] == "DeskIT.App" and got["DEFAULT_PORT"] == "8756"
+        assert got["APP_ID"] == "DeskIT.App"
         assert got["mutex"] == r"Local\DeskIT.instance", got["mutex"]
         assert got["pipe"] == r"\\.\pipe\DeskIT.control", got["pipe"]
 
@@ -34592,7 +37034,7 @@ def test_paths_dev_mark_only_in_a_checkout():
     import paths
     assert paths.DEV_SUFFIX == ".dev" and paths.DEV_TAG == "Dev"
     assert paths.APP_ID == "DeskIT.Dev"
-    assert paths.DEFAULT_PORT == 8757
+    assert not hasattr(paths, "DEFAULT_PORT"), "every copy asks for the same port and falls through"
     assert paths.kernel_name(r"Local\DeskIT.instance") == r"Local\DeskIT.dev.instance"
     assert paths.kernel_name(r"\\.\pipe\DeskIT.control") == r"\\.\pipe\DeskIT.dev.control"
     assert paths.kernel_name(r"Local\Other.thing") == r"Local\Other.thing.dev"
@@ -34614,7 +37056,7 @@ _STRANGER_PROBE = (
     "import paths, autostart, notify_hook, secretstore, models, packs;"
     "print(json.dumps({'STRANGER': paths.STRANGER, 'DEVELOPER': paths.DEVELOPER,"
     " 'PORTABLE': paths.PORTABLE, 'FLAT': paths.FLAT, 'DATA_DIR': str(paths.DATA_DIR),"
-    " 'suffix': paths.DEV_SUFFIX, 'tag': paths.DEV_TAG, 'port': paths.DEFAULT_PORT,"
+    " 'suffix': paths.DEV_SUFFIX, 'tag': paths.DEV_TAG,"
     " 'app_id': paths.APP_ID, 'mutex': paths.kernel_name(r'Local\\DeskIT.instance'),"
     " 'run_key': autostart.RUN_KEY, 'hook_file': str(notify_hook.DEFAULT_SETTINGS),"
     " 'prefix': secretstore.TARGET_PREFIX,"
@@ -34668,7 +37110,7 @@ def test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy():
         got = probe({"DESKIT_HOME": str(tmp), "DESKIT_STRANGER": "1"})
         assert got["STRANGER"] and not got["DEVELOPER"] and not got["PORTABLE"] and not got["FLAT"], got
         assert got["DATA_DIR"] == str(tmp), got
-        assert got["suffix"] == ".test" and got["tag"] == "" and got["port"] == 8758, got
+        assert got["suffix"] == ".test" and got["tag"] == "", got
         assert got["app_id"] == "DeskIT.Test" and got["mutex"] == r"Local\DeskIT.test.instance", got
         assert got["run_key"] == r"Software\DeskIT.test\Run", got
         assert got["hook_file"] == str(tmp / "claude-settings.json"), got
@@ -34984,14 +37426,14 @@ def test_settings_toml_roundtrip_all_kinds():
     try:
         values = {"local.extra_fillers": ["כאילו", 'say "hi"', "a\\b"],
                   "vocab.max_terms": 55, "polish.max_wait_s": 2.5,
-                  "server.enabled": True, "local.initial_prompt": "שלום, \"world\""}
+                  "server.enabled": False, "local.initial_prompt": "שלום, \"world\""}
         config_mod.save(values, settings=s, state=t)
         back = config_mod.read_settings(s)
         for key, value in values.items():
             assert back[key] == value, (key, back.get(key))
         cfg = config_mod.load_layered(settings=s, state=t)
         assert list(cfg.local.extra_fillers) == values["local.extra_fillers"]
-        assert cfg.polish.max_wait_s == 2.5 and cfg.server.enabled is True
+        assert cfg.polish.max_wait_s == 2.5 and cfg.server.enabled is False
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -35056,7 +37498,7 @@ def test_defaults_toml_carries_no_owner_values():
     assert flat["capture.folder"] == "{pictures}/DeskIT" and flat["camera.folder"] == "{pictures}/DeskIT"
     assert flat["capture.clip_folder"] == "{videos}/DeskIT"
     assert flat["vocab.terms"] == []
-    assert flat["server.enabled"] is False
+    assert flat["server.enabled"] is True
     for key in ("dot.x", "dot.y", "hint.x", "hint.y", "notify.x", "notify.y",
                 "problems.x", "problems.y", "review.x", "review.y",
                 "shelf.x", "shelf.y"):
@@ -35078,11 +37520,11 @@ def test_migrate_config_diff_splits_settings_from_state():
         text = text.replace('device = ""', 'device = "Old Mic"', 1)
         old.write_text(text, encoding="utf-8")
         config_mod.set_values(old, {"vocab.max_terms": 41, "polish.when": "known",
-                                    "server.enabled": True, "notify.x": 10, "notify.y": 20,
+                                    "server.enabled": False, "notify.x": 10, "notify.y": 20,
                                     "lookup.dwell_ms": 5})
         settings, state, dropped = migrate_mod.config_diff(old)
         assert settings == {"vocab.max_terms": 41, "polish.when": "known",
-                            "server.enabled": True}, settings
+                            "server.enabled": False}, settings
         assert state == {"audio.device": "Old Mic", "notify.x": 10, "notify.y": 20}, state
         assert "lookup.dwell_ms" in dropped
     finally:
@@ -37000,7 +39442,7 @@ def test_reset_spares_the_owners_training_data():
 # and what replaces each one is where it says it is.
 #
 # What STAYS is underneath and is not a surface: the portable layout,
-# OWNER_DATA, the .dev names, port 8757, autostart refusing in a
+# OWNER_DATA, the .dev names, autostart refusing in a
 # checkout, updates that look and never install.
 
 def test_the_product_has_no_owner_surface_left():
@@ -40233,7 +42675,7 @@ def test_the_wizard_downloads_in_the_background_and_hands_the_rest_to_the_app():
             assert written.get("notify.enabled") is None, "notify.enabled is the default already"
             assert hooked == ["install"], hooked
             assert set(w.switches) == {"autostart", "phone"}, "the last page's two"
-            assert w.switches["phone"].get() is False and w.switches["autostart"].get() is False
+            assert w.switches["phone"].get() is True and w.switches["autostart"].get() is False
             w.switches["phone"].toggle()
             assert "server.enabled" not in config_mod.read_settings(s), "written on Finish, not before"
             assert "setup.autostart" not in config_mod.read_state(t), "an unmoved switch was written"
@@ -40242,7 +42684,7 @@ def test_the_wizard_downloads_in_the_background_and_hands_the_rest_to_the_app():
             assert w.result.saved and w.result.open_desk
             assert w.result.downloads is None, "a finished queue was handed to the app"
             assert config_mod.read_state(t).get("setup.done") is True
-            assert config_mod.read_settings(s).get("server.enabled") is True
+            assert config_mod.read_settings(s).get("server.enabled") is False, "each PC keeps its no"
             assert bool(w.result) is True
         finally:
             gate.set()
@@ -54799,12 +57241,11 @@ def test_webdesk_imports_nothing_of_webview_and_guards_its_doors():
 
     def fake_send(command, timeout_ms=2000, **args):
         asked.append(command)
-        return {"ok": True, "state": "idle", "phone": {"url": "http://x/?t=secret"}}
+        return {"ok": True, "state": "idle", "phone": {"on": False, "phones": []}}
 
     with _patched(control, "send", fake_send):
         api = webdesk.Api(allow={"status"})
-        assert "phone" not in api.status()
-        assert "phone" not in api.send("status")
+        assert api.status()["state"] == "idle" and api.send("status")["ok"]
         refused = api.send("quit")
         assert refused["ok"] is False and "quit" in refused["error"], refused
         assert asked == ["status", "status"], asked
@@ -54852,7 +57293,9 @@ def _web_desk(status):
 
 
 _WEB_STATUS = {"ok": True, "stage": "running", "activity": "ready", "model": "on",
-               "uptime_s": 3700, "paused": False, "phone": "http://x/?t=secret",
+               "uptime_s": 3700, "paused": False,
+               "phone": {"on": True, "port": 8801, "addrs": [], "error": "", "pcs": [],
+                         "phones": [{"id": "p", "name": "A phone", "cert": "c"}]},
                "awake": {"held": True},
                "keys": {"dismiss_hotkey": "ctrl+alt+m", "hotkey": "right ctrl"}}
 
@@ -56994,8 +59437,8 @@ def test_web_desk_settings_draws_the_tk_desks_layout_and_words():
     general = {s["id"]: s for s in answer["pages"]["general"]}
     assert general["dot"]["row"]["path"] == "dot.corner"
     assert general["updates"]["row"]["path"] == "privacy.update_check"
-    phone = {s["id"]: s for s in answer["pages"]["phone"]}["phone"]
-    assert phone["url"] == "http://x/?t=" + "•" * 12, phone
+    phone = {s["id"]: s for s in answer["pages"]["phone"]}
+    assert {"devices", "keyboard", "trouble"} <= set(phone), list(phone)
 
 
 def test_web_desk_settings_refuses_what_the_page_may_not_ask():
@@ -57077,9 +59520,6 @@ def test_web_desk_settings_writes_where_the_tk_desk_writes():
         assert place.act("account.do", "delete")["ok"] is False, "the question is asked once per press"
         place.act("quit", None)
         assert ("quit",) in doors and ("quit", {}) not in asked
-        place.act("phone.copy", None)
-        # the link carries its token: kept out of the clipboard's history
-        assert ("secret clipboard", signed_in["phone"]) in doors
         place.act("cue.play", "ready")
         assert ("cue", "ready") in doors
     with _web_settings(running=False) as (place, asked, doors, (s, t)):

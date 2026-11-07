@@ -386,7 +386,7 @@ exactly what classic did.
   — his own included (2026-09-18: "I am the user; you are the
   developer"). What `paths.DEVELOPER` still decides is NOT a surface:
   the portable layout, `OWNER_DATA`, the `.dev` mutex/pipe/AppUserModelID,
-  port 8757, autostart refusing here, updates that look and never
+  autostart refusing here, updates that look and never
   install.
 - Logs: `app.log` never quotes dictated text, a learned pair, the phone
   link or a key — counts and names only (D8); the words live in
@@ -458,6 +458,39 @@ exactly what classic did.
   others run on his PC, and explorer.exe holds 40.99.44.x itself. The
   release CARRIES the web desk (its five packages in the lock, the pages
   in `app\web\dist`); whether it opens is one line, `deskweb.LAUNCHED`.
+- **The phone's door is the one way in, and a test must never open it for
+  real.** A bind on every interface raises Windows' firewall dialog on his
+  screen, so `server.PHONE_BIND` is loopback under `DESKIT_SUITE`, and
+  `server._asked` keeps a marked process off 8756 and 8766, which are his
+  running app's (`dev\user_sim.py` carries the mark too). `phone.py` asks
+  `paths.SECRETS_DIR` at every use and never builds a path at import: the
+  suite moves that folder at run time, so a constant stays the checkout's
+  real one, and one run wrote a key beside the code that way on 2026-11-06.
+  `load_cert_chain` on an encrypted key with no password callback waits on
+  the console for ever; it hung a probe. `phone._lock` is never held across
+  the network: `view()` takes it for the desk's poll on the pipe, and
+  `refresh` and `publish` used to read and write the account under it. **And
+  it, with `App._doors_lock`, is always taken BEFORE `sb._lock`**, so nothing
+  that can run with `sb._lock` held may touch either: `sb.SIGNED_OUT_HOOKS`
+  come that way from a refused refresh (`_fresh` holds it across `_refresh`,
+  `_account_gone`, the hooks), which is why `App._phone_signed_out` only
+  starts a thread. Run inline it deadlocked with the desk's poll, with
+  status() and locked() behind them and the pause key on the keyboard hook's
+  thread. `sb.ACCOUNT_HOOKS` and `sb.FORGOTTEN_HOOKS` never come with it held,
+  and `settle_left` needs the second to run where a failure can be seen.
+  `test_a_refused_refresh_beside_the_desks_poll_is_no_deadlock` drives the real
+  thing on locks that give up. Only a missing file makes a new key
+  (`phone.identity`): a read that failed must not cost every phone its pin. A
+  leaving's certificate goes in `App._phone_forgotten`, which
+  `App._settle_left` runs before the door binds at start, because the
+  worker's first turn is 30 s off. It may run twice, and `sb.write_link`
+  refuses until it is done, so nobody has seen the first run's certificate.
+  The door is built for whoever
+  downloads this, on any network: the addresses come from the adapters, the
+  port from wherever it landed, the firewall's profile from Windows at the
+  press. `test_the_addresses_come_from_the_machine_on_any_network` refuses
+  an address in the code, and a fact about one home is a test case, never a
+  constant.
 - **`net.py` defines `open()`; inside it, write files with
   `path.open(...)`.** A bare `open(path, "a")` in that module calls the
   request function and fails on "unknown purpose 'a'" — silently, in
@@ -1790,7 +1823,8 @@ otify.py puts a click-through blur
 | `weekly_review.ps1` + `.claude/commands/weekly-reports.md` | the Saturday 08:00 review of the bug list: a scheduled task runs the wrapper, the wrapper runs the local `claude.exe` on the project command, and the command reads `problems.json`, writes the summary, the plan and the archive into `problems\weekly\`, closes only what it understood, regenerates `problems.md` and posts a card through notify_hook.py. It builds only what he answered, and it asks rather than guesses — a report it cannot explain stays open with a question against it. The command is committed (it is the routine); everything it writes is gitignored (it is his). **Since 2026-09-23 (audit A13) the wrapper pulls the inbox itself, takes every key and token out of claude.exe's environment, and runs two parts under `--permission-mode dontAsk` with explicit lists**: the owner's part (his reports and answers; may edit and commit, never push, never read `problems\inbox`) and the inbox part (other people's reports; reads, and writes `problems\weekly\<date>-inbox.md`, nothing else — a stranger's report is described, never built). It never starts claude as `/weekly-reports`: the command's `allowed-tools` frontmatter widens `--allowedTools` (measured with 2.1.280), so the run reads the file instead |
 | `nightly.py` + `nightly_tests.ps1` + `install_nightly_task.ps1` | the 02:55 run of the WHOLE suite, the sixteen screen tests included — which is the only time they ever run, because `--no-screen` skips them every day he is at the desk. A Windows scheduled task fires the wrapper and the wrapper runs `nightly.py`: a card asks, and **no answer means RUN** (he rejected an idle check — a bottle falling on the keyboard in the night looks exactly like him being there and would cancel the run in silence). The trigger is outside the app on purpose, so that the night DeskIT crashed is still a night the tests run, and the monitors are never woken: measured 2026-09-08, `ImageGrab.grab()` returns a real 2560×1440 picture with the screens off. A clean night files NOTHING; a night with real failures files ONE report into `problems.json` for the Saturday routine to rule on; the machine's one known flake is named in `KNOWN_FLAKES` and files nothing on its own; a run he stopped is recorded as stopped. State lives in `problems
 ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedges nothing, and a `stop` file. **The desk's Stop tests button went on 2026-10-01** (MASTER.md §8); to end a run by hand, `python -c "import nightly; nightly.ask_stop('.')"` writes the same file. `install_nightly_task.ps1` is NOT run by anything here; it changes the machine, so he runs it himself |
-| `server.py` | the loopback HTTP door on the `[server]` port: phone dictation, translate, punctuate, notify — every POST route bearer-token gated |
+| `server.py` | two doors, one set of routes (`Routes.handle(route, body, phone)`, a table per door). `PhoneServer` is the loopback door on the `[server]` port, plain HTTP, every POST route bearer-token gated, the Claude hook's `/notify`, `tailscale serve` until the phone plan's stage 6; it runs while the switch is on OR the hook is connected, and with the switch off it answers only `/notify` and `/health` (`HOOK_ROUTES`, asked per request). `PhoneDoor` is the one a phone reaches over the network: `net.serve_tls`, a client certificate the account lists, no bearer, no `/notify`; it opens with a phone in the account, the switch on, this PC's one yes and the person's yes to the `account` consent (`main.App._doors`, `privacy.granted`: Offline mode and a lost internet leave it open), and it reopens when the key on disk is not the one it opened with. A busy port falls through 20 tries into state.json, loudly in the checkout |
+| `phone.py` | this PC's half of the home road: `identity()` (a P-256 key and a self-signed certificate through CNG, no package; the key as PKCS#8 under PBES2 in `secrets\phone_key.pem`, its passphrase in the store as `phone_key_pass`), `refresh` / `anchors` / `view` over the account's sealed `link` rows, kept in `secrets\phone_rows.json` so a door opens with the internet down, `publish` (this PC's own row: False is also "not yet", and it never carries an id or a certificate the forgotten list names; `sb` cannot see inside a row, so `main.App._phone_check_certificate` replaces a certificate the list names), `keyless` (how `main.py` gets past `sb.ACCOUNT_HOOKS` handing every hook the account key: it never holds one), `saw` (what the card says a phone did), `addresses` (off the adapters, any network), the firewall (`open_firewall`, one elevated line, called from the desk, because a windowless process's prompt only flashes in the taskbar) and the QR. It imports no transport; a test holds that |
 | `control.py` | the named pipe between the dashboard and the app: status, commands, replies; handlers must never block |
 | `overlay.py` | every window this app paints by hand: the splash, the status dot, the hint card, the correction and report box (`WordPrompt` — `fill()` puts a dictated line IN the box without sending it, which is the only way a transcript reaches one of OUR windows, `injector` refusing by design to paste into this process), `ProblemCard(WordPrompt)` — a SUBCLASS and not a mode flag, so the review pencil's one-line box is provably untouched; it overrides only `ask` and `_run` — and the review and notify cards on top of `HintCard`. `NotifyCard.pin()` / `unpin()` keep ONE pinned card (the "Screens off" card, `notify_card.PIN_ID`) at the BOTTOM of the column: what is drawn is always `notifications + [pin]`, while `visible()` / `current()` / Esc / the dismiss key / `hide()` still mean the notifications only. Nothing dismisses or opens the pin; its pill is `pressed("button", PIN_ID)` -> `on_pin_press`. main builds the column when notifications are on OR `[awake] screens_card` is, handing the engine a `NullCard` when only the second is |
 | `hint.py` | what the hint card says while the key is held: one row per bound key, read off the live Config under the same condition `main.App._bindings` registers it under, so a rebind moves the row and a feature switched off takes its row away. Pure Python, no Tk — the tests read every row |
@@ -1843,7 +1877,7 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `.github/workflows/supabase-keepalive.yml` | the weekly knock that keeps the Free project from pausing (8.9): one GET to `/rest/v1/profiles` with the publishable key from a repository VARIABLE; green and silent while the variables are not set |
 | `tests.py` | the product suite — hundreds of plain-assert test functions, `NEEDS_SCREEN`, `--no-screen`. Not the file you run |
 | `dev\tests_ops.py` | the owner's suite: the nightly run, the git card, the routine's docs — imports `tests.py`'s fixtures, runs only in this checkout |
-| `dev\stranger.py` | the stranger's first run from THIS checkout: `DESKIT_STRANGER=1` beside a `DESKIT_HOME` of its own (`paths.STRANGER`) makes the checkout's code an installed copy — neither `DEVELOPER` nor `PORTABLE`, the model absent under the home, no `.env`, no bare key name, the `DeskIT.stranger/` store (its own — the suite's children stay on `DeskIT.test/`), kernel names with `.test`, port 8758, `APP_ID` `DeskIT.Test`, the Run value under `HKCU\Software\DeskIT.test\Run` and the Claude hook in the home's `claude-settings.json`, so the owner's hook, Run value and data are never touched. Plain = a fresh person with the downloads kept; `--all` the true first run; `--keep` only forgets `setup.done`; `--stop`; `--shots D` photographs the first window on the hidden desktop. It fakes nothing else: the mic, the probe, the downloads, the account page and the hotkeys are real (the copy answers the dev copy's keys while both run). `test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy` holds the flags |
+| `dev\stranger.py` | the stranger's first run from THIS checkout: `DESKIT_STRANGER=1` beside a `DESKIT_HOME` of its own (`paths.STRANGER`) makes the checkout's code an installed copy — neither `DEVELOPER` nor `PORTABLE`, the model absent under the home, no `.env`, no bare key name, the `DeskIT.stranger/` store (its own — the suite's children stay on `DeskIT.test/`), kernel names with `.test`, `APP_ID` `DeskIT.Test`, the Run value under `HKCU\Software\DeskIT.test\Run`, the Claude hook in the home's `claude-settings.json` and `PORTS` in the home's `settings.toml` (`seed_ports`, at every start: a default port is the Dev's, and a stranger started first would take it, and the phone's old road with it), so the owner's hook, Run value, ports and data are never touched. Plain = a fresh person with the downloads kept; `--all` the true first run; `--keep` only forgets `setup.done`; `--stop`; `--shots D` photographs the first window on the hidden desktop. It fakes nothing else: the mic, the probe, the downloads, the account page and the hotkeys are real (the copy answers the dev copy's keys while both run). `test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy` holds the flags |
 | `tests_quiet.py` | how both are run: on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |
 | `.github/workflows/ci.yml` | the product suite on `windows-latest`, `tests.py --no-screen`, on every push; installs `requirements.lock` exactly as the build does (`--require-hashes --no-deps`), `av` from `packs.lock`, `requests` for the phone tests, then `pip check` |
 | `API_POOL_PLAN.md` | **"the API idea" / "רעיון ה-API"** (2026-10-08, a plan, nothing built): Claude Haiku 5.5 for every user through a Supabase function holding the key of the owner's Max 5x credit ($100 a cycle), a share per person per day and month counted in dollars and shown in dictations, every number live in a server table the master app tunes without a release, own-key as the other road. Read it whole before touching any of it; its §12 are his open decisions |

@@ -17,7 +17,7 @@ type Press = (b: Button, rowId?: string) => void;
 
 const HEBREW = /[֐-׿]/;
 // a row the press answers leaves at once; the answer redraws the pile
-const LEAVES = /^(notify\.dismiss|review\.|consent\.|keys\.later|hardware\.(seen|retry|remove)|lock\.(done|decline))/;
+const LEAVES = /^(notify\.dismiss|review\.|consent\.|keys\.later|hardware\.(seen|retry|remove)|lock\.(done|decline)|phone\.)/;
 
 export default function HomePlace({ sub }: { sub: string }) {
   void sub;                                  // Home has no parts

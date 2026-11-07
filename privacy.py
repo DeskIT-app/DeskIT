@@ -286,6 +286,16 @@ def allowed(kind: str) -> bool:
     return consent(kind) is not None
 
 
+def granted(kind: str) -> bool:
+    """Has the person said yes to ``kind``, whatever Offline mode says?
+    ``allowed`` asks whether something may leave now. This asks what the
+    person decided, for a thing that rests on the yes and sends nothing
+    itself: the phone door stays open in Offline mode, and shuts on Withdraw."""
+    if kind not in KINDS:
+        raise ValueError(f"unknown consent kind {kind!r}")
+    return bool(_gates[kind]) and consent(kind) is not None
+
+
 def require(kind: str) -> str:
     """``allowed`` or raise ``ConsentRequired`` with the reason. Returns
     the consent tag so a caller can put it on its network row."""

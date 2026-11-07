@@ -175,9 +175,19 @@ body.settings-on .sky .r2{left:300px;top:520px;width:820px;height:44px;transform
 .place-settings .cue .w{font-size:12.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .place-settings .cue:hover .w{color:var(--ink)}
 
-/* the phone's address: the link with its token as dots */
-.place-settings .url{font-size:15px;line-height:22px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.place-settings .url.none{font-size:13.5px;color:var(--ink-3)}
+/* the devices of the account, the keyboard's QR, the way out */
+.place-settings .r.dev{padding-top:9px;padding-bottom:9px;gap:14px}
+.place-settings .dg{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--ink-2);flex:none;
+  background:var(--glass-disc);box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint)}
+.place-settings .qrrow{gap:20px;padding-top:12px;padding-bottom:12px}
+.place-settings .qr{width:100px;height:100px;flex:none;border-radius:14px;background:#f4f3fa;overflow:hidden;box-shadow:0 0 0 1px var(--line-faint)}
+.place-settings .qr svg{display:block;width:100%;height:100%}
+.place-settings .qr path{fill:#0c0d18}
+.place-settings .r.more{padding-top:9px;padding-bottom:11px}
+.place-settings .r.more .link{display:inline-block;margin-top:0;font-size:12.5px}
+.place-settings .r.more .kv{display:flex;gap:16px;font-size:12.5px;line-height:18px;margin-top:6px}
+.place-settings .r.more .kv .k{width:150px;flex:none;color:var(--ink-3)}
+.place-settings .r.more .kv .v{color:var(--ink-2)}
 
 /* your cloud keys */
 .place-settings .keyrows{padding:8px 24px 14px}
