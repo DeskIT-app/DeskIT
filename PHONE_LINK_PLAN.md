@@ -1350,7 +1350,10 @@ Stages 2 and 2b follow as lanes of their own once stage 1 stands.
 - **A `link` row.** `vault.seal_json(key, obj, "device/{uid}/{device_id}")`, the template named `vault.AAD_DEVICE`. A PC:
   `{"v": 1, "kind": "pc", "cert": "<SHA-256 of the DER, hex>", "addrs": ["192.168.68.50"], "port": 8766, "proto": 1,
   "words_sync": true}`. A phone: `{"v": 1, "kind": "phone", "cert": "<the DER, base64>", "proto": 1, "backup": true}`. An
-  unknown field is ignored.
+  unknown field is ignored. A phone's `cert` can change under one `id`, and that is no forgetting: a key made once a screen
+  lock has appeared, or a software key on a phone whose Keystore will not do TLS. Its row says which one is in use, and
+  the old one stops at the moment the row lands, so a PC that has not read it refuses that phone until it does. A PC's
+  `addrs` can be empty, which is a fact of the moment, and a phone reads the row again before it believes it.
 - **The `forgotten` row.** `vault` name `forgotten`, AAD `vault/{uid}/forgotten`, `seal_json` of `{"v": [{"device":
   "<uuid>", "cert": "<SHA-256 hex>", "at": "<ISO time>"}]}`, an entry unique by the pair (`device`, `cert`). Read, merged,
   written back. A PC also keeps the union, one file per account (`secrets\forgotten-<uid>.json`), that never shrinks, and a
