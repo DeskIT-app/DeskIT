@@ -2333,9 +2333,17 @@ class App:
         engine = getattr(self, "notify", None)
         if engine is None:
             return
+        # A Hebrew Samsung's default name mixes Hebrew and Latin, and at the
+        # head of a line it turns the whole line right to left: his S26's
+        # first request read "26 Ultra asks to join your account של Yoav-ה",
+        # the S cut off (2026-11-07). Isolates do not help, because the card's
+        # painter draws them as boxes. So that name stays out of this title,
+        # one line wide, and Home's row, which has the room, says it.
+        rtl = any("\u0590" <= ch <= "\u08ff" for ch in name)
         try:
             engine.receive({"source": "account", "kind": "input",
-                            "title": f"{name} asks to join your account",
+                            "title": ("A device asks to join your account" if rtl
+                                      else f"{name} asks to join your account"),
                             "body": f"Its screen must show {request.get('code') or '?'}. "
                                     f"Open the desk: Approve or Not now on Home.",
                             "app": "DeskIT", "link": notify_mod.DESK_LINK})

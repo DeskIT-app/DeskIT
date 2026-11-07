@@ -48897,6 +48897,11 @@ def test_with_both_syncs_off_the_account_pass_makes_the_lock_and_hears_a_phone()
             tk_rows, web_rows = rows_of(lock)
             assert any("Galaxy S26 asks to join your account" in t and code in t for t in tk_rows), tk_rows
             assert any("Galaxy S26 asks to join your account" in t and code in t for t in web_rows), web_rows
+            # a name brings no marks of its own: it is drawn beside that code
+            asked_row = next(r for r in fake.tables["pairings"] if r["id"] == pid)
+            asked_row["device_name"] = "\u202eGalaxy S26\u2069"
+            assert sb.pending_pairings()[0]["name"] == "Galaxy S26"
+            asked_row["device_name"] = "Galaxy S26"
             assert any(t.startswith("Make a recovery key") for t in tk_rows), "the row did not come with the phone"
             assert any(t.startswith("Make a recovery key") for t in web_rows)
 
@@ -54774,6 +54779,11 @@ def test_the_lock_over_the_pipe_and_the_join_notification():
         note = received[0]
         assert note["source"] == "account" and note["kind"] == "input"
         assert note["title"] == "laptop asks to join your account" and "H7QM-3K2P" in note["body"]
+        # a name that would turn the line around stays out of the one-line title
+        app._pairing_asked({**request, "id": "req-10", "name": "ה-Yoav של S26 Ultra"})
+        assert received[-1]["title"] == "A device asks to join your account", received[-1]
+        assert "H7QM-3K2P" in received[-1]["body"]
+        del received[1:]
         assert note["link"] == notify_mod.DESK_LINK == "deskit://home", note
         assert notify_mod.label_for("account") == "Your account"
         assert not hasattr(cc, "pairing_card") and not hasattr(cc, "PAIRING")
