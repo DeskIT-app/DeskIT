@@ -189,8 +189,18 @@ def shot(name: str) -> Path:
     return out
 
 
+def pid() -> str:
+    """The app's process, or "" when there is none."""
+    return shell("pidof", PKG, check=False).strip()
+
+
+def crashes() -> str:
+    """What Android wrote down of an app dying since the log was last cleared."""
+    return adb("logcat", "-d", "-b", "crash", check=False)
+
+
 def logcat_clear() -> None:
-    adb("logcat", "-c", check=False)
+    adb("logcat", "-b", "all", "-c", check=False)
 
 
 def logcat(tag: str = "DeskIT") -> str:

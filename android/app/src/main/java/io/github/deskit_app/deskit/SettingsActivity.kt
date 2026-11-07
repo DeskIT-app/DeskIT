@@ -153,6 +153,8 @@ class SettingsActivity : Activity() {
     /** The device whose Forget is being asked, in its own row. */
     private var askingForget = ""
     private var askingSignOut = false
+    /** Sign out is under way, on a thread: the card says so from the press on. */
+    @Volatile private var leaving = false
 
     override fun onResume() {
         super.onResume()
@@ -230,7 +232,7 @@ class SettingsActivity : Activity() {
     private fun drawAccount() {
         val st = drawnState ?: return
         val key = when (st) {
-            is Lock.State.Ready -> "ready:$askingForget:$askingSignOut:$drawnWord:" +
+            is Lock.State.Ready -> "ready:$askingForget:$askingSignOut:$leaving:$drawnWord:" +
                 drawnDevices.map { it.id + it.seen } + drawnAsking.map { it.id + it.code }
             else -> st.javaClass.simpleName
         }
@@ -261,14 +263,15 @@ class SettingsActivity : Activity() {
         val rows = drawnDevices.map { d ->
             if (d.id == askingForget) a.forgetQuestion(d.name, { forget(d) },
                                                        { askingForget = ""; drawAccount() })
-            else a.deviceRow(rowOf(d), if (d.mine) null else ({
+            else a.deviceRow(rowOf(d), if (d.mine || leaving) null else ({
                 askingForget = d.id
                 drawAccount()
             }))
         }
         val foot: View =
-            if (askingSignOut) a.signOutQuestion(Lock.recordings(this), { signOut() },
-                                                 { askingSignOut = false; drawAccount() })
+            if (leaving) a.leavingLine()
+            else if (askingSignOut) a.signOutQuestion(Lock.recordings(this), { signOut() },
+                                                      { askingSignOut = false; drawAccount() })
             else Skin.button(this, getString(R.string.sign_out)) {
                 askingSignOut = true
                 drawAccount()
@@ -307,7 +310,15 @@ class SettingsActivity : Activity() {
 
     private fun signOut() {
         askingSignOut = false
-        act { if (!Lock.signOut(this)) throw Account.Failed(getString(R.string.sign_out_unreached)) }
+        leaving = true
+        drawAccount()
+        act {
+            try {
+                if (!Lock.signOut(this)) throw Account.Failed(getString(R.string.sign_out_unreached))
+            } finally {
+                leaving = false
+            }
+        }
     }
 
     private fun label(s: String): TextView = Skin.text(this, s, 13f, Skin.DIM).apply {

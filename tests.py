@@ -5857,6 +5857,13 @@ def test_the_keyboard_has_its_own_identity_and_no_default_pc() -> None:
     assert "android/keystore.properties" in ignore and "android/*.jks" in ignore
     manifest = (src / "AndroidManifest.xml").read_text("utf-8")
     assert 'android:allowBackup="false"' in manifest
+    # allowBackup binds the cloud and not a phone-to-phone transfer on Android 12 up
+    assert 'android:dataExtractionRules="@xml/data_extraction_rules"' in manifest
+    rules = (src / "res" / "xml" / "data_extraction_rules.xml").read_text("utf-8")
+    for road in ("cloud-backup", "device-transfer"):
+        inside = rules.split(f"<{road}>")[1].split(f"</{road}>")[0]
+        for domain in ("root", "file", "database", "sharedpref", "external"):
+            assert f'<exclude domain="{domain}" path="." />' in inside, (road, domain)
 
 
 def test_needs_translation_skips_text_with_no_hebrew() -> None:

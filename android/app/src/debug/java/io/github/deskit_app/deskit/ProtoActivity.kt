@@ -23,7 +23,8 @@ class ProtoActivity : Activity() {
         val none = {}
         val col = Skin.page(this)
         val screen = intent.getStringExtra("screen") ?: "signin"
-        val onSettings = screen in setOf("devices", "asking", "twins", "forget", "signout")
+        val onSettings = screen in setOf("devices", "asking", "twins", "forget", "signout",
+                                         "signingout")
         col.addView(Skin.header(this, getString(if (onSettings) R.string.settings
                                                 else R.string.your_account)) { })
         val phone = AccountScreens.Row("1", "Dana's phone", false, getString(R.string.this_phone))
@@ -38,6 +39,7 @@ class ProtoActivity : Activity() {
             "signin" -> col.addView(a.signIn("", none))
             "signin_gone" -> col.addView(a.signIn(Account.GONE_ELSEWHERE, none))
             "preparing" -> col.addView(a.preparing())
+            "leaving" -> col.addView(a.leaving())
             "waiting" -> col.addView(a.waiting(code, email, "", false, none, none))
             "pressed" -> col.addView(a.waiting(code, email, "", true, none, none))
             "removed" -> col.addView(a.waiting(code, email, getString(R.string.removed_word),
@@ -46,7 +48,7 @@ class ProtoActivity : Activity() {
             "declined" -> col.addView(a.declined(email, none, none))
             "ready" -> col.addView(a.ready(none))
             "changed" -> col.addView(a.changed(none, none))
-            "refused" -> col.addView(a.refused())
+            "refused" -> col.addView(a.refused(email, none))
             "devices" -> account(devices, signOut)
             "asking" -> {
                 col.addView(a.asking(AccountScreens.Ask("5", "NEW-PC", code), none, none))
@@ -60,6 +62,7 @@ class ProtoActivity : Activity() {
                                        a.forgetQuestion("Office PC", none, none),
                                        a.deviceRow(home, none)), signOut)
             "signout" -> account(devices.take(2), a.signOutQuestion(2, none, none))
+            "signingout" -> account(devices.take(2), a.leavingLine())
         }
     }
 }

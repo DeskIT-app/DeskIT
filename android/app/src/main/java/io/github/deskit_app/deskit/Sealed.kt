@@ -92,6 +92,9 @@ object Sealed {
             } catch (e: ProviderException) {
                 Log.w("DeskIT", "no unlocked-only key here: ${e.javaClass.simpleName}")
             }
+            // A phone that locked in this very moment fails the same way, and
+            // the weaker key would be its key for good.
+            if (locked(c)) throw NotNow("the phone is locked", locked = true)
         }
         return makeOne(unlockedOnly = false)
     }
@@ -151,7 +154,13 @@ object Sealed {
         }
         val f = file(c, name)
         val tmp = File(f.path + ".tmp")
-        tmp.writeBytes(out)
+        try {
+            tmp.writeBytes(out)
+        } catch (e: IOException) {
+            // A full phone, above all. What was sealed before is still there.
+            tmp.delete()
+            throw NotNow("the sealed file could not be written", false, e)
+        }
         if (!tmp.renameTo(f)) {
             tmp.delete()
             throw NotNow("the sealed file could not be written")
@@ -166,7 +175,11 @@ object Sealed {
     fun get(c: Context, name: String): ByteArray? {
         val f = file(c, name)
         if (!f.exists()) return null
-        val raw = f.readBytes()
+        val raw = try {
+            f.readBytes()
+        } catch (e: IOException) {
+            throw NotNow("the sealed file could not be read", false, e)
+        }
         if (raw.size < IV_BYTES) return null
         return try {
             val key = stored() ?: return null

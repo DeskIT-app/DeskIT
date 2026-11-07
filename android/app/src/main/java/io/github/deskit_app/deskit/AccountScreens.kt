@@ -143,6 +143,11 @@ class AccountScreens(private val c: Context) {
         addView(lampLine(Skin.TRANSCRIBING, s(R.string.preparing)))
     }
 
+    /** Signing out waits on the network: the press is answered at once. */
+    fun leavingLine(): View = lampLine(Skin.TRANSCRIBING, s(R.string.signing_out))
+
+    fun leaving(): View = Skin.card(c).apply { addView(leavingLine()) }
+
     /** Whose account this is, and the way out if it is the wrong one. */
     private fun whose(email: String, onOther: () -> Unit): View = LinearLayout(c).apply {
         orientation = LinearLayout.VERTICAL
@@ -227,10 +232,16 @@ class AccountScreens(private val c: Context) {
         addView(more(s(R.string.changed_more)))
     }
 
-    fun refused(): View = Skin.card(c).apply {
-        background = red()
-        addView(title(s(R.string.refused_title)))
-        addView(below(body(s(R.string.refused_line)), 8))
+    /** The PC's answer may never change, so this screen has a way out of its own. */
+    fun refused(email: String, onOther: () -> Unit): View = LinearLayout(c).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = match()
+        addView(Skin.card(c).apply {
+            background = red()
+            addView(title(s(R.string.refused_title)))
+            addView(below(body(s(R.string.refused_line)), 8))
+        })
+        addView(whose(email, onOther))
     }
 
     // ---- what Settings draws ----

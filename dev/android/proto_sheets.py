@@ -10,8 +10,8 @@ from pathlib import Path
 from PIL import Image
 
 MAIN = ["signin", "waiting", "pressed", "ready", "devices", "asking", "changed"]
-MORE = ["preparing", "removed", "nolock", "declined", "refused", "forget", "signout", "twins",
-        "signin_gone"]
+MORE = ["preparing", "removed", "nolock", "declined", "refused", "forget", "signout", "signingout",
+        "leaving", "twins", "signin_gone"]
 NARROW = ["signin", "waiting", "asking", "changed", "forget", "signout"]
 
 

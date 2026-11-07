@@ -97,8 +97,8 @@ class AccountActivity : Activity() {
     }
 
     private fun waits(st: Lock.State): Boolean = when (st) {
-        is Lock.State.Waiting, is Lock.State.NoLock, is Lock.State.Preparing,
-        is Lock.State.Trouble -> true
+        is Lock.State.Waiting, is Lock.State.NoLock, is Lock.State.Preparing -> true
+        is Lock.State.Trouble -> st.polls
         else -> false
     }
 
@@ -114,6 +114,7 @@ class AccountActivity : Activity() {
             is Lock.State.Changed -> "changed:${st.refused}"
             is Lock.State.NotNow -> "notnow:${st.words}"
             is Lock.State.Trouble -> "trouble:${st.words}"
+            is Lock.State.Leaving -> "leaving"
         }
         if (key == drawn) return
         if (drawn.isNotEmpty()) Skin.settle(box)
@@ -128,10 +129,11 @@ class AccountActivity : Activity() {
             is Lock.State.Declined -> screens.declined(st.email, { ask() }, { leave() })
             is Lock.State.Ready -> screens.ready { finish() }
             is Lock.State.Changed ->
-                if (st.refused) screens.refused()
+                if (st.refused) screens.refused(st.email) { leave() }
                 else screens.changed({ answer(false) }, { answer(true) })
             is Lock.State.NotNow -> screens.trouble(st.words) { look() }
             is Lock.State.Trouble -> screens.trouble(st.words) { look() }
+            is Lock.State.Leaving -> screens.leaving()
         })
     }
 
@@ -156,14 +158,19 @@ class AccountActivity : Activity() {
         look { Lock.askAgain(this) { early -> runOnUiThread { show(early) } } }
     }
 
-    /** The screen answers the press at once; the pass catches up behind it. */
+    /**
+     * The screen answers the press at once and the pass catches up behind it. The
+     * press carries the code it was made on: if that code has gone by then, the
+     * answer is the new one on screen, waiting for a press of its own.
+     */
     private fun same(st: Lock.State.Waiting) {
         show(Lock.State.Waiting(st.code, st.email, st.word, true))
-        look { Lock.sameCode(this) { early -> runOnUiThread { show(early) } } }
+        look { Lock.sameCode(this, st.code) { early -> runOnUiThread { show(early) } } }
     }
 
-    /** "Use another account": this phone holds nothing of the account yet. */
+    /** "Use another account", which is leaving: [Lock.signOut]. */
     private fun leave() {
+        show(Lock.State.Leaving)
         look {
             Lock.signOut(this)
             Lock.look(this)

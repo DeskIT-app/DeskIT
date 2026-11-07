@@ -139,6 +139,16 @@ def sealed_files() -> str:
     return drive.as_app("ls", "no_backup/sealed", check=False)
 
 
+def sdk() -> int:
+    return int(drive.shell("getprop", "ro.build.version.sdk").strip())
+
+
+def on_screen() -> str:
+    """The code being shown, or ""."""
+    n = drive.find(CODE)
+    return n["text"] if n else ""
+
+
 # ---- what a person leaves on a phone, and watching it go ----
 
 # One word each: adb's shell splits on spaces.
@@ -1022,6 +1032,479 @@ def flow_keyboard():
               drive.seek(HINT) is not None and drive.find("late-words") is None, drive.screen()[:400])
     finally:
         drive.shell("ime", "reset", check=False)
+        acct.stop()
+
+
+def flow_same_code_gone():
+    """A press belongs to the code it was made on. The server holds a poll open, he
+    presses, and it lets the poll go naming a lock of its own: what comes out of
+    that is a new request with a new code, which he has compared with nothing."""
+    acct = fresh()
+    try:
+        own = os.urandom(32)
+        sign_in(acct)
+        honest = drive.wait(CODE, 30)["text"]
+        first = acct.requests()[0]
+        check("the code on screen is the honest one", honest == acct.code_of(first))
+        held = acct.stop_at("GET", "profiles")
+        assert held.caught.wait(10), "no poll came"
+        drive.tap("^Same code$", 8)
+        drive.wait("Press Approve on your PC", 8)
+        check("the press waits behind the poll, and the screen answers it at once", True)
+        lie = vault.fingerprint(own)
+        with acct.mutex:
+            acct.tables["profiles"][0]["lock_id"] = lie
+        held.go()
+        check("a press on a code that has gone ends with the new code on screen",
+              until(lambda: on_screen() not in ("", honest), 20), drive.screen()[:300])
+        new = on_screen()
+        req = acct.requests()[-1]
+        check("the old request went", first["id"] not in [r["id"] for r in acct.requests()])
+        check("the new one is for the server's lock", new == acct.code_of(req, lie))
+        check("and waits for a press of its own", until(
+            lambda: drive.find("^Same code$") is not None, 10), drive.screen()[:300])
+        acct.approve(req["id"], key=own)
+        time.sleep(7)                            # two polls of the page
+        check("what the server wrote under its own key is not kept",
+              "account_key.bin" not in sealed_files(), sealed_files())
+        check("and no row is written", not acct.phones())
+    finally:
+        acct.stop()
+
+
+def flow_refused_way_out():
+    """It wasn't me, and the PC did as the screen said: the lock stays what it
+    is, and the screen must not be a room with no door."""
+    acct = fresh()
+    try:
+        row = join(acct)
+        acct.change_lock()
+        to_account_page()
+        drive.wait("Your account's lock changed", 20)
+        drive.tap("^It wasn't me$")
+        drive.wait("Paused on this phone", 15)
+        acct.end_every_session()                 # Sign out of every PC
+        drive.kill()
+        to_account_page_or_sign_in()
+        drive.wait("Signed out from another device", 20)
+        sign_in(acct, from_home=False)
+        drive.wait("Paused on this phone", 25)
+        check("signed in again, the refusal stands", True)
+        check("the screen says whose account this is", drive.find(acct.email) is not None)
+        drive.tap("^Use another account$", 10)
+        drive.wait("^Sign in$", 20)
+        check("and there is a way off it", True)
+        check("which leaves as any Sign out does", until(
+            lambda: "account_key.bin" not in sealed_files(), 10), sealed_files())
+        check("its session ended", until(lambda: not acct.sessions, 10))
+        sign_in(acct, from_home=False)
+        code = drive.wait(CODE, 30)["text"]
+        req = acct.requests()[-1]
+        check("the next sign-in asks to join the lock as it stands", code == acct.code_of(req))
+        check("as a new device", req["device_id"] != row["id"])
+    finally:
+        acct.stop()
+
+
+def settled(acct: fake_pc.FakeAccount, road: str) -> None:
+    """No PC said anything, so the phone must not say one did."""
+    drive.wait(CODE, 30)
+    time.sleep(7)                                # two polls: a false Not now lands here
+    check(f"{road}: no Your PC said Not now", drive.find("Your PC said Not now") is None,
+          drive.screen()[:300])
+    reqs = acct.requests()
+    check(f"{road}: one request, and its code on screen",
+          len(reqs) == 1 and on_screen() == acct.code_of(reqs[0]), f"{len(reqs)} {on_screen()}")
+
+
+def flow_lost_post():
+    """The request's row never landed, or the reply never came, or the process
+    died under it. The private half is sealed before the row exists, so each of
+    these leaves a request with no row, and that used to read as a PC's Not now."""
+    acct = fresh()
+    try:
+        cut = acct.stop_at("POST", "pairings", hold=False, cut=True, land=False)
+        sign_in(acct)
+        check("the first POST goes nowhere", cut.caught.wait(30))
+        settled(acct, "a row that never landed")
+    finally:
+        acct.stop()
+    acct = fresh()
+    try:
+        cut = acct.stop_at("POST", "pairings", hold=False, cut=True, land=True)
+        sign_in(acct)
+        check("the first POST lands and its reply is lost", cut.caught.wait(30))
+        settled(acct, "a reply that never came")
+    finally:
+        acct.stop()
+    acct = fresh()
+    try:
+        held = acct.stop_at("POST", "pairings", cut=True, land=False)
+        sign_in(acct)
+        assert held.caught.wait(30), "no POST came"
+        drive.die()
+        held.go()
+        drive.home()                             # the page comes back as it was left
+        settled(acct, "a process killed under the POST")
+    finally:
+        acct.stop()
+
+
+def flow_key_shaped_name():
+    """A phone's name is whatever its owner typed, and the server refuses one that
+    looks like a key. It must stop neither the request nor the device's row."""
+    name = "Ring Bearer S24"
+    was = drive.shell("settings", "get", "global", "device_name").strip()
+    acct = fresh()
+    try:
+        check("the server refuses this name", fake_pc.looks_like_key(name))
+        drive.shell("settings", "put", "global", "device_name", f"'{name}'")
+        check("the phone goes by it", name in drive.shell("settings", "get", "global", "device_name"))
+        row = join(acct)
+        check("it joins, and its row is there under the plain name", row["name"] == "Android phone",
+              row["name"])
+        to_settings()
+        drive.wait("HOME-PC", 20)
+        check("and nothing is said about it", drive.find("HTTP") is None, drive.screen()[:300])
+    finally:
+        if was and was != "null":
+            drive.shell("settings", "put", "global", "device_name", f"'{was}'")
+        else:
+            drive.shell("settings", "delete", "global", "device_name")
+        acct.stop()
+
+
+def flow_locked_poll():
+    """The phone locks while a poll is out and the poll fails. What it reaches for
+    next is sealed, and an exception there is on a plain thread, in a catch: the
+    whole process, keyboard included."""
+    pin = "1234"
+    acct = fresh()
+    try:
+        drive.shell("locksettings", "set-pin", pin)
+        time.sleep(1)
+        sign_in(acct)
+        code = drive.wait(CODE, 30)["text"]
+        pid = drive.pid()
+        drive.logcat_clear()
+        held = acct.stop_at("GET", "profiles", cut=True, land=False)
+        assert held.caught.wait(10), "no poll came"
+        lock_screen()
+        time.sleep(2)
+        held.go()
+        time.sleep(3)
+        check("a poll failing on a locked phone kills nothing",
+              drive.pid() == pid and "FATAL" not in drive.crashes(), drive.crashes()[:500])
+        unlock(pin)
+        check("unlocked, the same code is on screen", until(lambda: on_screen() == code, 20),
+              drive.screen()[:300])
+    finally:
+        drive.shell("locksettings", "clear", "--old", pin, check=False)
+        acct.stop()
+
+
+def flow_disk_refuses():
+    """A sealed file that will not read or will not write: a full phone, in
+    everything but the size. It is an answer, not a crash, and a token the server
+    has spent must not depend on the disk being able to take the next one."""
+    sealed = "no_backup/sealed"
+    acct = fresh()
+    try:
+        join(acct)
+        drive.die()
+        drive.as_app("mv", f"{sealed}/session.bin", f"{sealed}/session.keep")
+        drive.as_app("mkdir", f"{sealed}/session.bin")
+        drive.logcat_clear()
+        drive.home()
+        time.sleep(3)
+        check("a file that will not read kills nothing",
+              drive.pid() != "" and "FATAL" not in drive.crashes(), drive.crashes()[:500])
+        drive.die()
+        drive.as_app("rmdir", f"{sealed}/session.bin")
+        drive.as_app("mv", f"{sealed}/session.keep", f"{sealed}/session.bin")
+        to_settings()
+        drive.wait("HOME-PC", 20)
+        check("and nothing was lost", "account_key.bin" in sealed_files())
+
+        drive.as_app("mkdir", "-p", f"{sealed}/session.bin.tmp/x")
+        back()
+        acct.expire_tokens()
+        drive.logcat_clear()
+        to_settings()
+        drive.wait("HOME-PC", 20)
+        check("a refresh with the disk refusing goes on from memory",
+              "FATAL" not in drive.crashes(), drive.crashes()[:500])
+        drive.as_app("rm", "-rf", f"{sealed}/session.bin.tmp")
+        back()
+        to_settings()
+        drive.wait("HOME-PC", 20)
+        drive.die()
+        acct.expire_tokens()
+        to_settings()
+        drive.wait("HOME-PC", 25)
+        check("and the new token reaches the disk once it can", True)
+    finally:
+        acct.stop()
+
+
+def flow_sign_out_killed():
+    """Sign out takes as long as the network does and the process can die in any
+    of it. What needs no call goes before the first one. The rest is written down
+    as owed, and the next look finishes it, with the account or without it."""
+    def press(acct):
+        leave_traces(acct)
+        recording()
+        to_settings()
+        drive.wait("^Sign out$", 20)
+        drive.tap_scrolling("^Sign out$")
+        drive.wait("^Sign out of this phone\\?$", 10)
+        held = acct.stop_at("DELETE", "pairings")
+        drive.tap_scrolling("^Sign out$")
+        assert held.caught.wait(15), "Sign out never reached the account"
+        return held
+
+    def wiped() -> bool:
+        files = sealed_files().split()
+        return not [f for f in ("account_key.bin", "session.bin", "device_rows.bin") if f in files]
+
+    acct = fresh()
+    try:
+        row = join(acct)
+        held = press(acct)
+        drive.wait("Signing out", 8)
+        check("the press is answered on screen while the account is asked", True)
+        check("the button is gone", drive.find("^Sign out$") is None, drive.screen()[:300])
+        kept = on_disk()
+        check("the words go before the first call comes back", SAID not in kept, kept[:300])
+        check("and the recordings", "a.wav" not in recordings())
+        check("what the calls need is still here", "session.bin" in sealed_files())
+        drive.die()
+        held.go()
+        check("killed under the calls, the phone is not out yet", not wiped(), sealed_files())
+        drive.home()
+        check("the next look finishes the leave", until(wiped, 20), sealed_files())
+        check("the account hears of it", until(
+            lambda: acct.row_of(row["id"]) is None and not acct.sessions, 15))
+        check("the phone is on the list", any(e.get("device") == row["id"] for e in acct.forgotten()))
+        drive.wait(STEP_SIGN_IN, 20)
+        check("and Home says sign in", True)
+        check("nothing is owed any more", until(
+            lambda: 'name="leaving" value="true"' not in
+            drive.as_app("cat", "shared_prefs/lock.xml", check=False), 10))
+        no_traces(acct, "a Sign out finished by the next look")
+    finally:
+        acct.stop()
+    acct = fresh()
+    try:
+        join(acct)
+        held = press(acct)
+        drive.die()
+        acct.stop()                              # and the Wi-Fi went with it
+        to_account_page()
+        check("with no account to tell, it finishes all the same", until(wiped, 20), sealed_files())
+        drive.wait("forget this phone", 20)
+        check("and says what is left to do", True)
+    finally:
+        acct.stop()
+
+
+def flow_locked_refresh():
+    """A refresh spends the old token on the server. If the phone locks under it,
+    the new one cannot be sealed, and it must not be dropped."""
+    pin = "1234"
+    acct = fresh()
+    try:
+        drive.shell("locksettings", "set-pin", pin)
+        time.sleep(1)
+        join(acct)
+        acct.expire_tokens()
+        held = acct.stop_at("POST", "token")
+        to_settings()
+        assert held.caught.wait(20), "no refresh came"
+        lock_screen()
+        time.sleep(2)
+        held.go()
+        time.sleep(3)
+        unlock(pin)
+        drive.wait("HOME-PC", 25)
+        check("the phone locking under a refresh loses nothing", bool(acct.sessions))
+        drive.die()
+        acct.expire_tokens()
+        to_settings()
+        drive.wait("HOME-PC", 25)
+        check("and the new token was sealed once it could be", True)
+    finally:
+        drive.shell("locksettings", "clear", "--old", pin, check=False)
+        acct.stop()
+
+
+def flow_auth_door():
+    """The way back from the browser is exported, so anything on the phone can
+    knock on it with anything, and any web page can open its address."""
+    words = "Call-555-0100-now"
+    acct = fresh()
+    try:
+        to_account_page()
+        drive.wait("^Sign in$", 15)
+        pid = drive.pid()
+        drive.logcat_clear()
+        drive.shell("am", "start", "-n", f"{PKG}/.AuthActivity", "-d", "mailto:a@example.com",
+                    check=False)
+        time.sleep(2.5)
+        check("an address that is not hierarchical kills nothing",
+              drive.pid() == pid and "FATAL" not in drive.crashes(), drive.crashes()[:500])
+        for road, uri in (("another scheme", f"https://example.com/?error_description={words}"),
+                          ("another host", f"deskit://evil?error_description={words}")):
+            drive.shell("am", "start", "-n", f"{PKG}/.AuthActivity", "-d", f"'{uri}'", check=False)
+            time.sleep(2)
+            check(f"{road} is not read", drive.find(words) is None and drive.pid() == pid,
+                  drive.screen()[:300])
+        for road, uri in (("a web link's words", f"deskit://auth?error_description={words}"),
+                          ("a web link's fragment", f"deskit://auth#error_description={words}")):
+            drive.shell("am", "start", "-a", "android.intent.action.VIEW", "-d", f"'{uri}'")
+            drive.wait("Google did not sign you in", 15)
+            time.sleep(1.5)
+            check(f"{road} never reach the screen", drive.find(words) is None, drive.screen()[:300])
+    finally:
+        acct.stop()
+
+
+def flow_device_transfer():
+    """Android 12 up ignores allowBackup="false" when one phone hands itself to the
+    next. Its own LocalTransport, told it is such a transfer, shows what travels."""
+    if sdk() < 31:
+        print("      no such transfer before Android 12: allowBackup is the whole answer", flush=True)
+        return
+    stored = f"/data/data/com.android.localtransport/files/1/_full/{PKG}"
+    transports = drive.shell("bmgr", "list", "transports", check=False)
+    current = next((t.split()[1] for t in transports.splitlines() if t.strip().startswith("*")), "")
+    acct = fresh()
+    try:
+        drive.adb("root", check=False)
+        time.sleep(3)
+        drive.adb("wait-for-device")
+        drive.shell("bmgr", "enable", "true")
+        drive.shell("bmgr", "transport", "com.android.localtransport/.LocalTransport")
+        drive.shell("settings", "put", "secure", "backup_local_transport_parameters",
+                    "'is_device_transfer=true,is_encrypted=true'")
+        plant(acct)
+        drive.shell("rm", "-f", stored, check=False)
+        said = drive.shell("bmgr", "backupnow", PKG, timeout=120, check=False)
+        check("the transfer ran", "Backup finished" in said, said)
+        time.sleep(1)
+        raw = subprocess.run([str(drive.ADB), "exec-out", "cat", stored], capture_output=True,
+                             timeout=60, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+        check("what was said does not travel", SAID.encode() not in raw)
+        check("nor the PC's token", acct.door_token.encode() not in raw)
+        check("nor any file of this app", b"apps/" not in raw, raw[:200].decode("latin-1"))
+    finally:
+        drive.shell("settings", "delete", "secure", "backup_local_transport_parameters", check=False)
+        if current:
+            drive.shell("bmgr", "transport", current, check=False)
+        drive.shell("bmgr", "enable", "false", check=False)
+        drive.adb("unroot", check=False)
+        time.sleep(3)
+        drive.adb("wait-for-device")
+        acct.stop()
+
+
+def flow_list_never_shrinks():
+    """The list is the server's to serve, and a device this phone was told to
+    forget stays out whatever the list says next."""
+    office = "77777777-7777-4777-8777-777777777777"
+    acct = fresh()
+    try:
+        join(acct)
+        acct.write_pc_row(device=office, name="OFFICE-PC")
+        to_settings()
+        drive.wait("OFFICE-PC", 20)
+        back()
+        acct.write_forgotten([{"device": office, "cert": "", "at": fake_pc.now_iso()}])
+        to_settings()
+        drive.wait("HOME-PC", 20)
+        check("a device on the list is off the page", drive.find("OFFICE-PC") is None)
+        back()
+        for road, doing in (("an entry dropped from the row", lambda: acct.write_forgotten([])),
+                            ("a row that no longer opens", lambda: _garble(acct))):
+            doing()
+            seen = len(acct.calls)
+            to_settings()
+            drive.wait("HOME-PC", 20)
+            check(f"{road}: the phone read it", ("GET", "/rest/v1/vault") in acct.calls[seen:])
+            check(f"{road}: the device stays out", drive.find("OFFICE-PC") is None, drive.screen()[:300])
+            back()
+    finally:
+        acct.stop()
+
+
+def _garble(acct: fake_pc.FakeAccount) -> None:
+    cipher = vault.seal_json(bytes(32), {"v": []}, "vault/x/forgotten")
+    with acct.mutex:
+        next(r for r in acct.tables["vault"] if r["name"] == "forgotten")["cipher"] = cipher
+
+
+def flow_client_key_locked():
+    """A locked phone fails an unlocked-only key exactly as a phone that has none
+    does, and the key made instead is the key for good. So none is made."""
+    pin = "1234"
+    acct = fresh()
+    try:
+        drive.shell("locksettings", "set-pin", pin)
+        time.sleep(1)
+        sign_in(acct)
+        drive.wait(CODE, 30)
+        req = acct.requests()[0]
+        same_code()
+        held = acct.stop_at("DELETE", "pairings")
+        acct.approve(req["id"])
+        assert held.caught.wait(15), "the answer was never taken"
+        pid = drive.pid()
+        drive.logcat_clear()
+        lock_screen()
+        time.sleep(2)
+        held.go()
+        time.sleep(3)
+        check("the phone locking as its client key is due kills nothing",
+              drive.pid() == pid and "FATAL" not in drive.crashes(), drive.crashes()[:500])
+        check("and writes no row without a key", not acct.phones())
+        unlock(pin)
+        check("unlocked, the join finishes", until(lambda: bool(acct.phones()), 25))
+        lock_screen()
+        time.sleep(2)
+        now = probe()
+        print("      locked:  ", now, flush=True)
+        if sdk() >= 28:
+            check("the key that was made is the unlocked-only one", "signs=refused" in now, now)
+        unlock(pin)
+    finally:
+        drive.shell("locksettings", "clear", "--old", pin, check=False)
+        acct.stop()
+
+
+def flow_answer_offline():
+    """He answers the lock's question with no network. The answer has not been
+    taken, and the screen must say so and not simply ask again."""
+    acct = fresh()
+    try:
+        join(acct)
+        acct.change_lock()
+        to_account_page()
+        drive.wait("Your account's lock changed", 20)
+        acct.stop()
+        drive.tap("^It was me$")
+        drive.wait("Can't reach your account", 15)
+        check("an answer that could not be taken says so", True)
+        time.sleep(4)
+        check("and goes on saying so", drive.find("Can't reach your account") is not None
+              and drive.find("^Try again$") is not None, drive.screen()[:300])
+        check("nothing moved", "account_key.bin" in sealed_files())
+        acct.start()
+        drive.tap("^Try again$")
+        drive.wait("Your account's lock changed", 15)
+        drive.tap("^It was me$")
+        drive.wait(CODE, 30)
+        check("with the account back, the answer counts", "account_key_aside.bin" in sealed_files())
+    finally:
         acct.stop()
 
 

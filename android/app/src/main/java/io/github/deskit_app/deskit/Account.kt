@@ -28,7 +28,9 @@ import java.util.Base64
  *
  * The session is sealed by the Keystore ([Sealed]), read once and kept in
  * memory, and refreshed the way sb._fresh does: under one lock, so that two
- * threads cannot spend one refresh token, ten seconds before its hour is up.
+ * threads cannot spend one refresh token, ten seconds before its hour is up. A
+ * refresh spends the old token on the server, so the new one goes into memory
+ * before anything else, and to disk as soon as the phone can seal it ([seal]).
  * A 401 is one refresh and one retry; a second 401, or a refresh the server
  * refuses, is [gone]: the session goes and so do the person's words ([Traces]).
  * The key and the recordings stay, so the same account back on this phone needs
@@ -120,6 +122,9 @@ object Account {
 
     @Volatile private var cached: Session? = null
 
+    /** The session the server last gave, while it could not be sealed. */
+    @Volatile private var unsealed: String? = null
+
     private fun parse(text: String): Session? = try {
         val o = JSONObject(text)
         val u = o.getJSONObject("user")
@@ -133,7 +138,10 @@ object Account {
     /** The session held here, or null. [Sealed.NotNow] while the phone is locked. */
     @Synchronized
     fun session(c: Context): Session? {
-        cached?.let { return it }
+        cached?.let {
+            seal(c)
+            return it
+        }
         val text = Sealed.getText(c, SESSION)
         if (text == null) {
             lost(c)
@@ -177,6 +185,7 @@ object Account {
      * and a phone whose clock is off (they are, and not only by minutes)
      * would refresh on every call, or never.
      */
+    @Synchronized
     private fun store(c: Context, data: JSONObject): Session {
         val now = System.currentTimeMillis() / 1000
         val expires = data.optLong("expires_in", 0).takeIf { it > 0 }?.let { now + it }
@@ -193,15 +202,35 @@ object Account {
                 .put("id", user.optString("id", ""))
                 .put("email", user.optString("email", ""))
                 .put("name", name))
-        Sealed.putText(c, SESSION, keep.toString())
-        val s = parse(keep.toString()) ?: throw Failed("the server's answer was not a session")
-        sp(c).edit().putBoolean(KEY_HELD, true).putString(KEY_UID, s.uid).commit()
+        val text = keep.toString()
+        val s = parse(text) ?: throw Failed("the server's answer was not a session")
         cached = s
+        unsealed = text
+        sp(c).edit().putString(KEY_UID, s.uid).commit()
+        seal(c)
         return s
+    }
+
+    /**
+     * The session on disk. A phone that locked under a refresh cannot seal, and
+     * the sealed copy then holds a token the server has spent: a process that
+     * died now would come back signed out. So it stays owed, the session goes on
+     * working from memory, and every look at it tries again.
+     */
+    private fun seal(c: Context) {
+        val text = unsealed ?: return
+        try {
+            Sealed.putText(c, SESSION, text)
+        } catch (e: Sealed.NotNow) {
+            return
+        }
+        unsealed = null
+        sp(c).edit().putBoolean(KEY_HELD, true).commit()
     }
 
     @Synchronized
     private fun clear(c: Context) {
+        unsealed = null
         Sealed.delete(c, SESSION)
         sp(c).edit().remove(KEY_HELD).commit()
         cached = null
@@ -230,9 +259,13 @@ object Account {
      * other end of a session. First, so that a kill here loses nothing that matters.
      */
     private fun gone(c: Context, words: String) {
-        sp(c).edit().putString(KEY_WORDS, words).commit()
+        sayGone(c, words)
         Traces.wipe(c)
         clear(c)
+    }
+
+    fun sayGone(c: Context, words: String) {
+        sp(c).edit().putString(KEY_WORDS, words).commit()
     }
 
     // ---- the wire ----
@@ -369,19 +402,13 @@ object Account {
     /**
      * The browser came back: the exchange, on a thread. Only a sign-in this
      * phone started can finish, since a code without our verifier is refused
-     * by the server, and without a verifier it never leaves the phone.
+     * by the server, and without a verifier it never leaves the phone. Any web
+     * page can open this address, with anything in it: nothing it says goes on
+     * screen, so what a person reads here is always one of our own sentences.
      */
     fun finishSignIn(c: Context, back: Uri): Session {
         val code = back.getQueryParameter("code").orEmpty()
-        if (code.isEmpty()) {
-            val fragment = Uri.parse("deskit://auth?" + back.encodedFragment.orEmpty())
-            val why = back.getQueryParameter("error_description")
-                ?: fragment.getQueryParameter("error_description")
-                ?: back.getQueryParameter("error")
-                ?: fragment.getQueryParameter("error")
-            throw Failed(if (why.isNullOrEmpty()) "The browser came back with nothing."
-                         else "Google did not sign you in: ${why.take(160)}")
-        }
+        if (code.isEmpty()) throw Failed("Google did not sign you in. Try again.")
         val verifier = Sealed.getText(c, PKCE)
             ?: throw Failed("That sign-in has ended. Try again.")
         val r = call(c, "POST", "/auth/v1/token?grant_type=pkce",
@@ -389,7 +416,8 @@ object Account {
                      null)
         val data = r.obj()
         if (r.status != 200 || data == null || data.optString("access_token", "").isEmpty()) {
-            throw Failed("The sign-in code was refused (${r.said()}).")
+            Log.w("DeskIT", "account: the sign-in code was refused (${r.status})")
+            throw Failed("That sign-in didn't work. Try again.")
         }
         Sealed.delete(c, PKCE)
         val was = sp(c).getString(KEY_UID, "").orEmpty()
@@ -403,11 +431,14 @@ object Account {
         return s
     }
 
-    /** This session and nothing else: scope=local, then forgotten here. */
-    fun endSession(c: Context) {
+    /**
+     * This session and nothing else: scope=local, then forgotten here. [tell] is
+     * false when the account has just failed to answer: it dies at its hour.
+     */
+    fun endSession(c: Context, tell: Boolean = true) {
         try {
             val s = session(c)
-            if (s != null) call(c, "POST", "/auth/v1/logout?scope=local", "{}", s.access)
+            if (s != null && tell) call(c, "POST", "/auth/v1/logout?scope=local", "{}", s.access)
         } catch (e: Failed) {
             // it dies at its hour; it is forgotten here either way
         } catch (e: Sealed.NotNow) {

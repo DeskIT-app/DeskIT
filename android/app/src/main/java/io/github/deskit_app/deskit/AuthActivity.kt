@@ -12,6 +12,11 @@ import kotlin.concurrent.thread
  * is exchanged, then the way back. Exported, because a browser has to reach
  * it, so it carries no authority of its own: Account.finishSignIn needs the
  * verifier this phone sealed when it opened the browser.
+ *
+ * Exported also means anything on the phone can start it with anything, past
+ * the manifest's filter on Android 12 and down. Only that one address is read:
+ * a URI that is not hierarchical throws on the thread below, and the keyboard
+ * dies with the process.
  */
 class AuthActivity : Activity() {
 
@@ -31,7 +36,11 @@ class AuthActivity : Activity() {
     }
 
     private fun back(uri: Uri?) {
-        if (uri == null) { finish(); return }
+        val home = Uri.parse(Account.REDIRECT)
+        if (uri == null || uri.scheme != home.scheme || uri.host != home.host) {
+            finish()
+            return
+        }
         thread {
             val word = try {
                 Account.finishSignIn(this, uri)

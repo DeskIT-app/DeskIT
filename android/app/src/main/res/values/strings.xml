@@ -145,6 +145,7 @@
     <!-- The account. -->
     <string name="your_account">Your account</string>
     <string name="signing_in">Signing in…</string>
+    <string name="signing_out">Signing out…</string>
     <string name="phone_locked">Unlock the phone and try again.</string>
     <string name="keystore_busy">This phone\'s secure storage isn\'t answering. Restart the phone and try again.</string>
     <string name="sign_in_title">Sign in</string>

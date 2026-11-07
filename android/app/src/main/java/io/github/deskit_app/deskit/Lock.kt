@@ -33,7 +33,9 @@ import java.util.UUID
  * can write, and a key that matches the lock it named passes every check a phone
  * can make, with no PC anywhere. So [sameCode] is the gate: until the person has
  * pressed Same code on the screen that shows the code, what arrived in `handed`
- * is neither opened nor kept. The press may come before or after the Approve.
+ * is neither opened nor kept. The press may come before or after the Approve,
+ * and it answers the code on the screen it was made on and no other: a request
+ * made afresh meanwhile has another code and is not answered by it.
  *
  * **It survives the process.** A PC keeps the join's private half in memory; a
  * phone is killed while its owner walks to the PC. The private half, the request
@@ -52,7 +54,8 @@ import java.util.UUID
  * sign-in is a new device. So does finding itself on the `forgotten` list. The
  * session merely ending keeps the device, so the same account back on this phone
  * needs no second Approve. On every one of these roads the person's words go
- * ([Traces]).
+ * ([Traces]). Telling the account can take minutes and the process can die in any
+ * of them, so a press on Sign out is written down first and [look] finishes it.
  *
  * Every state is the answer to [look], which blocks: call it from a thread. A
  * key goes into a variable here and in [Crypt], and is zeroed after use.
@@ -75,6 +78,7 @@ object Lock {
     private const val PREF_DECLINED = "declined"
     private const val PREF_REMOVED = "removed"
     private const val PREF_FORGOTTEN = "forgotten"
+    private const val PREF_LEAVING = "leaving"
 
     private const val HAVE = "have"
     private const val CHANGED = "changed"
@@ -121,8 +125,15 @@ object Lock {
         /** Locked, or Keystore said no for now. Nothing is lost. */
         class NotNow(val words: String) : State()
 
-        /** No answer from the account, and nothing held to carry on with. */
-        class Trouble(val email: String, val words: String) : State()
+        /**
+         * No answer from the account, and nothing held to carry on with.
+         * [polls]: the page looks again by itself. Not after a person's answer:
+         * the question coming back would read as if it had been taken.
+         */
+        class Trouble(val email: String, val words: String, val polls: Boolean = true) : State()
+
+        /** Sign out is under way: what a screen draws at the press. [look] never says this. */
+        object Leaving : State()
     }
 
     /** One device of the account, its row opened. */
@@ -285,13 +296,17 @@ object Lock {
 
     private class Request(val uid: String, val id: String, val code: String, val lockId: String,
                           val expires: Long, val private: ByteArray, val point: ByteArray,
-                          val pressed: Boolean = false)
+                          val pressed: Boolean = false, val posted: Boolean = false) {
+        fun with(pressed: Boolean = this.pressed, posted: Boolean = this.posted) =
+            Request(uid, id, code, lockId, expires, private, point, pressed, posted)
+    }
 
     private fun saveRequest(c: Context, r: Request) {
         Sealed.putText(c, REQUEST, JSONObject()
             .put("uid", r.uid).put("id", r.id).put("code", r.code).put("lock_id", r.lockId)
             .put("expires", r.expires).put("private", Crypt.b64(r.private))
-            .put("point", Crypt.b64(r.point)).put("pressed", r.pressed).toString())
+            .put("point", Crypt.b64(r.point)).put("pressed", r.pressed)
+            .put("posted", r.posted).toString())
     }
 
     private fun loadRequest(c: Context): Request? {
@@ -302,7 +317,7 @@ object Lock {
             Request(o.getString("uid"), o.getString("id"), o.getString("code"),
                     o.getString("lock_id"), o.getLong("expires"),
                     decode.decode(o.getString("private")), decode.decode(o.getString("point")),
-                    o.optBoolean("pressed", false))
+                    o.optBoolean("pressed", false), o.optBoolean("posted", false))
         } catch (e: JSONException) {
             null
         } catch (e: IllegalArgumentException) {
@@ -317,6 +332,14 @@ object Lock {
     }
 
     private fun refused(r: Account.Reply): Nothing = throw Account.Failed(r.said())
+
+    /**
+     * The server refuses a name it takes for a key (`looks_like_key`: "Ring
+     * Bearer S24" trips it). A phone's name is whatever its owner typed, and that
+     * must stop nothing: the row goes under the plain name.
+     */
+    private fun refusedTheName(r: Account.Reply): Boolean =
+        r.status == 400 && r.obj()?.optString("code") == "23514"
 
     private fun postRequest(c: Context, uid: String, id: String, device: String, name: String,
                             code: String, point: ByteArray): Account.Reply =
@@ -337,21 +360,32 @@ object Lock {
         val point = Crypt.pointOf(pair.public as ECPublicKey)
         val code = Crypt.pairingCode(s.uid, id, point, remote)
         // Sealed before the row exists: a kill between the two leaves a request
-        // that a sweep clears, and never a row whose private half is gone.
-        saveRequest(c, Request(s.uid, id, code, remote, nowS() + PAIRING_TTL_S,
-                               pair.private.encoded, point))
+        // that says it never reached the server, and never a row whose private
+        // half is gone.
+        val req = Request(s.uid, id, code, remote, nowS() + PAIRING_TTL_S,
+                          pair.private.encoded, point)
+        saveRequest(c, req)
         var name = deviceName(c)
-        var r = postRequest(c, s.uid, id, device, name, code, point)
-        if (r.status == 400 && r.obj()?.optString("code") == "23514" && name != GENERIC_NAME) {
-            // The server refuses a name it takes for a key. A phone's name is
-            // whatever its owner typed; this one must not stop the join.
-            name = GENERIC_NAME
-            r = postRequest(c, s.uid, id, device, name, code, point)
+        val r = try {
+            val first = postRequest(c, s.uid, id, device, name, code, point)
+            if (refusedTheName(first) && name != GENERIC_NAME) {
+                name = GENERIC_NAME
+                postRequest(c, s.uid, id, device, name, code, point)
+            } else first
+        } catch (e: Account.Failed) {
+            // Kept, a request with no row reads as Not now at the next look. If
+            // the row did land and only the reply was lost, the next sweep has it.
+            dropRequest(c)
+            throw e
+        } catch (e: Sealed.NotNow) {
+            dropRequest(c)
+            throw e
         }
         if (!r.ok) {
             dropRequest(c)
             refused(r)
         }
+        saveRequest(c, req.with(posted = true))
         Account.broadcast(c, "pairing", JSONObject().put("device", device).put("id", id)
             .put("code", code).put("name", name))
         return State.Waiting(code, s.email, removedWord(c), false)
@@ -386,7 +420,7 @@ object Lock {
             val rows = r.rows()
             if (rows.length() == 0) {
                 dropRequest(c)
-                if (nowS() < req.expires) {
+                if (req.posted && nowS() < req.expires) {
                     // Not now on the PC, or a row swept. Asked again by itself,
                     // the 3 s poll would put it straight back on his Home.
                     sp(c).edit().putBoolean(PREF_DECLINED, true).commit()
@@ -527,7 +561,12 @@ object Lock {
             return State.Changed(s.email, server, p.getString(PREF_MINE, "").orEmpty(),
                                  isRefused(c, server))
         }
-        val req = loadRequest(c)?.takeIf { it.uid == s.uid }
+        // In a catch, on a thread: what escapes here takes the keyboard with it.
+        val req = try {
+            loadRequest(c)?.takeIf { it.uid == s.uid }
+        } catch (e: Sealed.NotNow) {
+            return State.NotNow(Sealed.words(c, e))
+        }
         if (req != null && nowS() < req.expires) {
             return State.Waiting(req.code, s.email, word, req.pressed)
         }
@@ -537,10 +576,16 @@ object Lock {
     /**
      * Where this phone stands, from the account: one or a few requests, and on
      * a new request a code, so a second or more. Blocking. [progress] hears a
-     * state worth showing before the answer is ready.
+     * state worth showing before the answer is ready. A Sign out the process
+     * died under is finished here first, because that is what was asked for.
      */
     @Synchronized
     fun look(c: Context, progress: (State) -> Unit = {}): State {
+        if (sp(c).getBoolean(PREF_LEAVING, false)) {
+            Log.w("DeskIT", "lock: a sign out was cut short: finishing it")
+            if (!signOut(c)) Account.sayGone(c, c.getString(R.string.sign_out_unreached))
+            return State.SignedOut(Account.goneWords(c))
+        }
         val s = try {
             Account.session(c)
         } catch (e: Sealed.NotNow) {
@@ -557,20 +602,24 @@ object Lock {
         }
     }
 
-    fun holdsKey(c: Context): Boolean = sp(c).getString(PREF_STATE, "") == HAVE
+    fun holdsKey(c: Context): Boolean {
+        val p = sp(c)
+        return p.getString(PREF_STATE, "") == HAVE && !p.getBoolean(PREF_LEAVING, false)
+    }
 
     /**
      * Same code: the person compared the two screens. Kept with the request, so
      * a kill right after it loses nothing, and then the pass takes what is there.
+     * [code] is the one on the screen that was pressed, as in sb.same_code. A
+     * press can wait behind a poll, and a poll can replace the request: the lock
+     * moved, or its fifteen minutes ran out. That request has another code, which
+     * he has compared with nothing, and the look below puts it on screen unpressed.
      */
     @Synchronized
-    fun sameCode(c: Context, progress: (State) -> Unit = {}): State {
+    fun sameCode(c: Context, code: String, progress: (State) -> Unit = {}): State {
         try {
             val req = loadRequest(c)
-            if (req != null) {
-                saveRequest(c, Request(req.uid, req.id, req.code, req.lockId, req.expires,
-                                       req.private, req.point, pressed = true))
-            }
+            if (req != null && req.code == code) saveRequest(c, req.with(pressed = true))
         } catch (e: Sealed.NotNow) {
             return State.NotNow(Sealed.words(c, e))
         }
@@ -618,7 +667,10 @@ object Lock {
         } catch (e: Sealed.NotNow) {
             State.NotNow(Sealed.words(c, e))
         } catch (e: Account.Failed) {
-            unreached(c, s, e)
+            // Not the question again: that reads as if the answer had been taken.
+            State.Trouble(s.email, e.message.orEmpty(), polls = false)
+        } catch (e: JSONException) {
+            State.Trouble(s.email, UNREADABLE, polls = false)
         }
     }
 
@@ -650,8 +702,11 @@ object Lock {
             .put("last_seen", Instant.now().toString())
             .put("link", Crypt.sealText(key, link.toString(), Crypt.aadDevice(s.uid, device)))
         if (sid.isNotEmpty()) row.put("session_id", sid)
-        val r = Account.rest(c, "POST", "devices?on_conflict=id", row,
-                             "resolution=merge-duplicates,return=minimal")
+        val prefer = "resolution=merge-duplicates,return=minimal"
+        var r = Account.rest(c, "POST", "devices?on_conflict=id", row, prefer)
+        if (refusedTheName(r) && name != GENERIC_NAME) {
+            r = Account.rest(c, "POST", "devices?on_conflict=id", row.put("name", GENERIC_NAME), prefer)
+        }
         if (!r.ok) throw Account.Failed(r.said())
         p.edit().putString(PREF_ROW_SIG, sig).putLong(PREF_ROW_AT, nowS()).commit()
         changedDevices(c, device)
@@ -664,6 +719,11 @@ object Lock {
 
     // ---- the forgotten ----
 
+    /**
+     * The account's list, and what stays out on this phone. That only ever grows:
+     * the row is the server's to serve, so an entry missing from it, or a row that
+     * no longer opens, says nothing about a device this phone was told to forget.
+     */
     private fun readForgotten(c: Context, uid: String, key: ByteArray): JSONArray {
         val r = Account.rest(c, "GET", "vault?select=cipher&name=eq.$FORGOTTEN")
         if (!r.ok) refused(r)
@@ -683,7 +743,7 @@ object Lock {
             if (o.text("device").isNotEmpty()) names.add(o.text("device"))
             if (o.text("cert").isNotEmpty()) names.add(o.text("cert"))
         }
-        sp(c).edit().putStringSet(PREF_FORGOTTEN, names).commit()
+        sp(c).edit().putStringSet(PREF_FORGOTTEN, names + forgotten(c)).commit()
         return list
     }
 
@@ -975,7 +1035,8 @@ object Lock {
         } catch (e: Sealed.NotNow) {
             Log.w("DeskIT", "lock: the client key stays until the next device's: ${e.message}")
         }
-        sp(c).edit().clear().commit()
+        val leaving = sp(c).getBoolean(PREF_LEAVING, false)
+        sp(c).edit().clear().putBoolean(PREF_LEAVING, leaving).commit()
         codes.clear()
         shown = emptyList()
     }
@@ -986,17 +1047,26 @@ object Lock {
      * right to say anything after it. Then everything here is wiped, whatever
      * the server answered: a phone being sold must not keep the key because
      * the Wi-Fi was off. False when the account could not be told.
+     *
+     * What the calls need stays until they are done: the session, the key, who
+     * this device is. The rest goes before the first of them. Each step here is
+     * safe to run twice, because a process that dies in the middle leaves the
+     * mark, and [look] runs the whole of this again.
      */
     @Synchronized
     fun signOut(c: Context): Boolean {
-        // Before anything else: with the Wi-Fi off, the calls below can take minutes.
+        sp(c).edit().putBoolean(PREF_LEAVING, true).commit()
         Traces.wipe(c)
+        dropRecordings(c)
         var told = true
+        var reached = true
         fun step(work: () -> Unit) {
+            if (!reached) return        // no answer once: the next call waits as long
             try {
                 work()
             } catch (e: Account.Failed) {
                 told = false
+                reached = !e.offline
             } catch (e: Sealed.NotNow) {
                 told = false
             } catch (e: JSONException) {
@@ -1007,6 +1077,7 @@ object Lock {
             Account.fresh(c)
         } catch (e: Account.Failed) {
             told = false
+            reached = !e.offline
             null
         } catch (e: Sealed.NotNow) {
             told = false
@@ -1032,9 +1103,10 @@ object Lock {
                 if (!r.ok) told = false
             }
         }
-        Account.endSession(c)
+        Account.endSession(c, tell = reached)
         wipe(c)
         Sealed.dropKey()
+        sp(c).edit().remove(PREF_LEAVING).commit()
         return told
     }
 }

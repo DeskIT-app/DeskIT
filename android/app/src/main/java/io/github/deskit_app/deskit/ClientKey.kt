@@ -38,7 +38,9 @@ import javax.security.auth.x500.X500Principal
  * setUnlockedDeviceRequired where the phone has it (API 28+, and a screen lock:
  * see Sealed.lockable): a stolen, locked phone cannot use the key. A Keystore
  * that will not make such a key, or makes it and will not use it, gets one
- * without the condition. A device with no Keystore at all has no road here:
+ * without the condition, and that is for good, so it is never made on a phone
+ * that is locked: a locked phone fails exactly that way, and it is told to come
+ * back ([Sealed.NotNow]). A device with no Keystore at all has no road here:
  * the plan's answer, a software key sealed by [Sealed], is for the day a real
  * phone needs it.
  */
@@ -77,6 +79,7 @@ object ClientKey {
 
     /** The key and whether a locked phone cannot use it. See Sealed.lockable. */
     private fun made(c: Context, alias: String): Pair<KeyPair, Boolean> {
+        if (Sealed.locked(c)) throw Sealed.NotNow("the phone is locked", locked = true)
         if (Sealed.lockable(c)) {
             try {
                 val strict = make(alias, unlockedOnly = true)
@@ -87,6 +90,8 @@ object ClientKey {
                 Log.w("DeskIT", "no unlocked-only client key here: ${e.javaClass.simpleName}")
             }
             keystore().deleteEntry(alias)
+            // It may have locked since the look above.
+            if (Sealed.locked(c)) throw Sealed.NotNow("the phone is locked", locked = true)
         }
         return Pair(make(alias, unlockedOnly = false), false)
     }

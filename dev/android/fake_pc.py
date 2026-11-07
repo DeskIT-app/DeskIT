@@ -37,6 +37,7 @@ os.environ.setdefault("DESKIT_SUITE", "1")      # the test slots, never a real o
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 if os.environ.get("DESKIT_VAULT_FROM"):          # another lane's vault.py, before it is merged
     sys.path.insert(0, os.environ["DESKIT_VAULT_FROM"])
+import redact                                    # noqa: E402
 import vault                                     # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -85,6 +86,28 @@ def pairing_code(uid: str, pairing_id: str, public: str, lock_id: str) -> str:
     return flat[:5] + "-" + flat[5:]
 
 
+def looks_like_key(text: str) -> bool:
+    """0001's looks_like_key(): its patterns are redact.PATTERNS verbatim, and a
+    product test holds them to each other."""
+    return any(pattern.search(text) for _, pattern in redact.PATTERNS)
+
+
+class Stop:
+    """One request caught at the server's door. [caught] when it arrives; with
+    [hold] it waits there for go(), as a server holding a poll open does.
+    [cut]: the socket goes instead of a reply, and [land] says whether the
+    request was carried out first, a reply lost, or not at all."""
+
+    def __init__(self, method: str, table: str, hold: bool, cut: bool, land: bool):
+        self.method, self.table = method, table
+        self.hold, self.cut, self.land = hold, cut, land
+        self.caught = threading.Event()
+        self.released = threading.Event()
+
+    def go(self):
+        self.released.set()
+
+
 class Refuse(Exception):
     """What the database would say: a status and a body."""
 
@@ -99,12 +122,16 @@ class _Door(http.server.BaseHTTPRequestHandler):
     # request, and that is the case the app has to get through.
     protocol_version = "HTTP/1.1"
     timeout = 2.0
+    #: a Stop said this request's reply never arrives
+    cut = False
 
     def log_message(self, *a):
         pass
 
     def _send(self, status: int, obj=None, *, html: str | None = None,
               location: str | None = None):
+        if self.cut:
+            return
         body = b"" if obj is None and html is None else \
             (html.encode("utf-8") if html is not None else json.dumps(obj).encode("utf-8"))
         self.send_response(status)
@@ -134,6 +161,9 @@ class _Door(http.server.BaseHTTPRequestHandler):
         except Refuse as e:
             log.info("refused %s %s: %s", method, self.path.split("?")[0], e.message)
             self._send(e.status, {"code": e.code, "message": e.message})
+        if self.cut:
+            self.close_connection = True
+            self.connection.close()
 
     def do_GET(self):
         self._go("GET")
@@ -172,6 +202,7 @@ class FakeAccount:
         #: how the next refresh is answered, for the test that wants a refusal
         self.refuse_refresh = False
         self.calls: list[tuple[str, str]] = []
+        self.stops: list[Stop] = []
         self.broadcasts: list[dict] = []
         self.tables: dict[str, list[dict]] = {t: [] for t in COLUMNS}
         # the old road beside the account: a pasted address and token
@@ -205,9 +236,33 @@ class FakeAccount:
 
     def stop(self):
         """Nobody home: every request is refused the way a dead server's would be."""
+        for caught in self.stops:
+            caught.go()
         if self._server is not None:
             self._server.account = None
             self._server = None
+
+    def stop_at(self, method: str, table: str, *, hold: bool = True, cut: bool = False,
+                land: bool = True) -> Stop:
+        """The next such request stops at the door: Stop says what happens to it."""
+        stop = Stop(method, table, hold, cut, land)
+        with self.mutex:
+            self.stops.append(stop)
+        return stop
+
+    def _stopped(self, h, method: str, path: str) -> bool:
+        """True when the request ends here."""
+        with self.mutex:
+            stop = next((s for s in self.stops if s.method == method and not s.caught.is_set()
+                         and path.endswith("/" + s.table)), None)
+            if stop is not None:
+                stop.caught.set()
+        if stop is None:
+            return False
+        if stop.hold:
+            stop.released.wait(18)              # the phone gives up at 20
+        h.cut = stop.cut
+        return stop.cut and not stop.land
 
     # ---- the PC ----
 
@@ -485,6 +540,8 @@ class FakeAccount:
                 refuse("device_name is past 40 characters")
             if not CODE_RE.match(str(row.get("code"))):
                 refuse("code is not eight characters of the alphabet")
+            if looks_like_key(str(row.get("device_name") or "")):
+                refuse("device_name looks like a key")
             if not vault.is_sealed(str(row.get("applicant"))):
                 refuse("applicant is not sealed")
             if row.get("handed") is not None and not vault.is_sealed(str(row["handed"])):
@@ -498,6 +555,9 @@ class FakeAccount:
                 refuse("platform is past 32 characters")
             if len(str(row.get("app_version") or "")) > 32:
                 refuse("app_version is past 32 characters")
+            for column in ("name", "platform", "app_version"):
+                if looks_like_key(str(row.get(column) or "")):
+                    refuse(f"{column} looks like a key")
             if str(row.get("tier") or "") not in ("", "gpu", "gpu_small", "cpu", "cloud"):
                 refuse("tier")
             if row.get("link") is not None and not vault.is_sealed(str(row["link"])):
@@ -601,6 +661,8 @@ class FakeAccount:
         with self.mutex:
             self.calls.append((method, path))
         log.info("%s %s", method, path)
+        if self._stopped(h, method, path):
+            return
         if path in ("/health", "/api/version", "/review"):
             self._pc_door(h, path)
             return
