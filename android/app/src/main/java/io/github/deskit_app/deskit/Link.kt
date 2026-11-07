@@ -399,11 +399,15 @@ object Link {
     @Volatile private var nobodyUntil = 0L
 
     /**
-     * Every road there is, best first, until [stop] says that is enough. A door
-     * that answered is handed over, and a PC that fails [stop] is left out of
-     * what comes next. [Sealed.NotNow] only when there was no other road to take.
+     * Every road there is, best first, until [stop] says that is enough: true when
+     * it is, false when the PC answered and cannot, null when nothing answered. A
+     * PC that answered and cannot (its model off, say) is left out of what comes
+     * next at once: sent the same recording again, it would only say no again. One
+     * that did not answer is left out too, unless it was the door from a moment
+     * ago, which is knocked on before it is given up. [Sealed.NotNow] only when
+     * there was no other road to take.
      */
-    private inline fun roads(c: Context, stop: (Road) -> Boolean) {
+    private inline fun roads(c: Context, stop: (Road) -> Boolean?) {
         val wipes = Traces.wipes
         val pasted = pasted(c)
         var sealed: Sealed.NotNow? = null
@@ -418,11 +422,12 @@ object Link {
                         if (skip.isEmpty()) nobodyUntil = SystemClock.elapsedRealtime() + NOBODY_MS
                         break
                     }
-                    if (stop(door)) {
+                    val said = stop(door)
+                    if (said == true) {
                         heard(door)
                         return
                     }
-                    if (door.fresh) {
+                    if (said == null && door.fresh) {
                         answered = null             // knock first, the next time round
                         continue
                     }
@@ -450,7 +455,7 @@ object Link {
         var got: String? = null
         roads(c) { road ->
             got = Transcriber.health(road)
-            got != null
+            if (got != null) true else null
         }
         return got
     }
@@ -461,7 +466,7 @@ object Link {
         try {
             roads(c) { road ->
                 got = Transcriber.versions(road)
-                got != null
+                if (got != null) true else null
             }
         } catch (e: Sealed.NotNow) {
             return null
@@ -486,7 +491,9 @@ object Link {
                 } else if (best == null || best?.why == Transcriber.Why.UNREACHED) {
                     best = r as Transcriber.Result.Err
                 }
-                !moveOn
+                if (!moveOn) true
+                else if ((r as Transcriber.Result.Err).why == Transcriber.Why.UNREACHED) null
+                else false
             }
         } catch (e: Sealed.NotNow) {
             return Transcriber.Result.Err(Sealed.words(c, e), Transcriber.Why.BUSY)
@@ -510,7 +517,7 @@ object Link {
         try {
             roads(c) { road ->
                 got = Transcriber.reviewPending(road)
-                got != null
+                if (got != null) true else null
             }
         } catch (e: Sealed.NotNow) {
             return null

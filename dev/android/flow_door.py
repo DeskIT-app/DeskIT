@@ -76,6 +76,7 @@ class Pc:
         self.hold.set()
         self.arrived = threading.Event()
         self.model_off = False
+        self.asked_off = 0
         self.review: list[dict] = []
         self.decided: list[tuple[str, str]] = []
         self.routes = server_mod.Routes(
@@ -90,6 +91,7 @@ class Pc:
         self.arrived.set()
         self.hold.wait(40)
         if self.model_off:
+            self.asked_off += 1
             raise RuntimeError("The speech model is off. Start it on the PC.")
         self.heard.append(wav)
         self.last_at = time.perf_counter()
@@ -714,6 +716,8 @@ def flow_two_pcs():
         fa.back()
         out = ask("dictate")
         check("a model that is off is passed over for the PC that can", "dictated=the-other-pc" in out, out)
+        check("and is sent the recording once: it answered, so no knock and no second time",
+              first.asked_off == 1, f"asked {first.asked_off} times")
         other.down()
         out = ask("dictate")
         check("with no other PC, its own sentence comes back", "speech model is off" in out, out)
