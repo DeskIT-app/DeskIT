@@ -95,7 +95,11 @@ TEXT_VERSIONS: dict[str, str] = {
     "account": "deskit-terms-0+en-2026-11-06",
     "report_upload": "deskit-terms-0+en-2026-09-19",
     "settings_sync": "deskit-terms-0+en-2026-09-21",
-    "history_sync": "deskit-terms-0+en-2026-09-21",
+    # 2026-11-07: "only your own PCs hold the key" went false at the first
+    # phone join, so it says devices. A row given under the old words named
+    # fewer holders: it goes stale and Home asks, with the account's; never
+    # carried forward.
+    "history_sync": "deskit-terms-0+en-2026-11-07",
 }
 
 #: The versions a step of migrations.py carries forward without asking
@@ -425,13 +429,16 @@ def carry_forward(kind: str, old_versions, to: str | None = None) -> bool:
     return True
 
 
-def grant(kind: str, text_version: str | None = None) -> dict:
+def grant(kind: str, text_version: str | None = None, *, from_a_step: bool = False) -> dict:
     """The person pressed [Turn on] on the card for ``kind``: one row,
-    written atomically, and the gate mirrored into the settings."""
+    written atomically, and the gate mirrored into the settings.
+    ``from_a_step`` is migrations.py's door and no other's: a step grants
+    under the words it was written about, which may be older than the
+    card's, and then Home asks about the rest like any stale row."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
     version_ = text_version or TEXT_VERSIONS[kind]
-    if version_ != TEXT_VERSIONS[kind]:
+    if version_ != TEXT_VERSIONS[kind] and not from_a_step:
         raise ValueError(f"{kind}: the card shown was {version_}, the "
                          f"current card is {TEXT_VERSIONS[kind]}")
     row = {"kind": kind, "text_version": version_,

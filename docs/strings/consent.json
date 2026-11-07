@@ -169,7 +169,7 @@
   },
   "history_sync": {
     "kind": "history_sync",
-    "text_version": "deskit-terms-0+en-2026-09-21",
+    "text_version": "deskit-terms-0+en-2026-11-07",
     "title": "Sync what you said?",
     "blocks": [
       [
@@ -178,7 +178,7 @@
       ],
       [
         "To whom",
-        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. Locked before it leaves with a key only your own PCs hold; the server, and DeskIT's developer, cannot read it."
+        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. Locked before it leaves with a key only your own devices hold; the server, and DeskIT's developer, cannot read it."
       ],
       [
         "On whose account",

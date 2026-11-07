@@ -124,7 +124,7 @@ beside the app keeps the defaults and the help for every key.
 |---|---|---|---|
 | `privacy.account` — An account | Anonymous, or your Google sign-in: for problem reports you choose to send and for the two syncs. Opens only through its card. | off | on / off |
 | `privacy.settings_sync` — Syncing settings and words | Your changed settings, learned words and cloud keys follow you to every PC you sign into — the keys locked with your account's own key; never hotkeys, devices, folders or positions. Comes with the sign-in and the wizard's one sync switch; Withdraw turns it off, Turn on here asks again. | off | on / off |
-| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Locked before it leaves with a key only your own PCs hold: the server cannot read it (The lock, below). Comes with the sign-in and the wizard's one sync switch, like the settings; Withdraw turns it off on its own, Turn on here asks again. | off | on / off |
+| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Locked before it leaves with a key only your own devices hold: the server cannot read it (The lock, below). Comes with the sign-in and the wizard's one sync switch, like the settings; Withdraw turns it off on its own, Turn on here asks again. | off | on / off |
 
 ## Privacy
 

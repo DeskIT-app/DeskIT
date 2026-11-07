@@ -142,7 +142,7 @@ LANDING_STORED = ("What is stored: an account id and the e-mail of the Google ac
                   "you choose; this PC's name, the app's version and Windows'. The server "
                   "is DeskIT's own (Supabase, Frankfurt). Only your voice never leaves this "
                   "PC: your learned words and settings are kept in your account, and so are "
-                  "what you said and your cloud keys, locked with a key only your own PCs "
+                  "what you said and your cloud keys, locked with a key only your own devices "
                   "hold. Settings > Privacy > Withdraw turns this off.")
 LANDING_WAITING = "Waiting for Google's sign-in page in your browser…"
 #: A recovery key as a person types it: Crockford letters and digits in
@@ -614,24 +614,17 @@ class Model:
         except Exception:                 # noqa: BLE001
             return []
         rows, now = [], self._stamp()
-        for kind in stale:
-            words = cc.TEXTS.get(kind) or {}
-            blocks = dict(words.get("blocks") or ())
-            what = str(blocks.get(cc.WHAT, "")).rstrip(".")
-            whom = str(blocks.get(cc.WHOM, "")).split(" — ")[0].rstrip(".")
-            off = str(blocks.get(cc.OFF, "")).rstrip(".")
-            changed = str(words.get("changed") or "")
+        for asked in cc.asked_again(stale):
+            arg = ",".join(asked["kinds"])
             rows.append({
-                "id": f"consent:{kind}", "kind": "consent", "at": now + 3,
+                "id": f"consent:{asked['kinds'][0]}", "kind": "consent", "at": now + 3,
                 "tone": "warn", "glyph": "globe",
-                "title": str(words.get("title", kind)), "meta": "the words changed",
-                "text": f"Say yes again? {changed}" if changed
-                        else f"Say yes again? What leaves: {what}.",
-                "rtl": False, "note": f"To {whom}, on your own key. Off again: {off}.",
+                "title": asked["title"], "meta": "the words changed",
+                "text": asked["text"], "rtl": False, "note": asked["note"],
                 "buttons": [{"label": "Turn on", "tone": "primary",
-                             "act": "consent.on", "arg": kind},
+                             "act": "consent.on", "arg": arg},
                             {"label": "Not now", "tone": "quiet",
-                             "act": "consent.later", "arg": kind}],
+                             "act": "consent.later", "arg": arg}],
             })
         return rows
 
@@ -1868,20 +1861,22 @@ class Model:
             except Exception as e:        # noqa: BLE001
                 log.warning("could not read the consents: %s", type(e).__name__)
                 return "could not record that"
-            kind = arg if isinstance(arg, str) else ""
-            if kind not in waiting:
+            kinds = arg.split(",") if isinstance(arg, str) else [""]
+            if not all(kind in waiting for kind in kinds):
                 return "that consent is not waiting for an answer"
             try:
-                privacy.grant(kind)
+                for kind in kinds:
+                    privacy.grant(kind)
             except Exception as e:        # noqa: BLE001
-                log.warning("could not record the consent for %s: %s", kind,
+                log.warning("could not record the consent for %s: %s", kinds,
                             type(e).__name__)
                 return "could not record that"
             return "turned on"
         if do == "consent.later":
             # only a gate that is asking: the page cannot grow this set
-            if isinstance(arg, str) and arg in self._consents_asking():
-                self._consent_later.add(arg)
+            kinds = arg.split(",") if isinstance(arg, str) else [""]
+            if all(kind in self._consents_asking() for kind in kinds):
+                self._consent_later.update(kinds)
             return ""
         if do == "keys.later":
             try:

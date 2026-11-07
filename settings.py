@@ -625,7 +625,7 @@ TABS: tuple[Tab, ...] = (
             Friendly("privacy.history_sync", "Syncing what you said",
                      "The Said page is the same on every PC you sign "
                      "into. Locked before it leaves with a key only your "
-                     "own PCs hold: the server cannot read it (The lock, "
+                     "own devices hold: the server cannot read it (The lock, "
                      "below). Comes with the sign-in and the wizard's one "
                      "sync switch, like the settings; Withdraw turns it "
                      "off on its own, Turn on here asks again."),

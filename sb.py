@@ -1529,9 +1529,12 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
     return f"pulled {pulled}, pushed {pushed}"
 
 
-#: One page of a pull (``_rows_after``).
+#: One page of a pull (``_rows_after``). No larger than the most rows the
+#: server answers with (1,000 by Supabase's default): a page asked for past
+#: that never comes back full, and a page that is not full is taken for the
+#: last, so the rest of a stamp would go on being skipped.
 HISTORY_PAGE = 500
-VOCAB_PAGE = 2000
+VOCAB_PAGE = 1000
 
 
 def _rows_after(table: str, *, word: str, purpose: str, select: str, ties: str, since: str,

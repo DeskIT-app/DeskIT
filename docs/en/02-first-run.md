@@ -38,7 +38,7 @@ the account needs one, so **Continue with Google** wakes once you have typed it)
 account is for (your learned words and settings follow you to any PC you sign in on), what is
 stored (the id and e-mail of the Google account you pick, the name you type), and that only
 your voice never leaves this PC: your learned words and settings are kept in your account, and
-so are what you said and your cloud keys, locked with a key only your own PCs hold (the last
+so are what you said and your cloud keys, locked with a key only your own devices hold (the last
 page turns this off). **Continue with Google** opens the browser once; this
 PC remembers you until you sign out, and the rest of the setup follows.
 
@@ -170,7 +170,7 @@ The hotkey to hold, and three switches asked once:
   learned from you, the settings you changed, the text of what you said and your cloud keys
   follow you to any PC you sign in on, so it hears you your way from the first sentence and
   the Said page is the same page there. What you said and the keys leave locked with a key
-  only your own PCs hold; the server cannot read them. Never your voice. To turn it off later:
+  only your own devices hold; the server cannot read them. Never your voice. To turn it off later:
   Settings > Account > **Withdraw** on *Syncing settings and words* and on *Syncing what
   you said* — each has its own row, so the history can go off alone; **Turn on** on the
   same row asks again. The row appears only when you signed in on the account page.

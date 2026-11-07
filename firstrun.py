@@ -205,11 +205,11 @@ WORDS = {
     # default (2026-09-20) and had the words fixed instead.
     "account.never": ("Only your voice never leaves this PC. Your learned words and settings "
                       "are kept in your account, and so are what you said and your cloud "
-                      "keys, locked with a key only your own PCs hold. The last page lets "
+                      "keys, locked with a key only your own devices hold. The last page lets "
                       "you turn this off."),
     "account.never.signin": ("Only your voice never leaves this PC. Your learned words and "
                              "settings are kept in your account, and so are what you said and "
-                             "your cloud keys, locked with a key only your own PCs hold. "
+                             "your cloud keys, locked with a key only your own devices hold. "
                              "Settings > Privacy > Withdraw turns this off."),
     "account.none": "This copy has no account server — you can go on.",
     "account.button": "Sign in with Google",
@@ -343,7 +343,7 @@ WORDS = {
                        "sentence, and the Said page is the same page: the words it learned "
                        "from you, the settings you changed, the text of what you said and "
                        "your cloud keys follow you there — what you said and the keys locked "
-                       "with a key only your own PCs hold. Never your voice. "
+                       "with a key only your own devices hold. Never your voice. "
                        "Settings > Privacy > Withdraw turns it off."),
     "cloud.title": "Cloud keys",
     "cloud.sub": ("Free keys for the features that need a language model. Only the text "

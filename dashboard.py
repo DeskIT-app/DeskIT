@@ -7842,49 +7842,44 @@ class Dashboard:
 
         rows: list[dict] = []
         now = time.time()
-        for kind in self._consent_stale():
-            words = cc.TEXTS.get(kind) or {}
-            blocks = dict(words.get("blocks") or ())
-            what = str(blocks.get(cc.WHAT, "")).rstrip(".")
-            # The receiver alone ("Groq and/or Google"), not the list of
-            # features after the dash: a note is one line.
-            whom = str(blocks.get(cc.WHOM, "")).split(" — ")[0].rstrip(".")
-            off = str(blocks.get(cc.OFF, "")).rstrip(".")
-            changed = str(words.get("changed") or "")
+        for asked in cc.asked_again(self._consent_stale()):
+            kinds = tuple(asked["kinds"])
             rows.append({
                 "at": now + 3, "kind": "consent", "mark": "globe",
                 "mark_colour": ui.AMBER,
-                "eyebrow": f"{words.get('title', kind)}   ·   the words changed",
+                "eyebrow": f"{asked['title']}   ·   the words changed",
                 "eyebrow_right": False,
-                "text": f"Say yes again? {changed}" if changed
-                        else f"Say yes again? What leaves: {what}.",
-                "note": f"To {whom}, on your own key. Off again: {off}.",
+                "text": asked["text"],
+                "note": asked["note"],
                 "buttons": [("Turn on", "gold",
-                             lambda k=kind: self._consent_do(k, True)),
+                             lambda k=kinds: self._consent_do(k, True)),
                             ("Not now", "quiet",
-                             lambda k=kind: self._consent_do(k, False))],
+                             lambda k=kinds: self._consent_do(k, False))],
             })
         return rows
 
-    def _consent_do(self, kind: str, yes: bool) -> None:
-        """Turn on writes the row (privacy.grant: the consent file and
+    def _consent_do(self, kinds, yes: bool) -> None:
+        """Turn on writes the rows (privacy.grant: the consent file and
         the settings mirror — the running app sees the file's mtime on
         its next gate check, no pipe message needed); Not now keeps the
-        row off this desk until it opens again."""
+        row off this desk until it opens again. One Home row may answer
+        for more than one gate (consent_card.ASK_TOGETHER)."""
         import privacy
 
+        kinds = (kinds,) if isinstance(kinds, str) else tuple(kinds)
         if yes:
             try:
-                privacy.grant(kind)
+                for kind in kinds:
+                    privacy.grant(kind)
             except Exception as e:        # noqa: BLE001
                 logging.getLogger("app").warning(
-                    "could not record the consent for %s: %s", kind, e)
+                    "could not record the consent for %s: %s", kinds, e)
                 return
         else:
             later = getattr(self, "_consent_later", None)
             if later is None:
                 later = self._consent_later = set()
-            later.add(kind)
+            later.update(kinds)
         self._redraw_pile()
 
     def _waiting_lock(self) -> list[dict]:
@@ -8121,7 +8116,7 @@ class Dashboard:
 
     def _lock_block(self, scroller) -> None:
         """THE LOCK under the account card: one key per account, held by
-        its own PCs, never by the server (vault.py, sb.py's lock). The
+        its own devices, never by the server (vault.py, sb.py's lock). The
         card says where this PC stands — it holds the key; it waits for
         another PC to approve it and shows the code that PC must see;
         another PC asks to join and this one can approve it — and
@@ -9851,7 +9846,7 @@ class Dashboard:
                       "Windows'. The server is DeskIT's own (Supabase, Frankfurt). "
                       "Only your voice never leaves this PC: your learned words and "
                       "settings are kept in your account, and so are what you said "
-                      "and your cloud keys, locked with a key only your own PCs hold. "
+                      "and your cloud keys, locked with a key only your own devices hold. "
                       "Settings > Privacy > Withdraw turns this off.")
 
     def _locked_now(self, reply: dict | None) -> bool:

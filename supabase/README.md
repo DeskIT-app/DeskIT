@@ -33,7 +33,7 @@ one Realtime topic per account that carries nothing but "go and pull".
   down through the tables above. No table is published to Realtime.
 - `migrations/0004_account_lock.sql` — the account lock. `history`
   loses its `text` and `raw` columns and gains `cipher`: what you said
-  arrives sealed under a key only your own PCs hold (AES-256-GCM through
+  arrives sealed under a key only your own devices hold (AES-256-GCM through
   Windows' own CNG in the app, `vault.py`). `vault` holds your cloud keys
   the same way, one sealed row per key name. `profiles.lock_id` is the
   key's fingerprint (sixteen hex characters of a hash — tells a PC

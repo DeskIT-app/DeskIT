@@ -40,26 +40,32 @@ ACCOUNT_WORDS = "deskit-terms-0+en-2026-09-23"
 SYNC_WORDS = "deskit-terms-0+en-2026-09-21"
 
 
+def _has_row(kind: str) -> bool:
+    """A row of any version: privacy.consent answers None for a stale one,
+    which is a person's yes to older words and not the absence of one. Read
+    as absence, it was granted over, at the card's words of the day."""
+    import privacy
+    return any(r.get("kind") == kind for r in privacy.rows())
+
+
 def _sync_follows_the_account() -> None:
     """The words-and-settings sync goes with the account (2026-09-20):
     a copy that signed in before this build never saw the Ready page's
-    switch and holds no settings_sync row — it is granted now, with
-    the card's current text_version, the way the sign-in press grants
-    it today. Not signed in, or the row already there (granted or since
-    withdrawn and re-granted), nothing happens; a copy that withdrew the
+    switch and holds no settings_sync row — it is granted now, under the
+    words of this step, the way the sign-in press granted it then. Not
+    signed in, or a row already there (granted or since withdrawn and
+    re-granted), nothing happens; a copy that withdrew the
     sync AFTER this step ran is never touched again — steps run once."""
     import privacy
     # The account row of a copy this old was given under the card's
     # 2026-09-19 words, which read stale since 2026-09-23 — step 5 would
     # carry it forward, but only AFTER this step had already read it as
     # "not signed in". Carrying it here first is the same idempotent
-    # rewrite, one step early. A row of any version says the person signed
-    # in: this one may stand short of the current words, and so stale.
+    # rewrite, one step early. It may stand short of the current words and so
+    # be stale, and it still says the person signed in.
     privacy.carry_forward("account", privacy.CARRIED_FORWARD.get("account", ()), to=ACCOUNT_WORDS)
-    signed_in = any(r.get("kind") == "account" for r in privacy.rows())
-    if signed_in and privacy.consent("settings_sync") is None:
-        import consent_card as cc
-        privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+    if _has_row("account") and not _has_row("settings_sync"):
+        privacy.grant("settings_sync", SYNC_WORDS, from_a_step=True)
 
 
 def _history_follows_the_sync() -> None:
@@ -67,15 +73,14 @@ def _history_follows_the_sync() -> None:
     signed in under the earlier build holds the words-and-settings
     consent and no history_sync row — the Said page there stayed this
     PC's own while the account's other PC showed another. Granted now
-    where the sync consent is, with the card's current text_version,
-    the way the sign-in press grants both today (privacy.SYNC_KINDS).
-    No sync consent (withdrawn, or never signed in), or the row already
-    there, nothing happens — and a withdrawal after this step ran is
-    never undone, because steps run once."""
+    where the sync consent is, under the words of this step, the way the
+    sign-in press granted both then (privacy.SYNC_KINDS); newer words on
+    the card are for Home to ask about. No sync consent (withdrawn, or
+    never signed in), or a row already there, nothing happens — and a
+    withdrawal after this step ran is never undone, because steps run once."""
     import privacy
-    if privacy.consent("settings_sync") is not None and privacy.consent("history_sync") is None:
-        import consent_card as cc
-        privacy.grant("history_sync", cc.card_for("history_sync")["text_version"])
+    if _has_row("settings_sync") and not _has_row("history_sync"):
+        privacy.grant("history_sync", SYNC_WORDS, from_a_step=True)
 
 
 def _the_lock_asks_nothing_new() -> None:

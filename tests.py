@@ -45114,7 +45114,8 @@ class _fixture_project:
                          "account.device_name": None, "account.device_session": None,
                          "account.device_ids": None, "account.past_devices": None,
                          "account.history_floor": None, "account.left": None,
-                         self.sb.LAST_ACCOUNT: None, self.sb.HELD_BACK: None})
+                         self.sb.LAST_ACCOUNT: None, self.sb.HELD_BACK: None,
+                         self.sb.PUSHED: None})
 
     def __exit__(self, *exc):
         try:
@@ -47613,8 +47614,12 @@ def test_a_copy_at_config_version_1_stops_at_the_words_each_step_wrote_for():
             assert rows["account"]["text_version"] == migrations.ACCOUNT_WORDS, rows["account"]
             assert rows["account"]["text_version"] != privacy.TEXT_VERSIONS["account"]
             assert rows["settings_sync"]["text_version"] == migrations.SYNC_WORDS
-            assert rows["history_sync"]["text_version"] == migrations.SYNC_WORDS
+            # a stale row is a yes to older words, not no row: step 3 read it
+            # as none and granted over it, at the card's words of the day
+            assert rows["history_sync"]["text_version"] == migrations.SYNC_WORDS, rows["history_sync"]
+            assert rows["history_sync"].get("carried_from") == old, "granted over and not carried"
             assert privacy.consent("account") is None and "account" in privacy.stale()
+            assert "history_sync" in privacy.stale()
 
             # an account row and no sync rows: signed in, so the sync follows
             for kind in ("account", "settings_sync", "history_sync"):
@@ -47624,11 +47629,102 @@ def test_a_copy_at_config_version_1_stops_at_the_words_each_step_wrote_for():
                 privacy.grant("account", old)
             assert migrations.apply() is None
             assert privacy.consent("settings_sync") is not None, "step 2 read the row as not signed in"
-            assert {r["kind"]: r for r in privacy.rows()}["account"]["text_version"] == migrations.ACCOUNT_WORDS
+            rows = {r["kind"]: r for r in privacy.rows()}
+            assert rows["account"]["text_version"] == migrations.ACCOUNT_WORDS
+            assert rows["history_sync"]["text_version"] == migrations.SYNC_WORDS, "a step claimed later words"
     finally:
         for kind in ("account", "settings_sync", "history_sync"):
             privacy.withdraw(kind)
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_home_asks_about_the_account_and_what_was_said_on_one_row():
+    """Two cards moved in one release, the account's and the history's, and
+    Home has a row per card. One person, one press: the row says what
+    changed in each, and Turn on answers both, in both desks. Not now the
+    same. Alone, each is its own row. And only a card on a person's own key
+    says so: the account's row ended "on your own key", which it is not."""
+    import consent_card as cc
+    import deskweb
+
+    both = cc.asked_again(["account", "history_sync"])
+    assert [r["kinds"] for r in both] == [["account", "history_sync"]], both
+    assert cc.TEXTS["account"]["changed"] in both[0]["text"]
+    assert cc.TEXTS["history_sync"]["changed"] in both[0]["text"]
+    assert "own key" not in both[0]["note"], both[0]["note"]
+    assert cc.TEXTS["account"]["more"] in both[0]["note"]
+    # Home shows two lines of each (photographed, 2026-11-07: the first
+    # version of this row was cut off before its second change, and a yes to
+    # a sentence nobody can finish is no yes)
+    for kinds in [["account", "history_sync"]] + [[k] for k, c in cc.TEXTS.items() if c.get("changed")]:
+        row = cc.asked_again(kinds)[0]
+        assert len(row["text"]) <= 110, (kinds, len(row["text"]), row["text"])
+        assert len(row["note"]) <= 165, (kinds, len(row["note"]), row["note"])
+    assert [r["kinds"] for r in cc.asked_again(["history_sync", "cloud_text"])] \
+        == [["history_sync"], ["cloud_text"]]
+    assert [r["kinds"] for r in cc.asked_again(["cloud_text", "account", "history_sync"])] \
+        == [["account", "history_sync"], ["cloud_text"]]
+    assert "own key" in cc.asked_again(["cloud_text"])[0]["note"]
+    assert "own key" not in cc.asked_again(["account"])[0]["note"]
+
+    granted: list[str] = []
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked), \
+            _patched(__import__("privacy"), "stale", lambda: ["account", "history_sync"]), \
+            _patched(__import__("privacy"), "grant", lambda kind, *a: granted.append(kind)):
+        rows = model._consent_rows()
+        assert [r["id"] for r in rows] == ["consent:account"], rows
+        arg = rows[0]["buttons"][0]["arg"]
+        assert model.act("consent.on", arg)["note"] == "turned on"
+        assert granted == ["account", "history_sync"], granted
+        granted.clear()
+        assert model.act("consent.on", "account,cloud_text")["note"] \
+            == "that consent is not waiting for an answer", "a kind the row never named"
+        assert granted == []
+        model.act("consent.later", arg)
+        assert model._consent_later == {"account", "history_sync"}, model._consent_later
+        assert model._consent_rows() == []
+
+
+def test_the_words_say_devices_wherever_the_key_is_named():
+    """Only your own PCs hold the key: false at the first phone join. No
+    screen, card or page says it, and the words that moved a card moved its
+    version (D11)."""
+    import consent_card as cc
+    import privacy
+
+    assert cc.TEXTS["history_sync"]["version"] == privacy.TEXT_VERSIONS["history_sync"]
+    assert privacy.TEXT_VERSIONS["history_sync"] not in privacy.CARRIED_FORWARD["history_sync"]
+    pages = ["consent_card.py", "firstrun.py", "dashboard.py", "deskweb.py", "secretstore.py",
+             "settings.py", "supabase/README.md", "docs/privacy.md", "docs/en/02-first-run.md",
+             "docs/en/04-privacy.md", "docs/en/05-cloud.md", "docs/he/04-privacy.md",
+             "docs/he/05-cloud.md", "docs/en/settings.md", "docs/he/settings.md",
+             "docs/strings/consent.json", "docs/strings/wizard.json", "docs/strings/keys.json"]
+    for name in pages:
+        text = " ".join((REPO / name).read_text("utf-8").split())
+        assert "your own PCs hold" not in text and "only your own PCs" not in text, name
+    assert "שרק המחשבים שלך" not in (REPO / "docs" / "he" / "02-first-run.md").read_text("utf-8")
+
+
+def test_only_a_migration_step_may_write_a_row_of_older_words():
+    """A consent row says which words the person saw, so grant refuses any
+    but the card's. A migration step grants under the words it was written
+    about, and then the row is stale and Home asks about the rest."""
+    import privacy
+
+    old = "deskit-terms-0+en-2026-09-21"
+    assert privacy.TEXT_VERSIONS["history_sync"] != old
+    try:
+        privacy.grant("history_sync", old)
+    except ValueError as e:
+        assert "current card" in str(e), str(e)
+    else:
+        raise AssertionError("a press claimed words no card shows")
+    try:
+        row = privacy.grant("history_sync", old, from_a_step=True)
+        assert row["text_version"] == old and "history_sync" in privacy.stale()
+        assert not privacy.allowed("history_sync"), "a step's row opened the gate"
+    finally:
+        privacy.withdraw("history_sync")
 
 
 def test_forget_says_whether_it_ended_the_device():
@@ -47933,6 +48029,7 @@ def test_a_pc_left_waiting_backs_off_and_asks_for_nothing_else():
                 asked = {c["path"].rsplit("/", 1)[-1] for c in fake.to_project()}
                 assert not asked & {"settings_sync", "vocab_sync", "history", "vault"}, asked
                 assert len(fake.to_project()) <= 3, [c["path"] for c in fake.to_project()]
+                print(f"    (a look at the lock is {len(fake.to_project())} requests)")
     finally:
         a.gone()
         b.gone()
@@ -49638,10 +49735,11 @@ def test_the_sync_follows_the_account():
         assert privacy.consent("history_sync") is None, "granted with no settings sync"
         privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
         migrations._history_follows_the_sync()
-        row = privacy.consent("history_sync")
-        assert row is not None and row["text_version"] == cc.card_for("history_sync")["text_version"], row
+        row = {r["kind"]: r for r in privacy.rows()}["history_sync"]
+        assert row["text_version"] == migrations.SYNC_WORDS, row
+        assert "history_sync" in privacy.stale(), "a step's row claimed the card's later words"
         migrations._history_follows_the_sync()                   # a row there: untouched
-        assert privacy.consent("history_sync")["when"] == row["when"]
+        assert {r["kind"]: r for r in privacy.rows()}["history_sync"]["when"] == row["when"]
         # ...and step 4, the lock (2026-09-21): a row given under the
         # 2026-09-19 words — which promised MORE than the new ones (the
         # admin could technically read a row) — becomes a row of the new
@@ -49661,13 +49759,16 @@ def test_the_sync_follows_the_account():
                      for kind in privacy.SYNC_KINDS}
         assert privacy.consent("history_sync") is None and not privacy.allowed("history_sync"), "the old row is not stale"
         migrations._the_lock_asks_nothing_new()
+        carried = {r["kind"]: r for r in privacy.rows()}
         for kind in privacy.SYNC_KINDS:
-            row = privacy.consent(kind)
-            assert row is not None and row["text_version"] == privacy.TEXT_VERSIONS[kind], (kind, row)
+            row = carried[kind]
+            assert row["text_version"] == migrations.SYNC_WORDS, (kind, row)
             assert row["carried_from"] == old and row["when"] == given[kind], row
-            assert privacy.allowed(kind), kind
-        migrations._the_lock_asks_nothing_new()                  # already current: untouched
-        assert privacy.consent("history_sync")["when"] == given["history_sync"]
+        # the step's own words and no further: the card's 2026-11-07 words
+        # name more holders of the key, and a row must not claim them unasked
+        assert privacy.allowed("settings_sync") and not privacy.allowed("history_sync")
+        migrations._the_lock_asks_nothing_new()                  # already carried: untouched
+        assert {r["kind"]: r for r in privacy.rows()}["history_sync"]["when"] == given["history_sync"]
         privacy.withdraw("history_sync")
         migrations._the_lock_asks_nothing_new()                  # no row: nothing
         assert privacy.consent("history_sync") is None
@@ -49727,7 +49828,7 @@ def test_the_account_words_say_what_the_sign_in_press_turns_on():
         assert "never stored" not in low and "stays off" not in low, (where, words)
         assert "only your voice never leaves this pc" in low, (where, words)
         for must in ("what you said", "cloud keys", "learned words", "settings",
-                     "locked with a key only your own pcs hold"):
+                     "locked with a key only your own devices hold"):
             assert must in low, (where, must)
         assert "turns this off" in low or "turn this off" in low, (where, words)
     card = " ".join(t for _l, t in cc.card_for("account")["blocks"]).lower()
@@ -49739,7 +49840,7 @@ def test_the_account_words_say_what_the_sign_in_press_turns_on():
     for name in secretstore.KEY_HOSTS:
         sentence = secretstore.storage_sentence(name)
         assert "never sent to the developer" not in sentence, sentence
-        assert "your account" in sentence and "only your own PCs hold" in sentence, sentence
+        assert "your account" in sentence and "only your own devices hold" in sentence, sentence
         assert f"as it is only to {secretstore.KEY_HOSTS[name]}" in sentence, sentence
     page = (REPO / "NETWORK.md").read_text("utf-8")
     assert "no column that could hold a" not in page
