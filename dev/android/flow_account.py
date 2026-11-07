@@ -260,9 +260,11 @@ def no_traces(acct: fake_pc.FakeAccount, road: str) -> None:
           and "device_rows.bin" not in held, held)
 
 
-def nothing_on_home(road: str) -> None:
-    """Home, which a person sees first. The caller has brought it up."""
-    drive.wait(NOT_LINKED, 20)
+def nothing_on_home(road: str, state: str = NOT_LINKED) -> None:
+    """Home, which a person sees first. The caller has brought it up. [state] is
+    what Home says of the PC: a phone in an account whose PC has a door it cannot
+    reach from here says so."""
+    drive.wait(state, 20)
     check(f"{road}: Home shows nothing that was said",
           drive.find(SAID) is None and drive.find(MEANT) is None, drive.screen()[:300])
 
@@ -1051,7 +1053,8 @@ def flow_another_account():
         second.approve(req["id"])
         drive.wait("This phone is ready", 25)
         drive.tap("^Done$")
-        nothing_on_home("a second account")
+        # In: its PC has a door, at an address no emulator reaches.
+        nothing_on_home("a second account", "^Can't reach the PC$")
     finally:
         acct.stop()
         second.stop()
@@ -1494,9 +1497,15 @@ def flow_words_go_midway():
         plant(acct)
         drive.die()
         acct.end_every_session()
+        # A joined phone asks its PCs' doors before the pasted line, and that takes
+        # seconds when no door answers. Home's own look at the account would find the
+        # session over in that time and take the words before any poll went: held,
+        # it lets the poll out first.
+        look = acct.stop_at("GET", "profiles")
         held = acct.stop_at("GET", "review")
         drive.home()
         assert held.caught.wait(20), "no poll came"
+        look.go()
         check("the words go with the poll still out", until(lambda: SAID not in on_disk(), 15),
               on_disk()[:300])
         held.go()
