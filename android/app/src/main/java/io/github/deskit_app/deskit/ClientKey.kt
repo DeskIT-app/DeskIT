@@ -53,7 +53,7 @@ import javax.security.auth.x500.X500Principal
  * phone changes, and it says nothing.
  *
  * **And a Keystore that cannot do TLS has a way out.** That Keystore signs is
- * proved on his S26 (M16). That Conscrypt will hand it a handshake is proved on
+ * proved on a real phone (M16). That Conscrypt will hand it a handshake is proved on
  * the emulator and nowhere else, and on a real phone, with its maker's own
  * Keystore and with no one to ask, a refusal would leave it joined and unable to
  * reach any PC. So the first thing asked of a key, here and with no network, is
