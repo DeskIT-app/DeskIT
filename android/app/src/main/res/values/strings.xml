@@ -188,8 +188,8 @@
     <string name="forget">Forget</string>
     <string name="keep_it">Keep it</string>
     <string name="forget_title">Forget %1$s?</string>
-    <!-- sb.OLDER_COPY_WORDS, word for word. -->
-    <string name="older_copy">That device is off your list but still signed in: it is an older copy of DeskIT, or one that has not said yes yet. To end it, press Sign out of every PC.</string>
+    <!-- sb.OLDER_COPY_WORDS, but for where the button is: a phone has none. -->
+    <string name="older_copy">That device is off your list but still signed in: it is an older copy of DeskIT, or one that has not said yes yet. To end it, go to your PC and press Sign out of every PC.</string>
     <string name="sign_out">Sign out</string>
     <string name="stay_signed_in">Stay signed in</string>
     <string name="sign_out_title">Sign out of this phone?</string>
