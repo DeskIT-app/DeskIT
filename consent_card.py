@@ -126,17 +126,27 @@ TEXTS: dict[str, dict] = {
         # — what the syncs send, their own cards always said — so a row
         # given under the old words is carried forward
         # (privacy.CARRIED_FORWARD, migrations step 5), never asked again.
-        "version": "deskit-terms-0+en-2026-09-23",
+        # 2026-11-06: the id of a device's session, and the one connection a
+        # signed-in copy keeps whatever its syncs say. Both are new under
+        # this gate, so this time a row given under the old words is asked
+        # again.
+        "version": "deskit-terms-0+en-2026-11-06",
         "title": "Open an account?",
-        "changed": "It now says that signing in keeps what you said and your cloud "
-                   "keys in your account, locked with a key only your own PCs hold.",
+        # On Home: `changed` is two lines of a row, 110 characters with
+        # "Say yes again? " and a batched neighbour, and what does not fit
+        # goes in `more`, on the note. A test holds both: a row cut off
+        # mid-sentence asks for a yes to words nobody can read.
+        "changed": "DeskIT now stays connected while signed in.",
+        "more": "The id of each device's session is kept too; neither carries what you said.",
         "blocks": (
             (WHAT, "An account id — anonymous, or the e-mail of the Google account you "
-                   "chose; this PC's name; the app, Windows and hardware versions."),
+                   "chose; this device's name; the app, Windows and hardware versions; "
+                   "the id of this device's session, so another device of yours can end it."),
             (WHOM, _DESKIT),
             (ACCOUNT, "DeskIT's project. Signing in also keeps your learned words and "
                       "settings there, and what you said and your cloud keys, locked "
-                      "with a key only your own PCs hold."),
+                      "with a key only your own devices hold. While you are signed in, one "
+                      "open connection stays up, syncs on or off; it carries nothing you said."),
             (TERMS, _TERMS),
             (OFF, "Your data > Delete my account."),
         ),
@@ -167,12 +177,17 @@ TEXTS: dict[str, dict] = {
         ),
     },
     "history_sync": {
-        "version": "deskit-terms-0+en-2026-09-21",
+        # 2026-11-07: these words named PCs alone, false at the first phone
+        # join. A yes given under them named fewer holders of the key, so it
+        # is asked again and not carried forward, on one row of Home with
+        # the account's (ASK_TOGETHER).
+        "version": "deskit-terms-0+en-2026-11-07",
         "title": "Sync what you said?",
+        "changed": "A phone you approve now holds the key too.",
         "blocks": (
             (WHAT, "Everything you dictated, translated, punctuated and looked up — the "
                    "text, not the recording — so the Said page is the same on every PC."),
-            (WHOM, _DESKIT + " Locked before it leaves with a key only your own PCs hold; "
+            (WHOM, _DESKIT + " Locked before it leaves with a key only your own devices hold; "
                    "the server, and DeskIT's developer, cannot read it."),
             (ACCOUNT, _PROJECT),
             (TERMS, _TERMS),
@@ -181,6 +196,41 @@ TEXTS: dict[str, dict] = {
         ),
     },
 }
+
+#: Kinds Home asks about on one row when the words of all of them changed:
+#: one person, one account, one press, and two rows for it would be a second
+#: re-ask in one breath. The row says what changed in each.
+ASK_TOGETHER: tuple[tuple[str, ...], ...] = (("account", "history_sync"),)
+
+
+def _asked_again(kinds: tuple[str, ...]) -> dict:
+    cards = [TEXTS.get(kind) or {} for kind in kinds]
+    blocks = dict(cards[0].get("blocks") or ())
+    what = str(blocks.get(WHAT, "")).rstrip(".")
+    # The receiver alone ("Groq and/or Google"), not the list of features
+    # after the dash: a note is one line.
+    whom = str(blocks.get(WHOM, "")).split(" — ")[0].rstrip(".")
+    off = str(blocks.get(OFF, "")).rstrip(".")
+    changed = " ".join(str(card.get("changed") or "") for card in cards).strip()
+    more = " ".join(str(card.get("more") or "") for card in cards).strip()
+    # a provider's card only: nothing else here runs on a key of the person's
+    own = ", on your own key" if blocks.get(ACCOUNT) == _KEY else ""
+    return {"kinds": list(kinds), "title": str(cards[0].get("title", kinds[0])),
+            "text": f"Say yes again? {changed}" if changed else f"Say yes again? What leaves: {what}.",
+            "note": f"{more + ' ' if more else ''}To {whom}{own}. Off again: {off}."}
+
+
+def asked_again(stale) -> list[dict]:
+    """Home's rows for the gates whose words changed (privacy.stale), for
+    both desks: ``kinds`` a Turn on answers, ``title``, ``text``, ``note``."""
+    left = list(stale)
+    rows = []
+    for group in ASK_TOGETHER:
+        if all(kind in left for kind in group):
+            rows.append(_asked_again(group))
+            left = [kind for kind in left if kind not in group]
+    return rows + [_asked_again((kind,)) for kind in left]
+
 
 #: The words' direction, decided from the table: English lays out from
 #: the left; a Hebrew table would lay itself out from the right again.
