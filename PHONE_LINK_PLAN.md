@@ -381,7 +381,8 @@ All in Kotlin with no library: REST through `HttpURLConnection` and the platform
   one seal, no new format, and a vector holds it. The waiting PC's row adds "or open DeskIT on your phone". Not the web
   page: its key cannot leave it, on purpose.
 - **Forget.** A new RPC, `forget_device(id)`, in 0007: it deletes the row and that device's session, which 0006 makes
-  effective at once. Every device writes its `session_id` claim beside its row for this, `ensure_profile` on a PC, and
+  effective at once, and it answers whether a session ended. A copy older than 0007 never named one, so its row goes and
+  it stays signed in, and whoever pressed Forget is told so and pointed at Sign out of every PC. Every device writes its `session_id` claim beside its row for this, `ensure_profile` on a PC, and
   because that column is the client's word, the RPC ends only a session that belongs to `auth.uid()`. Any device of the
   account can do it, a PC or the phone, so it no longer needs that one PC. The PCs drop the anchor on the broadcast.
 - **A forgotten device stays forgotten.** A row that opens is not enough. A forgotten phone still holds the account key,
@@ -394,7 +395,20 @@ All in Kotlin with no library: REST through `HttpURLConnection` and the platform
   under a new device id and a new certificate, because the list never lets the old ones back.
 - **Sign out on a phone is leaving.** A phone is lent and sold as a PC is not, so it does not copy the PC's "the key file
   stays". Sign out is Forget on itself: its row and session go, the wrapped key, the certificate and the cached rows are
-  wiped, and the next sign-in is a new device, with a new Approve. Recordings still in the spool are named first.
+  wiped, and the next sign-in is a new device, with a new Approve. Recordings still in the spool are named first. The
+  press is written down before anything else, the words and the recordings go before the first network call, and the
+  next `look` finishes a leave the process died under.
+- **Out of the account, nothing of the person stays on the phone.** `Traces.kt` is the one wipe and every road out calls
+  it: Sign out, Use another account and finding itself forgotten take the Said list, the proposals in the shade and on
+  Home, a sentence copied under our label, the pasted line, and the recordings. A session the server ended takes the
+  words and the line and leaves the recordings, because they are the only copy and the same account's next sign-in
+  finds them; so does a screen lock taken away. Another account signing in wipes too, and the first's key moves aside.
+  What `phone-keyboard-door` adds that holds words or an address goes in `Traces.wipe`, the addresses `Link` remembers
+  above all, and a send out of the spool stops when `Traces.wipes` moves. The app's own backup and phone-to-phone
+  transfer carry none of it (`dataExtractionRules`, measured on Android 14: 3,072 bytes with Said and the token before,
+  112 after).
+- **The whole phone app moved to the desk's look** (his word, 2026-11-06): space dark, iris purple, one Rubik variable
+  file (157 KB in the APK), far fewer words, pages that move instead of jump.
 - **Sign out of every PC reaches the door.** The door checks a certificate, not a session, so ending sessions alone would
   leave a phone's door open, and this is Home's answer to a stranger. So the PC that presses it first deletes every other
   device's `link` row, and the doors drop what they cached (`sb.SIGNED_OUT_HOOKS`). A device that signs in again writes
@@ -418,8 +432,10 @@ itself, so the switch no longer has to be what keeps it shut. `[server]` stays o
 PC keeps its own no. It starts and stops
 the doors live: `server` is not in `LIVE_SECTIONS` today, so a switch would wait for a restart. The loopback door on
 8756 keeps its behaviour, so `tailscale serve` works untouched beside the new road until stage 6 and nothing has to be
-cut over on a given day. It also stops depending on the phone: it runs when the switch is on OR the Claude hook is
-connected, which closes today's silent hole (§1).
+cut over on a given day. Two exceptions, both on purpose. The line pasted into the phone for the old road is a key to the
+PC, so it goes on every road out of the account, and whoever is still on that road pastes it again. And with the switch
+off the door answers only `/health` and `/notify`, so a person's no is not undone by the hook. It also stops depending on
+the phone: it runs when the switch is on OR the Claude hook is connected, which closes today's silent hole (§1).
 
 **Two doors, each with one job.**
 
@@ -890,8 +906,10 @@ not named).
   PR and merge as everything else, no third-party script and no analytics on it ever, a strict Content-Security-Policy
   `<meta>`, and the guide says it plainly: the keyboard is the stronger road, and a page can be signed out.
 - **The door on a Public network.** With the client-certificate door nothing is parsed before authentication, so a
-  café's Wi-Fi gets a dropped handshake. A scanner learns that a TLS port asked for a certificate. Connection floods cost
-  a thread for at most 10 s, capped at 16.
+  café's Wi-Fi gets a dropped handshake. A scanner learns that a TLS port asked for a certificate, and it sees the door's
+  own certificate, as any client can: the name in it is random hex and says nothing of DeskIT, but it is the same one on
+  every network, so the same PC can be told from others. Nothing there opens anything. Connection floods cost a thread
+  for at most 10 s, capped at 16, and one address holds at most 4 of those.
 
 ### 6.2 The account's channel
 
@@ -1048,11 +1066,12 @@ Every way this can fail that we could think of, with what happens. "Stage" says 
 
 | Hole | What happens | Answer |
 |---|---|---|
-| Lost or stolen phone | It holds the account key and a key to the dictation door | Both are unusable while the phone is locked (`setUnlockedDeviceRequired`, API 28+). **Forget** from any device of the account deletes its row and session at once: the door closes and the account stops answering it. What it already holds cannot be un-held: there is no way today to change the account key, so a phone taken while unlocked is a real loss, and the cloud keys should then be changed. Forget stops the app, not someone who took the key out of the phone and also holds his Google sign-in, so then his Google password changes too |
+| Lost or stolen phone | It holds the account key and a key to the dictation door | Both are unusable while the phone is locked, where a screen lock existed when the keys were made, on Android 9 and up (`setUnlockedDeviceRequired`). A phone with no screen lock works in full and says nothing, because Android refuses such a key there; a lock added later protects the keys only after Sign out and back in, until `phone-keyboard-door` upgrades them by itself; Android 8 has no such key at all. **Forget** from any device of the account deletes its row and session at once: the door closes and the account stops answering it. What it already holds cannot be un-held: there is no way today to change the account key, so a phone taken while unlocked is a real loss, and the cloud keys should then be changed. Forget stops the app, not someone who took the key out of the phone and also holds his Google sign-in, so then his Google password changes too |
 | Someone else asks to join | They need his Google sign-in first, and then his Approve against a code | Not me (**Not now**), as between PCs; the twin check holds |
 | A dishonest server at the join | It could hand the new device a key of its own | The code binds the lock, so the two screens differ, and the new device keeps nothing until its person presses Same code (stage 1). This closes it for a PC joining too |
 | A forgotten phone signs in again, or the server restores its row | The row still opens | The `forgotten` list, kept on every PC and never shrinking, and the phone wipes itself (stage 1) |
-| The phone is sold or lent | The key and the door's certificate would stay on it | Sign out on a phone wipes both, and recordings still waiting are named first (stage 1) |
+| The phone is sold or lent | The key, the door's certificate, the Said list, a pasted address and token would stay on it | Sign out on a phone takes all of them, and recordings still waiting are named first, then go too (stage 1, `Traces.kt`) |
+| A second person signs in on a PC | The first's history, words, settings, cloud keys and queued reports would go up under the second, sealed to the second's devices | `sb._take_over`. The first account a PC ever has takes what is here, the same account back loses nothing, and a different one starts past everything: the history floor rises, left pairs and settings stay out of the rows and the blob, the cloud keys stay in the slot and are never sealed up, queued reports wait for their account. The PC's one copy is not kept per person: a second account's first pull replaces settings and words the first never synced (one `.bak`), and one slot holds one key. Consent stays per PC, so the second account inherits the gates the first opened, and its sign-in press is its yes to the syncs; a card of its own would be new, and it is left for a day someone needs it |
 | Android kills the keyboard while he walks to the PC | The join's private half would be gone | Sealed by the Keystore for the request's 15 minutes, so the same code and the answer survive; the phone sweeps its own requests, so no twin appears |
 | PC reinstalled | A new certificate, and no key until it rejoins | It joins the lock as a new PC: approved by another PC, by the recovery key, or by the phone (stage 1), which is the only other holder a one-PC person has. Then it writes its row and phones pick it up with nothing to do |
 | Windows account reset | DPAPI cannot open the passphrase | Treated as a new identity, never a crash: `load_token()`'s existing pattern |
@@ -1079,7 +1098,7 @@ Every way this can fail that we could think of, with what happens. "Stage" says 
 | `docs/privacy.md` says the lock's key is held by "your own PCs", and a syncs-off copy holds no socket today | Its words become "your own devices", and it says every signed-in copy keeps one socket that carries nothing personal |
 | The vault's rule that a fresh slot must never push an empty | The phone has no slot and writes only on a press |
 | Home's lock row says "PC" | Its words become "device"; nothing else in it changes |
-| "Offline" (`net.offline`) | Offline stops every outgoing call, so the account's channel goes silent, while the LAN door keeps answering: it is inbound and local. The switch's sentence says this |
+| "Offline" (`net.offline`) | Offline stops every outgoing call, so the account's channel goes silent, while the LAN door keeps answering: it is inbound and local. The switch's sentence says this. So a Forget pressed on another device is heard here when Offline ends; a Forget pressed here, and the switch, work at once. Withdrawing the `account` consent does close the door, because that is a person saying no to what the door hears through |
 | `paths.OWNER_DATA`, recordings, `corpus\` | No store is wiped or rewritten. Phone recordings go to `recent\` as they do today. Removing Tailscale deletes no data |
 | The web desk's network census (`dev\web_census.py`) | It runs over the engine too, for TCP; UDP destinations need a packet capture (stage 3) |
 | Tk has no bidi; a PNG QR is language-free | Words on the panel follow the desk's rules |
@@ -1316,20 +1335,26 @@ Stages 2 and 2b follow as lanes of their own once stage 1 stands.
   With `lock_id` `0123456789abcdef` the code is `WK0MS-7HN8C`; with `fedcba9876543210` it is `R85CJ-HRE9H`. A Python test and
   a Kotlin test hold both. The asking device opens nothing from `handed` until its person has pressed **Same code**.
 - **`devices`, migration 0007.** `link text`, nullable, under `is_sealed()`. `session_id uuid`, nullable.
-  `forget_device(target uuid)` deletes the row and the session its `session_id` names, only where both belong to
-  `auth.uid()`. `platform` is `windows-…` as today, `android-<sdk>` on a phone, later `web`.
+  `forget_device(target uuid) returns boolean` deletes the row and the session its `session_id` names, only where both
+  belong to `auth.uid()`, and answers whether a session ended. `platform` is `windows-…` as today, `android-<sdk>` on a
+  phone, later `web`. Dry-run on the real project on 2026-11-06 and, with the answer, on 2026-11-07, each in a block that
+  rolls itself back: anon may not call it, an unsealed `link` is refused, another person's row and session stay, and
+  nothing was left behind.
 - **A `link` row.** `vault.seal_json(key, obj, "device/{uid}/{device_id}")`, the template named `vault.AAD_DEVICE`. A PC:
   `{"v": 1, "kind": "pc", "cert": "<SHA-256 of the DER, hex>", "addrs": ["192.168.68.50"], "port": 8766, "proto": 1,
   "words_sync": true}`. A phone: `{"v": 1, "kind": "phone", "cert": "<the DER, base64>", "proto": 1, "backup": true}`. An
   unknown field is ignored.
 - **The `forgotten` row.** `vault` name `forgotten`, AAD `vault/{uid}/forgotten`, `seal_json` of `{"v": [{"device":
-  "<uuid>", "cert": "<SHA-256 hex>", "at": "<ISO time>"}]}`. Read, merged by `device`, written back. A PC also keeps the
-  union in a local file that never shrinks.
+  "<uuid>", "cert": "<SHA-256 hex>", "at": "<ISO time>"}]}`, an entry unique by the pair (`device`, `cert`). Read, merged,
+  written back. A PC also keeps the union, one file per account (`secrets\forgotten-<uid>.json`), that never shrinks, and a
+  phone keeps it too.
 - **Events.** `changed` with `stores: ["devices"]`, on the account's topic the way `_broadcast` sends it, when a device
   writes its row or forgets one. `pairing` as today: `device`, `id`, `code`, `name`.
 - **What `sb.py` offers `phone.py`.** `devices() -> list[dict]`, every row of the account with `link` as stored.
-  `write_link(sealed: str)`, this device's row, then the broadcast. `forget_device(device_id: str, cert: str)`.
-  `forgotten() -> set[str]`, device ids and certificate fingerprints, the local list and the account's. `ACCOUNT_HOOKS`,
+  `write_link(sealed: str)`, this device's row, then the broadcast. `forget_device(device_id: str, cert: str) -> bool`.
+  `forgotten() -> set[str]`, device ids and certificate fingerprints: the local list, which holds the account's as of the
+  last account pass, and nothing with nobody signed in. `FORGOTTEN_HOOKS`, finished through the persisted `account.left`
+  mark by `settle_left()`, because a leaving noticed in the desk must be finished by the app. `ACCOUNT_HOOKS`,
   callables taking `(key: bytes)`, run at the end of every account pass and on `changed: devices`, once the lock says
   `have`. `SIGNED_OUT_HOOKS` as today.
 
