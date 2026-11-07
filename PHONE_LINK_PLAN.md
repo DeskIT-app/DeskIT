@@ -381,8 +381,9 @@ All in Kotlin with no library: REST through `HttpURLConnection` and the platform
   one seal, no new format, and a vector holds it. The waiting PC's row adds "or open DeskIT on your phone". Not the web
   page: its key cannot leave it, on purpose.
 - **Forget.** A new RPC, `forget_device(id)`, in 0007: it deletes the row and that device's session, which 0006 makes
-  effective at once, and it answers whether a session ended. A copy older than 0007 never named one, so its row goes and
-  it stays signed in, and whoever pressed Forget is told so and pointed at Sign out of every PC. Every device writes its `session_id` claim beside its row for this, `ensure_profile` on a PC, and
+  effective at once, and it answers true when no session of that row is left, ended here or over already, as on a PC that
+  signed out. A copy older than 0007 never named one, so its row goes and it stays signed in, and whoever pressed Forget
+  is told so and pointed at Sign out of every PC. Every device writes its `session_id` claim beside its row for this, `ensure_profile` on a PC, and
   because that column is the client's word, the RPC ends only a session that belongs to `auth.uid()`. Any device of the
   account can do it, a PC or the phone, so it no longer needs that one PC. The PCs drop the anchor on the broadcast.
 - **A forgotten device stays forgotten.** A row that opens is not enough. A forgotten phone still holds the account key,
@@ -1078,6 +1079,9 @@ Every way this can fail that we could think of, with what happens. "Stage" says 
 | Certificate expiry | The phone's pin compares a hash and ignores dates, and Android's self-signed certificate runs to 2048 | Nothing expires. `rotate()` exists for a lost key, not for time |
 | Two phones | With one shared subject OpenSSL refuses the second (measured) | `VERIFY_X509_PARTIAL_CHAIN` and a random subject, stage 1 |
 | The name on Home's row | `Build.MODEL` reads "SM-S948B" | The device's own name (`Settings.Global.DEVICE_NAME`, no permission) |
+| A PC left waiting to join | A new request every 15 minutes is a card and a cue on every device, for as long as it is left, and a code that changes under whoever is comparing it | The same request goes up again: the same id, key and code in a new row, because `pairings_guard` freezes `expires_at`. Every device knocks once per id, so nobody is rung twice. Not now holds for the rest of the request's time, and what was handed over before the press stays where it is |
+| A refresh on a locked phone | A refresh spends the old token on the server, and a phone that cannot seal could not keep the new one | It does not refresh. Keystore is asked first, with a one-byte seal, because KeyguardManager still reads "locked" for a moment after the unlock; the old token stays good until the phone is opened |
+| A gateway's error during a refresh | Any 4xx used to end the session and take the person's words with it | Only the auth server's own refusal does, off its `error_code` or an older server's "Invalid Refresh Token", and a second 401 needs PostgREST's own code. A PC signs out on any 4xx there and loses no words; that is outside this plan |
 | No device with the key is on when a phone joins | Nobody can approve | The request waits 15 minutes and asks again; the screen says to open the PC. Recovery key on the phone comes later |
 | A phone signed in to another Google account | It sees no PCs | The screen names the account it is on |
 | Months offline, the session expired | The account refuses the old session | The phone signs in again; the account key it holds stays, so no second Approve, the way a PC comes back, unless it was forgotten meanwhile |
@@ -1336,10 +1340,12 @@ Stages 2 and 2b follow as lanes of their own once stage 1 stands.
   a Kotlin test hold both. The asking device opens nothing from `handed` until its person has pressed **Same code**.
 - **`devices`, migration 0007.** `link text`, nullable, under `is_sealed()`. `session_id uuid`, nullable.
   `forget_device(target uuid) returns boolean` deletes the row and the session its `session_id` names, only where both
-  belong to `auth.uid()`, and answers whether a session ended. `platform` is `windows-…` as today, `android-<sdk>` on a
-  phone, later `web`. Dry-run on the real project on 2026-11-06 and, with the answer, on 2026-11-07, each in a block that
-  rolls itself back: anon may not call it, an unsealed `link` is refused, another person's row and session stay, and
-  nothing was left behind.
+  belong to `auth.uid()`, and answers true when no session of that row is left, ended here or over already. False is a
+  target that is not there, a row that named no session, or one that named somebody else's, which stays as it was.
+  `platform` is `windows-…` as today, `android-<sdk>` on a phone, later `web`. Dry-run on the real project on 2026-11-06
+  and twice on 2026-11-07, the last on the file as it stands, each in a block that rolls itself back: anon may not call it,
+  an unsealed `link` is refused, another person's row and session stay, a session over already answers true, delete and
+  insert under one `pairings` id pass the real policies while `expires_at` stays frozen, and nothing was left behind.
 - **A `link` row.** `vault.seal_json(key, obj, "device/{uid}/{device_id}")`, the template named `vault.AAD_DEVICE`. A PC:
   `{"v": 1, "kind": "pc", "cert": "<SHA-256 of the DER, hex>", "addrs": ["192.168.68.50"], "port": 8766, "proto": 1,
   "words_sync": true}`. A phone: `{"v": 1, "kind": "phone", "cert": "<the DER, base64>", "proto": 1, "backup": true}`. An

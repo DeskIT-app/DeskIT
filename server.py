@@ -761,20 +761,21 @@ class PhoneServer:
         token = load_token()
         self.routes.review_scope = self.cfg.server.review_scope
         asked = _asked(self.cfg.server.port if first is None else first)
-        self._srv, self.port = _first_free(
+        srv, port = _first_free(
             lambda port: _Server((host, port), token, self.routes,
                                  lambda: self.cfg.server.enabled), asked)
-        self._thread = threading.Thread(target=self._srv.serve_forever,
+        self._srv, self.port = srv, port
+        self._thread = threading.Thread(target=srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()
-        log.info("phone endpoint on %s:%d", host, self.port)
-        if self.port != asked:
+        log.info("phone endpoint on %s:%d", host, port)
+        if port != asked:
             # another copy got here first. In the checkout that is the
             # Stranger or the released app, and `tailscale serve` and the
             # phone now reach THAT copy, under a token that is not this one's.
             (log.warning if paths.DEVELOPER else log.info)(
                 "THE LOOPBACK DOOR MOVED: port %d is taken, so this copy is on %d, and "
-                "whatever still points at %d reaches the other copy", asked, self.port, asked)
+                "whatever still points at %d reaches the other copy", asked, port, asked)
 
     def stop(self) -> None:
         srv, thread = self._srv, self._thread
