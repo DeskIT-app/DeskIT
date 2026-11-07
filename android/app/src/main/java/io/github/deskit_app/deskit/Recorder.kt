@@ -13,8 +13,8 @@ import kotlin.concurrent.thread
  * sample rate and container for us and throws if stopped too soon after
  * starting — both bad properties for a push-to-talk button. AudioRecord
  * gives exactly the format the server's Whisper model already wants, so
- * nothing transcodes anywhere. A minute costs ~1.9 MB, which over a
- * private Tailscale link is not worth optimising.
+ * nothing transcodes anywhere. A minute costs ~1.9 MB, which is nothing on
+ * the network at home.
  */
 class Recorder {
 

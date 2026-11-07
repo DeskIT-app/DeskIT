@@ -1,14 +1,21 @@
 package io.github.deskit_app.deskit
 
+import java.io.ByteArrayInputStream
+import java.io.File
 import java.math.BigInteger
+import java.nio.file.Files
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.PrivateKey
+import java.security.cert.CertificateException
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECPoint
 import java.security.spec.ECPrivateKeySpec
 import java.security.spec.ECPublicKeySpec
 import java.util.Base64
+import java.util.Locale
 import kotlin.system.exitProcess
 
 /**
@@ -64,7 +71,124 @@ private fun publicKey(point: ByteArray): ECPublicKey =
         ECPoint(BigInteger(1, point.copyOfRange(0, 32)), BigInteger(1, point.copyOfRange(32, 64))),
         Crypt.p256)) as ECPublicKey
 
+private fun x509(der: ByteArray) =
+    CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(der))
+        as X509Certificate
+
+private fun throws(name: String, what: () -> Unit) {
+    val threw = try {
+        what()
+        false
+    } catch (e: CertificateException) {
+        true
+    }
+    check(name, threw)
+}
+
+/** The hand-written certificate, the pin, and whether TLS really turns on them. */
+private fun pinChecks() {
+    val phone = Crypt.newPair()
+    val pc = Crypt.newPair()
+    val der = Cert.selfSigned(phone)
+    val phoneCert = x509(der)
+    val pcCert = x509(Cert.selfSigned(pc))
+    val stranger = x509(Cert.selfSigned(Crypt.newPair()))
+    check("a hand-written certificate parses as X.509 v3", phoneCert.version == 3)
+    phoneCert.verify(phone.public)
+    check("and carries its own good signature", true)
+    check("subject and issuer are one name, and random",
+          phoneCert.subjectX500Principal == phoneCert.issuerX500Principal &&
+              phoneCert.subjectX500Principal != pcCert.subjectX500Principal)
+    check("it runs to 2049, like a PC's", phoneCert.notAfter.time > 2_500_000_000_000L)
+    check("a pin is the SHA-256 of the DER, in hex, as a row writes it",
+          Pin.of(der) == Crypt.hex(Crypt.sha256(der)) && Pin.of(der).length == 64)
+    check("a pin in capitals is the same pin", Pin.matches(Pin.of(der).uppercase(), der))
+
+    val trust = Pin.Trust(Pin.of(der))
+    trust.checkServerTrusted(arrayOf(phoneCert), "ECDHE_ECDSA")
+    check("the one leaf passes", true)
+    throws("any other leaf throws") { trust.checkServerTrusted(arrayOf(stranger), "ECDHE_ECDSA") }
+    throws("the leaf with another behind it throws") {
+        trust.checkServerTrusted(arrayOf(phoneCert, stranger), "ECDHE_ECDSA")
+    }
+    throws("the other leaf with this one behind it throws") {
+        trust.checkServerTrusted(arrayOf(stranger, phoneCert), "ECDHE_ECDSA")
+    }
+    throws("no chain throws") { trust.checkServerTrusted(emptyArray(), "ECDHE_ECDSA") }
+    throws("null throws") { trust.checkServerTrusted(null, "ECDHE_ECDSA") }
+    check("it vouches for no issuer", trust.acceptedIssuers.isEmpty())
+
+    fun client(pin: String, cert: X509Certificate = phoneCert, key: PrivateKey = phone.private) =
+        Pin.context(Pin.Trust(pin), Pin.OneKey(arrayOf(cert), key))
+    fun door(wants: String, cert: X509Certificate = pcCert, key: PrivateKey = pc.private) =
+        Pin.context(Pin.Trust(wants), Pin.OneKey(arrayOf(cert), key))
+    val pcPin = Pin.of(pcCert.encoded)
+    val phonePin = Pin.of(der)
+
+    val session = Pin.handshake(client(pcPin), door(phonePin))
+    check("both pins right: TLS holds, in memory, with a client certificate", session != null)
+    check("the verifier finds the pin in the real session", Pin.Names(pcPin).verify("10.0.0.2", session))
+    check("and refuses any other", !Pin.Names(phonePin).verify("10.0.0.2", session))
+    check("no session is no", !Pin.Names(pcPin).verify("10.0.0.2", null))
+    check("a door with another certificate is refused",
+          Pin.handshake(client(pcPin), door(phonePin, stranger,
+                                            Crypt.newPair().private)) == null)
+    check("a door that shows the right certificate and cannot prove it is refused",
+          Pin.handshake(client(pcPin), door(phonePin, pcCert, Crypt.newPair().private)) == null)
+    check("a phone that is not on the door's list is refused",
+          Pin.handshake(client(pcPin), door(Pin.of(stranger.encoded))) == null)
+    check("a phone with another key under its certificate is refused",
+          Pin.handshake(client(pcPin, phoneCert, Crypt.newPair().private), door(phonePin)) == null)
+}
+
+/** The spool's rules, on a real folder. */
+private fun spoolChecks() {
+    val dir: File = Files.createTempDirectory("spool").toFile()
+    val day = 24 * 3600 * 1000L
+    try {
+        val small = SpoolFiles(dir, maxBytes = 3000, keepMs = 7 * day)
+        val t = 1_700_000_000_000L
+        val a = small.keep(ByteArray(1000), t)
+        val b = small.keep(ByteArray(1000), t + 1)
+        check("a kept recording is a whole file", a.file?.length() == 1000L && a.dropped == 0)
+        check("and no temporary is left", dir.list()!!.none { it.endsWith(".tmp") })
+        check("oldest first", small.items().map { it.name } == listOf(a.file!!.name, b.file!!.name))
+        File(dir, "a.wav").writeBytes(ByteArray(0))
+        check("a name that is not ours is never sent", small.items().size == 2)
+        check("and is still a recording to Sign out", small.count() == 3)
+        File(dir, "1-half.wav.tmp").writeBytes(ByteArray(10))
+        check("half a write is not a recording", small.items().size == 2 && small.count() == 3)
+        val c = small.keep(ByteArray(1000), t + 2)
+        check("the first past the cap costs nothing yet", c.dropped == 0 && small.items().size == 3)
+        check("and the half a write has gone", dir.list()!!.none { it.endsWith(".tmp") })
+        val d = small.keep(ByteArray(1000), t + 3)
+        check("past the cap the oldest goes first, and it says so",
+              d.dropped == 1 && !a.file!!.exists() && b.file!!.exists() && small.items().size == 3)
+        val e = small.keep(ByteArray(9000), t + 4)
+        check("a recording bigger than the cap is never its own victim",
+              e.file!!.exists() && small.items() == listOf(e.file))
+        check("and took everything older", e.dropped == 3)
+        val gone = SpoolFiles(dir, maxBytes = 1 shl 30, keepMs = 7 * day)
+        check("a day short of the week it stays", gone.prune(t + 7 * day - 1) == 0)
+        check("past the week it goes", gone.prune(t + 8 * day) == 1 && gone.items().isEmpty())
+        check("a name that is not ours outlives it", File(dir, "a.wav").exists())
+        val was = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.forLanguageTag("ar-EG-u-nu-arab"))
+            val arabic = gone.keep(ByteArray(10), t + 9 * day)
+            check("a phone set to Arabic digits writes a name the spool can read",
+                  gone.items() == listOf(arabic.file))
+        } finally {
+            Locale.setDefault(was)
+        }
+    } finally {
+        dir.deleteRecursively()
+    }
+}
+
 fun main() {
+    pinChecks()
+    spoolChecks()
     val aad = Crypt.aadPairing(Vectors.UID, Vectors.PAIRING)
     val account = ByteArray(32) { it.toByte() }
     val rowAad = Crypt.aadVault(Vectors.UID, "groq")

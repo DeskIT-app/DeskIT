@@ -94,8 +94,6 @@ object Lock {
     private const val GENERIC_NAME = "Android phone"
     /** The protocol a phone speaks at the door. */
     private const val PROTO = 1
-    /** Where the keyboard keeps recordings no PC has yet. */
-    private const val SPOOL = "spool"
     private const val UNREADABLE = "Your account answered with something unreadable. Try again."
 
     sealed class State {
@@ -597,6 +595,7 @@ object Lock {
     @Synchronized
     fun look(c: Context, progress: (State) -> Unit = {}): State {
         Account.settle(c)
+        Sealed.strengthen(c)
         if (sp(c).getBoolean(PREF_LEAVING, false)) {
             Log.w("DeskIT", "lock: a sign out was cut short: finishing it")
             val told = finishLeaving(c) ?: return State.NotNow(c.getString(R.string.phone_locked))
@@ -623,6 +622,9 @@ object Lock {
         val p = sp(c)
         return p.getString(PREF_STATE, "") == HAVE && !p.getBoolean(PREF_LEAVING, false)
     }
+
+    /** Is this phone stopped on the lock's question? Nothing it holds is used meanwhile. */
+    fun lockChanged(c: Context): Boolean = sp(c).getString(PREF_STATE, "") == CHANGED
 
     /**
      * Same code: the person compared the two screens. Kept with the request, so
@@ -710,6 +712,7 @@ object Lock {
             .toByteArray() + der)
         val p = sp(c)
         if (p.getString(PREF_ROW_SIG, "") == sig && nowS() - p.getLong(PREF_ROW_AT, 0) < ROW_EVERY_S) {
+            ClientKey.published(c, device, der)     // a kill between the row and the word of it
             return
         }
         val link = JSONObject().put("v", 1).put("kind", "phone").put("cert", Crypt.b64(der))
@@ -726,6 +729,7 @@ object Lock {
         }
         if (!r.ok) throw Account.Failed(r.said())
         p.edit().putString(PREF_ROW_SIG, sig).putLong(PREF_ROW_AT, nowS()).commit()
+        ClientKey.published(c, device, der)
         changedDevices(c, device)
     }
 
@@ -855,17 +859,22 @@ object Lock {
     @Synchronized
     fun devices(c: Context): List<Device> {
         val s = Account.fresh(c)
+        val wipes = Traces.wipes
         return keyed(c, s.uid) { key ->
             val r = Account.rest(c, "GET", "devices?select=id,name,platform,app_version,last_seen,link")
             if (!r.ok) refused(r)
             val rows = r.rows()
-            Sealed.putText(c, ROWS, rows.toString())
+            // Addresses a wipe has just taken must not land back on the disk.
+            if (wipes == Traces.wipes) Sealed.putText(c, ROWS, rows.toString())
             parseDevices(c, s.uid, key, rows)
         }
     }
 
-    /** The same, from the last read: no network at all. */
-    @Synchronized
+    /**
+     * The same, from the last read: no network at all. Off this object's lock,
+     * which a look holds across the network: a dictation on its way to a PC must
+     * not wait behind a poll for a list that is on the disk.
+     */
     fun cachedDevices(c: Context): List<Device> {
         val s = Account.session(c) ?: return emptyList()
         val text = Sealed.getText(c, ROWS) ?: return emptyList()
@@ -1032,8 +1041,11 @@ object Lock {
         return ended
     }
 
+    /** The cached rows go: they name the PCs' addresses. A wipe's, and [Traces] calls it. */
+    fun dropRows(c: Context) = Sealed.delete(c, ROWS)
+
     /** How many recordings no PC has yet. Named before Sign out deletes them. */
-    fun recordings(c: Context): Int = File(c.filesDir, SPOOL).list()?.size ?: 0
+    fun recordings(c: Context): Int = Spool.files(c).count()
 
     /**
      * Recordings no PC has yet are the only copy of those words, so unlike
@@ -1044,7 +1056,7 @@ object Lock {
      * would write them down.
      */
     fun dropRecordings(c: Context) {
-        File(c.filesDir, SPOOL).deleteRecursively()
+        File(c.filesDir, Spool.DIR).deleteRecursively()
     }
 
     /** Everything this device holds of the account but the session. */
@@ -1142,7 +1154,7 @@ object Lock {
         if (waits) return null
         Account.endSession(c, tell = reached)
         wipe(c)
-        Sealed.dropKey()
+        Sealed.dropKey(c)
         sp(c).edit().remove(PREF_LEAVING).commit()
         return told
     }

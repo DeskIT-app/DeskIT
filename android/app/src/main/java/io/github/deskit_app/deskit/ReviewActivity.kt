@@ -63,7 +63,7 @@ class ReviewActivity : Activity() {
 
     private fun load(wanted: String?) {
         thread {
-            val got = Transcriber.reviewPending(Prefs.url(this), Prefs.token(this))
+            val got = Link.proposals(this)
             runOnUiThread {
                 if (got == null) {
                     showEmpty(getString(R.string.unreachable)); return@runOnUiThread
@@ -153,8 +153,7 @@ class ReviewActivity : Activity() {
 
     private fun decide(p: Transcriber.Proposal, verdict: String) {
         thread {
-            val r = Transcriber.reviewDecide(Prefs.url(this), Prefs.token(this),
-                                             p.id, verdict)
+            val r = Link.ask(this) { Transcriber.reviewDecide(it, p.id, verdict) }
             runOnUiThread {
                 when (r) {
                     is Transcriber.Result.Ok -> {

@@ -82,9 +82,9 @@ class LookupActivity : Activity() {
         window.setBackgroundDrawableResource(android.R.color.transparent)
 
         if (selected.isEmpty()) { say(getString(R.string.nothing_selected), Skin.DIM); return }
-        if (Prefs.token(this).isEmpty()) { say(getString(R.string.needs_setup), Skin.RED); return }
+        if (!Link.ready(this)) { say(getString(Link.step(this)), Skin.RED); return }
         thread {
-            val r = Transcriber.lookup(Prefs.url(this), Prefs.token(this), selected)
+            val r = Link.ask(this) { Transcriber.lookup(it, selected) }
             runOnUiThread {
                 when (r) {
                     is Transcriber.Result.Ok -> {

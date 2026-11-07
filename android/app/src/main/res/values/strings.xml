@@ -79,8 +79,7 @@
     <string name="cd_arrange">Arranging keys — drag one onto another</string>
 
     <string name="needs_permission">No mic permission — tap here</string>
-    <string name="needs_setup">No token — tap here to set up</string>
-    <string name="unreachable">Can\'t reach the PC — is it on, and the link up?</string>
+    <string name="unreachable">Your PC isn\'t reachable from this network.</string>
     <!-- %1$s is the backend the PC answered with: "local" or "gemini". -->
     <string name="ready_on">Slide up to lock ↑ · %1$s</string>
 
@@ -103,7 +102,6 @@
     <string name="no_token_title">Not connected yet</string>
     <string name="step_mic">Allow the microphone</string>
     <string name="step_keyboard">Turn the keyboard on</string>
-    <string name="step_pc">Point it at the PC</string>
     <string name="step_notify">Allow notifications</string>
     <string name="mic_granted">Microphone allowed</string>
     <string name="mic_denied">Without the microphone the keyboard can\'t record</string>

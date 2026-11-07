@@ -3,15 +3,14 @@ package io.github.deskit_app.deskit
 import android.content.Context
 
 /**
- * Where the PC is and how to prove we are allowed to talk to it.
+ * What the phone keeps in the plain: the keys' order, the switches, its own
+ * Said, and the old road, a pasted address and token, which stage 6 removes. The
+ * road that replaces it is the account's: [Link].
  *
- * Nothing is baked in: a fresh install knows no PC at all — the address
- * and the token are empty until the person pastes the line their own PC
- * shows, and Home says "Not connected yet" until then. There used to be a
- * default address here (the owner's own machine, from the days the APK
- * only ever reached his own phone); it went with the package rename of
- * 2026-09-19 (DISTRIBUTION_PLAN.md 12.6), and D22's QR pairing replaces
- * the pasted line altogether.
+ * Nothing is baked in: a fresh install knows no PC at all. There used to be a
+ * default address here (the owner's own machine, from the days the APK only ever
+ * reached his own phone); it went with the package rename of 2026-09-19
+ * (DISTRIBUTION_PLAN.md 12.6).
  */
 object Prefs {
     private const val FILE = "dictation"

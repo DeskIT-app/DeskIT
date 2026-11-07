@@ -1,18 +1,30 @@
 package io.github.deskit_app.deskit
 
+import android.util.Log
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
-import java.net.URL
 
 /**
- * POSTs the audio to the PC and returns its transcript.
+ * POSTs the audio to the PC and returns its transcript. Every route the PC
+ * has, on whichever road [Link] hands over: this file knows what to say to a PC
+ * and nothing about how to get to one.
  *
  * HttpURLConnection rather than OkHttp: one fewer dependency to resolve in
  * a build with no IDE behind it, and this makes exactly one kind of
  * request.
  */
 object Transcriber {
+
+    /** Why a request came to nothing, which decides what happens to what it carried. */
+    enum class Why {
+        /** No answer. Another road may have one, and the recording stays. */
+        UNREACHED,
+        /** A PC answered that it cannot now: the model is off, or it is signed out. */
+        BUSY,
+        /** A PC answered that it never will, about this: sending it again changes nothing. */
+        REFUSED,
+    }
 
     sealed class Result {
         data class Ok(
@@ -25,12 +37,12 @@ object Transcriber {
             val rtl: Boolean = false,
         ) : Result()
 
-        data class Err(val message: String) : Result()
+        data class Err(val message: String, val why: Why = Why.BUSY) : Result()
     }
 
     /** Blocking. Call from a background thread. */
-    fun send(baseUrl: String, token: String, wav: ByteArray): Result =
-        post(baseUrl, "/transcribe", token, "audio/wav", wav, 120000)
+    fun send(road: Link.Road, wav: ByteArray): Result =
+        post(road, "/transcribe", "audio/wav", wav, 120000)
 
     /**
      * Punctuate text already in the field — the phone twin of the desktop's
@@ -45,11 +57,10 @@ object Transcriber {
      * Same generous read timeout as translate(), for the same reason: a
      * cold Ollama takes over a minute to load the model into VRAM.
      */
-    fun punctuate(baseUrl: String, token: String, text: String): Result {
+    fun punctuate(road: Link.Road, text: String): Result {
         val body = JSONObject().put("text", text)
             .toString().toByteArray(Charsets.UTF_8)
-        return post(baseUrl, "/punctuate", token,
-            "application/json; charset=utf-8", body, 180000)
+        return post(road, "/punctuate", "application/json; charset=utf-8", body, 180000)
     }
 
     /**
@@ -60,8 +71,8 @@ object Transcriber {
      * {ok, version} and nothing else since 12.3: the engine's name is not
      * for whoever can reach the port, it comes back with each transcript.
      */
-    fun health(baseUrl: String): String? {
-        val h = healthJson(baseUrl) ?: return null
+    fun health(road: Link.Road): String? {
+        val h = getJson(road, "/health") ?: return null
         if (!h.optBoolean("ok", false)) return null
         return h.optString("version", "").ifEmpty { "?" }
     }
@@ -72,15 +83,11 @@ object Transcriber {
      * Ollama's first request after idling takes over a minute while the
      * model loads into VRAM, hence the longer read timeout.
      */
-    fun translate(baseUrl: String, token: String, text: String): Result {
+    fun translate(road: Link.Road, text: String): Result {
         val body = JSONObject().put("text", text).toString()
             .toByteArray(Charsets.UTF_8)
-        return post(baseUrl, "/translate", token,
-            "application/json; charset=utf-8", body, 180000)
+        return post(road, "/translate", "application/json; charset=utf-8", body, 180000)
     }
-
-    /** The whole of /health as JSON, or null if the PC did not answer. */
-    fun healthJson(baseUrl: String): JSONObject? = getJson("$baseUrl/health", null)
 
     /**
      * What the PC knows about keyboard builds (DISTRIBUTION_PLAN.md 12.9),
@@ -104,21 +111,24 @@ object Transcriber {
     }
 
     /** /api/version, or null when the PC did not answer or refused the token. */
-    fun versions(baseUrl: String, token: String): Versions? =
-        getJson("$baseUrl/api/version", token)?.let { Versions.from(it) }
+    fun versions(road: Link.Road): Versions? =
+        getJson(road, "/api/version")?.let { Versions.from(it) }
 
-    /** One GET as JSON — with the bearer when one is given — or null. */
-    private fun getJson(url: String, token: String?): JSONObject? {
+    /** One GET as JSON, or null. */
+    private fun getJson(road: Link.Road, path: String): JSONObject? {
         var conn: HttpURLConnection? = null
         return try {
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10000
-                readTimeout = 15000
-                if (token != null) setRequestProperty("Authorization", "Bearer $token")
+            conn = road.open(path).apply {
+                connectTimeout = road.connectMs
+                readTimeout = road.readMs
+                road.prove(this)
             }
             if (conn.responseCode !in 200..299) return null
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             JSONObject(body)
+        } catch (e: IOException) {
+            Log.i("DeskIT", "transcriber: no answer on $path: ${e.javaClass.simpleName}")
+            null
         } catch (e: Exception) {
             null
         } finally {
@@ -164,32 +174,21 @@ object Transcriber {
      * Every proposal still waiting on the PC — null when it cannot be
      * asked (unreachable, bad token, the reading switched off). Blocking.
      */
-    fun reviewPending(baseUrl: String, token: String): List<Proposal>? {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = (URL("$baseUrl/review").openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10000
-                readTimeout = 15000
-                setRequestProperty("Authorization", "Bearer $token")
-            }
-            if (conn.responseCode !in 200..299) return null
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
-            (0 until items.length()).map { Proposal.from(items.getJSONObject(it)) }
-        } catch (e: Exception) {
-            null
-        } finally {
-            conn?.disconnect()
+    fun reviewPending(road: Link.Road): List<Proposal>? = try {
+        getJson(road, "/review")?.let { o ->
+            val items = o.optJSONArray("items")
+            if (items == null) emptyList()
+            else (0 until items.length()).map { Proposal.from(items.getJSONObject(it)) }
         }
+    } catch (e: org.json.JSONException) {
+        null
     }
 
     /** Keep or No on one proposal. "accepted" / "rejected". Blocking. */
-    fun reviewDecide(baseUrl: String, token: String, id: String,
-                     verdict: String): Result {
+    fun reviewDecide(road: Link.Road, id: String, verdict: String): Result {
         val body = JSONObject().put("id", id).put("verdict", verdict)
             .toString().toByteArray(Charsets.UTF_8)
-        return post(baseUrl, "/review/decide", token,
-            "application/json; charset=utf-8", body, 30000)
+        return post(road, "/review/decide", "application/json; charset=utf-8", body, 30000)
     }
 
     /**
@@ -198,27 +197,25 @@ object Transcriber {
      * written anywhere by the caller — shown in a box, and that is all.
      * Same long read timeout as translate: the local model may be cold.
      */
-    fun lookup(baseUrl: String, token: String, text: String): Result {
+    fun lookup(road: Link.Road, text: String): Result {
         val body = JSONObject().put("text", text)
             .toString().toByteArray(Charsets.UTF_8)
-        return post(baseUrl, "/lookup", token,
-            "application/json; charset=utf-8", body, 180000)
+        return post(road, "/lookup", "application/json; charset=utf-8", body, 180000)
     }
 
     private fun post(
-        baseUrl: String, path: String, token: String,
-        contentType: String, body: ByteArray, readTimeoutMs: Int
+        road: Link.Road, path: String, contentType: String, body: ByteArray, readTimeoutMs: Int
     ): Result {
         var conn: HttpURLConnection? = null
         return try {
-            conn = (URL("$baseUrl$path").openConnection() as HttpURLConnection).apply {
+            conn = road.open(path).apply {
                 requestMethod = "POST"
                 doOutput = true
+                connectTimeout = road.connectMs
                 // Generous: a long dictation is a long upload, and the
                 // model itself needs a moment on the far end.
-                connectTimeout = 15000
                 readTimeout = readTimeoutMs
-                setRequestProperty("Authorization", "Bearer $token")
+                road.prove(this)
                 setRequestProperty("Content-Type", contentType)
                 setFixedLengthStreamingMode(body.size)
             }
@@ -228,6 +225,7 @@ object Transcriber {
                 ?.bufferedReader()?.use { it.readText() } ?: ""
             when {
                 code == 401 -> Result.Err("bad token — check setup")
+                code in REFUSED -> Result.Err(errorFrom(body, code), Why.REFUSED)
                 code !in 200..299 -> Result.Err(errorFrom(body, code))
                 else -> {
                     val o = JSONObject(body)
@@ -240,14 +238,23 @@ object Transcriber {
             }
         } catch (e: IOException) {
             // By far the most likely failure in real use, and the least
-            // obvious from a raw exception string.
-            Result.Err("can't reach the PC — is it on, and the link up?")
+            // obvious from a raw exception string. Its class, because a door
+            // that refused this phone reads as nothing else from here.
+            Log.i("DeskIT", "transcriber: no answer on $path: ${e.javaClass.simpleName}")
+            Result.Err(road.unreached, Why.UNREACHED)
         } catch (e: Exception) {
             Result.Err(e.message ?: "failed")
         } finally {
             conn?.disconnect()
         }
     }
+
+    /**
+     * The answers that say sending it again changes nothing: not audio it can read,
+     * or words it will not touch. Everything else is a PC with a reason of the
+     * moment, and a recording is the only copy of what was said.
+     */
+    private val REFUSED = setOf(400, 409, 413, 415)
 
     private fun errorFrom(body: String, code: Int): String = try {
         JSONObject(body).optString("error").ifEmpty { "server error $code" }

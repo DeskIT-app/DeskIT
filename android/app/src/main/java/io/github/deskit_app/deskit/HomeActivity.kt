@@ -162,7 +162,7 @@ class HomeActivity : Activity() {
         state.addView(lines)
         col.addView(state)
 
-        // The three steps, while one is still red.
+        // The steps, while one is still left.
         stepsCard = Skin.card(this)
         col.addView(stepsCard)
 
@@ -232,9 +232,7 @@ class HomeActivity : Activity() {
     // ---- the link ----
 
     private fun check() {
-        val url = Prefs.url(this)
-        val token = Prefs.token(this)
-        if (token.isEmpty()) {
+        if (!Link.ready(this)) {
             state(Skin.PAUSED, false, getString(R.string.no_token_title), "")
             buildReview(null)
             return
@@ -242,14 +240,21 @@ class HomeActivity : Activity() {
         stateTitle.text = getString(R.string.checking)
         val wipes = Traces.wipes
         thread {
-            val pcVersion = Transcriber.health(url)
-            val versions = if (pcVersion != null) Transcriber.versions(url, token) else null
-            val pending = if (pcVersion != null) Notify.poll(this) else null
+            var word = getString(R.string.unreachable_line)
+            val reached = try {
+                Link.reach(this)
+            } catch (e: Sealed.NotNow) {
+                word = Sealed.words(this, e)    // the phone, and nothing about the PC
+                null
+            }
+            val versions = if (reached != null) Link.versions(this) else null
+            val pending = if (reached != null) Notify.poll(this) else null
+            if (reached != null) Spool.kick(this)
+            else if (Spool.waiting(this)) Spool.schedule(this)
             runOnUiThread {
                 if (wipes != Traces.wipes) return@runOnUiThread
-                if (pcVersion == null) {
-                    state(Skin.PAUSED, false, getString(R.string.unreachable_title),
-                          getString(R.string.unreachable_line))
+                if (reached == null) {
+                    state(Skin.PAUSED, false, getString(R.string.unreachable_title), word)
                 } else {
                     state(Skin.LISTENING, true, getString(R.string.connected_title), "")
                     showUpdate(versions)
@@ -325,9 +330,6 @@ class HomeActivity : Activity() {
         })
         steps.add(Triple(getString(R.string.step_keyboard), keyboardOn()) {
             startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-        })
-        steps.add(Triple(getString(R.string.step_pc), Prefs.token(this).isNotEmpty()) {
-            startActivity(Intent(this, SettingsActivity::class.java))
         })
         if (Build.VERSION.SDK_INT >= 33) {
             steps.add(Triple(getString(R.string.step_notify), Notify.allowed(this)) {

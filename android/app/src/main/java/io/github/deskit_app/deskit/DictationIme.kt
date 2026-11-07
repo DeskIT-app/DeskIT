@@ -39,10 +39,11 @@ import kotlin.concurrent.thread
  * result except leave it on the clipboard. Here the transcript is
  * committed straight into whatever field has the cursor, in any app.
  *
- * Recording happens on the phone; transcription happens on the PC, over
- * Tailscale, on the Hebrew fine-tune that lives there. A phone cannot run
- * that model at a useful speed, and its accuracy is the point of the whole
- * project.
+ * Recording happens on the phone; transcription happens on the PC, on the
+ * Hebrew fine-tune that lives there, by whichever road [Link] finds. A phone
+ * cannot run that model at a useful speed, and its accuracy is the point of
+ * the whole project. A recording that finds no PC stays in the [Spool], and
+ * what comes back after the field has gone lands in Said.
  *
  * IT IS STILL NOT THE KEYBOARD YOU LIVE IN. There is no letter grid and
  * there will not be one. What the second row buys is the two things
@@ -132,8 +133,8 @@ class DictationIme : InputMethodService() {
     /** Exactly what this keyboard last put in the field, for undo. */
     private var lastInsert: String? = null
 
-    /** The last recording, kept so a failure can be retried, not respoken. */
-    private var lastWav: ByteArray? = null
+    /** The recording a failure left in the spool: a tap sends it, not a second saying. */
+    private var kept: SpoolFiles.Item? = null
 
     /** Text that arrived after its field went away; offered, never forced. */
     private var pending: String? = null
@@ -143,8 +144,8 @@ class DictationIme : InputMethodService() {
     private var statusAction: (() -> Unit)? = null
 
     /**
-     * The sticky error is "no microphone" or "no token". Those two are
-     * fixed on the app's screens, not here — so the next field after the
+     * The sticky error is "no microphone" or a step of the account. Those
+     * are fixed on the app's screens, not here — so the next field after the
      * fix must look again instead of keeping a complaint that is no
      * longer true (found on the emulator: the token was saved and the
      * keyboard went on saying there was none).
@@ -612,11 +613,28 @@ class DictationIme : InputMethodService() {
         if (traces == Traces.wipes) return
         traces = Traces.wipes
         pending = null
-        lastWav = null
+        kept = null
         lastInsert = null
         sticky = false
         stickySetup = false
         statusAction = null
+    }
+
+    /**
+     * Every field the cursor lands in, the keyboard on screen or not: a phone back on
+     * its home screen is one too, and text committed there goes nowhere with no
+     * complaint. So this is what moves [session], and not [onStartInputView], which
+     * never hears of a field with no keyboard over it.
+     */
+    override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(info, restarting)
+        val moved = info?.fieldId != editor?.fieldId ||
+                info?.packageName != editor?.packageName
+        editor = info
+        if (moved) {
+            session++
+            lastInsert = null
+        }
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
@@ -626,17 +644,11 @@ class DictationIme : InputMethodService() {
         // after every swap, so leaving loses nothing.
         if (arranging) exitArrange()
         letGoIfWiped()
-        val moved = info?.fieldId != editor?.fieldId ||
-                info?.packageName != editor?.packageName
         editor = info
-        if (moved) {
-            session++
-            lastInsert = null
-        }
         privateField = isPrivate(info)
         refreshActionKey()
         restoreState()
-        if (!sticky || (stickySetup && hasMic() && Prefs.token(this).isNotEmpty())) {
+        if (!sticky || (stickySetup && hasMic() && Link.ready(this))) {
             sayReady()
         }
         if (!privateField) checkHealth()
@@ -723,8 +735,8 @@ class DictationIme : InputMethodService() {
             sayError(getString(R.string.needs_permission)) { openSetup() }
             stickySetup = true; return
         }
-        if (Prefs.token(this).isEmpty()) {
-            sayError(getString(R.string.needs_setup)) { openSetup() }
+        if (!Link.ready(this)) {
+            sayError(getString(Link.step(this))) { openSetup() }
             stickySetup = true; return
         }
         say(
@@ -743,8 +755,8 @@ class DictationIme : InputMethodService() {
      * the retry below is what gets it there.
      */
     private fun checkHealth() {
-        if (Prefs.token(this).isEmpty()) {
-            // Nothing to ask yet: the lamp is grey until the PC is named.
+        if (!Link.ready(this)) {
+            // Nothing to ask yet: the lamp is grey until there is a PC to ask.
             reachable = false
             if (!busy && !holding && !locked) tint(idleColor)
             return
@@ -752,18 +764,28 @@ class DictationIme : InputMethodService() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastHealth < HEALTH_TTL_MS) return
         lastHealth = now
-        val url = Prefs.url(this)
+        val app = applicationContext
         thread {
             // /health says {ok, version} and nothing else (12.3): the
             // engine's name arrives with each transcript instead, and the
             // ready line names the one that answered last.
-            val pcVersion = Transcriber.health(url)
+            var word = getString(R.string.unreachable)
+            val reached = try {
+                Link.reach(app)
+            } catch (e: Sealed.NotNow) {
+                word = Sealed.words(app, e)     // the phone, and nothing about the PC
+                null
+            }
+            if (reached != null) Spool.kick(app)
+            else if (Spool.waiting(app)) Spool.schedule(app)
+            // A phone used only through this keyboard opens no screen that would look.
+            if (Sealed.weak(app)) Lock.look(app)
             ui.post {
-                reachable = pcVersion != null
+                reachable = reached != null
                 if (busy || holding || locked) return@post
                 tint(idleColor)
-                if (pcVersion == null) {
-                    sayError(getString(R.string.unreachable)) { openSetup() }
+                if (reached == null) {
+                    sayError(word) { openSetup() }
                 } else if (!sticky) {
                     sayReady()
                 }
@@ -814,8 +836,8 @@ class DictationIme : InputMethodService() {
             sayError(getString(R.string.needs_permission)) { openSetup() }
             return false
         }
-        if (Prefs.token(this).isEmpty()) {
-            sayError(getString(R.string.needs_setup)) { openSetup() }
+        if (!Link.ready(this)) {
+            sayError(getString(Link.step(this))) { openSetup() }
             return false
         }
         return true
@@ -892,32 +914,39 @@ class DictationIme : InputMethodService() {
             sayError(getString(R.string.no_sound))
             return
         }
-        lastWav = wav
-        send(wav)
+        val app = applicationContext
+        go { Spool.keep(app, wav) }
         if (capped) {
             say(getString(R.string.capped, "${Recorder.MAX_SECONDS / 60} min"))
         }
     }
 
-    private fun send(wav: ByteArray) {
+    /**
+     * One recording on its way, on a thread from its first step: [item] puts it on
+     * the disk, which is not the main thread's to wait for, and from then on a
+     * process killed anywhere loses nothing. The spool sends it on.
+     */
+    private fun go(item: () -> SpoolFiles.Item) {
         busy = true
         tint(busyColor)
         say(getString(R.string.transcribing))
-        val url = Prefs.url(this)
-        val token = Prefs.token(this)
+        val app = applicationContext
         val mine = session
         val wipes = Traces.wipes
         thread {
-            val result = Transcriber.send(url, token, wav)
-            ui.post { deliver(result, mine, wipes) }
+            val recording = item()
+            val result = Link.dictate(app, recording)
+            ui.post { deliver(result, recording, mine, wipes) }
         }
     }
 
-    private fun deliver(result: Transcriber.Result, mine: Int, wipes: Int) {
+    private fun deliver(result: Transcriber.Result, item: SpoolFiles.Item, mine: Int, wipes: Int) {
         busy = false
         tint(idleColor)
-        // Out of the account while this was on its way: it lands nowhere.
+        // Out of the account while this was on its way: it lands nowhere. What
+        // became of the file is the road's: [Lock.dropRecordings].
         if (wipes != Traces.wipes) {
+            Spool.free(item)
             letGoIfWiped()
             sayReady()
             return
@@ -925,21 +954,45 @@ class DictationIme : InputMethodService() {
         when (result) {
             is Transcriber.Result.Ok -> {
                 val text = result.text.trim()
-                if (text.isEmpty()) { say(getString(R.string.no_speech)); return }
-                lastWav = null
+                kept = null
+                if (text.isEmpty()) {
+                    Spool.done(this, item)
+                    say(getString(R.string.no_speech))
+                    return
+                }
                 // The PC answered, so the link is up whatever /health last
-                // said — and the sentence goes on the phone's own Said.
+                // said — and the sentence goes on the phone's own Said, before
+                // the file goes: a kill between the two says it twice, and
+                // never not at all.
                 reachable = true
                 if (result.backend.isNotEmpty()) backendName = result.backend
                 Prefs.addSaid(this, text, wipes)
+                Spool.done(this, item)
                 scheduleReviewPolls()
-                if (!place(text, mine)) return
+                if (!place(text, mine)) {
+                    // Nobody is looking at the status line now.
+                    if (!isInputViewShown) Notify.landed(this, text, wipes)
+                    return
+                }
                 // A decoder loop means words were LOST, not garbled — say
                 // so now, not after the gap is discovered in reading.
                 say(result.warning ?: engineNote(result))
                 if (Prefs.switchBack(this)) goBack()
             }
-            is Transcriber.Result.Err -> retryable(result.message)
+            is Transcriber.Result.Err -> {
+                if (result.why == Transcriber.Why.REFUSED) {
+                    kept = null
+                    Spool.done(this, item)
+                    sayError(result.message)
+                } else {
+                    Spool.free(item)
+                    kept = item
+                    if (result.why == Transcriber.Why.UNREACHED) reachable = false
+                    tint(idleColor)
+                    Spool.schedule(applicationContext)
+                    retryable(result.message)
+                }
+            }
         }
     }
 
@@ -1007,9 +1060,12 @@ class DictationIme : InputMethodService() {
 
     /** A failed send keeps its audio: "say it again" is the wrong answer. */
     private fun retryable(message: String) {
-        val wav = lastWav
-        if (wav == null) { sayError(message); return }
-        sayError(getString(R.string.tap_to_retry, message)) { send(wav) }
+        val item = kept
+        if (item == null) { sayError(message); return }
+        sayError(getString(R.string.tap_to_retry, message.trimEnd('.'))) {
+            // The background may have sent it since.
+            if (Spool.claim(item)) go { item } else say("")
+        }
     }
 
     // ---- keys that change what is already there ----
@@ -1042,13 +1098,13 @@ class DictationIme : InputMethodService() {
         return Target(before + after, true, before.length, after.length)
     }
 
-    private fun translateField() = fieldOp(R.string.translating) { url, token, text ->
-        Transcriber.translate(url, token, text)
+    private fun translateField() = fieldOp(R.string.translating) { road, text ->
+        Transcriber.translate(road, text)
     }
 
     private fun punctuateField() =
-        fieldOp(R.string.punctuating) { url, token, text ->
-            Transcriber.punctuate(url, token, text)
+        fieldOp(R.string.punctuating) { road, text ->
+            Transcriber.punctuate(road, text)
         }
 
     /**
@@ -1062,12 +1118,12 @@ class DictationIme : InputMethodService() {
      */
     private fun fieldOp(
         note: Int,
-        call: (String, String, String) -> Transcriber.Result,
+        call: (Link.Road, String) -> Transcriber.Result,
     ) {
         if (busy) return
         if (privateField) { say(getString(R.string.private_field)); return }
-        if (Prefs.token(this).isEmpty()) {
-            sayError(getString(R.string.needs_setup)) { openSetup() }; return
+        if (!Link.ready(this)) {
+            sayError(getString(Link.step(this))) { openSetup() }; return
         }
         val ic = currentInputConnection ?: return
         val target = readTarget(ic)
@@ -1075,11 +1131,10 @@ class DictationIme : InputMethodService() {
         busy = true
         tint(busyColor)
         say(getString(note))
-        val url = Prefs.url(this)
-        val token = Prefs.token(this)
+        val app = applicationContext
         val mine = session
         thread {
-            val result = call(url, token, target.text)
+            val result = Link.ask(app) { call(it, target.text) }
             ui.post { putBack(result, target, mine) }
         }
     }

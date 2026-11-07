@@ -24,9 +24,11 @@ import android.util.Log
  * What goes: the phone's Said; the second reading's proposals, whole sentences
  * on the notification shade; a sentence copied from here; and the pasted address
  * and token, which are a key to the PC and would put those proposals back on Home
- * at the next look. The keyboard holds a transcript waiting for a field and the
- * last recording in memory, and a dictation can be on its way back: all of them
- * read [wipes], in this one process, and let go when it has moved.
+ * at the next look; and where the PCs are: the addresses that answered and the
+ * rows they came from ([Link.forget]). The keyboard holds a transcript waiting for
+ * a field and the last recording in hand, and a dictation can be on its way back
+ * or out of the spool: all of them read [wipes], in this one process, and let go
+ * when it has moved.
  *
  * Recordings no PC has yet are not here, because they are the only copy of those
  * words: [Lock.dropRecordings] has the rule. What stays is the phone's own: the
@@ -53,6 +55,7 @@ object Traces {
     fun wipe(c: Context) {
         wipes++
         Prefs.forget(c)
+        Link.forget(c)
         (c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancelAll()
         Prefs.clipOwed(c, true)
         val app = c.applicationContext

@@ -177,6 +177,12 @@ object Account {
     fun signedIn(c: Context): Boolean = session(c) != null
 
     /**
+     * Is a session sealed here? A word, not a read: a keyboard asks this on the
+     * main thread, on a phone that may be locked.
+     */
+    fun held(c: Context): Boolean = sp(c).getBoolean(KEY_HELD, false)
+
+    /**
      * A session sealed here that will never open again: the screen lock was
      * taken away and the Keystore key with it. Nobody pressed anything and no
      * server said so, but the phone is out of the account all the same, so the

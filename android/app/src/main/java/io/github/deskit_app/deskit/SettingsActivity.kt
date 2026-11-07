@@ -370,11 +370,11 @@ class SettingsActivity : Activity() {
         Prefs.save(this, url, token, switchBack.isChecked)
         say(getString(R.string.checking), Skin.DIM)
         thread {
-            // A one-second silent clip: proves DNS, Tailscale, TLS, the
-            // token and the model in one round trip, without needing the
-            // user to say anything.
+            // A one-second silent clip: proves the address, the token and
+            // the model in one round trip, without needing the user to say
+            // anything.
             val silent = ByteArray(Recorder.SAMPLE_RATE * 2)
-            val r = Transcriber.send(url, token, wavOf(silent))
+            val r = Transcriber.send(Link.pasted(this, url, token), wavOf(silent))
             runOnUiThread {
                 when (r) {
                     is Transcriber.Result.Ok -> say(getString(R.string.reachable), Skin.GREEN)
@@ -392,11 +392,9 @@ class SettingsActivity : Activity() {
      * latest there is nothing to fetch and nothing opens.
      */
     private fun checkForUpdate() {
-        val url = Prefs.url(this)
-        val token = Prefs.token(this)
         say(getString(R.string.checking), Skin.DIM, updateResult)
         thread {
-            val remote = Transcriber.versions(url, token)
+            val remote = Link.versions(this)
             val info = try { packageManager.getPackageInfo(packageName, 0) } catch (e: Exception) { null }
             val mine = info?.versionName ?: "?"
             val myCode = when {

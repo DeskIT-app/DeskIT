@@ -33,13 +33,25 @@ import javax.crypto.spec.GCMParameterSpec
  * can never open again ([get] returning null) lets a caller start over. A
  * Keystore key can die under us (a device policy, a changed lock screen on
  * some phones): that reads as nothing there, and the phone asks to join again.
+ *
+ * A phone with no screen lock cannot have such a key, and one that gets a lock
+ * later should not stay without it. Two aliases: [ALIAS] is a key with no
+ * condition, or one from before anyone kept count, and [STRICT] is the
+ * unlocked-only one. [strengthen] moves every file across by itself, one atomic
+ * file at a time, so a process killed in the middle leaves files under both, and
+ * [get] opens either until it runs again. Android tells nobody when a lock
+ * appears, so a look asks.
  */
 object Sealed {
     private const val STORE = "AndroidKeyStore"
     private const val ALIAS = "deskit.sealed.v1"
+    private const val STRICT = "deskit.sealed.v2"
     private const val MODE = "AES/GCM/NoPadding"
     private const val TAG_BITS = 128
     private const val IV_BYTES = 12
+    private const val SUFFIX = ".bin"
+    /** A phone whose Keystore will not make the strict key: it is not asked at every look. */
+    private const val NO_STRICT = "no_strict"
 
     /**
      * The phone is locked, or Keystore said no for now. Ask again later.
@@ -61,7 +73,7 @@ object Sealed {
 
     private fun dir(c: Context) = File(c.noBackupFilesDir, "sealed").apply { mkdirs() }
 
-    private fun file(c: Context, name: String) = File(dir(c), "$name.bin")
+    private fun file(c: Context, name: String) = File(dir(c), name + SUFFIX)
 
     fun has(c: Context, name: String): Boolean = file(c, name).exists()
 
@@ -80,28 +92,31 @@ object Sealed {
     private fun make(c: Context): SecretKey {
         if (locked(c)) throw NotNow("the phone is locked", locked = true)
         if (lockable(c)) {
-            try {
-                val strict = makeOne(unlockedOnly = true)
-                roundTrip(strict)
-                return strict
-            } catch (e: GeneralSecurityException) {
-                // A phone whose Keystore will not make the key, or makes it
-                // and then will not use it. Sealed without the condition
-                // beats not sealed at all.
-                Log.w("DeskIT", "no unlocked-only key here: ${e.javaClass.simpleName}")
-            } catch (e: ProviderException) {
-                Log.w("DeskIT", "no unlocked-only key here: ${e.javaClass.simpleName}")
-            }
+            strictKey()?.let { return it }
             // A phone that locked in this very moment fails the same way, and
             // the weaker key would be its key for good.
             if (locked(c)) throw NotNow("the phone is locked", locked = true)
         }
-        return makeOne(unlockedOnly = false)
+        return makeOne(ALIAS, unlockedOnly = false)
     }
 
-    private fun makeOne(unlockedOnly: Boolean): SecretKey {
+    /**
+     * Null on a phone whose Keystore will not make the key, or makes it and then
+     * will not use it. Sealed without the condition beats not sealed at all.
+     */
+    private fun strictKey(): SecretKey? = try {
+        makeOne(STRICT, unlockedOnly = true).also { roundTrip(it) }
+    } catch (e: GeneralSecurityException) {
+        Log.w("DeskIT", "no unlocked-only key here: ${e.javaClass.simpleName}")
+        null
+    } catch (e: ProviderException) {
+        Log.w("DeskIT", "no unlocked-only key here: ${e.javaClass.simpleName}")
+        null
+    }
+
+    private fun makeOne(alias: String, unlockedOnly: Boolean): SecretKey {
         val spec = KeyGenParameterSpec.Builder(
-            ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
@@ -119,13 +134,103 @@ object Sealed {
         d.doFinal(sealed)
     }
 
-    private fun stored(): SecretKey? {
-        val ks = KeyStore.getInstance(STORE).apply { load(null) }
-        return ks.getKey(ALIAS, null) as? SecretKey
-    }
+    private fun keystore() = KeyStore.getInstance(STORE).apply { load(null) }
+
+    private fun held(alias: String): SecretKey? = keystore().getKey(alias, null) as? SecretKey
+
+    /** The key to seal with. */
+    private fun stored(): SecretKey? = held(STRICT) ?: held(ALIAS)
 
     private fun drop() {
-        KeyStore.getInstance(STORE).apply { load(null) }.deleteEntry(ALIAS)
+        keystore().apply {
+            deleteEntry(STRICT)
+            deleteEntry(ALIAS)
+        }
+    }
+
+    private fun sealWith(key: SecretKey, name: String, plain: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(MODE)
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        cipher.updateAAD(name.toByteArray(Charsets.UTF_8))
+        return cipher.iv + cipher.doFinal(plain)
+    }
+
+    private fun openWith(key: SecretKey, name: String, raw: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(MODE)
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, raw, 0, IV_BYTES))
+        cipher.updateAAD(name.toByteArray(Charsets.UTF_8))
+        return cipher.doFinal(raw, IV_BYTES, raw.size - IV_BYTES)
+    }
+
+    private fun write(f: File, out: ByteArray) {
+        val tmp = File(f.path + ".tmp")
+        try {
+            tmp.writeBytes(out)
+        } catch (e: IOException) {
+            // A full phone, above all. What was sealed before is still there.
+            tmp.delete()
+            throw NotNow("the sealed file could not be written", false, e)
+        }
+        if (!tmp.renameTo(f)) {
+            tmp.delete()
+            throw NotNow("the sealed file could not be written")
+        }
+    }
+
+    /**
+     * Is what is here kept under a key a locked phone can use, on a phone that
+     * could do better now? The question is a Keystore call, so a look asks and a
+     * keyboard does not.
+     */
+    @Synchronized
+    fun weak(c: Context): Boolean = try {
+        lockable(c) && keystore().containsAlias(ALIAS) && !File(dir(c), NO_STRICT).exists()
+    } catch (e: GeneralSecurityException) {
+        false
+    } catch (e: IOException) {
+        false
+    }
+
+    /**
+     * A screen lock has appeared since the key was made: every file moves to one
+     * a locked phone cannot use, and the old key goes. Quiet: a phone that says
+     * nothing about having no lock says nothing about getting one, and whatever
+     * stops this leaves everything readable for the next look.
+     */
+    @Synchronized
+    fun strengthen(c: Context) {
+        if (!weak(c)) return
+        try {
+            val strict = held(STRICT) ?: strictKey()
+            if (strict == null) {
+                if (!locked(c)) File(dir(c), NO_STRICT).writeBytes(ByteArray(0))
+                return
+            }
+            val old = held(ALIAS) ?: return
+            for (f in dir(c).listFiles().orEmpty()) {
+                if (!f.name.endsWith(SUFFIX)) continue
+                val name = f.name.removeSuffix(SUFFIX)
+                val raw = f.readBytes()
+                if (raw.size < IV_BYTES) continue
+                val plain = try {
+                    openWith(old, name, raw)
+                } catch (e: AEADBadTagException) {
+                    continue                    // moved already
+                }
+                write(f, sealWith(strict, name, plain))
+                plain.fill(0)
+            }
+            keystore().deleteEntry(ALIAS)
+            Log.i("DeskIT", "sealed: what is here now needs the phone unlocked")
+        } catch (e: GeneralSecurityException) {
+            Log.w("DeskIT", "sealed: not moved: ${e.javaClass.simpleName}")
+        } catch (e: ProviderException) {
+            Log.w("DeskIT", "sealed: not moved: ${e.javaClass.simpleName}")
+        } catch (e: IOException) {
+            Log.w("DeskIT", "sealed: not moved: ${e.javaClass.simpleName}")
+        } catch (e: NotNow) {
+            // a phone that filled up, and the next look tries again
+        }
     }
 
     /**
@@ -156,19 +261,12 @@ object Sealed {
     /** Keep [plain] under [name], replacing what was there. */
     @Synchronized
     fun put(c: Context, name: String, plain: ByteArray) {
-        val aad = name.toByteArray(Charsets.UTF_8)
-        fun seal(key: SecretKey): ByteArray {
-            val cipher = Cipher.getInstance(MODE)
-            cipher.init(Cipher.ENCRYPT_MODE, key)
-            cipher.updateAAD(aad)
-            return cipher.iv + cipher.doFinal(plain)
-        }
         val out = try {
             try {
-                seal(stored() ?: make(c))
+                sealWith(stored() ?: make(c), name, plain)
             } catch (e: KeyPermanentlyInvalidatedException) {
                 drop()
-                seal(make(c))
+                sealWith(make(c), name, plain)
             }
         } catch (e: GeneralSecurityException) {
             throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", locked(c), e)
@@ -177,19 +275,7 @@ object Sealed {
         } catch (e: IOException) {
             throw NotNow("nothing could be sealed: ${e.javaClass.simpleName}", locked(c), e)
         }
-        val f = file(c, name)
-        val tmp = File(f.path + ".tmp")
-        try {
-            tmp.writeBytes(out)
-        } catch (e: IOException) {
-            // A full phone, above all. What was sealed before is still there.
-            tmp.delete()
-            throw NotNow("the sealed file could not be written", false, e)
-        }
-        if (!tmp.renameTo(f)) {
-            tmp.delete()
-            throw NotNow("the sealed file could not be written")
-        }
+        write(file(c, name), out)
     }
 
     /**
@@ -207,11 +293,16 @@ object Sealed {
         }
         if (raw.size < IV_BYTES) return null
         return try {
-            val key = stored() ?: return null
-            val cipher = Cipher.getInstance(MODE)
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, raw, 0, IV_BYTES))
-            cipher.updateAAD(name.toByteArray(Charsets.UTF_8))
-            cipher.doFinal(raw, IV_BYTES, raw.size - IV_BYTES)
+            val strict = held(STRICT)
+            val old = held(ALIAS)
+            if (strict == null && old == null) return null
+            try {
+                openWith(strict ?: old!!, name, raw)
+            } catch (e: AEADBadTagException) {
+                // a file [strengthen] had not reached when it was stopped
+                if (strict == null || old == null) throw e
+                openWith(old, name, raw)
+            }
         } catch (e: AEADBadTagException) {
             if (locked(c)) throw NotNow("the phone is locked", true, e)
             null
@@ -239,7 +330,8 @@ object Sealed {
      * comes back with an unlocked-only key and not the old one.
      */
     @Synchronized
-    fun dropKey() {
+    fun dropKey(c: Context) {
+        File(dir(c), NO_STRICT).delete()
         try {
             drop()
         } catch (e: GeneralSecurityException) {

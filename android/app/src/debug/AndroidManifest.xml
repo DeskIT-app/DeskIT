@@ -16,6 +16,12 @@
             android:exported="true"
             android:permission="android.permission.DUMP"
             android:label="Clipboard probe" />
+        <!-- One field, for the keyboard to come up on. -->
+        <activity
+            android:name=".FieldProbe"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:label="Field probe" />
         <!-- Whether a locked phone can use what is sealed: one log line. -->
         <receiver
             android:name=".ProbeReceiver"
