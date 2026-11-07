@@ -159,11 +159,28 @@ NOT_LINKED = "^Not connected yet$"
 HINT = "^https://"                               # what an empty address field shows
 
 
-def told(*args) -> str:
-    """One word to the debug probe, and the line it answers with."""
+_log_kept: list[str] = []
+
+
+def log_so_far() -> str:
+    """Everything the log has said since [log_forget], probes or no probes."""
+    return "".join(_log_kept) + drive.logcat()
+
+
+def log_forget() -> None:
+    _log_kept.clear()
     drive.logcat_clear()
-    drive.shell("am", "broadcast", "-n", f"{PKG}/.ProbeReceiver", *args)
-    end = time.time() + 15
+
+
+def told(*args, wait: float = 15) -> str:
+    """One word to the debug probe, and the line it answers with."""
+    _log_kept.append(drive.logcat())
+    drive.logcat_clear()
+    # The foreground queue: the background one is serial, and a network change or a new
+    # PIN sends it system broadcasts that hold a probe for the whole of adb's patience.
+    drive.shell("am", "broadcast", "--receiver-foreground", "-n", f"{PKG}/.ProbeReceiver", *args,
+                timeout=150)
+    end = time.time() + wait
     while time.time() < end:
         for line in drive.logcat().splitlines():
             if "probe:" in line:
@@ -218,6 +235,7 @@ def leave_traces(acct: fake_pc.FakeAccount) -> None:
     line pasted, and a proposal from the second reading on Home and on the shade."""
     propose(acct)
     plant(acct)
+    told("--es", "link", "plant")                # where the PCs are, as a door leaves it
     drive.kill()                                 # Home asks the PC as it opens
     drive.home()
     drive.wait(MEANT, 20)
@@ -237,6 +255,9 @@ def no_traces(acct: fake_pc.FakeAccount, road: str) -> None:
           until(lambda: MEANT not in drive.notifications(), 10))
     on = clip()
     check(f"{road}: none on the clipboard", "clip=DeskIT" not in on, on)
+    held = sealed_files()
+    check(f"{road}: nothing says where the PC is", "link_routes.bin" not in held
+          and "device_rows.bin" not in held, held)
 
 
 def nothing_on_home(road: str) -> None:
