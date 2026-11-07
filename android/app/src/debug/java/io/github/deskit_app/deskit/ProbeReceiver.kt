@@ -178,6 +178,25 @@ class ProbeReceiver : BroadcastReceiver() {
             }
         }
         "drain" -> "more=${Spool.drain(c)}"
+        "parts" -> {
+            // Where a dictation's time goes, one piece at a time.
+            fun ms(t: Long) = (System.nanoTime() - t) / 1_000_000
+            val wav = silence()
+            var t = System.nanoTime()
+            val item = Spool.keep(c, wav)
+            val keep = ms(t)
+            t = System.nanoTime()
+            val pcs = Link.pcs(c).size
+            val read = ms(t)
+            t = System.nanoTime()
+            val knock = Link.reach(c)
+            val reach = ms(t)
+            t = System.nanoTime()
+            val r = Link.dictate(c, item)
+            val all = ms(t)
+            Spool.done(c, item)
+            "parts keep=$keep rows=$read($pcs) knock=$reach($knock) dictate=$all ok=${r is Transcriber.Result.Ok}"
+        }
         "plant" -> {
             Sealed.putText(c, "link_routes", "{}")
             Sealed.putText(c, "device_rows", "[]")
@@ -203,7 +222,11 @@ class ProbeReceiver : BroadcastReceiver() {
             }
             "rechecked"
         }
-        else -> if (what.startsWith("try:")) tryPort(c, what.substring(4).toInt()) else "what=$what"
+        else -> when {
+            what.startsWith("try:") -> tryPort(c, what.substring(4).toInt())
+            what.startsWith("tls:") -> tls(c, what.substring(4).toInt())
+            else -> "what=$what"
+        }
     }
 
     /**
@@ -233,6 +256,47 @@ class ProbeReceiver : BroadcastReceiver() {
             return "$nets unbound ${one(null)}"
         }
         return all()
+    }
+
+    /** One TLS handshake by hand, then one GET by HttpsURLConnection: where a knock's time goes. */
+    private fun tls(c: Context, port: Int): String {
+        val s = Account.session(c) ?: return "no session"
+        val mine = ClientKey.forDoor(c, Lock.deviceId(c, s.uid)) ?: return "no key"
+        val pin = Link.pcs(c).firstOrNull()?.pin ?: return "no pc"
+        val ctx = Pin.context(Pin.Trust(pin), mine)
+        fun ms(t: Long) = (System.nanoTime() - t) / 1_000_000
+        val out = ArrayList<String>()
+        repeat(3) {
+            var t = System.nanoTime()
+            val raw = java.net.Socket()
+            raw.connect(java.net.InetSocketAddress("10.0.2.2", port), 3000)
+            val tcp = ms(t)
+            t = System.nanoTime()
+            val tls = ctx.socketFactory.createSocket(raw, "10.0.2.2", port, true) as javax.net.ssl.SSLSocket
+            tls.startHandshake()
+            val shake = ms(t)
+            t = System.nanoTime()
+            tls.outputStream.write("GET /health HTTP/1.0\r\n\r\n".toByteArray())
+            tls.outputStream.flush()
+            val got = tls.inputStream.readBytes().size
+            val answer = ms(t)
+            tls.close()
+            out.add("by hand: tcp=$tcp tls=$shake (${tls.session.protocol}) get=$answer ($got bytes)")
+        }
+        repeat(3) {
+            val t = System.nanoTime()
+            val conn = (java.net.URL("https", "10.0.2.2", port, "/health").openConnection(java.net.Proxy.NO_PROXY)
+                as javax.net.ssl.HttpsURLConnection).apply {
+                sslSocketFactory = ctx.socketFactory
+                hostnameVerifier = Pin.Names(pin)
+                setRequestProperty("Connection", "close")
+            }
+            val code = conn.responseCode
+            conn.inputStream.readBytes()
+            conn.disconnect()
+            out.add("HttpsURLConnection: ${ms(t)} ms ($code)")
+        }
+        return out.joinToString(" | ")
     }
 
     private fun running(): DictationIme? = try {

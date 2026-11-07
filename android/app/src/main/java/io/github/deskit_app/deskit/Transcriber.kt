@@ -114,6 +114,27 @@ object Transcriber {
     fun versions(road: Link.Road): Versions? =
         getJson(road, "/api/version")?.let { Versions.from(it) }
 
+    /**
+     * Does the PC refuse who is asking? A long POST cannot say: the PC answers 401
+     * before it has read the body and closes, and the phone, still writing, sees a
+     * broken pipe. A GET that needs the same proof can.
+     */
+    fun refused(road: Link.Road): Boolean {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = road.open("/api/version").apply {
+                connectTimeout = road.connectMs
+                readTimeout = road.readMs
+                road.prove(this)
+            }
+            conn.responseCode == 401
+        } catch (e: IOException) {
+            false
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
     /** One GET as JSON, or null. */
     private fun getJson(road: Link.Road, path: String): JSONObject? {
         var conn: HttpURLConnection? = null
@@ -224,7 +245,7 @@ object Transcriber {
             val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader()?.use { it.readText() } ?: ""
             when {
-                code == 401 -> Result.Err("bad token — check setup")
+                code == 401 -> Result.Err(BAD_TOKEN)
                 code in REFUSED -> Result.Err(errorFrom(body, code), Why.REFUSED)
                 code !in 200..299 -> Result.Err(errorFrom(body, code))
                 else -> {
@@ -255,6 +276,9 @@ object Transcriber {
      * moment, and a recording is the only copy of what was said.
      */
     private val REFUSED = setOf(400, 409, 413, 415)
+
+    /** The pasted line's own failure, as it always read. */
+    const val BAD_TOKEN = "bad token — check setup"
 
     private fun errorFrom(body: String, code: Int): String = try {
         JSONObject(body).optString("error").ifEmpty { "server error $code" }

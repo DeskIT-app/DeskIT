@@ -89,6 +89,12 @@ object Link {
     private const val READ_EVERY_MS = 30_000L
     /** With a pasted line beside it, a door that just did not answer is not asked again yet. */
     private const val NOBODY_MS = 20_000L
+    /**
+     * A door that answered this recently is used with no knock first: a knock is a
+     * whole TLS connection, and sentence after sentence pays for it each time. One
+     * that fails after all is knocked on before it is given up.
+     */
+    private const val FRESH_MS = 60_000L
 
     /** An address, and never a name: a row names no host to look up. */
     private val IP = Regex("""(\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}""")
@@ -127,10 +133,14 @@ object Link {
 
     /** One address of one PC on one network. No bearer: the handshake is the proof. */
     private class Door(val pc: Pc, val addr: String, val net: Net, private val ssl: SSLContext,
-                       override val connectMs: Int, unreached: String) : Road(unreached) {
+                       override val connectMs: Int, unreached: String,
+                       val fresh: Boolean = false) : Road(unreached) {
         override val readMs = ANSWER_MS
 
-        fun quickly(ms: Int) = Door(pc, addr, net, ssl, ms, unreached)
+        /** Who this is, wherever it was made: the same PC, address, port and network. */
+        val mark: String get() = "${net.key}|${pc.id}|$addr|${pc.port}|${pc.pin}"
+
+        fun quickly(ms: Int, fresh: Boolean = false) = Door(pc, addr, net, ssl, ms, unreached, fresh)
 
         override fun open(path: String): HttpURLConnection {
             val url = URL("https", if (':' in addr) "[$addr]" else addr, pc.port, path)
@@ -140,6 +150,10 @@ object Link {
                 sslSocketFactory = ssl.socketFactory
                 hostnameVerifier = Pin.Names(pc.pin)
                 instanceFollowRedirects = false
+                // The door answers HTTP/1.0 and hangs up, and each Network handle has
+                // a pool of its own that keeps the socket it can never use again: 24
+                // half-closed sockets after ten dictations, measured, until this.
+                setRequestProperty("Connection", "close")
             }
         }
     }
@@ -291,6 +305,7 @@ object Link {
         routes = null
         lastRead = 0L
         nobodyUntil = 0L
+        answered = null
         Sealed.delete(c, ROUTES)
         Lock.dropRows(c)
     }
@@ -313,7 +328,16 @@ object Link {
         return out.sortedBy { it.first }.map { it.second }
     }
 
-    private fun answers(door: Door): Boolean = Transcriber.health(door) != null
+    /** The door that answered last, and when, in this process. */
+    @Volatile private var answered: Pair<String, Long>? = null
+
+    private fun heard(door: Door) {
+        answered = Pair(door.mark, SystemClock.elapsedRealtime())
+    }
+
+    private fun answers(door: Door): Boolean = (Transcriber.health(door) != null).also {
+        if (it) heard(door)
+    }
 
     /** Everything at once, and the first that answers. */
     private fun race(doors: List<Door>): Door? {
@@ -346,7 +370,13 @@ object Link {
         }
         val nets = nets(c)
         val doors = doors(c, pcs, nets).filter { it.pc.id !in skip }
-        remembered(c, doors)?.quickly(QUICK_MS)?.let {
+        remembered(c, doors)?.let { last ->
+            val when_ = answered?.takeIf { it.first == last.mark }?.second
+            if (when_ != null && SystemClock.elapsedRealtime() - when_ < FRESH_MS) {
+                Log.i("DeskIT", "link: the address from a moment ago, on ${last.net.word}")
+                return last.quickly(QUICK_MS, fresh = true)
+            }
+            val it = last.quickly(QUICK_MS)
             if (answers(it)) {
                 Log.i("DeskIT", "link: the address from last time answered, on ${it.net.word}")
                 return it
@@ -391,7 +421,14 @@ object Link {
                         if (skip.isEmpty()) nobodyUntil = SystemClock.elapsedRealtime() + NOBODY_MS
                         break
                     }
-                    if (stop(door)) return
+                    if (stop(door)) {
+                        heard(door)
+                        return
+                    }
+                    if (door.fresh) {
+                        answered = null             // knock first, the next time round
+                        continue
+                    }
                     skip.add(door.pc.id)
                 }
             } catch (e: Sealed.NotNow) {
@@ -441,7 +478,11 @@ object Link {
         var done: Transcriber.Result? = null
         try {
             roads(c) { road ->
-                val r = work(road)
+                var r = work(road)
+                if (road is Pasted && r is Transcriber.Result.Err && r.why == Transcriber.Why.UNREACHED &&
+                    Transcriber.refused(road)) {
+                    r = Transcriber.Result.Err(Transcriber.BAD_TOKEN)
+                }
                 val moveOn = r is Transcriber.Result.Err && r.why != Transcriber.Why.REFUSED
                 if (!moveOn) {
                     done = r

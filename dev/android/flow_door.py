@@ -92,6 +92,7 @@ class Pc:
         if self.model_off:
             raise RuntimeError("The speech model is off. Start it on the PC.")
         self.heard.append(wav)
+        self.last_at = time.perf_counter()
         return self.text, "fake", None
 
     def _translate(self, text: str):
@@ -259,9 +260,16 @@ def flow_first_join():
         hold_and_say()
         check("the second one lands too", until(lambda: len(pc.heard) == n + 1, 15))
         lines = fa.log_so_far()
-        check("with no race: the address from last time answered",
-              "the address from last time answered" in lines and "a race, won" not in lines,
+        check("with no race and no knock: the address from a moment ago",
+              "the address from a moment ago" in lines and "a race, won" not in lines,
               lines[-600:])
+        fa.log_forget()
+        drive.kill()
+        out = ask("dictate")
+        lines = fa.log_so_far()
+        check("a new process knocks on the address from last time",
+              f"dictated={SENTENCE}" in out and "the address from last time answered" in lines
+              and "a race, won" not in lines, lines[-600:])
         files = fa.sealed_files()
         check("what answered is sealed, under a name of its own", "link_routes.bin" in files, files)
         raw = drive.as_app("cat", "no_backup/sealed/link_routes.bin", check=False)
@@ -620,6 +628,9 @@ def flow_old_road():
         fa.told("--es", "url", f"http://10.0.2.2:{old.port}", "--es", "token", server_mod.load_token())
 
         pc.text = SENTENCE
+        fa.back()
+        fa.back()
+        drive.kill()
         real_join(acct)
         pc = acct._door_pc
         old.routes.transcribe = lambda wav: ("the-old-road-spoke", "fake", None)
@@ -637,15 +648,18 @@ def flow_old_road():
 
 
 def flow_keys():
-    """The keys that send what is in the field, on the door."""
+    """The keys that send what is in the field, on the door. Translate takes Hebrew
+    and nothing else, and adb cannot type it, so the field is dictated into."""
     acct = fa.fresh()
     try:
         real_join(acct)
+        pc = acct._door_pc
+        pc.text = "שלום עולם"
         field()
-        drive.shell("input", "text", "shalom")
-        check("something in the field", until(lambda: "shalom" in in_field(), 10), in_field()[:200])
+        hold_and_say()
+        check("something in the field", until(lambda: pc.text in in_field(), 15), in_field()[:200])
         press("punctuate")
-        check("the punctuate key goes through the door", until(lambda: "shalom." in in_field(), 15),
+        check("the punctuate key goes through the door", until(lambda: pc.text + "." in in_field(), 15),
               in_field()[:200])
         press("translate")
         check("and translate", until(lambda: "in-english" in in_field(), 15), in_field()[:200])
@@ -662,6 +676,7 @@ def flow_no_address():
         pc = acct._door_pc
         check("the row was read, words_sync and all", "link pcs=1:true " in ask("pcs"), ask("pcs"))
         pc.down()                                # the switch goes off on the PC
+        drive.kill()                             # nothing fresh in memory either
         pc.write(addrs=[], words_sync=False)
         drive.kill()
         drive.home()
@@ -1029,6 +1044,10 @@ def flow_timing():
         for _ in range(3):
             drive.kill()
             cold.append(one())
+        for _ in range(5):
+            print("     ", ask("parts"), flush=True)
+        t_door = []
+        heard = len(pc.heard)
         port = pc.door.port
         pc.down()
         t0 = time.time()
