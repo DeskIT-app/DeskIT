@@ -611,9 +611,12 @@ def refused(uid: str) -> str:
 
 def forget(uid: str | None = None) -> bool:
     """Delete my account: the key, and — for ``uid`` — every key of that
-    account set aside. Nothing else deletes a key."""
+    account set aside. Nothing else deletes a key. The slot is one, and until
+    this account's first look at it (``key``) it may hold another account's:
+    that one is not this account's to delete."""
     with _lock:
-        gone = secretstore.delete(KEY_NAME)
+        held = _read() if uid is not None else None
+        gone = secretstore.delete(KEY_NAME) if uid is None or (held or {}).get("uid") == str(uid) else False
         if uid is not None:
             try:
                 rows = _aside()

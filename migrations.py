@@ -32,6 +32,14 @@ import version
 
 log = logging.getLogger("app")
 
+#: How far each step's carrying goes: the words that step said nothing new
+#: about, never the current ones. A card's later words may name something
+#: new, and a row must not claim them unasked (2026-11-06: a copy at
+#: config_version 1 went from the 09-19 words straight to the 11-06 ones).
+ACCOUNT_WORDS = "deskit-terms-0+en-2026-09-23"
+SYNC_WORDS = "deskit-terms-0+en-2026-09-21"
+
+
 def _sync_follows_the_account() -> None:
     """The words-and-settings sync goes with the account (2026-09-20):
     a copy that signed in before this build never saw the Ready page's
@@ -45,9 +53,11 @@ def _sync_follows_the_account() -> None:
     # 2026-09-19 words, which read stale since 2026-09-23 — step 5 would
     # carry it forward, but only AFTER this step had already read it as
     # "not signed in". Carrying it here first is the same idempotent
-    # rewrite, one step early.
-    privacy.carry_forward("account", privacy.CARRIED_FORWARD.get("account", ()))
-    if privacy.consent("account") is not None and privacy.consent("settings_sync") is None:
+    # rewrite, one step early. A row of any version says the person signed
+    # in: this one may stand short of the current words, and so stale.
+    privacy.carry_forward("account", privacy.CARRIED_FORWARD.get("account", ()), to=ACCOUNT_WORDS)
+    signed_in = any(r.get("kind") == "account" for r in privacy.rows())
+    if signed_in and privacy.consent("settings_sync") is None:
         import consent_card as cc
         privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
 
@@ -79,7 +89,8 @@ def _the_lock_asks_nothing_new() -> None:
     or none, is left alone (privacy.CARRIED_FORWARD lists exactly which)."""
     import privacy
     for kind, old_versions in privacy.CARRIED_FORWARD.items():
-        privacy.carry_forward(kind, old_versions)
+        privacy.carry_forward(kind, old_versions,
+                              to=ACCOUNT_WORDS if kind == "account" else SYNC_WORDS)
 
 
 def _the_account_words_ask_nothing_new() -> None:
@@ -93,8 +104,7 @@ def _the_account_words_ask_nothing_new() -> None:
     To those words and no further: the card's 2026-11-06 words do name
     something new, and a row must not claim them unasked."""
     import privacy
-    privacy.carry_forward("account", privacy.CARRIED_FORWARD["account"],
-                          to="deskit-terms-0+en-2026-09-23")
+    privacy.carry_forward("account", privacy.CARRIED_FORWARD["account"], to=ACCOUNT_WORDS)
 
 
 def _each_copy_its_own_key_slot() -> None:
@@ -125,11 +135,18 @@ STEPS: list[tuple[int, object]] = [(2, _sync_follows_the_account),
 
 
 def current() -> int:
-    """The files' version: 1 for a copy that never wrote one."""
+    """The files' version: 1 for a copy that never wrote one. A state file
+    that will not read gives no version at all, and no step runs on a guess:
+    the early ones grant consents, once, to a copy that has never had them.
+    The stamp that follows (config.state_to_write) sets the file aside."""
     try:
-        state = config_mod.read_state(paths.STATE_FILE)
+        state = config_mod.read_state_strict(paths.STATE_FILE)
+    except config_mod.StateUnreadable as e:
+        log.warning("settings: %s — no upgrade step runs on it", e)
+        return version.CONFIG_VERSION
+    try:
         return int(state.get("config_version") or 1)
-    except Exception:                                        # noqa: BLE001
+    except (TypeError, ValueError):
         return 1
 
 

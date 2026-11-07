@@ -29,6 +29,9 @@
 --                       one thing no device can do for itself on another
 --                       device's behalf through the Data API. 0006 makes
 --                       the end of a session effective at the next request.
+--                       It answers whether a session ended, because a copy
+--                       that never wrote `session_id` loses its row and
+--                       stays signed in, and the person has to be told.
 --
 -- `platform` stays what it was and gains values: `windows-…` as today,
 -- `android-<sdk>` on a phone, later `web`.
@@ -63,8 +66,14 @@ alter table public.devices
 -- there is no error, so a second press changes nothing. Deleting the
 -- session takes its refresh tokens with it (their foreign key cascades).
 -- A device may name itself: Sign out on a phone is Forget on itself.
+-- It answers true when a session ended. False is a target that is not
+-- there, or a row that named no session of the caller's: a client older
+-- than this file, or one whose account gate was shut when it wrote its row.
+-- The row goes all the same, and that device stays signed in until its
+-- sessions end some other way, which is what the client then tells the
+-- person.
 create or replace function public.forget_device(target uuid)
-returns void
+returns boolean
 language plpgsql
 security definer
 set search_path = ''
@@ -72,6 +81,7 @@ as $$
 declare
   uid uuid := auth.uid();
   sid uuid;
+  ended boolean := false;
 begin
   if uid is null then
     raise exception 'forget_device: no session';
@@ -84,7 +94,9 @@ begin
     delete from auth.sessions s
      where s.id = sid
        and s.user_id = uid;
+    ended := found;
   end if;
+  return ended;
 end
 $$;
 

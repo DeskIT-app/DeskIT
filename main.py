@@ -3453,7 +3453,9 @@ class App:
             if not sb.configured():
                 return
             sb.start_worker(vocab=self.vocab, on_sent=self._report_sent)
-            for kind in ("settings_sync", "history_sync", "report_upload"):
+            # the account's own Turn on too: with that gate shut nothing
+            # moved, and the rest would wait for the next dictation or 15 min
+            for kind in ("account", "settings_sync", "history_sync", "report_upload"):
                 privacy.on_change(kind, sb.nudge)
             # the session going away — a second 401, Sign out, Delete my
             # account — locks the keys again, from whichever thread saw it

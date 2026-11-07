@@ -69,9 +69,11 @@ one Realtime topic per account that carries nothing but "go and pull".
   private addresses, its port. A row that does not open is ignored, so
   this server cannot add a device. `devices.session_id` is the session a
   device runs on, in the clear, so that `forget_device()` can end it: the
-  one new RPC, which deletes a device's row and its session, and ends
-  only a session that belongs to the caller. Who was forgotten is one
-  more sealed `vault` row, named `forgotten`, so there is no new table.
+  one new RPC, which deletes a device's row and its session, ends only a
+  session that belongs to the caller, and answers whether one ended: a
+  copy older than this file never wrote its session, so it loses its row
+  and stays signed in, and the app says so. Who was forgotten is one more
+  sealed `vault` row, named `forgotten`, so there is no new table.
 
 ## How to read it in ten minutes
 

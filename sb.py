@@ -113,6 +113,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone
 
+from config import LAST_ACCOUNT, SOMEBODY
 import net
 import paths
 import privacy
@@ -319,15 +320,17 @@ def _store_session(data: dict) -> dict:
             "name": str(meta.get("name") or meta.get("full_name") or "")[:NAME_MAX],
         },
     }
-    # before the session: a crash between the two leaves a record and no
-    # session, and the next sign-in of anybody reads that correctly
-    try:
-        _take_over(session["user"]["id"])
-    except Exception as e:                                   # noqa: BLE001
-        log.warning("account: the stores did not change hands at the sign-in (%s) — "
-                    "the first sync does it", e)
-    secretstore.set(SESSION_NAME, json.dumps(session))
+    # the record before the session: a crash between the two leaves a record
+    # and no session, and the next sign-in of anybody reads that correctly.
+    # One lock over both: a pass in flight must see the old session with
+    # the old cursor or the new one with none (``_write_cursor``)
     with _lock:
+        try:
+            _take_over(session["user"]["id"])
+        except Exception as e:                               # noqa: BLE001
+            log.warning("account: the stores did not change hands at the sign-in (%s) — "
+                        "the first sync does it", e)
+        secretstore.set(SESSION_NAME, json.dumps(session))
         _cache.update(loaded=True, session=session)
     return session
 
@@ -425,6 +428,16 @@ def _fresh() -> dict:
 #: Refresh Token Not Found)" — and it said nothing to a person.
 GONE_ELSEWHERE = "Signed out from another device."
 GONE_WORDS = "This PC was signed out."
+#: Sign out of every PC when it did not happen. Nothing is signed out then,
+#: this PC included: it is the one that can try again.
+SAY_YES_FIRST = ("Your other devices are still signed in. Say yes to the account's new "
+                 "words on Home first, then press Sign out of every PC again.")
+NO_ROAD_THERE = ("Your other devices are still signed in, because this PC could not reach "
+                 "your account. Try Sign out of every PC again when it is online.")
+#: Forget, when no session ended (``forget_device``).
+OLDER_COPY_WORDS = ("That device is off your list but still signed in: it is an older copy of "
+                    "DeskIT, or one that has not said yes yet. To end it, press Sign out of "
+                    "every PC.")
 
 
 def _account_gone(why: str, *, words: str = GONE_WORDS) -> None:
@@ -432,6 +445,7 @@ def _account_gone(why: str, *, words: str = GONE_WORDS) -> None:
     cursors; the next sign-in starts clean. Never a dialog: ``why`` goes
     to the log, ``words`` to the sign-in card."""
     log.warning("account: %s — signed out on this PC", why)
+    _keep_what_went_up()
     _clear_session()
     sync.forget_all()
     _forget_lock_state()
@@ -488,33 +502,31 @@ def _storage(method: str, path: str, *, body: bytes | None = None,
 
 # ----------------------------------------------------------- the profile
 
-def _state_reads() -> bool:
-    """Is state.json absent or readable? config.read_state says {} for a
-    file that is missing and for one that is damaged, and only the first
-    may have a new id written over it."""
+def _state() -> dict:
+    """state.json, or AccountError: {} would say nothing was ever written,
+    and a device id, a floor or a record of whose the stores are would then
+    be gone for this pass on the strength of one bad read
+    (config.read_state_strict)."""
+    import config
     try:
-        return isinstance(json.loads(paths.STATE_FILE.read_text("utf-8")), dict)
-    except FileNotFoundError:
-        return True
-    except (OSError, ValueError):
-        return False
+        return config.read_state_strict(paths.STATE_FILE)
+    except config.StateUnreadable as e:
+        raise AccountError(f"this PC's state file will not read ({e})") from e
 
 
 def _per_account(name: str) -> dict:
     """One of the maps state.json keeps by the account's uid."""
-    import config
-    data = config.read_state(paths.STATE_FILE).get(name)
+    data = _state().get(name)
     return dict(data) if isinstance(data, dict) else {}
 
 
-#: Whose the stores on this PC are (``_take_over``), and what each other
-#: account has to leave where it is. Not ``account.``: Delete my account
-#: takes those, and the next person must not look like this PC's first.
-LAST_ACCOUNT = "sync.last_account"
+#: Where each account's history stood when it signed out, and under which
+#: lock (``_keep_what_went_up``).
+PUSHED = "account.history_pushed"
+#: What each other account has to leave where it is (``_take_over``;
+#: LAST_ACCOUNT, beside it, says whose the stores are). SOMEBODY is what
+#: that says with no account to name: not an id, and not nobody.
 HELD_BACK = "sync.held_back"
-#: What LAST_ACCOUNT says once that account is deleted, and of a copy from
-#: before it was kept that somebody signed out of: not an id, and not nobody.
-SOMEBODY = "somebody"
 #: What ``vault.digest_keys`` hashes under at the door. No account's key,
 #: because the new account's may not be on this PC yet; these are hashes of
 #: long random keys, only ever compared with each other.
@@ -591,12 +603,10 @@ def _take_over(uid: str) -> None:
         return
     import config
     with _lock:
-        state = config.read_state(paths.STATE_FILE)
+        state = _state()
         last = str(state.get(LAST_ACCOUNT) or "")
         if last == uid:
             return
-        if not _state_reads():
-            raise AccountError("this PC's state file will not read, so whose words are here is not known")
         here = ((_load_session() or {}).get("user") or {}).get("id")
         before = last or str(here or "") or (SOMEBODY if state.get("account.device_id") else "")
         updates: dict = {LAST_ACCOUNT: uid}
@@ -649,6 +659,39 @@ def _reports_wait(old: str, new: str) -> None:
             pass                       # another account's are still in it
 
 
+def _keep_what_went_up() -> None:
+    """Where this PC's history stands on the account, kept past a sign-out.
+    ``sync.forget_all`` takes the cursors, so the same account back pushed
+    every line again, the server's trigger stamped each row new, and every
+    other device appended them all a second time: one sign-out doubled this
+    PC's lines on the others, and Sign out of every PC every pair of copies.
+    Kept with the lock it went up under and not as a floor, because a floor
+    says what must never go up, and a lock that changed meanwhile means
+    these rows must, under the new key (``_cursor_follows_lock``). Never
+    stops a sign-out."""
+    try:
+        who = user()
+        cursor = sync.read_cursor()
+        pushed = cursor.get("history_pushed_ts")
+        if who and pushed:
+            import config
+            config.save({PUSHED: {**_per_account(PUSHED),
+                                  who["id"]: {"ts": pushed, "lock": str(cursor.get("lock") or "")}}})
+    except Exception as e:                                   # noqa: BLE001
+        log.info("account: where the history stands was not kept (%s)", e)
+
+
+def _write_cursor(cursor: dict, uid: str) -> None:
+    """The cursor back on disk, only while the account it was read under is
+    still the one here. A pass in flight across a sign-in would otherwise
+    put the last account's cursor back after ``_take_over`` wiped it, and
+    the new account's first pass would take it for its own. Under the lock
+    the door and the session's write share."""
+    with _lock:
+        if (user() or {}).get("id") == uid:
+            sync.write_cursor(cursor)
+
+
 def _held_back(uid: str, store: str):
     """What ``uid`` leaves where it is in one store: marks, or for the
     cloud keys {name: hash}. Empty for an account that took nothing over."""
@@ -691,12 +734,12 @@ def device_id() -> str:
     another account the old id would be refused, and a phone would find no
     PC. A new one comes only when the account forgot the old (``_leave``).
     Never minted over a state file that will not read, which may hold the
-    real one: AccountError then, and the next pass looks again."""
+    real one: AccountError then (``_state``), and the next pass looks again."""
     import config
     session = _load_session()
     uid = str(((session or {}).get("user") or {}).get("id") or "")
     with _lock:
-        state = config.read_state(paths.STATE_FILE)
+        state = _state()
         ids = state.get("account.device_ids")
         ids = dict(ids) if isinstance(ids, dict) else {}
         current = str(state.get("account.device_id") or "")
@@ -706,8 +749,6 @@ def device_id() -> str:
         if ident and ident == current and (not uid or ids.get(uid) == ident):
             return ident
         if not ident:
-            if not _state_reads():
-                raise AccountError("this PC's state file will not read, so its device id is not known")
             ident = str(uuid.uuid4())
         updates: dict = {"account.device_id": ident}
         if uid:
@@ -1171,13 +1212,20 @@ def sign_out(everywhere: bool = True) -> None:
     ``everywhere=False`` is this PC's session only, the person's other
     PCs keep theirs: the wizard's "Not you?" and, since the Store walk of
     2026-10-03, the desk's own Sign out. The desk's Sign out of every PC
-    is the one caller of the default."""
+    is the one caller of the default. That one raises AccountError, with
+    the words for the person and nothing signed out, when it could not end
+    the others: it is what the changed lock's "It wasn't me" points to, and
+    saying it had done so would leave a stranger in. This PC's own sign-out
+    goes through whatever the server said, because the session is forgotten
+    here either way."""
     session = _load_session()
     if session is not None and configured():
         # every PC: the others first and told (_end_the_others), then
         # this one; if that road fails, the old one — all at once
         scope = "local"
         if everywhere:
+            if not privacy.allowed("account"):
+                raise AccountError(NO_ROAD_THERE if net.offline else SAY_YES_FIRST)
             try:
                 _end_the_others()
             except Exception as e:                           # noqa: BLE001
@@ -1185,10 +1233,18 @@ def sign_out(everywhere: bool = True) -> None:
                          "all at once instead", e)
                 scope = "global"
         try:
-            _auth("logout", {}, query=f"scope={scope}", bearer=True)
+            # a session that turned out dead on the way has already gone
+            if signed_in():
+                status, _said = _auth("logout", {}, query=f"scope={scope}", bearer=True)
+                if scope == "global" and status not in (200, 204):
+                    raise AccountError(f"HTTP {status}")
         except Exception as e:                               # noqa: BLE001
+            if scope == "global":
+                log.info("account: every PC was not signed out (%s)", e)
+                raise AccountError(NO_ROAD_THERE) from e
             log.info("account: the sign-out did not reach the server (%s) — "
                      "signed out here", e)
+    _keep_what_went_up()
     _clear_session()
     sync.forget_all()
     _forget_lock_state()          # the key file stays: the same account back on this PC needs no approval
@@ -1218,13 +1274,19 @@ def delete_account() -> None:
     vault.forget(uid)             # the key and every key of this account set aside
     _forget_lock_state()
     try:
-        _forgotten_file(uid).unlink(missing_ok=True)
+        listed = _forgotten_file(uid)
+        listed.unlink(missing_ok=True)
+        for kept in listed.parent.glob(f"{listed.name}.broken-*"):
+            kept.unlink(missing_ok=True)
     except OSError as e:
         log.info("account: the list of forgotten devices stayed (%s)", e)
     import config
-    maps = {name: {k: v for k, v in _per_account(name).items() if k != uid} or None
-            for name in ("account.device_ids", "account.past_devices", "account.history_floor",
-                         HELD_BACK)}
+    try:
+        maps = {name: {k: v for k, v in _per_account(name).items() if k != uid} or None
+                for name in ("account.device_ids", "account.past_devices", "account.history_floor",
+                             PUSHED, HELD_BACK)}
+    except AccountError:
+        maps = {}                 # the account is gone; the save sets the file aside
     config.save({"account.device_id": None, "account.device_seen_at": None,
                  "account.device_name": None, "account.device_session": None,
                  LAST_ACCOUNT: SOMEBODY, **maps})
@@ -1378,12 +1440,9 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
     # down instead, from the start of time (audit 2026-09-23, A7).
     broken = bool(getattr(vocab, "broken", None))
     since = "" if broken else str(cursor.get("vocab_pulled_at") or "")
-    query = "select=heard,meant,hits,last_used,deleted,updated_at&order=updated_at.asc&limit=2000"
-    if since:
-        query += "&updated_at=gt." + urllib.parse.quote(since)
-    status, rows = _rest("GET", "vocab_sync", purpose="sync", query=query)
-    if status != 200 or not isinstance(rows, list):
-        raise AccountError(f"vocabulary: {_server_said(status, rows)}")
+    rows = _rows_after("vocab_sync", word="vocabulary", purpose="sync",
+                       select="heard,meant,hits,last_used,deleted,updated_at",
+                       ties="heard.asc", since=since, page=VOCAB_PAGE)
     pulled = 0
     snapshot = dict(cursor.get("vocab_snapshot") or {})
     if rows:
@@ -1468,6 +1527,42 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
         cursor["vocab_pulled_at"] = ""
         return f"pulled {pulled}, pushed {pushed}, held back {held}"
     return f"pulled {pulled}, pushed {pushed}"
+
+
+#: One page of a pull (``_rows_after``).
+HISTORY_PAGE = 500
+VOCAB_PAGE = 2000
+
+
+def _rows_after(table: str, *, word: str, purpose: str, select: str, ties: str, since: str,
+                page: int, where: str = "") -> list:
+    """A page of ``table`` newer than ``since``, oldest first, and with it
+    every other row of the page's last stamp. A push is one statement and
+    the server's trigger stamps its whole batch alike, so a page can end in
+    the middle of a stamp, and the next page asks for what is later than
+    that stamp: the rest of the batch was skipped for good, on every other
+    device, with nothing to show for it. ``ties`` orders rows of one stamp,
+    in both queries, so the offset means the same in each."""
+    query = f"select={select}&order=updated_at.asc,{ties}&limit={page}{where}"
+    if since:
+        query += "&updated_at=gt." + urllib.parse.quote(since)
+    status, rows = _rest("GET", table, purpose=purpose, query=query)
+    if status != 200 or not isinstance(rows, list):
+        raise AccountError(f"{word}: {_server_said(status, rows)}")
+    if len(rows) < page:
+        return rows
+    last = str(rows[-1].get("updated_at") or "")
+    seen = sum(1 for r in rows if str(r.get("updated_at") or "") == last)
+    while True:
+        status, more = _rest("GET", table, purpose=purpose,
+                             query=f"select={select}&order={ties}&limit={page}&offset={seen}{where}"
+                                   f"&updated_at=eq.{urllib.parse.quote(last)}")
+        if status != 200 or not isinstance(more, list):
+            raise AccountError(f"{word}: {_server_said(status, more)}")
+        rows = rows + more
+        if len(more) < page:
+            return rows
+        seen += len(more)
 
 
 _device_names: dict = {"at": 0.0, "names": {}, "phone": False}
@@ -1573,13 +1668,10 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
     pulled = unopened = 0
     for _round in range(10):
         since = str(cursor.get("history_pulled_at") or "")
-        query = ("select=device_id,ts,kind,cipher,engine,seconds,updated_at"
-                 "&order=updated_at.asc&limit=500&device_id=neq." + mine)
-        if since:
-            query += "&updated_at=gt." + urllib.parse.quote(since)
-        status, rows = _rest("GET", "history", purpose="history", query=query)
-        if status != 200 or not isinstance(rows, list):
-            raise AccountError(f"history: {_server_said(status, rows)}")
+        rows = _rows_after("history", word="history", purpose="history",
+                           select="device_id,ts,kind,cipher,engine,seconds,updated_at",
+                           ties="device_id.asc,ts.asc,kind.asc", since=since,
+                           page=HISTORY_PAGE, where="&device_id=neq." + mine)
         if not rows:
             break
         lines = []
@@ -1593,8 +1685,8 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
             lines.append(sync.remote_line(opened, names.get(str(r.get("device_id")), "")))
         pulled += sync.append_remote_history(lines)
         cursor["history_pulled_at"] = str(rows[-1].get("updated_at") or since)
-        sync.write_cursor(cursor)
-        if len(rows) < 500:
+        _write_cursor(cursor, uid)
+        if len(rows) < HISTORY_PAGE:
             break
     # up
     events = history.all_events() if push else []
@@ -1615,7 +1707,7 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
             raise AccountError(f"history: {_server_said(status, data)}")
         pushed += len(batch)
         cursor["history_pushed_ts"] = batch[-1]["ts"]
-        sync.write_cursor(cursor)
+        _write_cursor(cursor, uid)
         if len(batch) < sync.HISTORY_BATCH:
             break
     word = f"pulled {pulled}, pushed {pushed}"
@@ -1823,7 +1915,11 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
     looked at twice; the pass takes the key this one seals with from
     what that one found."""
     out: dict[str, str] = {}
-    if not configured() or not signed_in():
+    if not configured() or not signed_in() or not privacy.allowed("account"):
+        # the account gate is under the two syncs: with it shut (stale, or
+        # withdrawn) their own gates still open, the words and settings went
+        # on syncing for the rest of the token's hour, and then every
+        # dictation left a refused row in network.log
         return out
     words = privacy.allowed("settings_sync")
     said = privacy.allowed("history_sync")
@@ -1839,7 +1935,8 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
             # a session this PC's record has not met (a copy from before
             # the record, a sign-in whose door tripped) stops here and not
             # at a push; if it cannot be told, nothing below runs
-            _take_over((user() or {}).get("id", ""))
+            uid = str((user() or {}).get("id") or "")
+            _take_over(uid)
             cursor = sync.read_cursor()
             if not after_pass:
                 try:
@@ -1849,10 +1946,9 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
             # the lock first: the key this pass seals and opens with,
             # made here on the account's first PC, asked for on the next
             try:
-                uid = _fresh()["user"]["id"]
                 key = _lock_key(uid) if after_pass else _ensure_lock(uid)
                 if key is not None:
-                    _cursor_follows_lock(cursor, key)
+                    _cursor_follows_lock(cursor, key, uid)
             except (AccountError, net.EgressRefused, net.NetError, vault.VaultError, OSError) as e:
                 out["lock"] = f"error: {e}"
                 _lock_state["error"] = str(e)[:200]
@@ -1876,7 +1972,7 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
                     # the account went away under us (a second 401): the
                     # cursors were dropped with it and must not come back
                     break
-                sync.write_cursor(cursor)
+                _write_cursor(cursor, uid)
             if changed and signed_in():
                 # each store went up under its own gate, so a push of
                 # history alone must not be sent under the other one
@@ -1934,7 +2030,8 @@ def drain_outbox(on_sent=None) -> dict:
     retrying it (a poison report, 8.8); a 5xx or no network leaves it
     queued. Returns {report_id: "sent" | "failed: why" | "queued: why"}."""
     out: dict[str, str] = {}
-    if not configured() or not signed_in() or not privacy.allowed("report_upload"):
+    if not configured() or not signed_in() or not privacy.allowed("account") \
+            or not privacy.allowed("report_upload"):
         return out
     try:
         files = sorted(paths.OUTBOX_DIR.glob("*.json"))
@@ -2045,14 +2142,52 @@ def _worker_pass(vocab, on_sent, only) -> None:
     A nudge names its stores and is those stores alone: a dictation must
     not cost the requests of an account pass. Only the app has a worker, so
     this is also where a leaving noticed in the desk or the wizard is
-    finished (``settle_left``)."""
+    finished (``settle_left``). ``only == ()`` is a look at the lock and
+    nothing else (``_plan_turn``)."""
     settle_left()
     if not signed_in():
         return
-    if only is None:
+    if not only:
         account_pass(reason="worker")
+    if only == ():
+        return
     sync_now(vocab, reason="nudge" if only else "worker", only=only, after_pass=only is None)
     drain_outbox(on_sent)
+
+
+def _plan_turn(plan: dict, named: set, now: float, waiting: bool):
+    """What one turn of the worker does, from what woke it: None a pass over
+    everything, a list those stores, ``()`` a look at the lock alone. The
+    15-minute pass was only ever the wait running out, and every nudge
+    restarts the wait, so a person dictating more often than that never got
+    one, and that pass is the account pass now: no forgotten list, no
+    request to join, no hooks. So it comes due by the clock, whatever woke
+    the worker. A PC waiting to be approved wakes every few seconds, and a
+    wake like that looks at its request and no more: the settings and the
+    words each turn were half its requests."""
+    if "*" in named or now - plan.get("full", float("-inf")) >= CADENCE_S:
+        plan["full"] = now
+        return None
+    if named:
+        return sorted(named)
+    if waiting:
+        return ()
+    plan["full"] = now
+    return None
+
+
+def _plan_wait(plan: dict, now: float, waiting: bool) -> float:
+    """How long the worker sleeps. Waiting to be approved it looks every few
+    seconds for the life of the first request, which is a person walking
+    to their other device; after that it is one who has walked away, and
+    one copy left waiting was 2,880 requests an hour on a free tier. The
+    ``paired`` event still answers at once, and a press here starts the
+    quick looks again."""
+    if not waiting:
+        plan.pop("asked", None)
+        return CADENCE_S
+    since = plan.setdefault("asked", now)
+    return PAIRING_POLL_S if now - since < PAIRING_TTL_S else CADENCE_S
 
 
 def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
@@ -2065,6 +2200,13 @@ def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
     global _worker, _live
     if not configured() or (_worker is not None and _worker.is_alive()):
         return _worker
+    # no network, and before anything can end the session: a copy from
+    # before the record that is signed in here says so now, or a session
+    # that dies first leaves its own account looking like somebody else
+    try:
+        _take_over((user() or {}).get("id", ""))
+    except Exception as e:                                   # noqa: BLE001
+        log.info("account: the record of this PC's account was not written (%s)", e)
 
     def _settings_stamp():
         try:
@@ -2075,6 +2217,7 @@ def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
     def loop() -> None:
         _wake.wait(FIRST_DELAY_S)
         seen = _settings_stamp()
+        plan: dict = {}
         while True:
             _wake.clear()
             with _lock:
@@ -2086,14 +2229,19 @@ def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
             if stamp != seen:
                 seen = stamp
                 named.add("settings")
-            only = None if (not named or "*" in named) else sorted(named)
+            only = _plan_turn(plan, named, time.monotonic(),
+                              _lock_state.get("state") == "waiting")
             try:
                 _worker_pass(vocab, on_sent, only)
             except Exception:                                # noqa: BLE001
                 log.debug("account worker tripped", exc_info=True)
-            wait = PAIRING_POLL_S if _lock_state.get("state") == "waiting" else CADENCE_S
+            wait = _plan_wait(plan, time.monotonic(), _lock_state.get("state") == "waiting")
             if _wake.wait(wait):
                 time.sleep(NUDGE_SETTLE_S)
+                with _lock:
+                    pressed = not _pending   # Same code, not a dictation
+                if pressed:
+                    plan.pop("asked", None)
 
     _worker = threading.Thread(target=loop, daemon=True, name="account-sync")
     _worker.start()
@@ -2150,6 +2298,7 @@ def _live_loop(vocab) -> None:
     tries = 0
     _live_state["asked"] = False
     while not _live_stop.is_set():
+        _live_state["joined"] = False
         try:
             if not (configured() and signed_in()) or _live_purpose() is None or net.offline:
                 _live_state["on"] = False
@@ -2159,12 +2308,15 @@ def _live_loop(vocab) -> None:
             _live_once(vocab)
             tries = 0
         except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
-            tries += 1
+            # a socket that joined and dropped is a laptop's lid, not a
+            # refusal: it starts the ladder again, or five minutes was
+            # every reconnect after a few nights' sleep
+            tries = 0 if _live_state["joined"] else tries + 1
             why = str(e)[:200]
             (log.info if why != _live_state["error"] else log.debug)("live: %s", why)
             _live_state.update(on=False, error=why)
         except Exception:                                    # noqa: BLE001
-            tries += 1
+            tries = 0 if _live_state["joined"] else tries + 1
             log.debug("live: tripped", exc_info=True)
             _live_state["on"] = False
         if _live_stop.wait(LIVE_RETRY_S[min(tries, len(LIVE_RETRY_S) - 1)]):
@@ -2205,7 +2357,7 @@ def _live_once(vocab) -> bool:
                 _live_state["asked"] = True
                 _ask_about_this_session("the live channel refused the join")
             raise AccountError(f"the live channel refused the join: {said}")
-        _live_state.update(on=True, error="", asked=False)
+        _live_state.update(on=True, error="", asked=False, joined=True)
         log.info("live: listening on the account's channel")
         if _lock_state.get("state") == "have":
             try:
@@ -2448,11 +2600,13 @@ def _lock_changed(uid: str, mine: str, remote: str) -> None:
     return None
 
 
-def _cursor_follows_lock(cursor: dict, key: bytes) -> None:
+def _cursor_follows_lock(cursor: dict, key: bytes, uid: str) -> None:
     """A lock the cursor has not seen — the first pass under one, or a
     key that changed: what was said and the keys sync again from the
     start (the rows on the server are sealed under the new key, the
-    other PCs' lines on this PC came under the old one)."""
+    other PCs' lines on this PC came under the old one). The first pass
+    after a sign-out is one of those, and under the same lock what went
+    up then is still up (``_keep_what_went_up``)."""
     fp = vault.fingerprint(key)
     if cursor.get("lock") == fp:
         return
@@ -2462,7 +2616,10 @@ def _cursor_follows_lock(cursor: dict, key: bytes) -> None:
         cursor.pop(name, None)
     sync.forget_remote()
     cursor["lock"] = fp
-    sync.write_cursor(cursor)
+    kept = _per_account(PUSHED).get(uid)
+    if isinstance(kept, dict) and kept.get("lock") == fp and kept.get("ts"):
+        cursor["history_pushed_ts"] = kept["ts"]
+    _write_cursor(cursor, uid)
 
 
 def _request_pairing(uid: str, remote: str) -> bytes | None:
@@ -2593,10 +2750,10 @@ def poll_lock() -> dict:
     try:
         if configured() and signed_in():
             with _sync_lock:
-                key = _ensure_lock(_fresh()["user"]["id"])
+                uid = _fresh()["user"]["id"]
+                key = _ensure_lock(uid)
                 if key is not None:
-                    cursor = sync.read_cursor()
-                    _cursor_follows_lock(cursor, key)
+                    _cursor_follows_lock(sync.read_cursor(), key, uid)
     except (AccountError, net.EgressRefused, net.NetError, vault.VaultError, OSError) as e:
         with _lock:
             _lock_state["error"] = str(e)[:200]
@@ -2997,16 +3154,32 @@ def _forgotten_rows(rows) -> list[dict]:
 
 
 def _read_forgotten(uid: str) -> list[dict] | None:
-    """The local list; None when the file is there and will not read,
-    which is not the same as empty: nothing may be written over it."""
+    """The local list; None when the file could not be opened this moment,
+    which is not the same as empty: nothing may be written over it. A file
+    that opened and is not a list will never read, and left in place it
+    meant an empty answer and nothing ever repairing it, with the door
+    open to every device on it. It is set aside, and the next account pass
+    writes the account's list in its place (``_keep_forgotten``), soon."""
+    path = _forgotten_file(uid)
     try:
-        data = json.loads(_forgotten_file(uid).read_text("utf-8"))
+        data = json.loads(path.read_text("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("not a list of devices")
     except FileNotFoundError:
         return []
-    except (OSError, ValueError) as e:
+    except ValueError as e:
+        log.warning("account: the list of forgotten devices is damaged and is set aside (%s)", e)
+        try:
+            os.replace(path, path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S')}"))
+        except OSError as moved:
+            log.warning("account: the damaged list stayed where it is (%s)", moved)
+            return None
+        nudge()
+        return []
+    except OSError as e:
         log.warning("account: the list of forgotten devices could not be read (%s)", e)
         return None
-    return _forgotten_rows(data.get("v") if isinstance(data, dict) else None)
+    return _forgotten_rows(data.get("v"))
 
 
 def _keep_forgotten(uid: str, rows: list[dict]) -> list[dict]:
@@ -3128,9 +3301,15 @@ def _forgotten_pass(uid: str) -> bool:
     It is written back only under a key the profile named: a sign-in reads
     before the lock is looked at, and a key the account moved on from would
     otherwise seal this PC's list over the account's. True when this PC
-    found itself on the list and left."""
+    found itself on the list and left. A PC with no key may be one that
+    started to leave and stopped: its own list says so, and it finishes,
+    or it would go on under the forgotten id, and write that row back."""
     key = vault.key(uid)
     if key is None or _lock_state.get("state") == "changed":
+        mine = device_id()
+        if any(r["device"] == mine for r in _read_forgotten(uid) or []):
+            _leave(uid, mine, key)
+            return True
         return False
     theirs = _account_forgotten(uid, key)
     union = _keep_forgotten(uid, theirs)
@@ -3143,7 +3322,7 @@ def _forgotten_pass(uid: str) -> bool:
     return False
 
 
-def _leave(uid: str, old: str, key: bytes) -> None:
+def _leave(uid: str, old: str, key: bytes | None) -> None:
     """This PC is on the account's forgotten list: its key moves aside,
     its row is never written again, and it asks to join as a new device,
     under a new id and, through FORGOTTEN_HOOKS, a new certificate, because
@@ -3152,13 +3331,16 @@ def _leave(uid: str, old: str, key: bytes) -> None:
     column, and the key is kept, so nothing it could read before is lost if
     the same key comes back to it. What it already said stays under the old
     id (``_history_floor``). ``account.left`` is what finishes this in the
-    app when a desk or the wizard noticed it (``settle_left``)."""
+    app when a desk or the wizard noticed it (``settle_left``). ``key`` is
+    None when an earlier try stopped after the key had gone: the state
+    written below is what that try left undone."""
     log.warning("account: this PC was forgotten on another device — its key is set aside "
                 "and it asks to join again as a new device")
     floor = _history_floor(uid)
     past = _per_account("account.past_devices")
     try:
-        vault.set_aside(uid, vault.fingerprint(key), why="this PC was forgotten")
+        if key is not None:
+            vault.set_aside(uid, vault.fingerprint(key), why="this PC was forgotten")
     except vault.VaultError as e:
         raise AccountError(f"this PC was forgotten and its key could not be set aside ({e})") from e
     also: dict = {"account.left": old,
@@ -3172,8 +3354,7 @@ def _leave(uid: str, old: str, key: bytes) -> None:
 
 
 def _left() -> bool:
-    import config
-    return bool(config.read_state(paths.STATE_FILE).get("account.left"))
+    return bool(_state().get("account.left"))
 
 
 def settle_left() -> bool:
@@ -3206,14 +3387,18 @@ def _mine() -> str:
     return device_id()
 
 
-def forget_device(device_id: str, cert: str) -> None:
+def forget_device(device_id: str, cert: str) -> bool:
     """Forget, from this device: the target goes on the account's list and
     on this PC's first, so a failure further on leaves it forgotten and
     never the other way round; then the row and its session go on the
     server (``forget_device()``, migration 0007, effective at once through
     0006); then the others are told. ``cert`` is the SHA-256 of the
     device's certificate, "" for a device that never wrote one. A PC does
-    not forget itself: that is Sign out."""
+    not forget itself: that is Sign out. True when its session ended. False
+    is a device that never said which session it runs on, an older copy or
+    one with its account gate shut: it is off the list of devices and goes
+    on working until Sign out of every PC, and whoever pressed Forget has
+    to be told, in OLDER_COPY_WORDS."""
     target = str(device_id or "").strip()
     if not _UUID.fullmatch(target):
         raise AccountError("that is not a device of this account")
@@ -3232,10 +3417,14 @@ def forget_device(device_id: str, cert: str) -> None:
                              payload={"target": target})
         if status not in (200, 204):
             raise AccountError(f"the server refused to forget it ({_server_said(status, data)})")
+        ended = data is True
         _device_names["at"] = 0.0
-    log.info("account: a device was forgotten on this PC")
+    log.info("account: a device was forgotten on this PC%s", "" if ended else ", and it stays signed in")
+    if not ended:
+        _status["last_error"] = OLDER_COPY_WORDS
     _broadcast(["devices"])
     _run_account_hooks(key)
+    return ended
 
 
 def _run_account_hooks(key: bytes) -> None:
@@ -3263,6 +3452,10 @@ def account_pass(reason: str = "") -> dict:
     with _sync_lock:
         try:
             uid = _fresh()["user"]["id"]
+            if vault.key(uid) is None:
+                # before the lock: a leaving that stopped half way must
+                # not ask to join under the id the account forgot
+                _forgotten_pass(uid)
             _ensure_lock(uid)
             if _forgotten_pass(uid):
                 _ensure_lock(uid)

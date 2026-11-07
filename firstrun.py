@@ -1864,11 +1864,20 @@ class Wizard:
     # it, nothing handed over is opened (sb.same_code), so a dishonest server
     # cannot answer the request by itself.
     LINK_POLL_S = 3.0
+    #: ...and past the life of the first request: a person who walked away
+    #: from this page is not worth four requests every three seconds.
+    LINK_IDLE_S = 60.0
 
     def _link_open(self) -> None:
         self._link_state = "waiting"
+        self._link_since = time.monotonic()
         self._account_show("link")
         self._link_poll_later()
+
+    def _link_wait(self) -> float:
+        import sb
+        waited = time.monotonic() - getattr(self, "_link_since", time.monotonic())
+        return self.LINK_POLL_S if waited < sb.PAIRING_TTL_S else self.LINK_IDLE_S
 
     def _account_link(self) -> None:
         import sb
@@ -1922,7 +1931,7 @@ class Wizard:
         self._link_cancel()
         if self._closing or getattr(self, "_link_state", "idle") != "waiting":
             return
-        self._link_after = self.root.after(int(self.LINK_POLL_S * 1000), self._link_poll)
+        self._link_after = self.root.after(int(self._link_wait() * 1000), self._link_poll)
 
     def _link_poll(self) -> None:
         self._link_after = None
@@ -1966,6 +1975,7 @@ class Wizard:
         device. No request and no wait in it; what was handed over is
         taken at the next poll, before or after the Approve."""
         import sb
+        self._link_since = time.monotonic()      # somebody is here
         try:
             sb.same_code(self.link_code.cget("text"))
         except Exception as e:                             # noqa: BLE001

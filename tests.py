@@ -44961,8 +44961,9 @@ class _FakeSupabase:
             rows = self.tables.setdefault("devices", [])
             hit = [r for r in rows if r.get("id") == payload["target"] and r.get("user_id") == caller]
             rows[:] = [r for r in rows if not any(r is h for h in hit)]
-            self.ended += [r["session_id"] for r in hit if self.sessions.get(r.get("session_id")) == caller]
-            return _FakeRaw(b"", 204)
+            ended = [r["session_id"] for r in hit if self.sessions.get(r.get("session_id")) == caller]
+            self.ended += ended
+            return _FakeRaw(b"true" if ended else b"false", 200)
         if path.startswith("rest/v1/"):
             table = path[len("rest/v1/"):]
             rows = self.tables.setdefault(table, [])
@@ -44978,7 +44979,7 @@ class _FakeSupabase:
                     # over one fake: UID is whoever signed in last
                     hit = [r for r in hit if r.get("user_id", self.UID) == self.UID]
                 for k, v in query.items():
-                    if k in ("select", "order", "limit", "on_conflict") or "." not in v:
+                    if k in ("select", "order", "limit", "offset", "on_conflict") or "." not in v:
                         continue
                     op, val = v.split(".", 1)
                     if op == "eq":
@@ -44990,7 +44991,13 @@ class _FakeSupabase:
                     elif op == "is" and val == "null":
                         hit = [r for r in hit if r.get(k) is None]
                 if method == "GET":
-                    return _FakeRaw(json.dumps(hit).encode(), 200)
+                    # PostgREST's paging, the way the client asks for it
+                    for spec in reversed([s for s in str(query.get("order", "")).split(",") if s]):
+                        name, _dot, way = spec.partition(".")
+                        hit.sort(key=lambda r: str(r.get(name) or ""), reverse=way == "desc")
+                    start = int(query.get("offset", 0))
+                    end = start + int(query["limit"]) if "limit" in query else None
+                    return _FakeRaw(json.dumps(hit[start:end]).encode(), 200)
                 if method == "DELETE":
                     rows[:] = [r for r in rows if not any(r is h for h in hit)]
                     return _FakeRaw(b"", 204)
@@ -47397,6 +47404,729 @@ def test_delete_my_account_leaves_the_next_account_nothing_of_it():
         pc.gone()
 
 
+def test_delete_my_account_takes_its_own_key_and_no_others():
+    """One slot, and until an account's first look at it the slot may hold
+    the account before it. vault.forget deleted whatever was there, so
+    Delete my account could take the other person's key, and on a PC that
+    held the only copy, with the syncs off and no recovery key, that key
+    was gone for good."""
+    import sb
+    import vault
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with pc:
+            first = vault.create(_ONE)
+            second = vault.create(_TWO)
+            assert vault.aside(_ONE) == [vault.fingerprint(first)]
+            assert vault.forget(_ONE) is False, "it said it took a key it left"
+            assert vault.aside(_ONE) == [], "its own set-aside key stayed"
+            assert vault.key(_TWO) == second, "another account's key went"
+            assert vault.forget(_TWO) is True and vault.key(_TWO) is None
+            assert vault.create(_ONE) and vault.forget() is True, "the plain call stopped working"
+
+        with _fixture_project() as fake, _consented("account"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _TWO)
+            sb.account_pass("test")
+            second = vault.key(_TWO)
+            sb.sign_out(everywhere=False)
+            # back, and no look at the slot yet: it still holds the other's
+            fake.UID = _ONE
+            _sign_in_pc(fake, "desk", uid=_ONE)
+            sb.delete_account()
+            assert vault.key(_TWO) == second, "Delete my account took another account's key"
+    finally:
+        pc.gone()
+
+
+def test_a_damaged_state_file_leaves_somebody_behind_and_nothing_goes_up():
+    """The road a start really takes. migrations.apply() runs first and
+    config.save wrote {config_version} over a state.json that would not read:
+    the record, the floors, the marks and the device id all gone, and the
+    next start saw a live session and counted it as this PC's first account,
+    so everything the last account left went up as this one's. Whatever
+    replaces the file now sets it aside and says somebody was here."""
+    import migrations
+    import secretstore
+    import sb
+    import vault
+    import version
+    import vocab as vocab_mod
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            v.learn_by_hand("a name heard", "a name meant")
+            config_mod.save({"vocab.terms": ["a name of the first"]})
+            secretstore.set("groq", "first-account-key-0123456789")
+            _says(pc, "said by one")
+            _signs_in(fake, _ONE)
+            sb.sync_now(v)
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _TWO)
+            sb.sync_now(v)
+
+            paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+            sb.forget_cache()
+            sb._forget_lock_state()
+            assert migrations.current() == version.CONFIG_VERSION, "a step ran on a guess"
+            assert migrations.apply() is None
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert state[sb.LAST_ACCOUNT] == sb.SOMEBODY, state
+            assert state["config_version"] == version.CONFIG_VERSION
+            kept = [p for p in pc.home.iterdir() if p.name.startswith("state.json.broken-")]
+            assert len(kept) == 1 and kept[0].read_text("utf-8") == "{ cut in half", "the old file went"
+
+            out = sb.sync_now(v)
+            assert out["history"] == "pulled 0, pushed 0", out
+            assert out["settings"] == "same" and out["vocab"].endswith("pushed 0"), out
+            assert not [r for r in fake.tables.get("history", []) if r["user_id"] == _TWO]
+            assert not [r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == _TWO]
+            assert not [r for r in fake.tables.get("settings_sync", []) if r["user_id"] == _TWO]
+            assert not [r for r in fake.tables.get("vault", []) if r["user_id"] == _TWO and r["name"] == "groq"]
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _TWO
+            assert vault.key(_TWO), "the account's own key went with the file"
+    finally:
+        pc.gone()
+
+
+def test_one_bad_read_of_the_state_file_is_not_an_empty_file():
+    """read_state answers {} for a read that failed this once, and a file
+    that was fine by then passed the check after it. A read tried again
+    gets the file; one that keeps failing raises, and a save then writes
+    nothing, where it used to write back {} plus its one key over everything
+    in the file."""
+    import sb
+
+    real = Path.read_text
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            ident = sb.device_id()
+            before = paths.STATE_FILE.read_bytes()
+            failures = [1]
+
+            def once(self, *a, **k):
+                if self == paths.STATE_FILE and failures:
+                    failures.pop()
+                    raise PermissionError("held for a moment")
+                return real(self, *a, **k)
+
+            def always(self, *a, **k):
+                if self == paths.STATE_FILE:
+                    raise PermissionError("held")
+                return real(self, *a, **k)
+
+            with _patched(Path, "read_text", once):
+                assert config_mod.read_state_strict(paths.STATE_FILE).get("account.device_id") == ident
+            assert not failures
+            with _patched(Path, "read_text", always):
+                for ask in (lambda: sb._take_over(_TWO), sb.device_id, lambda: sb._per_account("account.device_ids")):
+                    try:
+                        ask()
+                    except sb.AccountError as e:
+                        assert "will not read" in str(e), str(e)
+                    else:
+                        raise AssertionError("a read that failed answered")
+                try:
+                    config_mod.save({"dot.x": 5})
+                except config_mod.StateUnreadable as e:
+                    assert not e.damaged
+                else:
+                    raise AssertionError("a save wrote over a file it could not read")
+            assert paths.STATE_FILE.read_bytes() == before, "a failed read cost the file"
+    finally:
+        pc.gone()
+
+
+def test_a_save_waits_for_another_process_and_never_for_long():
+    """Two programs write state.json, each reading the whole file and writing
+    it back, so one could lose what the other just wrote. One byte beside it
+    keeps them in turn. The wait has a bound: past it the save goes on
+    without the byte, so nothing can hang the app or the desk on it."""
+    import msvcrt
+
+    d, s, t = _layer_files()
+    lock = t.with_name(t.name + ".lock")
+    try:
+        config_mod.write_state(t, {"sync.first": 1})
+        other = lock.open("a+b")               # another process's handle
+        msvcrt.locking(other.fileno(), msvcrt.LK_NBLCK, 1)
+
+        def saves():
+            config_mod.save({"sync.second": 2}, settings=s, state=t)
+
+        worker = threading.Thread(target=saves, daemon=True)
+        with _patched(config_mod, "SAVE_WAIT_S", 5.0):
+            worker.start()
+            time.sleep(0.15)
+            assert worker.is_alive(), "the save did not wait its turn"
+            config_mod.write_state(t, {"sync.first": 1, "sync.from_the_other": 3})
+            other.seek(0)
+            msvcrt.locking(other.fileno(), msvcrt.LK_UNLCK, 1)
+            worker.join(3)
+        assert not worker.is_alive()
+        state = config_mod.read_state(t)
+        assert state.get("sync.from_the_other") == 3 and state.get("sync.second") == 2, state
+
+        other.seek(0)
+        msvcrt.locking(other.fileno(), msvcrt.LK_NBLCK, 1)     # held and never let go
+        start = time.monotonic()
+        with _patched(config_mod, "SAVE_WAIT_S", 0.1):
+            config_mod.save({"sync.third": 3}, settings=s, state=t)
+        assert time.monotonic() - start < 2.0, "a held byte hung a save"
+        assert config_mod.read_state(t).get("sync.third") == 3
+        other.seek(0)
+        msvcrt.locking(other.fileno(), msvcrt.LK_UNLCK, 1)
+        other.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_copy_at_config_version_1_stops_at_the_words_each_step_wrote_for():
+    """Steps 2 and 4 carried a row with no `to=`, so a copy at config_version
+    1 or 2 went from the 2026-09-19 words straight to the 2026-11-06 ones, a
+    yes to words nobody showed it. Each stops at the words it was written
+    about, and then Home asks. A row short of the current words still says
+    the person signed in, so step 2 goes on granting the sync it grants."""
+    import migrations
+    import privacy
+
+    old = "deskit-terms-0+en-2026-09-19"
+    versions = {**privacy.TEXT_VERSIONS, "account": old, "settings_sync": old, "history_sync": old}
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            with _patched(privacy, "TEXT_VERSIONS", versions):
+                for kind in ("account", "settings_sync", "history_sync"):
+                    privacy.grant(kind, old)
+            assert migrations.current() == 1
+            assert migrations.apply() is None
+            rows = {r["kind"]: r for r in privacy.rows()}
+            assert rows["account"]["text_version"] == migrations.ACCOUNT_WORDS, rows["account"]
+            assert rows["account"]["text_version"] != privacy.TEXT_VERSIONS["account"]
+            assert rows["settings_sync"]["text_version"] == migrations.SYNC_WORDS
+            assert rows["history_sync"]["text_version"] == migrations.SYNC_WORDS
+            assert privacy.consent("account") is None and "account" in privacy.stale()
+
+            # an account row and no sync rows: signed in, so the sync follows
+            for kind in ("account", "settings_sync", "history_sync"):
+                privacy.withdraw(kind)
+            config_mod.save({"config_version": None})
+            with _patched(privacy, "TEXT_VERSIONS", versions):
+                privacy.grant("account", old)
+            assert migrations.apply() is None
+            assert privacy.consent("settings_sync") is not None, "step 2 read the row as not signed in"
+            assert {r["kind"]: r for r in privacy.rows()}["account"]["text_version"] == migrations.ACCOUNT_WORDS
+    finally:
+        for kind in ("account", "settings_sync", "history_sync"):
+            privacy.withdraw(kind)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_forget_says_whether_it_ended_the_device():
+    """0007 took the row and ended the session the row named. A copy older
+    than it never wrote `session_id`, nor did a new copy with its account gate
+    shut, so Forget took the row, ended nothing, and said it was done: that
+    device went on working. The server now answers whether a session ended,
+    and the person is told, in plain words, what to press instead."""
+    import sb
+
+    older = "99999999-8888-7777-6666-555555555502"
+    sid = "bbbbbbbb-0000-4000-8000-000000000009"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            fake.sessions[sid] = _ONE
+            _a_phone_row(fake, _PHONE, session_id=sid)
+            _a_phone_row(fake, older)
+            assert sb.forget_device(_PHONE, _PHONE_CERT) is True
+            assert fake.ended == [sid] and not sb.status()["last_error"]
+            assert sb.forget_device(older, "") is False, "it said it ended a copy it did not"
+            assert fake.ended == [sid]
+            assert sb.status()["last_error"] == sb.OLDER_COPY_WORDS
+            assert "older copy" in sb.OLDER_COPY_WORDS and "Sign out of every PC" in sb.OLDER_COPY_WORDS
+            assert older in sb.forgotten(), "the list must hold it either way"
+            assert all(r["id"] != older for r in fake.tables["devices"]), "the row stayed"
+    finally:
+        pc.gone()
+
+
+def test_sign_out_of_every_pc_ends_them_or_says_it_did_not():
+    """With the account gate stale each logout was refused at the gate and
+    swallowed, so Sign out of every PC ended nothing and said it had, and that
+    is the button the changed lock's "It wasn't me" points to, to throw a
+    stranger out. It raises now, with the words, and this PC stays signed in
+    to try again. Plain Sign out is this PC's own and needs no server."""
+    import privacy
+    import sb
+
+    stale = {**privacy.TEXT_VERSIONS, "account": "deskit-terms-0+en-2099-01-01"}
+
+    def no_road(*a, **k):
+        raise OSError("no road")
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            with _patched(privacy, "TEXT_VERSIONS", stale):
+                assert not privacy.allowed("account")
+                fake.calls.clear()
+                try:
+                    sb.sign_out()
+                except sb.AccountError as e:
+                    assert str(e) == sb.SAY_YES_FIRST, str(e)
+                else:
+                    raise AssertionError("it said it signed out the others")
+                assert sb.signed_in(), "this PC went and the others stayed"
+                assert not fake.to_project(), "a refused request left a row in network.log"
+            with _patched(sb, "_auth", no_road):
+                try:
+                    sb.sign_out()
+                except sb.AccountError as e:
+                    assert str(e) == sb.NO_ROAD_THERE, str(e)
+                else:
+                    raise AssertionError("it said it signed out the others")
+            assert sb.signed_in()
+            assert len(sb.SAY_YES_FIRST) <= 200 and len(sb.NO_ROAD_THERE) <= 200, "main cuts at 200"
+            with _patched(sb, "_auth", no_road):
+                sb.sign_out(everywhere=False)
+            assert not sb.signed_in(), "this PC's own sign-out needs no server"
+    finally:
+        pc.gone()
+
+
+def test_with_the_account_gate_shut_nothing_leaves():
+    """sync_now asked the two syncs' gates and never the account's, under them
+    both. With that gate stale the words and settings went on syncing until
+    the token's hour was over, and then every dictation left refused rows in
+    network.log. Shut means shut: no request, no row, reports included."""
+    import net as net_mod
+    import privacy
+    import sb
+
+    stale = {**privacy.TEXT_VERSIONS, "account": "deskit-terms-0+en-2099-01-01"}
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, \
+                _consented("account", "settings_sync", "history_sync", "report_upload"), pc:
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            _says(pc, "said with the gate shut")
+            paths.OUTBOX_DIR.mkdir(parents=True)
+            (paths.OUTBOX_DIR / "aaaaaaaa-bbbb-cccc-dddd-000000000004.json").write_text("{}", "utf-8")
+            with _patched(privacy, "TEXT_VERSIONS", stale):
+                net_mod.ROWS.clear()
+                fake.calls.clear()
+                assert sb.sync_now() == {}
+                assert sb.drain_outbox() == {}
+                sb._worker_pass(None, None, ["history"])
+                sb._worker_pass(None, None, None)
+                assert not fake.to_project(), [c["path"] for c in fake.to_project()]
+                assert not list(net_mod.ROWS), "a refused row in network.log"
+            assert "pushed 1" in sb.sync_now()["history"], "the yes did not bring it back"
+    finally:
+        pc.gone()
+
+
+def test_turn_on_wakes_the_worker():
+    """The account's own card was not among the gates that nudge the worker,
+    so after Turn on the rest waited for the next dictation or 15 minutes."""
+    import main
+    import privacy
+    import sb
+    import types
+
+    stub = types.SimpleNamespace(vocab=None, _report_sent=None, _lock=lambda: None,
+                                 _pairing_asked=lambda *a: None, _pairing_settled=lambda *a: None)
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project(), pc, _patched(privacy, "_resets", {}), \
+                _patched(sb, "start_worker", lambda **k: None), _patched(sb, "SIGNED_OUT_HOOKS", []), \
+                _patched(sb, "PAIRING_HOOKS", []), _patched(sb, "LOCK_HOOKS", []):
+            main.App._start_account(stub)
+            sb._pending.clear()
+            with _consented("account"):
+                assert "*" in sb._pending, "Turn on left the worker asleep"
+    finally:
+        pc.gone()
+
+
+def test_a_sign_out_and_back_doubles_nothing_on_the_other_devices():
+    """forget_all took the cursor and nothing kept it, so a plain sign-out and
+    sign-in pushed every line again, the server's trigger stamped each row
+    new, and every other device appended them a second time. Sign out of every
+    PC did it to every pair of copies. Where the history stood goes back with
+    the account, through a refused session too, and a line not yet up still
+    goes. It is kept with its lock and is not a floor: a lock that changed
+    means the rows must go up again, under the new key."""
+    import sb
+    import sync as sync_mod
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    sid = "bbbbbbbb-0000-4000-8000-000000000011"
+
+    def lines() -> str:
+        return sync_mod.remote_history_path().read_text("utf-8")
+
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with a:
+                _sign_in_pc(fake, "desk", sid=sid)
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+            with a:
+                _says(a, "said once")
+                assert sb.sync_now()["history"] == "pulled 0, pushed 1"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 1, pushed 0"
+
+                # a plain sign-out and back
+            with a:
+                sb.sign_out(everywhere=False)
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "it pushed its lines again"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "the other device took them twice"
+                assert lines().count("said once") == 1
+
+                # a line not yet up goes, and only that one
+            with a:
+                _says(a, "said last")
+                sb.sign_out(everywhere=False)
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 1"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 1, pushed 0"
+
+                # the road through a refused session
+            with a:
+                fake.ended.append(sid)
+                sb.sync_now()
+                assert not sb.signed_in() and not sync_mod.cursor_path().exists()
+                fake.ended.clear()
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "a dead session cost the mark"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+                assert lines().count("said once") == 1 and lines().count("said last") == 1
+
+                # under another lock the rows go up again, as they must
+            with a:
+                sb.sign_out(everywhere=False)
+                kept = config_mod.read_state(paths.STATE_FILE)[sb.PUSHED]
+                config_mod.save({sb.PUSHED: {fake.UID: {**kept[fake.UID], "lock": "0" * 16}}})
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 2", "a mark of another lock held them"
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_the_worker_writes_down_whose_the_stores_are_before_anything_can_end_the_session():
+    """A copy from before the record learned whose the stores were at a
+    refresh or inside sync_now, behind its gates. A session that died first
+    left no record and a device id on file, which reads as somebody else, so
+    the person's own account came back to nothing of its own. The worker
+    writes it at its start, with no network."""
+    import sb
+
+    class Held:
+        def __init__(self, *a, **k):
+            self.daemon = True
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            config_mod.save({"account.device_id": "ffffffff-6666-4666-8666-666666666666"})
+            fake.UID = _ONE
+            _sign_in_pc(fake, "desk", uid=_ONE)
+            _says(pc, "said before the update")
+            assert sb.LAST_ACCOUNT not in config_mod.read_state(paths.STATE_FILE)
+            fake.calls.clear()
+            with _patched(sb, "_worker", None), _patched(sb, "_live", None), \
+                    _patched(threading, "Thread", Held):
+                sb.start_worker()
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _ONE
+            assert not fake.to_project(), "the record cost a request"
+            sb._account_gone("the session died before the first pass")
+            _signs_in(fake, _ONE)
+            assert sb.sync_now()["history"] == "pulled 0, pushed 1", "its own account came back as another"
+    finally:
+        pc.gone()
+
+
+def test_dictation_does_not_starve_the_fifteen_minute_pass():
+    """The pass was only ever the wait running out, and every nudge restarts
+    the wait, so a person dictating more often than that never got one, and
+    that pass is the account pass now: the forgotten list, the requests to
+    join, the hooks. Two hours of a dictation a minute: one every 15."""
+    import sb
+
+    plan: dict = {}
+    assert sb._plan_turn(plan, set(), 1000.0, False) is None, "the first turn is a whole one"
+    turns = [sb._plan_turn(plan, {"history"}, 1000.0 + minute * 60.0, False) for minute in range(1, 121)]
+    assert sum(t is None for t in turns) == 8, turns
+    assert turns[0] == ["history"] and turns[14] is None, "a nudge is still small between them"
+    assert sb._plan_turn(plan, {"*"}, 1000.0 + 7300.0, False) is None, "a nudge of everything"
+    assert sb._plan_turn(plan, set(), 1000.0 + 7310.0, False) is None, "a wait that ran out"
+
+
+def test_a_pc_left_waiting_backs_off_and_asks_for_nothing_else():
+    """Waiting to be approved it looked every 5 s for as long as it waited,
+    with the settings and the words each turn: one copy left waiting was 2,880
+    requests an hour on a free tier. A look now asks about the lock alone,
+    every few seconds for the life of the first request, and then at the pass's
+    pace. A press here starts the quick looks again. The wizard the same."""
+    import firstrun
+    import sb
+    import types
+
+    plan: dict = {}
+    assert sb._plan_turn(plan, set(), 0.0, True) is None
+    assert sb._plan_turn(plan, set(), 5.0, True) == (), "a wake that only waits is a look"
+    assert sb._plan_turn(plan, {"history"}, 6.0, True) == ["history"], "a dictation is still its own"
+    assert sb._plan_turn(plan, set(), sb.CADENCE_S + 1.0, True) is None, "the whole pass still comes"
+    assert sb._plan_wait(plan, 0.0, True) == sb.PAIRING_POLL_S
+    assert sb._plan_wait(plan, sb.PAIRING_TTL_S - 1.0, True) == sb.PAIRING_POLL_S
+    assert sb._plan_wait(plan, sb.PAIRING_TTL_S, True) == sb.CADENCE_S, "it never backs off"
+    plan.pop("asked")
+    assert sb._plan_wait(plan, sb.PAIRING_TTL_S, True) == sb.PAIRING_POLL_S, "a press did not wake it"
+    assert sb._plan_wait(plan, 1.0, False) == sb.CADENCE_S and "asked" not in plan
+
+    # what a look costs, on the wire
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "waiting"
+                fake.calls.clear()
+                sb._worker_pass(None, None, ())
+                asked = {c["path"].rsplit("/", 1)[-1] for c in fake.to_project()}
+                assert not asked & {"settings_sync", "vocab_sync", "history", "vault"}, asked
+                assert len(fake.to_project()) <= 3, [c["path"] for c in fake.to_project()]
+    finally:
+        a.gone()
+        b.gone()
+
+    wizard = types.SimpleNamespace(LINK_POLL_S=3.0, LINK_IDLE_S=60.0, _link_since=time.monotonic())
+    assert firstrun.Wizard._link_wait(wizard) == 3.0
+    wizard._link_since = time.monotonic() - sb.PAIRING_TTL_S - 1.0
+    assert firstrun.Wizard._link_wait(wizard) == 60.0, "the wizard polls an empty room"
+
+
+def test_a_leaving_that_stopped_half_way_is_finished_by_the_next_pass():
+    """The key moves aside before the state is written, and a pass with no
+    key returned at the door, so a crash between them left a forgotten PC with
+    no key, its old id and nothing to finish it: it wrote that row back and
+    asked to join under the id the account had thrown out. Its own list says
+    what it was doing."""
+    import sb
+    import vault
+
+    def stops(uid, **also):
+        raise OSError("the disk said no")
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            mine = sb.device_id()
+            sb._keep_forgotten(_ONE, [{"device": mine, "cert": "", "at": ""}])
+            with _patched(sb, "_new_device_id", stops):
+                try:
+                    sb._forgotten_pass(_ONE)
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("the fixture did not stop it")
+            assert vault.key(_ONE) is None and sb.device_id() == mine, "the fixture is not the case"
+            fake.tables.pop("pairings", None)
+
+            sb.account_pass("test")
+            new = sb.device_id()
+            assert new != mine, "it stayed under the forgotten id"
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert state["account.left"] == mine and mine in state["account.past_devices"][_ONE], state
+            assert all(r["device_id"] == new for r in fake.tables.get("pairings", [])), "it asked as the old id"
+    finally:
+        pc.gone()
+
+
+def test_a_pull_takes_a_whole_batch_that_shares_one_stamp():
+    """A push is one statement and the trigger stamps its whole batch alike.
+    A page that ended inside that stamp asked next for what is later than
+    it, so the rest of the batch was skipped for good, on every other device,
+    with no error. Against a fake that pages as PostgREST does."""
+    import sb
+    import sync as sync_mod
+    import vocab as vocab_mod
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+            with a:
+                for n in range(7):
+                    _says(a, f"line number {n}")
+                words = vocab_mod.Vocab(a.home / "vocab.json")
+                for n in range(5):
+                    words.learn_by_hand(f"heard {n}", f"meant {n}")
+                sb.sync_now(words)
+            stamps = {r["updated_at"] for r in fake.tables["history"]}
+            assert len(stamps) == 1, stamps
+            with b, _patched(sb, "HISTORY_PAGE", 3), _patched(sb, "VOCAB_PAGE", 2):
+                words = vocab_mod.Vocab(b.home / "vocab.json")
+                out = sb.sync_now(words)
+                assert out["history"] == "pulled 7, pushed 0", out
+                kept = sync_mod.remote_history_path().read_text("utf-8")
+                assert all(f"line number {n}" in kept for n in range(7)), kept
+                assert all(kept.count(f"line number {n}") == 1 for n in range(7)), "a row twice"
+                assert len(words.corrections) == 5, words.corrections
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_a_socket_that_joined_and_dropped_starts_the_ladder_again():
+    """A drop raises, so `tries` was reset only by a clean return, which a
+    socket never has: a laptop that had slept a few times waited five minutes
+    on every reconnect. A join that was answered starts the ladder again; a
+    join that is refused still climbs it."""
+    import sb
+
+    class Stop:
+        def __init__(self):
+            self.waits: list = []
+
+        def is_set(self):
+            return len(self.waits) >= 5
+
+        def wait(self, seconds):
+            self.waits.append(seconds)
+            return self.is_set()
+
+    def dropped(vocab):
+        sb._live_state["joined"] = True
+        raise sb.AccountError("the live channel dropped")
+
+    def refused(vocab):
+        raise sb.AccountError("the live channel refused the join")
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _sign_in_pc(fake, "desk")
+            with _patched(sb, "_live_once", dropped), _patched(sb, "_live_stop", Stop()) as stop:
+                sb._live_loop(None)
+                assert sb._live_stop.waits == [sb.LIVE_RETRY_S[0]] * 5, sb._live_stop.waits
+            with _patched(sb, "_live_once", refused), _patched(sb, "_live_stop", Stop()):
+                sb._live_loop(None)
+                assert sb._live_stop.waits == [15.0, 60.0, 300.0, 300.0, 300.0], sb._live_stop.waits
+    finally:
+        pc.gone()
+
+
+def test_a_damaged_forgotten_list_is_set_aside_and_the_accounts_takes_its_place():
+    """forgotten() answered empty for a file that would not read, and nothing
+    ever repaired it, so the door stood open to every device on it. The bad
+    file is set aside, kept, the worker is called at once, and the next pass
+    writes the account's list in its place. Delete my account takes the
+    kept copy with the rest."""
+    import sb
+
+    gone = "99999999-8888-7777-6666-555555555503"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            sb._keep_forgotten(_ONE, [{"device": gone, "cert": "ab" * 32, "at": ""}])
+            sb.account_pass("test")
+            assert gone in sb.forgotten()
+            path = sb._forgotten_file(_ONE)
+            path.write_text("{ cut in half", "utf-8")
+            sb._pending.clear()
+            assert sb.forgotten() == set()
+            kept = list(path.parent.glob(path.name + ".broken-*"))
+            assert len(kept) == 1 and kept[0].read_text("utf-8") == "{ cut in half", "the bad file went"
+            assert "*" in sb._pending, "nothing was told to repair it"
+            sb.account_pass("test")
+            assert gone in sb.forgotten(), "the account's list did not come back"
+            sb.delete_account()
+            assert not list(path.parent.glob(path.name + "*")), "Delete left a copy of the list"
+    finally:
+        pc.gone()
+
+
+def test_a_pass_across_a_sign_in_leaves_no_cursor_of_the_last_account():
+    """sync_now wrote its cursor back if somebody was signed in, and a sign-in
+    that lands during a pass is somebody: the last account's cursor, back
+    on disk after the door had wiped it, read by the new one as its own. It
+    goes back only under the account it was read under."""
+    import sb
+    import sync as sync_mod
+
+    real = sb._sync_settings
+
+    def crossing(cursor, push=True):
+        out = real(cursor, push=push)
+        sb.sign_out(everywhere=False)
+        _signs_in(fake, _TWO)
+        return out
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            with _patched(sb, "_sync_settings", crossing):
+                sb.sync_now(only=["settings"])
+            assert (sb.user() or {}).get("id") == _TWO
+            assert "settings_hash" not in sync_mod.read_cursor(), "the last account's cursor came back"
+    finally:
+        pc.gone()
+
+
 def test_forget_ends_a_device_and_a_row_restored_unchanged_gives_nothing_back():
     """Forget, from any device that holds the key. The list first, then
     the row and its session (forget_device(), 0007), then the others are
@@ -47791,7 +48521,7 @@ def test_a_forgotten_pc_walks_back_in_with_nothing_doubled():
                 assert out["history"] == "pulled 0, pushed 0", out
                 assert len(fake.tables["history"]) == 2, "its history went up again under the new id"
                 assert not sync_mod.remote_history_path().exists(), "its own words came back as another's"
-                assert sync_mod.read_cursor().get("history_pushed_ts") is None
+                assert fake.UID in config_mod.read_state(paths.STATE_FILE)["account.history_floor"]
                 # what it says from now on goes up, once
                 with b.log.open("a", encoding="utf-8") as f:
                     f.write("2026-11-06 12:00:00,100 | OK | 1.0s | local | 0.4s latency | המילה השלישית\n")
@@ -47812,6 +48542,9 @@ def test_a_forgotten_pc_walks_back_in_with_nothing_doubled():
                 assert sum(r["device_id"] == new for r in fake.tables["history"]) == 1, \
                     "what it said after coming back was pushed twice"
                 assert len(fake.tables["history"]) == 3
+            with a:
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "the other PC saw it again"
+                assert sync_mod.remote_history_path().read_text("utf-8").count("המילה") == 3
     finally:
         for pc in (a, b):
             pc.gone()
@@ -48091,7 +48824,9 @@ def test_migration_0007_gives_a_device_its_link_and_forget_its_limits():
     fn = sql[sql.index("create or replace function public.forget_device(target uuid)"):]
     head, body, _tail = fn.split("$$", 2)
     assert "security definer" in head and "set search_path = ''" in head and "language plpgsql" in head
+    assert "returns boolean" in head and "returns void" not in head, "whether a session ended"
     assert "uid uuid := auth.uid();" in body and "if uid is null then" in body
+    assert "ended := found;" in body and "return ended;" in body and "ended boolean := false;" in body
     assert re.search(r"delete from public\.devices d\s+where d\.id = target\s+and d\.user_id = uid\s+"
                      r"returning d\.session_id into sid;", body), body
     assert re.search(r"delete from auth\.sessions s\s+where s\.id = sid\s+and s\.user_id = uid;", body), body
@@ -51030,7 +51765,7 @@ def test_the_wizard_waits_for_the_other_pcs_approval_and_offers_the_recovery_key
         lock["state"] = "have"
 
     def settle(w, seconds=1.5, until=None):
-        deadline = time.monotonic() + seconds
+        deadline = time.monotonic() + (seconds if until is None else 10.0)
         while time.monotonic() < deadline:
             w.root.update()
             w._drain()
