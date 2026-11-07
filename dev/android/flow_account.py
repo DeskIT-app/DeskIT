@@ -203,15 +203,20 @@ def plant(acct: fake_pc.FakeAccount) -> None:
          "--es", "token", acct.door_token)
 
 
-def leave_traces(acct: fake_pc.FakeAccount) -> None:
-    """A person's ordinary day: a sentence in Said and copied from there, the PC's
-    line pasted, and a proposal from the second reading on Home and on the shade."""
+def propose(acct: fake_pc.FakeAccount) -> None:
+    """One proposal of the second reading, waiting on the PC for this phone."""
     drive.shell("pm", "grant", PKG, "android.permission.POST_NOTIFICATIONS", check=False)
     acct.proposals = [{
         "id": "20261106-120000-0001", "when": "2026-11-06 12:00:00", "text": HEARD,
         "proposed": MEANT, "source": "phone", "status": "pending",
         "changes": [{"before": HEARD, "after": MEANT, "kind": "replace", "why": "the sentence"}],
     }]
+
+
+def leave_traces(acct: fake_pc.FakeAccount) -> None:
+    """A person's ordinary day: a sentence in Said and copied from there, the PC's
+    line pasted, and a proposal from the second reading on Home and on the shade."""
+    propose(acct)
     plant(acct)
     drive.kill()                                 # Home asks the PC as it opens
     drive.home()
@@ -1032,6 +1037,45 @@ def flow_keyboard():
               drive.seek(HINT) is not None and drive.find("late-words") is None, drive.screen()[:400])
     finally:
         drive.shell("ime", "reset", check=False)
+        acct.stop()
+
+
+def flow_words_go_midway():
+    """Two things a wipe can catch on their way to the screen: a proposal's page
+    already open, and a poll still out to the PC."""
+    acct = fresh()
+    try:
+        leave_traces(acct)
+        drive.tap(MEANT)
+        drive.wait("^Keep$", 15)
+        drive.shell("input", "keyevent", "3")
+        time.sleep(1)
+        told("--es", "wipe", "1")
+        # The page comes back in front. No -W: it finishes itself, and Android 8
+        # would wait on it for ever.
+        drive.shell("am", "start", "-n", f"{PKG}/.HomeActivity")
+        check("a proposal's page closes when it is seen again",
+              until(lambda: drive.find("^Keep$") is None, 10), drive.screen()[:300])
+        nothing_on_home("a page open as the words went")
+    finally:
+        acct.stop()
+    acct = fresh()
+    try:
+        join(acct)
+        propose(acct)
+        plant(acct)
+        drive.die()
+        acct.end_every_session()
+        held = acct.stop_at("GET", "review")
+        drive.home()
+        assert held.caught.wait(20), "no poll came"
+        check("the words go with the poll still out", until(lambda: SAID not in on_disk(), 15),
+              on_disk()[:300])
+        held.go()
+        time.sleep(3)
+        check("what it brings back rings nothing", MEANT not in drive.notifications())
+        nothing_on_home("a poll out as the words went")
+    finally:
         acct.stop()
 
 
