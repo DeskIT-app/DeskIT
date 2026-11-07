@@ -434,7 +434,16 @@ SAY_YES_FIRST = ("Your other devices are still signed in. Say yes to the account
                  "words on Home first, then press Sign out of every PC again.")
 NO_ROAD_THERE = ("Your other devices are still signed in, because this PC could not reach "
                  "your account. Try Sign out of every PC again when it is online.")
-#: Forget, when no session ended (``forget_device``).
+#: ... and when this PC's own session turned out to be dead on the way, which
+#: was the one road to the others: this PC is signed out, they may not be.
+SESSION_WENT = ("This PC's session had already ended, so your other devices may still be "
+                "signed in. Sign in again, then press Sign out of every PC.")
+#: A state.json that will not read (``_state``), as a person reads it: every
+#: sync stops until it does, and a start replaces a damaged one
+#: (migrations.apply, config.state_to_write).
+STATE_WORDS = ("A file DeskIT keeps on this PC will not read, so your account is paused here. "
+               "Restarting DeskIT puts that right.")
+#: Forget, when a session of that device is left (``forget_device``).
 OLDER_COPY_WORDS = ("That device is off your list but still signed in: it is an older copy of "
                     "DeskIT, or one that has not said yes yet. To end it, press Sign out of "
                     "every PC.")
@@ -511,7 +520,26 @@ def _state() -> dict:
     try:
         return config.read_state_strict(paths.STATE_FILE)
     except config.StateUnreadable as e:
-        raise AccountError(f"this PC's state file will not read ({e})") from e
+        log.info("account: %s", e)
+        raise AccountError(STATE_WORDS) from e
+
+
+def _state_mended() -> dict:
+    """state.json for ``_take_over``, which is about to write it. A damaged
+    file is replaced here (a save does it, config.state_to_write), by one
+    that says somebody was here. Left for the next save it would fail the
+    door at the sign-in of the very person it matters for, and that person's
+    session would then read as the one that was here all along: what another
+    account queued would go out as theirs. One that would not open raises."""
+    import config
+    try:
+        return _state()
+    except AccountError:
+        try:
+            config.save({})
+        except config.StateUnreadable as e:
+            raise AccountError(STATE_WORDS) from e
+        return _state()
 
 
 def _per_account(name: str) -> dict:
@@ -596,14 +624,15 @@ def _take_over(uid: str) -> None:
     All of it goes down in one write, in state.json, where neither a sign-out
     nor ``sync.forget_all`` reaches it, and last: what can raise is worked out
     before anything moves, and a crash after the cursors and the reports went
-    finds the same door next time. Raises when state.json will not read,
-    because {} from a damaged file would look like a first account, and
-    ``sync_now`` then moves nothing."""
+    finds the same door next time. A damaged state.json is replaced on the
+    way in, and reads as somebody else's (``_state_mended``). Raises when it
+    would not open, because {} would look like a first account, and
+    ``sync_now`` and ``drain_outbox`` then move nothing."""
     if not uid:
         return
     import config
     with _lock:
-        state = _state()
+        state = _state_mended()
         last = str(state.get(LAST_ACCOUNT) or "")
         if last == uid:
             return
@@ -616,7 +645,11 @@ def _take_over(uid: str) -> None:
             updates["account.history_floor"] = {**floors, uid: _later(floors.get(uid), _end_of_log())}
             updates[HELD_BACK] = {**_per_account(HELD_BACK), uid: _what_is_here()}
             sync.forget_all()
-            _reports_wait(before, uid)
+            # a record lost with its file names nobody to wait for, and with
+            # this session still here what is queued is its own: moved under
+            # that word nothing would ever bring it back
+            if not (before == SOMEBODY and here == uid):
+                _reports_wait(before, uid)
         config.save(updates)
 
 
@@ -1215,9 +1248,10 @@ def sign_out(everywhere: bool = True) -> None:
     is the one caller of the default. That one raises AccountError, with
     the words for the person and nothing signed out, when it could not end
     the others: it is what the changed lock's "It wasn't me" points to, and
-    saying it had done so would leave a stranger in. This PC's own sign-out
-    goes through whatever the server said, because the session is forgotten
-    here either way."""
+    saying it had done so would leave a stranger in. Nothing is signed out
+    then, unless this PC's session was dead already, which SESSION_WENT
+    says. This PC's own sign-out goes through whatever the server said,
+    because the session is forgotten here either way."""
     session = _load_session()
     if session is not None and configured():
         # every PC: the others first and told (_end_the_others), then
@@ -1244,6 +1278,11 @@ def sign_out(everywhere: bool = True) -> None:
                 raise AccountError(NO_ROAD_THERE) from e
             log.info("account: the sign-out did not reach the server (%s) — "
                      "signed out here", e)
+        if scope == "global" and not signed_in():
+            # _account_gone did the rest of this function on the way, and
+            # nothing asked the server to end anybody
+            log.info("account: this PC's session ended first — every PC was not signed out")
+            raise AccountError(SESSION_WENT)
     _keep_what_went_up()
     _clear_session()
     sync.forget_all()
@@ -2037,6 +2076,13 @@ def drain_outbox(on_sent=None) -> dict:
             or not privacy.allowed("report_upload"):
         return out
     try:
+        # through the door first, as sync_now is: with both syncs off nothing
+        # else asks, and a report goes out as whoever is signed in
+        _take_over(str((user() or {}).get("id") or ""))
+    except Exception as e:                                   # noqa: BLE001
+        log.info("report: the outbox waits (%s)", e)
+        return out
+    try:
         files = sorted(paths.OUTBOX_DIR.glob("*.json"))
     except OSError:
         return out
@@ -2146,8 +2192,19 @@ def _worker_pass(vocab, on_sent, only) -> None:
     not cost the requests of an account pass. Only the app has a worker, so
     this is also where a leaving noticed in the desk or the wizard is
     finished (``settle_left``). ``only == ()`` is a look at the lock and
-    nothing else (``_plan_turn``)."""
-    settle_left()
+    nothing else (``_plan_turn``). A state.json that will not read does not
+    end the turn: it was a debug line and a worker that stopped without a
+    word. The person's status says so and the turn goes on, because
+    whatever needs the file refuses by itself."""
+    try:
+        settle_left()
+    except AccountError as e:
+        _status["last_error"] = str(e)[:200]
+    else:
+        if _status.get("last_error") == STATE_WORDS:
+            _status["last_error"] = ""
+        if _lock_state.get("error") == STATE_WORDS:
+            _lock_state["error"] = ""
     if not signed_in():
         return
     if not only:
@@ -2295,13 +2352,21 @@ def _live_purpose() -> str | None:
     return "account" if privacy.allowed("account") else None
 
 
+def _held() -> bool:
+    """Did this try's socket stay up? A join that was answered says nothing:
+    a socket that joins and drops at once would be a new one every 5 s for
+    ever. One heartbeat's time is a socket that worked."""
+    joined = _live_state.get("joined")
+    return joined is not None and time.monotonic() - joined >= LIVE_HEARTBEAT_S
+
+
 def _live_loop(vocab) -> None:
     """Hold the socket for as long as the account and its gate are
     there; reconnect with LIVE_RETRY_S between tries; never raise."""
     tries = 0
     _live_state["asked"] = False
     while not _live_stop.is_set():
-        _live_state["joined"] = False
+        _live_state["joined"] = None
         try:
             if not (configured() and signed_in()) or _live_purpose() is None or net.offline:
                 _live_state["on"] = False
@@ -2311,15 +2376,15 @@ def _live_loop(vocab) -> None:
             _live_once(vocab)
             tries = 0
         except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
-            # a socket that joined and dropped is a laptop's lid, not a
+            # a socket that held and dropped is a laptop's lid, not a
             # refusal: it starts the ladder again, or five minutes was
             # every reconnect after a few nights' sleep
-            tries = 0 if _live_state["joined"] else tries + 1
+            tries = 0 if _held() else tries + 1
             why = str(e)[:200]
             (log.info if why != _live_state["error"] else log.debug)("live: %s", why)
             _live_state.update(on=False, error=why)
         except Exception:                                    # noqa: BLE001
-            tries = 0 if _live_state["joined"] else tries + 1
+            tries = 0 if _held() else tries + 1
             log.debug("live: tripped", exc_info=True)
             _live_state["on"] = False
         if _live_stop.wait(LIVE_RETRY_S[min(tries, len(LIVE_RETRY_S) - 1)]):
@@ -2360,7 +2425,7 @@ def _live_once(vocab) -> bool:
                 _live_state["asked"] = True
                 _ask_about_this_session("the live channel refused the join")
             raise AccountError(f"the live channel refused the join: {said}")
-        _live_state.update(on=True, error="", asked=False, joined=True)
+        _live_state.update(on=True, error="", asked=False, joined=time.monotonic())
         log.info("live: listening on the account's channel")
         if _lock_state.get("state") == "have":
             try:
@@ -2609,29 +2674,44 @@ def _cursor_follows_lock(cursor: dict, key: bytes, uid: str) -> None:
     start (the rows on the server are sealed under the new key, the
     other PCs' lines on this PC came under the old one). The first pass
     after a sign-out is one of those, and under the same lock what went
-    up then is still up (``_keep_what_went_up``)."""
+    up then is still up (``_keep_what_went_up``). Only then: a cursor with
+    a lock on it is a lock that moved in session, and one that came back
+    to the lock of that sign-out finds these rows re-sealed under the lock
+    between, where only going up again can open them."""
     fp = vault.fingerprint(key)
-    if cursor.get("lock") == fp:
+    had = cursor.get("lock")
+    if had == fp:
         return
-    if cursor.get("lock"):
+    if had:
         log.info("lock: the account's key changed — what was said syncs again from the start")
     for name in ("history_pulled_at", "history_pushed_ts", "vault_slots") + _VAULT_FLAT:
         cursor.pop(name, None)
     sync.forget_remote()
     cursor["lock"] = fp
     kept = _per_account(PUSHED).get(uid)
-    if isinstance(kept, dict) and kept.get("lock") == fp and kept.get("ts"):
+    if not had and isinstance(kept, dict) and kept.get("lock") == fp and kept.get("ts"):
         cursor["history_pushed_ts"] = kept["ts"]
     _write_cursor(cursor, uid)
 
 
 def _request_pairing(uid: str, remote: str) -> bytes | None:
-    """This PC's open request to join, made if there is none (or the
-    last one expired), looked at if there is: approved means the key
-    is taken out of what the other PC handed over and kept here — only
-    when its fingerprint is the lock the profile named when this PC
-    asked AND names now, and, on a PC that set a key aside, the lock the
-    person confirmed."""
+    """This PC's open request to join, made if there is none, looked at
+    if there is: approved means the key is taken out of what the other PC
+    handed over and kept here — only when its fingerprint is the lock the
+    profile named when this PC asked AND names now, and, on a PC that set
+    a key aside, the lock the person confirmed.
+
+    A request whose time ran out is made again as the SAME request: the
+    id, the key and the code stay, in a new row, because `pairings_guard`
+    freezes `expires_at`. Every device knocks once per id
+    (``_seen_pairings``), so a new id every fifteen minutes was a card and
+    a cue on all of them for as long as a copy was left waiting, the card
+    went on naming the old code, and the code here changed under whoever
+    was comparing it. Home's rows stay true on both sides: this PC is
+    asking, under the code it shows. Not now takes the row away for the
+    rest of the request's time (at the next look it was back in five
+    seconds, with a card), and an answer handed over before the press stays
+    where it is, whatever the time says."""
     st = _lock_state
     req = st.get("pairing")
     now = time.time()
@@ -2641,17 +2721,14 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         log.info("lock: the account's lock moved while this PC waited — asking again")
         vault.drop(req["id"])
         req = None
-    if req is not None and req["expires"] > now:
+    handed = False
+    if req is not None:
         status, rows = _rest("GET", "pairings", purpose="account",
                              query=f"select=handed,approved_at&id=eq.{req['id']}")
         if status != 200 or not isinstance(rows, list):
             raise AccountError(f"lock: {_server_said(status, rows)}")
-        if not rows:
-            # declined on the other PC, or swept: ask again
-            log.info("lock: the request to join is gone — asking again")
-            vault.drop(req["id"])
-            req = None
-        elif rows[0].get("handed") and req.get("same"):
+        handed = bool(rows and rows[0].get("handed"))
+        if handed and req.get("same"):
             # both sides press: without this one a dishonest server writes
             # `handed` itself, with no other device at all, under a lock it
             # named. Whatever is there stays unopened until the person here
@@ -2679,10 +2756,8 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
                     _recovery_known()
                     _wake.set()
                     return key
-    if req is not None and req["expires"] <= now:
-        vault.drop(req["id"])
-        req = None
-    if req is None:
+    new = req is None
+    if new or (not handed and req["expires"] <= now):
         # this PC's earlier requests go first — the wizard's, say, whose
         # private half died with its process — so the other PC's card
         # never shows a code this PC no longer does
@@ -2691,24 +2766,30 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
                   query=f"device_id=eq.{urllib.parse.quote(device_id())}")
         except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
             log.debug("lock: the old requests were not swept (%s)", e)
-        pid = str(uuid.uuid4())
-        public = vault.applicant(pid)
-        # the code is the key's own and the lock's (vault.pairing_code):
-        # the other device computes it from the same public key and the
-        # key it holds, never from a column
-        code = vault.pairing_code(uid, pid, public, remote)
+        if new:
+            pid = str(uuid.uuid4())
+            public = vault.applicant(pid)
+            # the code is the key's own and the lock's (vault.pairing_code):
+            # the other device computes it from the same public key and the
+            # key it holds, never from a column
+            req = {"id": pid, "public": public, "lock_id": remote,
+                   "code": vault.pairing_code(uid, pid, public, remote)}
         status, data = _rest("POST", "pairings", purpose="account",
-                             payload={"id": pid, "user_id": uid, "device_id": device_id(),
+                             payload={"id": req["id"], "user_id": uid, "device_id": device_id(),
                                       "device_name": request_name(),
-                                      "code": vault.code_hint(code), "applicant": public},
+                                      "code": vault.code_hint(req["code"]),
+                                      "applicant": req["public"]},
                              prefer="return=minimal")
         if status not in (200, 201, 204):
-            vault.drop(pid)
+            if new:
+                vault.drop(req["id"])
             raise AccountError(f"lock: the request to join was refused ({_server_said(status, data)})")
-        req = {"id": pid, "code": code, "expires": now + PAIRING_TTL_S, "lock_id": remote}
-        log.info("lock: another PC holds the account's key — this PC asks to join (code %s)", code)
+        req["expires"] = now + PAIRING_TTL_S
+        log.info("lock: another PC holds the account's key — this PC %s to join (code %s)",
+                 "asks" if new else "goes on asking", req["code"])
         _set_lock(state="waiting", lock_id=remote, pairing=req)
-        _broadcast(event="pairing", extra={"id": pid, "code": code, "name": request_name()})
+        # not a knock on a request that was seen: it puts the row back on Home
+        _broadcast(event="pairing", extra={"id": req["id"], "code": req["code"], "name": request_name()})
     else:
         _set_lock(state="waiting", lock_id=remote, pairing=req)
     return None
@@ -2898,8 +2979,8 @@ def approve_pairing(pairing_id: str) -> str:
 
 
 def decline_pairing(pairing_id: str) -> None:
-    """[Not now] on this PC: the request goes; the other PC asks again
-    when it wants to."""
+    """[Not now] on this PC: the request goes, and the other PC asks again
+    when the request's time is up, with no knock (``_request_pairing``)."""
     pid = str(pairing_id or "").strip()
     _rest("DELETE", "pairings", purpose="account", query=f"id=eq.{urllib.parse.quote(pid)}")
     with _lock:
@@ -3397,11 +3478,13 @@ def forget_device(device_id: str, cert: str) -> bool:
     server (``forget_device()``, migration 0007, effective at once through
     0006); then the others are told. ``cert`` is the SHA-256 of the
     device's certificate, "" for a device that never wrote one. A PC does
-    not forget itself: that is Sign out. True when its session ended. False
-    is a device that never said which session it runs on, an older copy or
-    one with its account gate shut: it is off the list of devices and goes
-    on working until Sign out of every PC, and whoever pressed Forget has
-    to be told, in OLDER_COPY_WORDS."""
+    not forget itself: that is Sign out. True when no session of that device
+    is left, ended here or already over: a PC that signed out keeps its row.
+    False is a device that never said which session it runs on, an older
+    copy or one with its account gate shut, or one that named a session not
+    this account's: it is off the list of devices and goes on working
+    until Sign out of every PC, and whoever pressed Forget has to be told,
+    in OLDER_COPY_WORDS."""
     target = str(device_id or "").strip()
     if not _UUID.fullmatch(target):
         raise AccountError("that is not a device of this account")

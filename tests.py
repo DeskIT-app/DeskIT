@@ -47517,14 +47517,18 @@ class _FakeSupabase:
             return _FakeRaw(b"", 204)
         if path == "rest/v1/rpc/forget_device":
             # migration 0007: the row and the session it names, each only
-            # where it is the caller's own: the column is the client's word
+            # where it is the caller's own: the column is the client's word.
+            # True when no session of that row is left to end: ended here, or
+            # over already. A row naming somebody else's leaves it and says so
             caller = self.sessions.get(sid, self.UID)
             rows = self.tables.setdefault("devices", [])
             hit = [r for r in rows if r.get("id") == payload["target"] and r.get("user_id") == caller]
             rows[:] = [r for r in rows if not any(r is h for h in hit)]
-            ended = [r["session_id"] for r in hit if self.sessions.get(r.get("session_id")) == caller]
-            self.ended += ended
-            return _FakeRaw(b"true" if ended else b"false", 200)
+            alive = {s: who for s, who in self.sessions.items() if s not in self.ended}
+            named = [r["session_id"] for r in hit if r.get("session_id")]
+            self.ended += [s for s in named if alive.get(s) == caller]
+            left = [s for s in named if s in alive and alive[s] != caller]
+            return _FakeRaw(b"true" if named and not left else b"false", 200)
         if path.startswith("rest/v1/"):
             table = path[len("rest/v1/"):]
             rows = self.tables.setdefault(table, [])
@@ -48737,7 +48741,7 @@ def test_a_forged_answer_is_never_kept_until_the_person_here_says_same_code():
                 assert sb.status()["lock"]["same"] is False
                 # a request made afresh is not answered by the press on the old one
                 old = sb.status()["lock"]["code"]
-                sb._lock_state["pairing"]["expires"] = 0
+                fake.tables["profiles"][0]["lock_id"] = "e" * 16
                 sb.sync_now()
                 fresh = sb.status()["lock"]["code"]
                 assert fresh != old and sb.status()["lock"]["state"] == "waiting"
@@ -49601,16 +49605,32 @@ def test_the_line_between_two_accounts_outlives_forget_all_a_sign_out_and_a_cras
             assert not any(r["user_id"] == _THREE for r in fake.tables["history"])
             sb.sign_out(everywhere=False)
 
+            # a file that will not open: nobody can say whose this is, so nothing moves
+            real = Path.read_text
+
+            def held(self, *a, **k):
+                if self == paths.STATE_FILE:
+                    raise PermissionError("held")
+                return real(self, *a, **k)
+
+            with _patched(Path, "read_text", held):
+                _signs_in(fake, _FOUR)
+                fake.calls.clear()
+                assert sb.sync_now() == {}
+                assert not [c for c in fake.to_project() if c["method"] == "POST"], "a store moved"
+                assert "will not read" in sb.status()["last_error"]
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            assert not any(r["user_id"] == _FOUR for r in fake.tables["history"])
+            sb.sign_out(everywhere=False)
+
+            # a damaged one is mended at the door, and reads as somebody else's
             good = paths.STATE_FILE.read_text("utf-8")
             paths.STATE_FILE.write_text("{ this is not json", "utf-8")
             _signs_in(fake, _FOUR)
-            fake.calls.clear()
-            assert sb.sync_now() == {}
-            assert not [c for c in fake.to_project() if c["method"] == "POST"], "a store moved"
-            assert "will not read" in sb.status()["last_error"]
-            paths.STATE_FILE.write_text(good, "utf-8")
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _FOUR
             assert sb.sync_now()["history"] == "pulled 0, pushed 0"
             assert not any(r["user_id"] == _FOUR for r in fake.tables["history"])
+            paths.STATE_FILE.write_text(good, "utf-8")
 
             # a crash inside a sign-out leaves that account's cursor here
             sb.sign_out(everywhere=False)
@@ -50315,8 +50335,29 @@ def test_forget_says_whether_it_ended_the_device():
             assert "older copy" in sb.OLDER_COPY_WORDS and "Sign out of every PC" in sb.OLDER_COPY_WORDS
             assert older in sb.forgotten(), "the list must hold it either way"
             assert all(r["id"] != older for r in fake.tables["devices"]), "the row stayed"
+
+            # a PC that signed out keeps its row and a session that is over:
+            # told "still signed in", the person threw out every device for it
+            sb._status["last_error"] = ""
+            out, over = "99999999-8888-7777-6666-555555555503", "bbbbbbbb-0000-4000-8000-00000000000b"
+            _a_phone_row(fake, out, session_id=over)
+            assert sb.forget_device(out, "") is True, "a session that is over reads as still signed in"
+            assert not sb.status()["last_error"] and over not in fake.ended
+            fake.sessions[over] = _ONE
+            fake.ended.append(over)
+            _a_phone_row(fake, out, session_id=over)
+            assert sb.forget_device(out, "") is True and fake.ended.count(over) == 1
+
+            # the column is the client's word: somebody else's stays, and says so
+            liar, theirs = "99999999-8888-7777-6666-555555555504", "bbbbbbbb-0000-4000-8000-00000000000c"
+            fake.sessions[theirs] = _TWO
+            _a_phone_row(fake, liar, session_id=theirs)
+            assert sb.forget_device(liar, "") is False, "it answered for somebody else's session"
+            assert theirs not in fake.ended and sb.status()["last_error"] == sb.OLDER_COPY_WORDS
     finally:
         pc.gone()
+
+
 
 
 def test_sign_out_of_every_pc_ends_them_or_says_it_did_not():
@@ -50697,11 +50738,14 @@ def test_a_pull_takes_a_whole_batch_that_shares_one_stamp():
         b.gone()
 
 
-def test_a_socket_that_joined_and_dropped_starts_the_ladder_again():
+def test_a_socket_that_held_starts_the_ladder_again_and_one_that_dropped_at_once_climbs_it():
     """A drop raises, so `tries` was reset only by a clean return, which a
     socket never has: a laptop that had slept a few times waited five minutes
-    on every reconnect. A join that was answered starts the ladder again; a
-    join that is refused still climbs it."""
+    on every reconnect. Then any answered join reset it, and a socket that
+    joins and drops at once was a new one every 5 s for ever. A socket that
+    held for a heartbeat starts the ladder again; one that dropped at once
+    climbs it, like a join that was refused."""
+    import net as net_mod
     import sb
 
     class Stop:
@@ -50715,25 +50759,390 @@ def test_a_socket_that_joined_and_dropped_starts_the_ladder_again():
             self.waits.append(seconds)
             return self.is_set()
 
-    def dropped(vocab):
-        sb._live_state["joined"] = True
+    def held(vocab):
+        sb._live_state["joined"] = time.monotonic() - sb.LIVE_HEARTBEAT_S
+        raise sb.AccountError("the live channel dropped")
+
+    def dropped_at_once(vocab):
+        sb._live_state["joined"] = time.monotonic()
         raise sb.AccountError("the live channel dropped")
 
     def refused(vocab):
         raise sb.AccountError("the live channel refused the join")
 
+    made: list = []
+
+    def drops_after(seconds: float):
+        def drop(server):
+            server.joined.wait(5)
+            time.sleep(seconds)
+            server.push({"topic": "x", "event": "phx_close", "payload": {}, "ref": None})
+
+        def connect(host, port, timeout_s):
+            server = _FakeRealtime()
+            made.append(server)
+            threading.Thread(target=drop, args=(server,), daemon=True).start()
+            return server.connect(host, port, timeout_s)
+        return connect
+
     pc = _pc("A", "DeskIT.test")
     try:
         with _fixture_project() as fake, _consented("account"), pc:
             _sign_in_pc(fake, "desk")
-            with _patched(sb, "_live_once", dropped), _patched(sb, "_live_stop", Stop()) as stop:
+            with _patched(sb, "_live_once", held), _patched(sb, "_live_stop", Stop()):
                 sb._live_loop(None)
                 assert sb._live_stop.waits == [sb.LIVE_RETRY_S[0]] * 5, sb._live_stop.waits
-            with _patched(sb, "_live_once", refused), _patched(sb, "_live_stop", Stop()):
-                sb._live_loop(None)
-                assert sb._live_stop.waits == [15.0, 60.0, 300.0, 300.0, 300.0], sb._live_stop.waits
+            for road in (dropped_at_once, refused):
+                with _patched(sb, "_live_once", road), _patched(sb, "_live_stop", Stop()):
+                    sb._live_loop(None)
+                    assert sb._live_stop.waits == [15.0, 60.0, 300.0, 300.0, 300.0], (road, sb._live_stop.waits)
+
+            # and on a real socket: joined, dropped, and then it waits
+            sb._live_stop.clear()
+            with _patched(net_mod, "_ws_connect", drops_after(0.0)), \
+                    _patched(sb, "LIVE_HEARTBEAT_S", 30.0), _patched(sb, "LIVE_RETRY_S", (0.05, 30.0)):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: made and made[0].joined.is_set()), "no join"
+                time.sleep(0.5)
+                assert len(made) == 1, f"{len(made)} sockets in half a second: a join alone reset the ladder"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+
+            # and one that held comes back at once
+            made.clear()
+            sb._live_stop.clear()
+            with _patched(net_mod, "_ws_connect", drops_after(0.4)), \
+                    _patched(sb, "LIVE_HEARTBEAT_S", 0.2), _patched(sb, "LIVE_RETRY_S", (0.05, 30.0)):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: len(made) >= 2), "a socket that held waited out the ladder"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        pc.gone()
+
+
+def _queued_report(rid: str) -> None:
+    """A report in this PC's outbox, as problems.py leaves it."""
+    (paths.OUTBOX_DIR).mkdir(parents=True, exist_ok=True)
+    (paths.OUTBOX_DIR / f"{rid}.json").write_text(json.dumps({
+        "id": rid, "kind": "wrong", "text": "the word came out wrong",
+        "dictation_raw": "said by whoever queued it", "attachments": []}), "utf-8")
+
+
+def test_sign_out_of_every_pc_answers_where_it_was_pressed():
+    """It went off on a thread and the pipe said "signing out" at once, so a
+    failure landed in last_error, which the web Home never draws: with the
+    network down, on the changed lock's row, the person read that it was
+    happening and the stranger stayed in. And with this PC's own session dead
+    the fallback was skipped, sign_out returned, and the desk said "signed out
+    of every PC" with every other device still in. The reply is the answer."""
+    import main as main_mod
+    import sb
+
+    def no_road(*a, **k):
+        raise OSError("no road")
+
+    app = main_mod.App.__new__(main_mod.App)
+    said: list = []
+    app._say = said.append
+    sid = "cccccccc-0000-4000-8000-000000000001"
+    refused = dict(_WEB_STATUS, account={"signed_in": True, "configured": True, "lock": {
+        "state": "changed", "changed": {"server": "a", "mine": "b", "refused": True}}})
+    pc = _pc("A", "DeskIT.test")
+    try:
+        # the gate in this PC's own settings: the desk reads them (privacy.configure)
+        with _fixture_project() as fake, pc, _consented("account"):
+            assert app._account_command("signout_all") == {"ok": False, "error": "no account on this PC"}
+            _sign_in_pc(fake, "desk", sid=sid)
+
+            with _patched(sb, "_auth", no_road):
+                reply = app._account_command("signout_all")
+            assert reply == {"ok": False, "error": sb.NO_ROAD_THERE}, reply
+            assert sb.signed_in() and not said, "nothing ended, and it said so"
+            assert sb.status()["last_error"] == sb.NO_ROAD_THERE
+
+            # what the person reads on Home
+            with _web_desk(refused) as (model, _f, _asked):
+                pipe = model._send
+                model._send = lambda command, timeout_ms=2000, **args: (
+                    app._account_command(args["do"]) if command == "account"
+                    else pipe(command, timeout_ms=timeout_ms, **args))
+                model.act("lock.signout_ask")
+                with _patched(sb, "_auth", no_road):
+                    note = model.act("lock.signout_all")["note"]
+                assert note == sb.NO_ROAD_THERE, note
+
+            # this PC's session is dead, and it was the one road to the others
+            fake.ended.append(sid)
+            fake.calls.clear()
+            reply = app._account_command("signout_all")
+            assert reply == {"ok": False, "error": sb.SESSION_WENT}, reply
+            assert not sb.signed_in() and not said, "it said it signed out the others"
+            assert sb.status()["last_error"] == sb.SESSION_WENT
+            assert not [c for c in fake.calls if c["path"] == "auth/v1/logout"], "no session, no road"
+            assert len(sb.SESSION_WENT) <= 200, "main cuts at 200"
+            locked = dict(_WEB_STATUS, locked=True, account=sb.status())
+            with _web_desk(locked) as (model, _f, _asked):
+                assert model.home()["landing"]["line"] == sb.SESSION_WENT, model.home()["landing"]
+
+            # and when it worked, it says that
+            fake.ended.clear()
+            sb._status["last_error"] = ""
+            _sign_in_pc(fake, "desk", sid=sid)
+            reply = app._account_command("signout_all")
+            assert reply == {"ok": True, "message": "signed out of every PC"}, reply
+            assert not sb.signed_in() and said == ["signed out of every PC"]
     finally:
         pc.gone()
+
+
+def test_a_state_file_replaced_in_the_middle_of_a_run_says_somebody_was_here():
+    """The damaged file was set aside before anything was written, and what
+    replaced it went down only with a save that touched state.json. After a
+    settings-only save, or a value that was refused, there was no file at all:
+    a strict read gives {}, and the next person was this PC's first account."""
+    import migrations
+    import sb
+    import version
+
+    for act in ("a settings-only save", "a refused value"):
+        pc = _pc("A", "DeskIT.test")
+        try:
+            with _fixture_project() as fake, _consented("account"), pc:
+                _signs_in(fake, _ONE)
+                sb.sign_out(everywhere=False)
+                paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+                if act == "a settings-only save":
+                    config_mod.save({"vocab.max_terms": 77})
+                else:
+                    try:
+                        config_mod.save({"polish.when": "whenever"})
+                    except config_mod.ConfigError:
+                        pass
+                    else:
+                        raise AssertionError("that value is not one the file takes")
+                state = config_mod.read_state_strict(paths.STATE_FILE)
+                assert state == {sb.LAST_ACCOUNT: sb.SOMEBODY, "config_version": version.CONFIG_VERSION}, (act, state)
+                kept = [p for p in pc.home.iterdir() if p.name.startswith("state.json.broken-")]
+                assert len(kept) == 1 and kept[0].read_text("utf-8") == "{ cut in half", act
+                assert migrations.current() == version.CONFIG_VERSION, "a file with no version runs the steps"
+                _signs_in(fake, _TWO)
+                assert sb._per_account(sb.HELD_BACK).get(_TWO), f"{act}: the next person was this PC's first"
+        finally:
+            pc.gone()
+
+
+def test_a_state_file_that_will_not_read_is_said_and_stops_nothing_it_need_not():
+    """A strict read raised at the top of a worker turn: a debug line, no
+    account pass, and nothing in the person's status, until a save or a
+    restart. The status says it now and the turn goes on, and a report does
+    not go out past a door that could not be asked. A damaged file is mended
+    by the door, and the words go with it."""
+    import sb
+
+    real = Path.read_text
+
+    def held(self, *a, **k):
+        if self == paths.STATE_FILE:
+            raise PermissionError("held")
+        return real(self, *a, **k)
+
+    rid = "aaaaaaaa-bbbb-cccc-dddd-000000000011"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "report_upload"), pc:
+            fake.rls = True
+            fake.tables["problem_reports"] = []
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            _queued_report(rid)
+
+            with _patched(Path, "read_text", held):
+                sb._worker_pass(None, None, None)
+            assert sb.status()["last_error"] == sb.STATE_WORDS, sb.status()["last_error"]
+            assert len(sb.STATE_WORDS) <= 200 and "will not read" in sb.STATE_WORDS
+            assert sb.status()["lock"]["error"] == sb.STATE_WORDS, "no account pass ran"
+            assert not fake.tables["problem_reports"], "a report went past a door nobody could ask"
+            assert sb.queued() == 1
+
+            # the file opens again, and the words go without a sync to clear them
+            sb._worker_pass(None, None, None)
+            assert sb.status()["last_error"] == "", "the words outlived what they said"
+            assert sb.status()["lock"]["error"] == "", "the lock's card went on saying them"
+            assert [r["id"] for r in fake.tables["problem_reports"]] == [rid]
+    finally:
+        pc.gone()
+
+
+def test_what_the_same_person_queued_stays_theirs_past_a_damaged_state_file():
+    """Its record is gone with the file, and "somebody" names nobody to wait
+    for: a report moved under that word never came back, with its own person
+    still signed in. Only that person: a different one who signs in over the
+    damage must not get it, so the door mends the file on the way in and does
+    not leave it to fail, or the new session reads as the one that was here."""
+    import sb
+
+    mine, theirs = "aaaaaaaa-bbbb-cccc-dddd-000000000012", "aaaaaaaa-bbbb-cccc-dddd-000000000013"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "report_upload"), pc:
+            fake.rls = True
+            fake.tables["problem_reports"] = []
+            _signs_in(fake, _ONE)
+            _queued_report(mine)
+            paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+            sb._take_over(_ONE)
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _ONE
+            assert sb.queued() == 1, "it was moved under nobody's name"
+            assert sb.drain_outbox() == {mine: "sent"}, "the same person's report never went"
+
+            _queued_report(theirs)
+            sb.sign_out(everywhere=False)
+            paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+            _signs_in(fake, _TWO)
+            config_mod.save({"vocab.max_terms": 77})
+            assert sb.queued() == 0 and sb.drain_outbox() == {}, "it went out as the next person's"
+            assert [r["user_id"] for r in fake.tables["problem_reports"]] == [_ONE]
+    finally:
+        pc.gone()
+
+
+def test_a_lock_that_comes_back_seals_again_what_the_lock_between_sealed():
+    """What went up is kept past a sign-out with the lock it went up under,
+    and a cursor with no lock on it gets it back. In session the lock can
+    move and move back: the rows were re-sealed under the lock between, and
+    the old mark said they were up, so they stayed sealed under a key the
+    account no longer names, and would not open on any other device."""
+    import sb
+    import sync as sync_mod
+    import vault
+
+    one, two = b"1" * 32, b"2" * 32
+    first, second = vault.fingerprint(one), vault.fingerprint(two)
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            config_mod.save({sb.PUSHED: {_ONE: {"ts": "2026-11-07T10:00:00.000+00:00", "lock": first}}})
+            # back after the sign-out, under that lock: what went up is up
+            cursor: dict = {}
+            sb._cursor_follows_lock(cursor, one, _ONE)
+            assert cursor.get("history_pushed_ts") == "2026-11-07T10:00:00.000+00:00", cursor
+            # under another: everything goes up again
+            sb._cursor_follows_lock(cursor, two, _ONE)
+            assert cursor["lock"] == second and "history_pushed_ts" not in cursor, cursor
+            cursor["history_pushed_ts"] = "2026-11-07T11:00:00.000+00:00"
+            # and back: the rows are under the lock between
+            sb._cursor_follows_lock(cursor, one, _ONE)
+            assert cursor["lock"] == first and "history_pushed_ts" not in cursor, cursor
+            assert sync_mod.read_cursor()["lock"] == first and \
+                "history_pushed_ts" not in sync_mod.read_cursor()
+    finally:
+        pc.gone()
+
+
+def test_a_copy_left_waiting_goes_on_asking_as_the_same_request_and_rings_nobody():
+    """A request lives fifteen minutes, and each new one had a new id, so a
+    copy left waiting was a card and a cue on every other device each time,
+    for as long as it waited, while the card named a code it no longer
+    showed. It is the same request now, in a new row: Home's row stays true
+    on both sides, nobody is rung, the code does not change under a person
+    comparing it and Same code stays pressed. Not now holds for the rest of
+    the request's time. An answer given before the press outlives the time."""
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    rings: list = []
+
+    def lapses() -> None:
+        sb._lock_state["pairing"]["expires"] = 0
+        for row in fake.tables.get("pairings", []):
+            row["expires_at"] = "2026-01-01T00:00:00+00:00"
+
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "PAIRING_HOOKS", [rings.append]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+                lock = sb.status()["lock"]
+                asked = dict(fake.tables["pairings"][0])
+            with a:
+                shown = sb.pending_pairings()
+                assert len(rings) == 1 and shown[0]["code"] == lock["code"], rings
+
+            for _turn in range(3):
+                with b:
+                    lapses()
+                    told = len(fake.broadcasts)
+                    sb._worker_pass(None, None, ())
+                    now = sb.status()["lock"]
+                    assert now["state"] == "waiting" and now["code"] == lock["code"], now
+                    rows = fake.tables["pairings"]
+                    assert [(r["id"], r["applicant"]) for r in rows] == [(asked["id"], asked["applicant"])], rows
+                    assert not rows[0].get("expires_at"), "the old row stayed"
+                    assert len(fake.broadcasts) == told + 1, "the row on the other Home stays stale"
+                with a:
+                    again = sb.pending_pairings()
+                    assert [(r["id"], r["code"]) for r in again] == [(asked["id"], lock["code"])], again
+                    assert len(rings) == 1, f"{len(rings)} knocks for one request"
+
+            # Not now holds for the rest of the request's time, and rings nobody after it
+            with a:
+                sb.decline_pairing(asked["id"])
+            with b:
+                sb._worker_pass(None, None, ())
+                assert not fake.tables["pairings"], "Not now was back at the next look"
+                assert sb.status()["lock"]["code"] == lock["code"]
+                lapses()
+                sb._worker_pass(None, None, ())
+                assert [r["id"] for r in fake.tables["pairings"]] == [asked["id"]]
+            with a:
+                assert [r["id"] for r in sb.pending_pairings()] == [asked["id"]] and len(rings) == 1
+
+            # Same code stays pressed, and an answer outlives the request's time
+            with b:
+                sb.same_code(lock["code"])
+                lapses()
+                sb._worker_pass(None, None, ())
+                assert sb.status()["lock"]["same"] is True, "a press was lost to the clock"
+                sb._lock_state["pairing"]["same"] = False
+            with a:
+                sb.approve_pairing(asked["id"])
+            with b:
+                lapses()
+                sb._worker_pass(None, None, ())
+                assert fake.tables["pairings"][0].get("handed"), "the clock threw the answer away"
+                sb.same_code(lock["code"])
+                sb._worker_pass(None, None, ())
+                assert sb.status()["lock"]["state"] == "have" and vault.key(fake.UID)
+                assert not fake.tables["pairings"]
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_the_privacy_page_says_what_a_second_account_changes_on_the_pc():
+    """It said what the last account left stays in the PC's files. A PC holds
+    one copy of the settings, the words and the keys, and the new account's
+    come down over them, so that was not true, and a promise on this page is
+    the one kind that has to be."""
+    policy = " ".join((REPO / "docs" / "privacy.md").read_text("utf-8").split())
+    assert "They are not removed either" not in policy
+    for words in ("nothing the last one said, learned or set", "the Said page there still shows it",
+                  "one copy of each and not one per person", "the new account's settings replace the last one's",
+                  "a word or key it removed goes", "what never reached it does not"):
+        assert words in policy, words
 
 
 def test_a_damaged_forgotten_list_is_set_aside_and_the_accounts_takes_its_place():
@@ -51496,7 +51905,9 @@ def test_migration_0007_gives_a_device_its_link_and_forget_its_limits():
     assert "security definer" in head and "set search_path = ''" in head and "language plpgsql" in head
     assert "returns boolean" in head and "returns void" not in head, "whether a session ended"
     assert "uid uuid := auth.uid();" in body and "if uid is null then" in body
-    assert "ended := found;" in body and "return ended;" in body and "ended boolean := false;" in body
+    assert "ended := found or not exists (select 1 from auth.sessions s where s.id = sid);" in body, body
+    assert body.index("if sid is not null then") < body.index("ended := found"), "a row that named nothing"
+    assert "return ended;" in body and "ended boolean := false;" in body
     assert re.search(r"delete from public\.devices d\s+where d\.id = target\s+and d\.user_id = uid\s+"
                      r"returning d\.session_id into sid;", body), body
     assert re.search(r"delete from auth\.sessions s\s+where s\.id = sid\s+and s\.user_id = uid;", body), body

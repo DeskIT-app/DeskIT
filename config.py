@@ -3052,10 +3052,18 @@ def state_to_write(path: Path) -> dict[str, object]:
     """state.json for a caller about to write the whole of it back. {} from a
     read that failed, written back, is every key in the file gone: the
     device id, the floors, the record of whose the stores are. So a file
-    that would not open raises and stays as it is. A damaged one is set
-    aside, never deleted, and what replaces it starts by saying that
-    somebody was here: its record is gone, and a live session must not read
-    that as a PC's first account (sb._take_over)."""
+    that would not open raises and stays as it is. A damaged one is copied
+    aside, never deleted, and what replaces it goes down here, in one
+    replace, and not with the caller's write: that may touch only
+    settings.toml, or be refused, and a state file that had gone would read
+    as a PC that never had an account. It says that somebody was here,
+    because its record is gone and a live session must not read that as a
+    PC's first account (sb._take_over), and it carries this build's version,
+    because a file with none reads as 1 and no upgrade step runs on a guess
+    (migrations.current)."""
+    import shutil
+
+    import version
     path = Path(path)
     try:
         return read_state_strict(path)
@@ -3064,9 +3072,11 @@ def state_to_write(path: Path) -> dict[str, object]:
             raise
         why = e
     aside = path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S')}")
-    os.replace(path, aside)
+    shutil.copyfile(path, aside)
+    fresh: dict[str, object] = {LAST_ACCOUNT: SOMEBODY, "config_version": version.CONFIG_VERSION}
+    write_state(path, fresh)
     logging.getLogger("app").warning("%s was set aside as %s (%s)", path.name, aside.name, why)
-    return {LAST_ACCOUNT: SOMEBODY}
+    return fresh
 
 
 def read_state(path: Path) -> dict[str, object]:

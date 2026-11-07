@@ -1603,7 +1603,7 @@ class Model:
                 said = str(info["last_error"])
                 try:
                     import sb
-                    gone = (sb.GONE_ELSEWHERE, sb.GONE_WORDS)
+                    gone = (sb.GONE_ELSEWHERE, sb.GONE_WORDS, sb.SESSION_WENT)
                 except Exception:         # noqa: BLE001
                     gone = ()
                 line = said[:200] if said in gone else f"Not signed in: {said}"[:200]
