@@ -9979,7 +9979,7 @@ class Dashboard:
         as they are, without "Not signed in:" in front."""
         try:
             import sb
-            return (sb.GONE_ELSEWHERE, sb.GONE_WORDS)
+            return (sb.GONE_ELSEWHERE, sb.GONE_WORDS, sb.SESSION_WENT)
         except Exception:                                    # noqa: BLE001
             return ()
 

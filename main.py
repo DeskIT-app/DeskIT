@@ -3223,8 +3223,11 @@ class App:
         opens the browser and waits on a thread of its own, a sync is a
         nudge to the worker — so the poll never sees a frozen app; the
         outcome lands in status()["account"] (busy / last_error) and
-        in the log. A shut gate opens its card first, like a key press
-        would (D7), and the person presses the button again after
+        in the log. Sign out of every PC and the lock's verbs are the
+        exceptions, and the reply is their answer: the pipe has four
+        threads, and Home draws no last_error, so a failure sent there
+        looked like success. A shut gate opens its card first, like a key
+        press would (D7), and the person presses the button again after
         [Turn on]."""
         import sb
         if do == "status":
@@ -3256,19 +3259,28 @@ class App:
             return {"ok": True, "message": ("the browser opens Google's sign-in; come back "
                                             "here when it says done" if do == "google"
                                             else "creating an anonymous account")}
-        if do in ("signout", "signout_all"):
+        if do == "signout":
             # Sign out is THIS PC (the Store walk, 2026-10-03: "why does
             # Sign out throw out everyone and not only the one I pressed it
             # on?" — it locked his Dev copy too). Every PC is its own,
-            # plainly named button: the one the changed lock's "It wasn't
-            # me" points to, to end a stranger's session with his own.
-            everywhere = do == "signout_all"
+            # plainly named button, below.
             threading.Thread(target=lambda: self._account_try(
-                lambda: sb.sign_out(everywhere=everywhere),
-                "signed out of every PC" if everywhere else "signed out on this PC"),
+                lambda: sb.sign_out(everywhere=False), "signed out on this PC"),
                 daemon=True, name="account-signout").start()
-            return {"ok": True, "message": ("signing out of every PC" if everywhere
-                                            else "signing out on this PC")}
+            return {"ok": True, "message": "signing out on this PC"}
+        if do == "signout_all":
+            # what the changed lock's "It wasn't me" points to, to end a
+            # stranger's session with his own: the reply says whether it did
+            if not sb.signed_in():
+                return {"ok": False, "error": "no account on this PC"}
+            try:
+                sb.sign_out(everywhere=True)
+            except Exception as e:                           # noqa: BLE001
+                sb._status["last_error"] = str(e)[:200]
+                log.info("account: %s", e)
+                return {"ok": False, "error": str(e)[:200]}
+            self._say("signed out of every PC")
+            return {"ok": True, "message": "signed out of every PC"}
         if do == "delete":
             if not sb.signed_in():
                 return {"ok": False, "error": "no account on this PC"}

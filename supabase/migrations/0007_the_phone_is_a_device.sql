@@ -29,9 +29,10 @@
 --                       one thing no device can do for itself on another
 --                       device's behalf through the Data API. 0006 makes
 --                       the end of a session effective at the next request.
---                       It answers whether a session ended, because a copy
---                       that never wrote `session_id` loses its row and
---                       stays signed in, and the person has to be told.
+--                       It answers whether any session of that row is left,
+--                       because a copy that never wrote `session_id` loses
+--                       its row and stays signed in, and the person has to
+--                       be told.
 --
 -- `platform` stays what it was and gains values: `windows-…` as today,
 -- `android-<sdk>` on a phone, later `web`.
@@ -66,12 +67,14 @@ alter table public.devices
 -- there is no error, so a second press changes nothing. Deleting the
 -- session takes its refresh tokens with it (their foreign key cascades).
 -- A device may name itself: Sign out on a phone is Forget on itself.
--- It answers true when a session ended. False is a target that is not
--- there, or a row that named no session of the caller's: a client older
--- than this file, or one whose account gate was shut when it wrote its row.
--- The row goes all the same, and that device stays signed in until its
--- sessions end some other way, which is what the client then tells the
--- person.
+-- It answers true when no session of that row is left to end: this call
+-- ended it, or it was over already, because a PC that signed out keeps its
+-- row and a `session_id` that names nothing any more. False is a target
+-- that is not there, a row that named no session (a client older than this
+-- file, or one whose account gate was shut when it wrote its row), or a row
+-- that named somebody else's, which stays exactly as it was. The row goes
+-- all the same, and that device stays signed in until its sessions end some
+-- other way, which is what the client then tells the person.
 create or replace function public.forget_device(target uuid)
 returns boolean
 language plpgsql
@@ -94,7 +97,7 @@ begin
     delete from auth.sessions s
      where s.id = sid
        and s.user_id = uid;
-    ended := found;
+    ended := found or not exists (select 1 from auth.sessions s where s.id = sid);
   end if;
   return ended;
 end

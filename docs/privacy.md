@@ -140,10 +140,16 @@ the session on that PC, and "Sign out of every PC" revokes every
 session of the account. Two accounts on one PC stay apart: when a
 different account signs in, nothing the last one said, learned or set,
 none of its cloud keys and none of its unsent reports goes up to the new
-account. They are not removed either: they stay in that PC's files, the
-Said page there still shows them, and dictation there goes on using
-those words and keys. Rights: access, rectification and
-deletion through the app and by e-mail. The whole database schema is
+account. What it said on that PC stays in that PC's files and the Said
+page there still shows it, and its unsent reports wait there for it. Its
+words, settings and keys stay too, and dictation there goes on using
+them, until the new account's own come down over them, because a PC
+holds one copy of each and not one per person: the new account's
+settings replace the last one's, its words and keys replace those of the
+same name, and a word or key it removed goes. What was on the last
+account's server comes back when that account signs in again; what never
+reached it does not. Rights: access, rectification and deletion through
+the app and by e-mail. The whole database schema is
 published at `supabase/migrations/` in the repository; no table in it
 has a column the server could read an API key from — the one table that
 carries your cloud keys (`vault`) holds them sealed under your
