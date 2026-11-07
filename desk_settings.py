@@ -334,8 +334,15 @@ def trouble_card(status) -> dict | None:
                {"k": "If you remove DeskIT",
                 "v": "The rule stays in Windows. It names one program and one port, and does "
                      "nothing once the program is gone."}]
-    if ((status or {}).get("privacy") or {}).get("offline"):
+    if info.get("offline"):
         details.append({"k": "Offline mode", "v": "Your phone still reaches this PC at home."})
+    if info.get("account_off"):
+        # the door is shut by a yes that went, and Windows has nothing to do
+        # with it: its button would ask for a yes that changes nothing
+        return {"kind": "trouble", "line": "The phone can't connect",
+                "said": ("Your phone comes in through your account, and the account is off on "
+                         "this PC. Turn it on from Home or Settings > Privacy."),
+                "button": "", "details": details}
     return {"kind": "trouble", "line": "The phone can't connect?",
             "said": ("Windows may be blocking it. DeskIT asks Windows to let your phone "
                      "through, and Windows asks you for a yes."),
@@ -967,9 +974,9 @@ class Place:
         """Your devices, with Forget, which asks in its own row. Nothing to
         list while this PC is the only one."""
         rows = device_rows(self.status, self._phone_asking)
-        if len(rows) < 2:
-            return None
         error = str(phone_info(self.status).get("error") or "")
+        if len(rows) < 2 and not error:     # a Forget's answer outlives the last row
+            return None
         return {"kind": "devices", "rows": rows, "ask": FORGET_ASK, "say": error}
 
     def _card_keyboard(self, sections) -> dict:

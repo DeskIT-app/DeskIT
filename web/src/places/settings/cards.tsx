@@ -42,10 +42,12 @@ function TroubleCard({ s, press, pressed }: {
           <div className="lab">{s.line}</div>
           <div className="help">{s.said}</div>
         </div>
-        <div className="ctl">
-          <div className={`btn${pressed === k ? " down" : ""}`}
-               onClick={() => void press({ do: "phone.firewall" }, k)}>{s.button}</div>
-        </div>
+        {s.button ? (
+          <div className="ctl">
+            <div className={`btn${pressed === k ? " down" : ""}`}
+                 onClick={() => void press({ do: "phone.firewall" }, k)}>{s.button}</div>
+          </div>
+        ) : null}
       </div>
       <div className="r more">
         <div className="t">

@@ -212,7 +212,9 @@ def rows() -> list[dict]:
     another process — runs this process's tear-downs for its kind, and so
     does one whose words moved: a Turn on on Home answers a row that was
     already there, and in the desk's process, so nothing else tells the
-    app that its gate just opened."""
+    app that its gate just opened. The tear-downs run after the lock is let
+    go: they reach other modules' locks, and those call back in here."""
+    moved: list[str] = []
     with _lock:
         try:
             mtime = paths.CONSENT_FILE.stat().st_mtime_ns
@@ -227,18 +229,20 @@ def rows() -> list[dict]:
         before, now = set(was), set(words)
         for kind in before & now:
             if kind in KINDS and was[kind] != words[kind]:
-                _run_resets(kind)
+                moved.append(kind)
         for kind in before - now:
             _gates[kind] = False
-            _run_resets(kind)
+            moved.append(kind)
         for kind in now - before:
             if kind in KINDS:
                 # Granted from the dashboard, another process: its
                 # settings mirror was written too, so the gate opens
                 # here without a restart.
                 _gates[kind] = True
-                _run_resets(kind)
-        return list(fresh)
+                moved.append(kind)
+    for kind in moved:
+        _run_resets(kind)
+    return list(fresh)
 
 
 def consent(kind: str) -> dict | None:
@@ -290,10 +294,16 @@ def granted(kind: str) -> bool:
     """Has the person said yes to ``kind``, whatever Offline mode says?
     ``allowed`` asks whether something may leave now. This asks what the
     person decided, for a thing that rests on the yes and sends nothing
-    itself: the phone door stays open in Offline mode, and shuts on Withdraw."""
+    itself: the phone door stays open in Offline mode, and shuts on Withdraw.
+    A row under older words counts in Offline mode: Home cannot ask then
+    (``stale``), and words that moved are not a person's no."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
-    return bool(_gates[kind]) and consent(kind) is not None
+    if not _gates[kind]:
+        return False
+    if consent(kind) is not None:
+        return True
+    return bool(_gates["offline"]) and any(r.get("kind") == kind for r in rows())
 
 
 def require(kind: str) -> str:

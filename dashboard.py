@@ -7503,9 +7503,10 @@ class Dashboard:
         import desk_settings
 
         rows = desk_settings.device_rows(self.status, getattr(self, "_phone_asking", ""))
-        if len(rows) < 2:
+        error = str(desk_settings.phone_info(self.status).get("error") or "")
+        if len(rows) < 2 and not error:
             return
-        card = ui.Card(scroller.inner, CW, 36 + 46 * len(rows), bg=ui.BG, pad=18)
+        card = ui.Card(scroller.inner, CW, 36 + 46 * len(rows) + (44 if error else 0), bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
         tk.Label(body, text="Y O U R   D E V I C E S", bg=ui.CARD, fg=ui.FAINT,
@@ -7527,6 +7528,9 @@ class Dashboard:
                 ui.Button(body, "Forget", lambda i=row["id"]: self._phone_ask(i), h=32,
                           quiet=True, w=widgets.button_width("Forget")
                           ).place(x=CW - 36, y=y, anchor="ne")
+        if error:
+            tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), justify="left",
+                     wraplength=CW - 60, text=error).place(x=0, y=24 + 46 * len(rows))
         scroller.bind_wheel(card)
 
     def _phone_ask(self, ident: str) -> None:
@@ -7600,8 +7604,9 @@ class Dashboard:
         tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), text=said["line"]).place(x=0, y=0)
         tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 240,
                  justify="left", text=said["said"]).place(x=0, y=24)
-        ui.Button(body, said["button"], self._phone_firewall, h=32, quiet=True,
-                  w=widgets.button_width(said["button"])).place(x=CW - 36, y=0, anchor="ne")
+        if said["button"]:
+            ui.Button(body, said["button"], self._phone_firewall, h=32, quiet=True,
+                      w=widgets.button_width(said["button"])).place(x=CW - 36, y=0, anchor="ne")
         lines = "\n".join(f"{d['k']}:  {d['v']}" for d in said["details"])
         more = tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), justify="left",
                         wraplength=CW - 80, text=lines)

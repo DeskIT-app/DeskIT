@@ -3626,7 +3626,10 @@ class App:
     def _watch_hook(self) -> None:
         """The hook's lines are written by the desk or the wizard, in another
         process, into a file of Claude Code's: this is how a switch flipped
-        there reaches the loopback door with nothing restarted."""
+        there reaches the loopback door with nothing restarted. A Withdraw
+        on the desk comes the same way: this process hears of it when
+        something reads the consent file, and with Offline mode on nothing
+        does, because `allowed` stops first, and the door would stand."""
         import notify_hook
 
         def stamp():
@@ -3637,6 +3640,10 @@ class App:
 
         seen = stamp()
         while not self._stopping.wait(HOOK_WATCH_S):
+            try:
+                privacy.rows()
+            except Exception:                                # noqa: BLE001
+                log.debug("the consent file was not read", exc_info=True)
             now = stamp()
             if now != seen:
                 seen = now
@@ -3793,6 +3800,9 @@ class App:
             out["error"] = getattr(self, "_phone_error", "")
             out["ask"] = bool(server.enabled and not server.phone_allowed and out["phones"]
                               and not getattr(self, "_phone_no", False))
+            out["account_off"] = bool(server.enabled and server.phone_allowed and out["phones"]
+                                      and not privacy.granted("account"))
+            out["offline"] = privacy.offline()
         except Exception:                                    # noqa: BLE001
             log.debug("the phone status tripped", exc_info=True)
         return out

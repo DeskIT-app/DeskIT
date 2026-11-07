@@ -7413,6 +7413,105 @@ def test_the_stranger_asks_for_ports_of_its_own() -> None:
     assert main.index("reset(home") < main.index("seed_ports(home)") < main.index("start(home, env)")
 
 
+def test_a_withdraw_on_the_desk_shuts_the_door_with_offline_mode_on() -> None:
+    """Withdraw runs in the desk's process, and the app hears of it when
+    something reads the consent file. With Offline mode on nothing does,
+    because `allowed` stops first, so the watch reads it. The card then says
+    why and offers no Windows button: a yes that went is not a firewall."""
+    import main as main_mod
+
+    import desk_settings
+    import phone as phone_mod
+    import privacy
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        privacy.on_change("account", app._doors_soon)
+        watch = None
+        try:
+            assert app.phone_door.running
+            with _patched(privacy, "_gates", dict(privacy._gates, offline=True)), \
+                    _patched(main_mod, "HOOK_WATCH_S", 0.05):
+                assert app._phone_status()["offline"] is True
+                assert "Offline mode" in str(desk_settings.trouble_card({"phone": app._phone_status()}))
+                watch = threading.Thread(target=app._watch_hook, daemon=True)
+                watch.start()
+                privacy._write_file([r for r in privacy.rows() if r["kind"] != "account"])
+                assert _until(lambda: not app.phone_door.running, 5), "the door outlived the consent"
+            card = desk_settings.trouble_card({"phone": app._phone_status()})
+            assert card["button"] == "" and "account is off" in card["said"], card
+        finally:
+            app._stopping.set()
+            if watch is not None:
+                watch.join(timeout=3)
+            _shut_doors(app)
+
+
+def test_a_consent_tear_down_runs_outside_the_consent_lock() -> None:
+    """rows() ran the tear-downs under its lock, and one of them is sb.nudge,
+    which takes sb._lock, while a refresh holds sb._lock and asks net, which
+    asks rows(). The two locks must not nest that way round."""
+    import privacy
+
+    free: list[bool] = []
+
+    def reset() -> None:
+        got: list[bool] = []
+
+        def try_it() -> None:
+            took = privacy._lock.acquire(timeout=2)
+            got.append(took)
+            if took:
+                privacy._lock.release()
+        thread = threading.Thread(target=try_it)
+        thread.start()
+        thread.join()
+        free.append(got == [True])
+
+    with _consented("account"), _patched(privacy, "_resets", {}):
+        privacy.on_change("account", reset)
+        row = next(r for r in privacy.rows() if r["kind"] == "account")
+        privacy._write_file([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+        privacy.rows()
+        assert free == [True], free
+
+
+def test_words_that_moved_do_not_shut_the_door_while_home_cannot_ask() -> None:
+    """An update moved the account's words on a PC in Offline mode: Home asks
+    nothing then (`stale` is empty), so a row under older words still stands
+    for the door, and only for as long as Offline mode lasts."""
+    import privacy
+
+    with _consented("account"):
+        row = next(r for r in privacy.rows() if r["kind"] == "account")
+        privacy._write_file([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+        assert not privacy.granted("account"), "a stale row is no yes with the internet on"
+        with _patched(privacy, "_gates", dict(privacy._gates, offline=True)):
+            assert privacy.stale() == [] and privacy.granted("account")
+            privacy._write_file([])
+            assert not privacy.granted("account"), "no row is no yes, Offline or not"
+
+
+def test_a_forgets_answer_outlives_the_last_row_on_the_card() -> None:
+    """Forget took the only other device and it stays signed in: the row is
+    gone, and the card that says so must not go with it."""
+    import desk_settings
+
+    place = desk_settings.Place.__new__(desk_settings.Place)
+    place.status = {"phone": {"phones": [], "pcs": [], "error": "still signed in"}}
+    place._phone_asking = ""
+    with _patched(desk_settings, "device_rows", lambda status, asking: [{"id": "", "name": "This PC"}]):
+        card = place._card_devices(None)
+        assert card is not None and card["say"] == "still signed in", card
+        place.status = {"phone": {"phones": [], "pcs": [], "error": ""}}
+        assert place._card_devices(None) is None
+
+
 def test_only_a_missing_file_makes_a_new_key() -> None:
     """A new key means every phone loses its pin, so a read that failed must
     not make one: a file another program has open, a blob this Windows
