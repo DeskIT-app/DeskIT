@@ -21,8 +21,11 @@ from nowhere else; net.serve_tls is handed the passphrase by NAME and asks
 the store for it inside load_cert_chain's callback, so the value never
 reaches server.py or main.py.
 
-``publish(key, ...)`` writes this PC's ``link`` row when anything in it
-changed. ``anchors()`` opens the phones' rows and leaves out the forgotten.
+``publish(...)`` writes this PC's ``link`` row when anything in it changed.
+``anchors()`` opens the phones' rows and leaves out the forgotten. Both ask
+vault.py for the account key themselves: it never leaves this module, so
+main.py never holds one, and ``keyless`` is how a hook of its gets past sb.py
+handing every hook the key.
 ``refresh()`` reads them from the account. The sealed
 rows are kept in ``secrets\\phone_rows.json``, because a PC restarted with the
 house's internet down must still open its door (§3's "Home: nobody" rests on
@@ -71,11 +74,14 @@ PASS_NAME = "phone_key_pass"
 KEY_FILE = "phone_key.pem"
 ROWS_FILE = "phone_rows.json"
 
-#: The first thing in a certificate's subject. The rest is random, because
-#: OpenSSL takes the first anchor of a name: three phones whose certificates
-#: share one subject gave [ok, SSLError, refused] without PARTIAL_CHAIN
-#: (2026-11-06). The door sets that flag; a random name is the other half.
-SUBJECT = "DeskIT PC"
+#: How many random bytes a certificate's subject is, and it is nothing else.
+#: Random, because OpenSSL takes the first anchor of a name: three phones whose
+#: certificates share one subject gave [ok, SSLError, refused] without
+#: PARTIAL_CHAIN (2026-11-06). The door sets that flag; a random name is the
+#: other half. Nothing else, because a door shows its certificate to whoever
+#: knocks, before any proof, and the product's name there would tell a prober
+#: what it had found.
+SUBJECT_BYTES = 8
 
 #: The key file's own PBKDF2. The passphrase is 256 random bits, so this is
 #: not what protects it: it is here because PBES2 has to name a count, and
@@ -277,34 +283,21 @@ def rows_path() -> Path:
 
 
 def _on_disk() -> bytes | None:
-    """The certificate in the key file, or None when there is no file or
-    no certificate in it."""
+    """The certificate in the key file, or None when there is no file. A
+    file that is there and was not read raises OSError, and one with no
+    certificate in it ValueError: neither is a missing key."""
     try:
         text = key_path().read_text("ascii")
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
     found = _PEM_CERT.search(text)
     if found is None:
-        return None
-    try:
-        return base64.b64decode("".join(found.group(1).split()), validate=True)
-    except ValueError:
-        return None
-
-
-def _passphrase_here() -> bool:
-    """Does the store open a passphrase? A blob another Windows account
-    wrote is SecretError, and that is the same as none: a new identity,
-    the way load_token treats it, never a crash."""
-    try:
-        return bool(secretstore.get(PASS_NAME))
-    except secretstore.SecretError as e:
-        log.warning("phone: %s", e)
-        return False
+        raise ValueError("the key file holds no certificate")
+    return base64.b64decode("".join(found.group(1).split()), validate=True)
 
 
 def _make_identity() -> str:
-    cert, sec1 = make_pair(f"{SUBJECT} {_secrets.token_hex(4)}")
+    cert, sec1 = make_pair(_secrets.token_hex(SUBJECT_BYTES))
     passphrase = _secrets.token_urlsafe(32)
     pem = _pem("CERTIFICATE", cert) + _pem("ENCRYPTED PRIVATE KEY", _encrypted_pkcs8(sec1, passphrase))
     secretstore.set(PASS_NAME, passphrase)
@@ -321,12 +314,18 @@ def _make_identity() -> str:
 
 def identity() -> str:
     """This PC's certificate fingerprint. Makes the key and the certificate
-    the first time; afterwards it only reads. A key file whose passphrase
-    is gone is treated as no key at all: a new identity, and every phone
-    picks it up from this PC's next ``link`` row."""
+    the first time; afterwards it only reads. Only a missing file makes a new
+    one: the key file, or the passphrase's, without which the key never opens
+    again. Every phone then picks it up from this PC's next ``link`` row.
+
+    A failed read is not a missing file, and a new key here would replace
+    the one a running door holds. So OSError (the file is there and was not
+    read), ValueError (it holds no certificate) and secretstore.SecretError
+    (a blob this Windows account cannot open) go up. A key that will never
+    open is server.PhoneDoor's to answer for, when a door has to open."""
     with _lock:
         cert = _on_disk()
-        if cert is not None and _passphrase_here():
+        if cert is not None and secretstore.get(PASS_NAME):
             return fingerprint(cert)
         return _make_identity()
 
@@ -423,7 +422,15 @@ def _phone_cert(link: dict) -> bytes | None:
         return None
 
 
-def anchors(key: bytes | None = None) -> dict[str, dict]:
+def keyless(then):
+    """A hook for sb.ACCOUNT_HOOKS, which hands every hook the account's key.
+    ``then`` is called with nothing, so the key stays on this side."""
+    def hook(_key: bytes) -> None:
+        then()
+    return hook
+
+
+def anchors() -> dict[str, dict]:
     """fingerprint -> {"device", "name", "der"}: every phone of the account
     that may come through the door, out of the kept rows, so this needs no
     network: opening them takes only the account key, which is local."""
@@ -434,7 +441,7 @@ def anchors(key: bytes | None = None) -> dict[str, dict]:
         uid = _uid()
         if not uid or str(kept.get("uid") or "") != uid:
             return {}
-        key = key or vault.key(uid)
+        key = vault.key(uid)
         if key is None:
             return {}
         gone = _forgotten(kept)
@@ -450,23 +457,36 @@ def anchors(key: bytes | None = None) -> dict[str, dict]:
         return out
 
 
+#: The reads of the account handed out, and the newest whose answer was kept.
+_reads_asked = 0
+_read_kept = 0
+
+
 def refresh() -> None:
     """Read the account's rows and keep them. An account that cannot be read
     raises and leaves the file as it is: a door must not close because the
     internet went.
 
     The read is outside the lock. The desk's poll takes that lock through
-    view(), on the pipe, whose handlers must never wait on a network. An
-    answer that lands after a sign-in to another account is dropped."""
+    view(), on the pipe, whose handlers must never wait on a network. So two
+    reads can cross, and the slower answer is the older one if it was asked
+    first: it is dropped, or it would put back what a newer one had taken
+    away, and stop the door on a row list from before a phone joined. An
+    answer that lands after a sign-in to another account goes the same way."""
+    global _reads_asked, _read_kept
     import sb
 
     uid = _uid()
     if not uid:
         return
+    with _lock:
+        _reads_asked += 1
+        ticket = _reads_asked
     rows = sb.devices()
     with _lock:
-        if _uid() != uid:
+        if _uid() != uid or ticket < _read_kept:
             return
+        _read_kept = ticket
         kept = _read_rows()
         same = str(kept.get("uid") or "") == uid
         keep = [{k: r.get(k) for k in ("id", "name", "platform", "last_seen", "link")}
@@ -562,15 +582,19 @@ def saw(cert: str, *, dictated: bool = False) -> None:
 
 
 def drop_rows() -> None:
-    """Signed out: what the door opened from goes with the session."""
+    """Signed out: what the door opened from goes with the session, and a
+    read still on its way lands on nothing."""
+    global _reads_asked, _read_kept
     with _lock:
+        _reads_asked += 1
+        _read_kept = _reads_asked
         try:
             rows_path().unlink()
         except FileNotFoundError:
             pass
 
 
-def publish(key: bytes, *, port: int, listening: bool, words_sync: bool) -> bool:
+def publish(*, port: int, listening: bool, words_sync: bool) -> bool:
     """This PC's ``link`` row, when anything in it changed; True when one
     went out. ``listening`` is whether a phone should try here at all: a
     PC that said no, or has the switch off, names no address.
@@ -590,7 +614,8 @@ def publish(key: bytes, *, port: int, listening: bool, words_sync: bool) -> bool
     import vault
 
     uid = _uid()
-    if not uid:
+    key = vault.key(uid) if uid else None
+    if key is None:
         return False
     addrs = addresses() if listening else []
     try:
@@ -832,10 +857,12 @@ def firewall_line(netsh: str, exe: str, port: int, profiles: str,
     netsh's delete has no ``action=`` filter, so a block rule is deleted by
     its name; a name that is not plain, or a registry that could not be read,
     takes every inbound rule of this program with it, which the allow below
-    replaces. Our own rule goes first, so pressing twice leaves one."""
+    replaces. Our own rule goes first, so pressing twice leaves one, and it
+    goes by name AND program: rules are the machine's, and a second Windows
+    user's press must not delete the first one's."""
     fw = f'"{netsh}" advfirewall firewall'
     prog = f'program="{exe}"'
-    steps = [f'{fw} delete rule name="{RULE_NAME}" dir=in']
+    steps = [f'{fw} delete rule name="{RULE_NAME}" dir=in {prog}']
     names = [] if blocks is None else [n for n in dict.fromkeys(blocks) if n]
     if blocks is None or not all(_PLAIN_RULE.fullmatch(n) for n in names):
         steps.append(f'{fw} delete rule name=all dir=in {prog}')
@@ -892,11 +919,16 @@ def open_firewall(exe: str, port: int) -> str:
     """The phone can't connect? Called from the desk, on the press, because
     the prompt comes up in front of whoever owns the foreground, and a
     windowless process would only flash in the taskbar. Waits for the
-    person's answer: ``done``, ``declined`` or ``failed``."""
+    person's answer: ``done``, ``declined`` or ``failed``.
+
+    ``exe`` came over the pipe and goes into a line an elevated cmd.exe runs
+    behind the person's yes, so a quote in it would be a command of its own,
+    with their yes on it: a program is a file that exists, and no file name
+    holds a quote."""
     buf = ctypes.create_unicode_buffer(260)
     n = ctypes.WinDLL("kernel32").GetSystemDirectoryW(buf, len(buf))
     system = buf.value[:n]
-    if not (system and exe and port):
+    if not (system and exe and 0 < int(port) < 65536) or '"' in exe or not os.path.isfile(exe):
         return "failed"
     line = firewall_line(os.path.join(system, "netsh.exe"), exe, port, network_profiles(),
                          block_rules(exe))

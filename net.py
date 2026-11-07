@@ -935,9 +935,12 @@ def websocket(url: str, purpose: str, *, headers: dict | None = None,
 
 #: The word in a row's purpose column for a connection that came in.
 DOOR_PURPOSE = "phone"
-#: The whole handshake, and how many may run at once.
+#: The whole handshake, how many may run at once, and how many of those one
+#: address may hold: without that last number one host reconnecting every ten
+#: seconds holds all sixteen, and the phone never gets a turn.
 DOOR_HANDSHAKE_S = 10.0
 DOOR_HANDSHAKES = 16
+DOOR_HANDSHAKES_EACH = 4
 DOOR_BACKLOG = 32
 #: The one secret a door may be handed, by name.
 DOOR_SECRETS: frozenset[str] = frozenset({"phone_key_pass"})
@@ -952,6 +955,12 @@ Peer = namedtuple("Peer", "fingerprint name")
 class DoorError(Exception):
     """The door could not be built: the key will not open, or it is not
     there. Never a busy port, which is the plain OSError of the bind."""
+
+
+class DoorUnread(DoorError):
+    """The key or its passphrase could not be read just now. That says
+    nothing against the key, so it is no reason to make a new one, which
+    would cost every phone its pin."""
 
 
 _Counted = None
@@ -1002,8 +1011,10 @@ def _door_context(chain, passphrase: str, anchors: dict):
     ctx.sslsocket_class = _counted()
     try:
         ctx.load_cert_chain(str(chain), password=lambda: _resolve(passphrase))
-    except (OSError, NetError, ValueError) as e:      # ssl.SSLError is an OSError
+    except (ssl.SSLError, ValueError) as e:           # ssl.SSLError is an OSError
         raise DoorError(f"the door's key will not open ({type(e).__name__})") from None
+    except (OSError, NetError) as e:
+        raise DoorUnread(f"the door's key was not read ({type(e).__name__})") from None
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
     for fingerprint, phone in anchors.items():
@@ -1038,6 +1049,7 @@ class Door:
         self._open: dict[str, set] = {}
         self._cut: set = set()
         self._slots = threading.BoundedSemaphore(DOOR_HANDSHAKES)
+        self._shaking: dict[str, int] = {}
         self._drops: dict[str, float] = {}
         self._closing = False
         self._listener.settimeout(0.5)     # a close on Windows may not wake accept
@@ -1055,14 +1067,32 @@ class Door:
                     return
                 time.sleep(0.05)
                 continue
-            if not self._slots.acquire(blocking=False):
-                # sixteen peers are in the handshake: this one gets nothing,
-                # and accept stays free for whoever comes when one is done
+            if not self._take_place(str(address[0])):
+                # sixteen peers are in the handshake, or four from this
+                # address: this one gets nothing, and accept stays free for
+                # whoever comes when one is done
                 self._shut(raw)
                 self._dropped(address)
                 continue
             threading.Thread(target=self._one, args=(raw, address), daemon=True,
                              name="phone-door-peer").start()
+
+    def _take_place(self, ip: str) -> bool:
+        with self._lock:
+            held = self._shaking.get(ip, 0)
+            if held >= DOOR_HANDSHAKES_EACH or not self._slots.acquire(blocking=False):
+                return False
+            self._shaking[ip] = held + 1
+            return True
+
+    def _give_place(self, ip: str) -> None:
+        with self._lock:
+            held = self._shaking.get(ip, 0) - 1
+            if held > 0:
+                self._shaking[ip] = held
+            else:
+                self._shaking.pop(ip, None)
+        self._slots.release()
 
     def _one(self, raw, address) -> None:
         tls = None
@@ -1075,7 +1105,7 @@ class Door:
             der = tls.getpeercert(binary_form=True) or b""
             fingerprint = hashlib.sha256(der).hexdigest()
             with self._lock:
-                phone = self._known.get(fingerprint)
+                phone = None if self._closing else self._known.get(fingerprint)
                 if phone is not None:
                     self._open.setdefault(fingerprint, set()).add(tls)
             if phone is None:
@@ -1086,7 +1116,7 @@ class Door:
             self._dropped(address)
             return
         finally:
-            self._slots.release()
+            self._give_place(str(address[0]))
         name = _door_name(phone.get("name"))
         try:
             tls.settimeout(None)
@@ -1138,26 +1168,33 @@ class Door:
             pass
 
     def admit(self, anchors: dict) -> None:
-        """These phones, and no others, from now on. A new context, and the
-        open connections of whoever left the list are closed here."""
-        ctx = _door_context(self._chain, self._passphrase, anchors)
+        """These phones, and no others, from now on. The list changes and
+        whoever left it is cut before the new context is built, so a key
+        that will not load (DoorError) can keep a new phone out and never
+        keep a forgotten one in: the leaf is checked against the list after
+        every handshake, whichever context it ran under."""
         with self._lock:
-            self._ctx, self._known = ctx, dict(anchors)
+            self._known = dict(anchors)
             gone = [tls for fingerprint, live in self._open.items()
                     if fingerprint not in self._known for tls in live]
             self._cut.update(gone)
         for tls in gone:
             self._kick(tls)
+        ctx = _door_context(self._chain, self._passphrase, anchors)
+        with self._lock:
+            self._ctx = ctx
 
     def stop(self) -> None:
-        """Nothing listens, and nobody is left inside."""
-        self._closing = True
+        """Nothing listens, and nobody is left inside, a handshake still
+        running included: it lands on an empty list."""
+        with self._lock:
+            self._closing = True
+            self._known = {}
+            everyone = [tls for live in self._open.values() for tls in live]
         try:
             self._listener.close()
         except OSError:
             pass
-        with self._lock:
-            everyone = [tls for live in self._open.values() for tls in live]
         for tls in everyone:
             self._kick(tls)
         self._thread.join(timeout=2)

@@ -1531,11 +1531,14 @@ offline = false                # true refuses EVERY connection except this
 # borrows the model that is already loaded.
 # Two doors. One stays on this PC (port, plain HTTP, a bearer) for the Claude
 # hook and anything else running here, and it stays open while the Claude
-# hook is connected even with this switch off. The other (phone_port) is the
-# one a phone reaches straight over the network you are both on. It takes
-# only a certificate listed, sealed, in your own account, drops anybody else
-# in the handshake, and opens only once a phone joined your account and this
-# PC said yes. No phone in the account, nothing listens beyond this PC.
+# hook is connected even with this switch off, answering then only the hook.
+# The other (phone_port) is the one a phone reaches straight over the network
+# you are both on. It takes only a certificate listed, sealed, in your own
+# account, drops anybody else in the handshake, and opens only once a phone
+# joined your account and this PC said yes. It closes when the account's
+# consent is withdrawn, because it hears a Forget through the account; no
+# internet does not close it. No phone in the account, nothing listens beyond
+# this PC.
 enabled = true
 host = ""                      # "" = 127.0.0.1. Nothing else is honoured:
                                # the door a phone uses is the other one.

@@ -927,6 +927,7 @@ class App:
         # press or it does not happen: a phone among these is this PC's yes
         # (_phone_account), and any other PC asks with a row on Home.
         self._approved: set[str] = set()
+        self._phone_hook = phone_mod.keyless(self._phone_account)
 
     @property
     def vqa(self):
@@ -3493,10 +3494,13 @@ class App:
             # finds itself forgotten comes back under a new certificate
             if self._phone_signed_out not in sb.SIGNED_OUT_HOOKS:
                 sb.SIGNED_OUT_HOOKS.append(self._phone_signed_out)
-            if self._phone_account not in sb.ACCOUNT_HOOKS:
-                sb.ACCOUNT_HOOKS.append(self._phone_account)
+            if self._phone_hook not in sb.ACCOUNT_HOOKS:
+                sb.ACCOUNT_HOOKS.append(self._phone_hook)
             if self._phone_forgotten not in sb.FORGOTTEN_HOOKS:
                 sb.FORGOTTEN_HOOKS.append(self._phone_forgotten)
+            # the door hears a Forget through the account, so a person who
+            # withdraws that consent closes it (_doors)
+            privacy.on_change("account", self._doors_soon)
         except Exception:                                    # noqa: BLE001
             log.warning("the account worker did not start", exc_info=True)
 
@@ -3548,17 +3552,30 @@ class App:
 
         The loopback door: while the switch is on OR the Claude hook is
         connected, so a person's hook does not post into nothing with the
-        phone switched off. The phone door: while the switch is on, this PC
-        gave its one yes and the account has a phone. Called at start, on a
-        change of [server], when the hook's lines move and at every account
-        pass; every path through here is the same one, so the answer does
-        not depend on the order things happened in. Never raises: a door
-        that cannot open must not touch dictation."""
+        phone switched off; with the switch off it answers the hook and
+        nothing else (server.HOOK_ROUTES). The phone door: while the switch
+        is on, this PC gave its one yes, the account has a phone and the
+        person's yes to the account stands.
+
+        That last one is the difference between a person's act and a
+        network's state. The door hears a Forget through the account, so
+        with the `account` consent withdrawn it would stand on kept rows,
+        deaf to one, for as long as nobody looked: a person who shut that
+        gate shuts the door. The internet going is not that, nor is Offline
+        mode, which the Phone card promises leaves the phone reaching this
+        PC: the door stays open on its kept rows (privacy.granted).
+
+        Called at start, on a change of [server], when the hook's lines move,
+        when the `account` consent moves and at every account pass; every
+        path through here is the same one, so the answer does not depend on
+        the order things happened in. Never raises: a door that cannot open
+        must not touch dictation."""
         with self._doors_lock:
             if self._stopping.is_set():
                 return
             self.phone.cfg = self.phone_door.cfg = self.cfg
             server = self.cfg.server
+            self.phone.routes.review_scope = server.review_scope
             try:
                 if server.enabled or self._hook_connected():
                     if not self.phone.running:
@@ -3575,7 +3592,8 @@ class App:
                 log.warning("the phones of the account were not read (%s)", type(e).__name__)
                 phones = {}
             try:
-                if server.enabled and server.phone_allowed and phones:
+                if (server.enabled and server.phone_allowed and phones
+                        and privacy.granted("account")):
                     self.phone_door.cfg = self.cfg
                     self._bound("server.phone_port", self.phone_door.start(phones))
                 elif self.phone_door.running:
@@ -3646,18 +3664,11 @@ class App:
         self._phone_read()
         self._phone_publish()
 
-    def _phone_publish(self, key: bytes | None = None) -> None:
+    def _phone_publish(self) -> None:
         """This PC's `link` row as things stand; phone.publish writes only
         what changed. Offline, or with no key here yet: the next pass."""
         try:
-            import sb
-            import vault
-            if key is None:
-                who = sb.user()
-                key = vault.key(who["id"]) if who else None
-            if key is None:
-                return
-            phone_mod.publish(key, port=self.phone_door.port or self.cfg.server.phone_port,
+            phone_mod.publish(port=self.phone_door.port or self.cfg.server.phone_port,
                               listening=self._phone_listening(),
                               words_sync=privacy.allowed("settings_sync"))
         except Exception as e:                               # noqa: BLE001
@@ -3680,11 +3691,11 @@ class App:
             self._approved.add(device)
         threading.Thread(target=self._phone_row, daemon=True, name="phone-row").start()
 
-    def _phone_account(self, key: bytes) -> None:
-        """sb.ACCOUNT_HOOKS: at every account pass and when a device of the
-        account changed. The rows are read and kept, the certificate is
-        checked against the list, the doors follow, and this PC's own row
-        goes out if anything in it moved."""
+    def _phone_account(self) -> None:
+        """sb.ACCOUNT_HOOKS, through phone.keyless: at every account pass and
+        when a device of the account changed. The rows are read and kept, the
+        certificate is checked against the list, the doors follow, and this
+        PC's own row goes out if anything in it moved."""
         self._phone_read()
         self._phone_check_certificate()
         view = phone_mod.view()
@@ -3693,7 +3704,7 @@ class App:
             self._phone_yes()
         self._approved -= phones | {d["id"] for d in view["pcs"]}
         self._doors()
-        self._phone_publish(key)
+        self._phone_publish()
 
     def _phone_check_certificate(self) -> None:
         """Replace the certificate if the account's list names it. A lost
@@ -3713,19 +3724,38 @@ class App:
             log.warning("phone: the certificate was not checked (%s)", type(e).__name__)
 
     def _phone_reissue(self) -> None:
-        """A new certificate and the door under it. Door.admit changes who
-        may come in, never who the door says it is, so it closes first."""
+        """A new certificate, and the door follows it (PhoneDoor.start reopens
+        under the key on disk), whichever way the rotation went."""
         with self._doors_lock:
-            phone_mod.rotate()
-            self.phone_door.stop()
-            self._doors()
+            try:
+                phone_mod.rotate()
+            finally:
+                self._doors()
 
     def _phone_signed_out(self) -> None:
         """sb.SIGNED_OUT_HOOKS: the door checks a certificate, not a session,
         so what it opened from goes with the session, and so does any Approve
-        still waiting for its row."""
+        still waiting for its row.
+
+        NOTHING HERE MAY TAKE phone._lock OR _doors_lock, because a refused
+        refresh calls this with sb._lock held (_fresh -> _refresh ->
+        _account_gone), and those two are taken first and sb._lock second by
+        phone.view, anchors, refresh and publish and by _doors. Doing the work
+        here deadlocked with the desk's poll: both threads for ever, status()
+        and locked() behind them, and the hook's thread at the pause key. So
+        the work has a thread of its own. The other two hooks stay on theirs:
+        sb.ACCOUNT_HOOKS and sb.FORGOTTEN_HOOKS never come with sb._lock held,
+        and settle_left needs the second to say whether it worked."""
         self._approved.clear()
-        phone_mod.drop_rows()
+        threading.Thread(target=self._phone_gone, daemon=True, name="phone-gone").start()
+
+    def _phone_gone(self) -> None:
+        """The session went: its rows go, and the doors follow even if they
+        would not. With nobody signed in the door opens for nobody."""
+        try:
+            phone_mod.drop_rows()
+        except OSError as e:
+            log.warning("phone: the kept rows stayed (%s)", type(e).__name__)
         self._doors()
 
     def _phone_forgotten(self) -> None:
@@ -3739,8 +3769,10 @@ class App:
         seen, because sb.write_link refuses until the mark is gone."""
         with self._doors_lock:
             self._approved.clear()
-            phone_mod.drop_rows()
-            self._phone_reissue()
+            try:
+                phone_mod.drop_rows()
+            finally:
+                self._phone_reissue()
 
     def _phone_status(self) -> dict:
         """status()["phone"]: what Settings > Phone and Home's row draw.
@@ -3765,13 +3797,17 @@ class App:
 
     def _phone_forget(self, ident: str, cert: str) -> None:
         """Forget, on a thread: three calls to the account. The list goes
-        first in sb.forget_device, and its hooks bring the door along."""
+        first in sb.forget_device and its hooks bring the door along, but a
+        call that fails after the list has moved runs no hook, and the door
+        must not go on admitting a phone this PC already forgot."""
         import sb
         try:
             sb.forget_device(ident, cert)
         except Exception as e:                               # noqa: BLE001
             self._phone_error = f"that did not go through ({type(e).__name__}) — try again"
             log.info("phone: Forget failed (%s)", type(e).__name__)
+        finally:
+            self._doors()
 
     def _phone_command(self, do: str, ident: str = "") -> dict:
         """Settings > Phone and Home's row, over the pipe."""

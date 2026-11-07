@@ -425,6 +425,7 @@ class Sim:
         import numpy as np
 
         import phone as phone_mod
+        import privacy
         import sb
         import vault
 
@@ -436,6 +437,8 @@ class Sim:
         keep = {n: getattr(sb, n, None) for n in ("user", "device_id", "devices", "write_link",
                                                   "forgotten", "forget_device")}
         keep_key, keep_aad = vault.key, getattr(vault, "AAD_DEVICE", None)
+        keep_granted = privacy.granted
+        privacy.granted = lambda kind: True
         sb.user = lambda: {"id": uid}
         sb.device_id = lambda: me
         sb.devices = lambda: list(rows)
@@ -445,20 +448,20 @@ class Sim:
         def forget(ident, cert):
             gone.update({ident, cert})
             rows[:] = [r for r in rows if r["id"] != ident]
-            app._phone_account(key)
+            app._phone_account()
         sb.forget_device = forget
         vault.key = lambda u: key if u == uid else None
         vault.AAD_DEVICE = "device/{uid}/{device_id}"
         ident = "bbbbbbbb-0000-0000-0000-000000000002"
         try:
-            app._phone_account(key)
+            app._phone_account()
             assert not app.phone_door.running, "a door with no phone in the account"
             app._phone_approved(ident)
             rows.append({"id": ident, "name": "Sim phone", "platform": "android-34",
                          "link": vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1,
                                                        "cert": base64.b64encode(der).decode()},
                                                  vault.AAD_DEVICE.format(uid=uid, device_id=ident))})
-            app._phone_account(key)
+            app._phone_account()
             assert app.phone_door.running, "Approve on this PC did not open the door"
             with tempfile.TemporaryDirectory() as tmp:
                 chain = os.path.join(tmp, "sim.pem")
@@ -507,6 +510,7 @@ class Sim:
                 else:
                     setattr(sb, name, value)
             vault.key = keep_key
+            privacy.granted = keep_granted
             if keep_aad is None:
                 del vault.AAD_DEVICE
             else:

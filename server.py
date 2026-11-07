@@ -15,7 +15,8 @@ each door has a table of what it answers.
 The LOOPBACK door, `PhoneServer`: 127.0.0.1, plain HTTP, the bearer token.
 It is this PC's own: the Claude hook's `/notify`, and `tailscale serve`
 until the phone plan's stage 6. It runs while the phone switch is on OR the
-hook is connected, so a stranger's hook does not post into nothing. Binding
+hook is connected, so a stranger's hook does not post into nothing, and with
+the switch off it answers the hook and nothing else (`HOOK_ROUTES`). Binding
 loopback is load-bearing: `tailscale serve` proxies to localhost, and any
 other address would put a token-guarded, un-throttled socket in front of
 the house.
@@ -26,8 +27,9 @@ and socket (the one `import socket` here is the loopback listener's
 exclusive-bind option), and it has checked the peer before a
 line of http.server runs: no unauthenticated byte ever reaches this file.
 There is no bearer on it and no `/notify`; the phone has never called that
-route. It opens only once the account has a phone, the switch is on and
-this PC gave its one yes (main.App._doors).
+route. It opens only once the account has a phone, the switch is on, this
+PC gave its one yes and the person's yes to the account stands
+(main.App._doors).
 
 The client is the Android keyboard (android/), and only that. There used
 to be a Hebrew web page at `/` that drove the same routes from a phone
@@ -205,6 +207,10 @@ LOOPBACK_ROUTES: dict[str, str] = {
 #: The phone door's: everything but /notify, which the keyboard has never
 #: called and which puts a card on his screen.
 PHONE_ROUTES: dict[str, str] = {r: n for r, n in LOOPBACK_ROUTES.items() if r != "/notify"}
+#: The loopback door's with the phone switch off: it stands then only for
+#: Claude's hook, and everything else that comes to it, the old road through
+#: `tailscale serve` included, finds nothing.
+HOOK_ROUTES: dict[str, str] = {r: LOOPBACK_ROUTES[r] for r in ("/health", "/notify")}
 #: The routes that take no body.
 GET_ROUTES: frozenset[str] = frozenset({"/health", "/api/version", "/review"})
 #: The one route open without the bearer on the loopback door.
@@ -504,8 +510,6 @@ class _Handler(BaseHTTPRequestHandler):
     # handler thread forever (a slowloris on the loopback/tailnet). With a
     # timeout the request socket gives up and the thread is freed.
     timeout = 30
-    #: What this door answers.
-    ROUTES = LOOPBACK_ROUTES
     #: Who came in: nobody the handshake proved, on this door.
     phone = None
 
@@ -545,11 +549,15 @@ class _Handler(BaseHTTPRequestHandler):
     def _route(self) -> str:
         return self.path.split("?", 1)[0].rstrip("/") or "/"
 
+    def _answers(self) -> dict[str, str]:
+        """What this door answers, as things stand now."""
+        return LOOPBACK_ROUTES if self.server.switch() else HOOK_ROUTES
+
     # -- routes --
 
     def do_GET(self) -> None:
         route = self._route()
-        if route not in self.ROUTES or route not in GET_ROUTES:
+        if route not in self._answers() or route not in GET_ROUTES:
             # `/` (the retired web page) and `/app.apk` land here too.
             self._json(404, {"error": "not found"})
             return
@@ -570,7 +578,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = self._route()
-        if route not in self.ROUTES or route in GET_ROUTES:
+        if route not in self._answers() or route in GET_ROUTES:
             self._json(404, {"error": "not found"})
             return
         if not self._authorised():
@@ -593,11 +601,12 @@ class _PhoneHandler(_Handler):
     before this class saw a byte, so the proof is the connection and there
     is no bearer to ask for; net.Door checks the leaf against the list."""
 
-    ROUTES = PHONE_ROUTES
-
     def __init__(self, request, client_address, server, peer) -> None:
         self.phone = peer
         super().__init__(request, client_address, server)
+
+    def _answers(self) -> dict[str, str]:
+        return PHONE_ROUTES
 
     def _authorised(self) -> bool:
         return True
@@ -695,10 +704,13 @@ class _Server(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, flag, 1)
         super().server_bind()
 
-    def __init__(self, addr, token, routes: Routes):
+    def __init__(self, addr, token, routes: Routes, switch):
         super().__init__(addr, _Handler)
         self.token = token
         self.routes = routes
+        #: Is the phone switch on? Asked per request: the door stays up for
+        #: the hook when it goes off, and nothing restarts.
+        self.switch = switch
 
 
 class PhoneServer:
@@ -748,13 +760,22 @@ class PhoneServer:
             host = "127.0.0.1"
         token = load_token()
         self.routes.review_scope = self.cfg.server.review_scope
+        asked = _asked(self.cfg.server.port if first is None else first)
         self._srv, self.port = _first_free(
-            lambda port: _Server((host, port), token, self.routes),
-            _asked(self.cfg.server.port if first is None else first))
+            lambda port: _Server((host, port), token, self.routes,
+                                 lambda: self.cfg.server.enabled), asked)
         self._thread = threading.Thread(target=self._srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()
         log.info("phone endpoint on %s:%d", host, self.port)
+        if self.port != asked:
+            # another copy got here first. In the checkout that is the
+            # Stranger or the released app, and `tailscale serve` and the
+            # phone now reach THAT copy, under a token that is not this one's.
+            (log.warning if paths.DEVELOPER else log.info)(
+                "THE LOOPBACK DOOR MOVED: port %d is taken, so this copy is on %d, and "
+                "whatever still points at %d reaches the other copy", asked, self.port, asked)
+
     def stop(self) -> None:
         srv, thread = self._srv, self._thread
         self._srv = self._thread = self.port = None
@@ -775,6 +796,8 @@ class PhoneDoor:
         self.routes = routes
         self._door = None
         self._list: dict = {}
+        #: The certificate the door was opened with.
+        self._cert = ""
 
     @property
     def running(self) -> bool:
@@ -800,34 +823,66 @@ class PhoneDoor:
                                        handler=self._serve),
             first)[0]
 
+    def _same_key(self) -> bool:
+        """Is the key on disk the one this door opened with? A read that
+        fails says yes: it is no reason to close a door that works."""
+        import phone as phone_mod
+        import secretstore
+
+        try:
+            return phone_mod.identity() == self._cert
+        except (OSError, ValueError, secretstore.SecretError) as e:
+            log.info("phone door: its key was not read (%s)", type(e).__name__)
+            return True
+
     def start(self, anchors: dict) -> int:
-        """Open it for ``anchors``; the port it got. A key that will not
-        open (the file came back from a backup, say) is a new identity and
-        one more try, and the next `link` row carries the new certificate."""
+        """Open it for ``anchors``; the port it got. An open door takes the
+        list, and reopens under the key on disk if that is another one: a
+        door shows the certificate it was opened with, and a phone pins what
+        the row says.
+
+        A key that will not open (the file came back from a backup, say) is
+        a new identity and one more try, and the next `link` row carries the
+        new certificate. A key that could not be read just now is neither:
+        the door stays as it is and the next pass tries again."""
         import net
         import phone as phone_mod
+        import secretstore
 
         names = {mark: phone.get("name") for mark, phone in anchors.items()}
-        if self._door is not None:
-            if names != self._list:
+        if self._door is not None and names != self._list:
+            try:
                 self._door.admit(anchors)
                 self._list = names
+            except net.DoorUnread as e:
+                log.warning("phone door: %s; the list stands, the next pass tries again", e)
+            except net.DoorError as e:
+                log.warning("phone door: %s; it opens again", e)
+                self.stop()
+        if self._door is not None and not self._same_key():
+            log.info("phone door: the key changed; it opens again")
+            self.stop()
+        if self._door is not None:
             return self._door.port
-        phone_mod.identity()
         first = _asked(self.cfg.server.phone_port)
         try:
-            self._door = self._open(anchors, first)
-        except net.DoorError as e:
-            log.warning("phone door: %s; a new identity for this PC", e)
-            phone_mod.rotate()
-            self._door = self._open(anchors, first)
-        self._list = names
-        log.info("phone door open on port %d for %d phone(s)", self._door.port, len(anchors))
-        return self._door.port
+            cert = phone_mod.identity()
+            door = self._open(anchors, first)
+        except net.DoorUnread:
+            raise
+        except (net.DoorError, ValueError, secretstore.SecretError) as e:
+            log.warning("phone door: the key will not do (%s); a new identity for this PC",
+                        type(e).__name__)
+            cert = phone_mod.rotate()
+            door = self._open(anchors, first)
+        self._door, self._cert, self._list = door, cert, names
+        log.info("phone door open on port %d for %d phone(s)", door.port, len(anchors))
+        return door.port
 
     def stop(self) -> None:
         door, self._door = self._door, None
         self._list = {}
+        self._cert = ""
         if door is not None:
             door.stop()
             log.info("phone door closed")
