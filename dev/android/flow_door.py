@@ -560,27 +560,95 @@ def flow_every_road_out():
         acct.stop()
 
 
+def old_door(pc: Pc):
+    """The loopback door, real, with its bearer: what `tailscale serve` proxies to, and
+    what the pasted line reaches here. Off the emulator it is 10.0.2.2 and plain HTTP,
+    the one address network_security_config lets through that way."""
+    cfg = dataclasses.replace(pc.cfg, server=dataclasses.replace(
+        pc.cfg.server, enabled=True, host="127.0.0.1", port=8756))
+    door = server_mod.PhoneServer(cfg, pc._transcribe, lambda: "fake", pc._translate,
+                                  pc._punctuate, None, review_pending=pc.routes.review_pending,
+                                  review_decide=pc._decide, lookup=pc._lookup)
+    door.routes.max_chars = 5000
+    door.start()
+    return door
+
+
+def press(key: str) -> None:
+    fa.told("--es", "ime", f"key:{key}")
+
+
 def flow_old_road():
-    """The pasted line beside the door, and without it: every old road still works."""
+    """The pasted line beside the door, and without it: every old road still works,
+    against the real loopback door and its bearer."""
     acct = fa.fresh()
+    pc = acct._door_pc = Pc(acct, text="heard-on-the-old-road")
+    old = old_door(pc)
     try:
-        fa.plant(acct)
+        fa.told("--es", "url", f"http://10.0.2.2:{old.port}", "--es", "token", server_mod.load_token())
+        pc.review = [{"id": "20261107-130000-0001", "when": "2026-11-07 13:00:00", "seconds": 1.0,
+                      "text": fa.HEARD, "proposed": fa.MEANT, "source": "phone",
+                      "changes": [{"before": fa.HEARD, "after": fa.MEANT, "kind": "replace",
+                                   "span": [0, 1], "why": "the sentence"}]}]
+        drive.shell("pm", "grant", PKG, "android.permission.POST_NOTIFICATIONS", check=False)
         drive.kill()
         drive.home()
         check("a pasted line alone is Connected, with no account at all",
               drive.wait("^Connected$", 25) is not None)
+        check("the second reading comes down it", drive.wait(fa.MEANT, 15) is not None)
         out = ask("dictate")
-        check("and dictates over the old road", "dictated=words" in out, out)
+        check("it dictates over the old road", "dictated=heard-on-the-old-road" in out, out)
+        drive.tap(fa.MEANT)
+        drive.wait("^Keep$", 15)
+        drive.tap("^Keep$")
+        check("Keep goes back up it", until(lambda: bool(pc.decided), 15), str(pc.decided))
+        drive.shell("am", "start", "-a", "android.intent.action.PROCESS_TEXT", "-t", "text/plain",
+                    "--es", "android.intent.extra.PROCESS_TEXT", "fragile",
+                    "-n", f"{PKG}/.LookupActivity")
+        check("Lookup too", drive.wait("looked-up", 15) is not None)
+        fa.back()
+        field()
+        hold_and_say()
+        check("a real hold, too", until(lambda: "heard-on-the-old-road" in in_field(), 15), in_field()[:200])
+        drive.shell("input", "text", "shalom")
+        press("punctuate")
+        check("the punctuate key", until(lambda: "." in in_field(), 15), in_field()[:200])
+        fa.told("--es", "url", f"http://10.0.2.2:{old.port}", "--es", "token", "the-wrong-token")
+        out = ask("dictate")
+        check("a wrong token says so, and keeps the recording", "bad token" in out and "BUSY" in out, out)
+        check("in the spool", "waiting=1" in spooled(), spooled())
+        fa.told("--es", "url", f"http://10.0.2.2:{old.port}", "--es", "token", server_mod.load_token())
 
+        pc.text = SENTENCE
         real_join(acct)
         pc = acct._door_pc
+        old.routes.transcribe = lambda wav: ("the-old-road-spoke", "fake", None)
         out = ask("dictate")
         check("joined, the door comes first", f"dictated={SENTENCE}" in out, out)
         pc.down()
         pc.write(addrs=[])
         drive.kill()
         out = ask("dictate")
-        check("door down, the pasted line carries it", "dictated=words" in out, out)
+        check("door down, the pasted line carries it", "dictated=the-old-road-spoke" in out, out)
+    finally:
+        acct._door_pc.down()
+        old.stop()
+        acct.stop()
+
+
+def flow_keys():
+    """The keys that send what is in the field, on the door."""
+    acct = fa.fresh()
+    try:
+        real_join(acct)
+        field()
+        drive.shell("input", "text", "shalom")
+        check("something in the field", until(lambda: "shalom" in in_field(), 10), in_field()[:200])
+        press("punctuate")
+        check("the punctuate key goes through the door", until(lambda: "shalom." in in_field(), 15),
+              in_field()[:200])
+        press("translate")
+        check("and translate", until(lambda: "in-english" in in_field(), 15), in_field()[:200])
     finally:
         acct._door_pc.down()
         acct.stop()
@@ -865,7 +933,14 @@ def flow_bound_wifi():
             drive.adb("root")
             time.sleep(3)
             drive.adb("wait-for-device")
-        assert until(lambda: "MOBILE" in drive.shell("dumpsys", "connectivity"), 60), "no mobile data"
+        if not until(lambda: "MOBILE" in drive.shell("dumpsys", "connectivity"), 60):
+            print("      the emulator's mobile data has gone: a reboot", flush=True)
+            pc.down()
+            acct.stop()
+            reboot()
+            acct = fa.fresh()
+            real_join(acct)
+            pc = acct._door_pc
         with NoInternet(pc.door.port) as shape:
             check("mobile data is the default, the Wi-Fi still up", until(_on_mobile, 60),
                   drive.shell("dumpsys", "connectivity")[:200])
@@ -898,6 +973,26 @@ def _wifi_caps() -> str:
     return ""
 
 
+def reboot() -> None:
+    """A fresh emulator, as emu.py leaves one: its mobile data does not always come back
+    from a round of the radio, and nothing short of this brings it back."""
+    drive.adb("reboot", check=False)
+    time.sleep(5)
+    drive.adb("wait-for-device", timeout=300)
+    assert until(lambda: drive.shell("getprop", "sys.boot_completed", check=False).strip() == "1",
+                 300, 3), "the emulator did not come back"
+    time.sleep(8)
+    drive.adb("root", check=False)
+    time.sleep(3)
+    drive.adb("wait-for-device", timeout=120)
+    for name in ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"):
+        drive.shell("settings", "put", "global", name, "0")
+    drive.shell("svc", "power", "stayon", "true")
+    drive.shell("input", "keyevent", "82")
+    drive.shell("settings", "put", "global", "hide_error_dialogs", "1")
+    drive.adb("logcat", "-G", "8M", check=False)
+
+
 def _on_mobile() -> bool:
     """Mobile data is the default and a Wi-Fi is up beside it."""
     out = drive.shell("dumpsys", "connectivity")
@@ -907,6 +1002,45 @@ def _on_mobile() -> bool:
     agents = [ln for ln in out.splitlines() if "NetworkAgentInfo{" in ln]
     default = [ln for ln in agents if f"network{{{m.group(1)}}}" in ln]
     return bool(default) and "MOBILE" in default[0] and any("WIFI CONNECTED" in ln for ln in agents)
+
+
+def flow_timing():
+    """How long a dictation takes the phone, from the recording on the disk to the
+    text back: the probe's own clock. An emulator, a fake model: what this says is
+    what the road costs, and nothing about a real phone's."""
+    acct = fa.fresh()
+    try:
+        real_join(acct)
+        pc = acct._door_pc
+
+        def one() -> int:
+            out = ask("dictate")
+            assert f"dictated={SENTENCE}" in out, out
+            return int(re.search(r"ms=(\d+)", out).group(1))
+
+        one()
+        waiting = lambda: drive.shell("ss", "-tn", "state", "close-wait", check=False).count(":" + str(pc.door.port))
+        before = waiting()
+        warm = sorted(one() for _ in range(10))
+        after = waiting()
+        print(f"      sockets the PC closed and the phone has not: {before} before ten, {after} after",
+              flush=True)
+        cold = []
+        for _ in range(3):
+            drive.kill()
+            cold.append(one())
+        port = pc.door.port
+        pc.down()
+        t0 = time.time()
+        out = ask("dictate")
+        off = int(re.search(r"ms=(\d+)", out).group(1))
+        print(f"      warm, the address from last time: {warm} (median {warm[len(warm) // 2]} ms)", flush=True)
+        print(f"      a new process, a race each time: {cold}", flush=True)
+        print(f"      the PC off, until the keyboard says so: {off} ms", flush=True)
+        check("measured", UNREACHED in out and port > 0, out)
+    finally:
+        acct._door_pc.down()
+        acct.stop()
 
 
 FLOWS = {name[5:]: fn for name, fn in list(globals().items()) if name.startswith("flow_")}

@@ -147,6 +147,7 @@ object Spool {
         files(c).keep(wav, System.currentTimeMillis()).also {
             claim(it)
             schedule(c)
+            if (it.dropped > 0) Log.w("DeskIT", "spool: ${it.dropped} older recording(s) made room")
         }
     } catch (e: IOException) {
         Log.w("DeskIT", "spool: a recording could not be kept: ${e.javaClass.simpleName}")
@@ -179,12 +180,12 @@ object Spool {
     /** On a thread: what is here, if a PC will take it. True when something still waits. */
     fun drain(c: Context): Boolean {
         val wipes = Traces.wipes
+        val store = files(c)
+        val gone = store.prune(System.currentTimeMillis())
+        if (gone > 0) Log.w("DeskIT", "spool: $gone recording(s) past their time went")
         if (!Link.ready(c)) return false
         if (!draining.compareAndSet(false, true)) return true
         try {
-            val store = files(c)
-            val gone = store.prune(System.currentTimeMillis())
-            if (gone > 0) Log.w("DeskIT", "spool: $gone recording(s) past their time went")
             for (f in store.items()) {
                 val item = SpoolFiles.Item(f, null)
                 if (wipes != Traces.wipes) return false

@@ -90,7 +90,8 @@ object Link {
     /** With a pasted line beside it, a door that just did not answer is not asked again yet. */
     private const val NOBODY_MS = 20_000L
 
-    private val IP = Regex("[0-9a-fA-F:.]{2,45}")
+    /** An address, and never a name: a row names no host to look up. */
+    private val IP = Regex("""(\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}""")
     private val PIN = Regex("[0-9a-f]{64}")
 
     /** One way to one PC: makes connections that have not connected yet. */
@@ -212,11 +213,6 @@ object Link {
         return !reader.isAlive
     }
 
-    /** Home and the account read rows of their own, so a new PC need not wait for a failure. */
-    fun readAgain() {
-        synchronized(this) { lastRead = 0L }
-    }
-
     // ---- the networks ----
 
     private fun keyOf(cm: ConnectivityManager, n: Network?): String {
@@ -304,15 +300,17 @@ object Link {
     private fun doors(c: Context, pcs: List<Pc>, nets: List<Net>): List<Door> {
         val s = Account.session(c) ?: return emptyList()
         val mine = ClientKey.forDoor(c, Lock.deviceId(c, s.uid)) ?: return emptyList()
-        val out = ArrayList<Door>()
+        val out = ArrayList<Pair<Int, Door>>()
         for (pc in pcs) {
             if (pc.port !in 1..65535) continue
             val ssl = Pin.context(Pin.Trust(pc.pin), mine)
-            for (addr in pc.addrs) for (net in nets) {
-                out.add(Door(pc, addr, net, ssl, KNOCK_MS, unreached(c)))
+            for ((rank, addr) in pc.addrs.withIndex()) for (net in nets) {
+                out.add(Pair(rank, Door(pc, addr, net, ssl, KNOCK_MS, unreached(c))))
             }
         }
-        return out
+        // Each PC's best address before anyone's second: [MOST_KNOCKS] must not
+        // leave a PC out for the sake of another's fifth adapter.
+        return out.sortedBy { it.first }.map { it.second }
     }
 
     private fun answers(door: Door): Boolean = Transcriber.health(door) != null

@@ -57,6 +57,12 @@ class HomeActivity : Activity() {
     private var accountDone = false
     /** [Traces.wipes] as of what this page last drew. */
     private var traces = Traces.wipes
+    /**
+     * The first moments of a phone are this page saying a PC cannot be reached,
+     * while that PC hears of the phone, and Windows asks him about its first door. So
+     * while the page is up and nobody answers, it asks again by itself.
+     */
+    private val again = Runnable { check(quietly = true) }
 
     /** This build's versionCode — MAJOR*10000 + MINOR*100 + PATCH. */
     private val versionCode: Int
@@ -188,6 +194,11 @@ class HomeActivity : Activity() {
         lookAtAccount()
     }
 
+    override fun onPause() {
+        super.onPause()
+        col.removeCallbacks(again)
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) Traces.focused(this)
@@ -231,13 +242,14 @@ class HomeActivity : Activity() {
 
     // ---- the link ----
 
-    private fun check() {
+    private fun check(quietly: Boolean = false) {
+        col.removeCallbacks(again)
         if (!Link.ready(this)) {
             state(Skin.PAUSED, false, getString(R.string.no_token_title), "")
             buildReview(null)
             return
         }
-        stateTitle.text = getString(R.string.checking)
+        if (!quietly) stateTitle.text = getString(R.string.checking)
         val wipes = Traces.wipes
         thread {
             var word = getString(R.string.unreachable_line)
@@ -255,6 +267,7 @@ class HomeActivity : Activity() {
                 if (wipes != Traces.wipes) return@runOnUiThread
                 if (reached == null) {
                     state(Skin.PAUSED, false, getString(R.string.unreachable_title), word)
+                    if (!isFinishing) col.postDelayed(again, AGAIN_MS)
                 } else {
                     state(Skin.LISTENING, true, getString(R.string.connected_title), "")
                     showUpdate(versions)
@@ -403,6 +416,11 @@ class HomeActivity : Activity() {
     }
 
     // ---- what you said ----
+
+    private companion object {
+        /** A knock while the page is up: the page is what is spending it. */
+        const val AGAIN_MS = 8000L
+    }
 
     private fun buildSaid() {
         saidCard.removeAllViews()

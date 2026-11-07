@@ -280,6 +280,24 @@ class ProbeReceiver : BroadcastReceiver() {
             Log.i("DeskIT", "probe: no keyboard is running")
             return
         }
+        if (what.startsWith("key:")) {
+            // A press on one of the small keys, the real listener.
+            @Suppress("UNCHECKED_CAST")
+            val keys = held("keyViews").get(k) as Map<String, android.view.View>
+            keys.getValue(what.substring(4)).performClick()
+            Log.i("DeskIT", "probe: pressed")
+            return
+        }
+        if (what.startsWith("say:")) {
+            // A picture of words that are not in the app yet: underscores for spaces,
+            // because adb's shell splits on them.
+            (held("status").get(k) as android.widget.TextView).apply {
+                text = what.substring(4).replace('_', ' ')
+                setTextColor(Skin.RED)
+            }
+            Log.i("DeskIT", "probe: said")
+            return
+        }
         when (what) {
             "plant" -> {
                 held("pending").set(k, "held-words")
