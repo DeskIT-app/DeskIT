@@ -55,10 +55,10 @@ import kotlin.concurrent.thread
  * The face is in English deliberately. It sits directly under a Hebrew
  * text field, and two scripts in one glance is harder to read, not easier.
  *
- * THE LOOK IS THE DESKTOP'S (Skin.kt): LAMPLIGHT's colours and Rubik, on
+ * THE LOOK IS THE DESKTOP'S (Skin.kt): B+'s colours and Rubik, flat, on
  * shapes cut for a thumb. The microphone is a pill holding the desktop's
  * status dot as a lamp — listening blue, recording red, locked red and
- * breathing, transcribing gold, grey with no halo when the PC cannot be
+ * breathing, transcribing amber, grey with no halo when the PC cannot be
  * reached — so the corner of the desk and the bottom of the phone say the
  * same thing in the same colour.
  */
@@ -125,6 +125,9 @@ class DictationIme : InputMethodService() {
 
     /** The EditorInfo action to fire, or 0 for "Enter means a newline". */
     private var actionId = 0
+
+    /** [Traces.wipes] as of what this keyboard holds: [letGoIfWiped]. */
+    private var traces = Traces.wipes
 
     /** Exactly what this keyboard last put in the field, for undo. */
     private var lastInsert: String? = null
@@ -431,7 +434,7 @@ class DictationIme : InputMethodService() {
         setTextColor(if (primary) Skin.ACCENT_ON else keyText)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
         isFocusable = true
-        // The action key is the ONE gold thing on this surface — the
+        // The action key is the ONE lit thing on this surface — the
         // primary action, the same rule every desktop surface keeps.
         background = if (primary) Skin.primaryFace(this@DictationIme, 14)
                      else Skin.secondaryFace(this@DictationIme, 14)
@@ -600,12 +603,29 @@ class DictationIme : InputMethodService() {
 
     // ---- what field is this? ----
 
+    /**
+     * The phone left its account: the transcript waiting for a field, the last
+     * recording and the tap that would have brought either back all go, before
+     * the keyboard is seen again.
+     */
+    private fun letGoIfWiped() {
+        if (traces == Traces.wipes) return
+        traces = Traces.wipes
+        pending = null
+        lastWav = null
+        lastInsert = null
+        sticky = false
+        stickySetup = false
+        statusAction = null
+    }
+
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         // Landing in a new field mid-arrange: the mode's disabled keys
         // must not be what greets the field. The layout is already saved
         // after every swap, so leaving loses nothing.
         if (arranging) exitArrange()
+        letGoIfWiped()
         val moved = info?.fieldId != editor?.fieldId ||
                 info?.packageName != editor?.packageName
         editor = info
@@ -886,15 +906,22 @@ class DictationIme : InputMethodService() {
         val url = Prefs.url(this)
         val token = Prefs.token(this)
         val mine = session
+        val wipes = Traces.wipes
         thread {
             val result = Transcriber.send(url, token, wav)
-            ui.post { deliver(result, mine) }
+            ui.post { deliver(result, mine, wipes) }
         }
     }
 
-    private fun deliver(result: Transcriber.Result, mine: Int) {
+    private fun deliver(result: Transcriber.Result, mine: Int, wipes: Int) {
         busy = false
         tint(idleColor)
+        // Out of the account while this was on its way: it lands nowhere.
+        if (wipes != Traces.wipes) {
+            letGoIfWiped()
+            sayReady()
+            return
+        }
         when (result) {
             is Transcriber.Result.Ok -> {
                 val text = result.text.trim()
@@ -904,7 +931,7 @@ class DictationIme : InputMethodService() {
                 // said — and the sentence goes on the phone's own Said.
                 reachable = true
                 if (result.backend.isNotEmpty()) backendName = result.backend
-                Prefs.addSaid(this, text)
+                Prefs.addSaid(this, text, wipes)
                 scheduleReviewPolls()
                 if (!place(text, mine)) return
                 // A decoder loop means words were LOST, not garbled — say

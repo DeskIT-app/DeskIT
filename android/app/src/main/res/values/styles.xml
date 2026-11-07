@@ -1,19 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- LAMPLIGHT for the system's own chrome: the bars, the toasts, the
-         dialogs. Everything the app draws itself reads Skin.kt. -->
+    <!-- The desk's night for the system's own chrome: the bars, the toasts, the
+         dialogs. Everything the app draws itself reads Skin.kt and Faces.kt. -->
     <style name="DeskIT" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:windowBackground">@color/ground</item>
         <item name="android:colorPrimary">@color/card</item>
-        <item name="android:colorPrimaryDark">@color/bg</item>
+        <item name="android:colorPrimaryDark">@color/ground</item>
         <item name="android:colorAccent">@color/accent</item>
         <item name="android:textColorPrimary">@color/fg</item>
         <item name="android:textColorSecondary">@color/dim</item>
-        <item name="android:statusBarColor">@color/bg</item>
-        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:statusBarColor">@color/ground</item>
+        <item name="android:navigationBarColor">@color/ground</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:colorControlActivated">@color/accent</item>
         <item name="android:colorControlHighlight">@color/card_hi</item>
+        <item name="android:windowAnimationStyle">@style/DeskIT.Move</item>
+    </style>
+
+    <!-- A page arrives on the same night it left: the sky stays, the page moves. -->
+    <style name="DeskIT.Move" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/page_in</item>
+        <item name="android:activityOpenExitAnimation">@anim/page_under</item>
+        <item name="android:activityCloseEnterAnimation">@anim/page_back</item>
+        <item name="android:activityCloseExitAnimation">@anim/page_out</item>
     </style>
 
     <!-- The lookup box: a card over the app that asked, nothing else. -->

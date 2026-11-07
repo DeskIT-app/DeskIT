@@ -84,9 +84,9 @@
     <!-- %1$s is the backend the PC answered with: "local" or "gemini". -->
     <string name="ready_on">Slide up to lock ↑ · %1$s</string>
 
-    <!-- The app's screens. English like the keyboard: the owner's
-         decision (2026-09-13) is that the app is an English app end to
-         end, the same as DeskIT on the desktop. -->
+    <!-- The app's screens. English, like the keyboard: the app is English end to
+         end, as DeskIT is on the desktop. His rule, 2026-11-06: keep what a
+         person must have to act, and drop the rest. -->
 
     <!-- Home. -->
     <string name="settings">Settings</string>
@@ -98,68 +98,116 @@
     <string name="update_on_pc">Keyboard %1$s is out</string>
     <string name="update_required">Update the keyboard to keep dictating</string>
     <string name="connected_title">Connected</string>
-    <!-- %1$s is the version of DeskIT the PC answered with. -->
-    <string name="connected_line">The PC answers · DeskIT %1$s</string>
     <string name="unreachable_title">Can\'t reach the PC</string>
-    <string name="unreachable_line">Is the PC on, and the link up at both ends? Tap to try again.</string>
-    <string name="no_token_title">Not set up yet</string>
-    <string name="no_token_line">Point it at the PC in Settings.</string>
-    <string name="steps_title">Set up</string>
+    <string name="unreachable_line">Tap to try again.</string>
+    <string name="no_token_title">Not connected yet</string>
     <string name="step_mic">Allow the microphone</string>
     <string name="step_keyboard">Turn the keyboard on</string>
     <string name="step_pc">Point it at the PC</string>
     <string name="step_notify">Allow notifications</string>
     <string name="mic_granted">Microphone allowed</string>
-    <string name="mic_denied">Without the microphone the keyboard cannot record</string>
+    <string name="mic_denied">Without the microphone the keyboard can\'t record</string>
     <string name="said_title">What you said</string>
-    <string name="said_empty">Nothing yet — hold the lamp in any app and talk.</string>
     <string name="clear">Clear</string>
     <string name="copied">Copied</string>
 
     <!-- Settings. -->
-    <string name="setup_intro">The phone records; your own PC transcribes. The two must be able to reach each other — over Tailscale today, over home Wi-Fi once pairing lands.</string>
     <string name="url_hint">https://…</string>
-    <string name="the_pc">The PC</string>
-    <string name="the_keyboard">The keyboard</string>
-    <string name="the_app">The app</string>
-    <string name="paste_url_label">Server address — paste the whole line, #t= and all</string>
+    <string name="other_ways">Other ways</string>
+    <string name="paste_url_label">Address</string>
     <string name="token_label">Token</string>
-    <string name="switch_back_label">Back to the previous keyboard once the text lands</string>
+    <string name="switch_back_label">Back to my usual keyboard after dictating</string>
     <string name="save_and_test">Save and test</string>
     <string name="checking">Checking…</string>
-    <string name="reachable">Connected — the PC answers</string>
-    <string name="arrange_help">Hold any key on the keyboard to rearrange the eight of them; drag one onto another to swap.</string>
-    <string name="reset_keys">Reset the keys</string>
+    <string name="reachable">Connected</string>
+    <string name="arrange_help">Hold a key on the keyboard to move it.</string>
+    <string name="reset_keys">Reset keys</string>
     <string name="keys_reset">Keys back in their places</string>
-    <string name="system_keyboards">Keyboard settings</string>
-    <string name="version_line">DeskIT %1$s on this phone</string>
+    <string name="system_keyboards">Keyboards</string>
+    <string name="version_line">DeskIT %1$s</string>
     <string name="check_update">Check for an update</string>
-    <string name="up_to_date">Up to date — v%1$s is the latest</string>
-    <string name="update_available">Keyboard %1$s is out — opening the download…</string>
-    <string name="update_check_failed">Can\'t check — the PC is not reachable, or the token is wrong</string>
+    <string name="up_to_date">Up to date</string>
+    <string name="update_available">Keyboard %1$s is out. Opening the download…</string>
+    <string name="update_check_failed">Can\'t check: the PC isn\'t reachable</string>
 
     <!-- The second reading. -->
     <string name="channel_review">Second reading</string>
-    <string name="channel_review_desc">A proposal for a sentence you dictated — learned only if you keep it</string>
-    <string name="second_reading">Second reading</string>
+    <string name="channel_review_desc">A proposal for a sentence you dictated</string>
     <string name="review_title">Did you mean…</string>
     <string name="did_you_mean">Did you mean</string>
-    <string name="did_you_mean_row">Did you mean this? · from %1$s</string>
-    <string name="the_phone">the phone</string>
-    <string name="the_desk">the desk</string>
-    <string name="from_the_phone">Said from the phone · %1$s</string>
-    <string name="from_the_desk">Said at the desk · %1$s</string>
-    <string name="you_said">What was written</string>
     <string name="keep">Keep</string>
     <string name="no">No</string>
     <string name="learned">Learned</string>
-    <string name="noted">Noted — nothing changes</string>
-    <string name="later_hint">Back leaves it waiting — you can answer later.</string>
+    <string name="noted">Noted</string>
     <string name="nothing_waiting">Nothing waiting.</string>
     <string name="close">Close</string>
 
+    <!-- The account. -->
+    <string name="your_account">Your account</string>
+    <string name="signing_in">Signing in…</string>
+    <string name="signing_out">Signing out…</string>
+    <string name="phone_locked">Unlock the phone and try again.</string>
+    <string name="keystore_busy">This phone\'s secure storage isn\'t answering. Restart the phone and try again.</string>
+    <string name="sign_in_title">Sign in</string>
+    <string name="sign_in_line">Same Google account as your PC.</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="use_another_account">Use another account</string>
+    <string name="preparing">One moment…</string>
+    <string name="same_code_q">Same code on your PC?</string>
+    <string name="same_code">Same code</string>
+    <string name="approve_on_pc">Press Approve on your PC</string>
+    <string name="waiting_pc">Waiting for your PC…</string>
+    <string name="no_lock_title">Open DeskIT on your PC</string>
+    <string name="declined_title">Your PC said Not now</string>
+    <string name="ask_again">Ask again</string>
+    <string name="removed_word">This phone was removed. Approve it again to bring it back.</string>
+    <string name="ready_title">This phone is ready</string>
+    <string name="done">Done</string>
+    <string name="more">More</string>
+    <string name="changed_title">Your account\'s lock changed. Was it you?</string>
+    <string name="changed_more">If it was, this phone asks to join again and you approve it on your PC. If it wasn\'t, nothing here changes. Until you answer, this phone doesn\'t use your keys or your PCs.</string>
+    <string name="it_wasnt_me">It wasn\'t me</string>
+    <string name="it_was_me">It was me</string>
+    <string name="refused_title">Paused on this phone</string>
+    <string name="refused_line">On your PC, press Sign out of every PC.</string>
+    <string name="asking_title">%1$s asks to join. Same code on its screen?</string>
+    <string name="asking_more">It gets your account\'s key: your cloud keys and what you said open there too. The key crosses sealed, so the server can\'t read it.</string>
+    <string name="approve">Approve</string>
+    <string name="not_now">Not now</string>
+    <string name="twins_title">Two requests say they are %1$s. Neither can be approved.</string>
+    <string name="this_phone">This phone</string>
+    <string name="device_seen">%1$s · %2$s</string>
+    <string name="kind_pc">PC</string>
+    <string name="kind_phone">Phone</string>
+    <string name="seen_today">today</string>
+    <string name="seen_yesterday">yesterday</string>
+    <plurals name="seen_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <string name="forget">Forget</string>
+    <string name="keep_it">Keep it</string>
+    <string name="forget_title">Forget %1$s?</string>
+    <string name="sign_out">Sign out</string>
+    <string name="stay_signed_in">Stay signed in</string>
+    <string name="sign_out_title">Sign out of this phone?</string>
+    <plurals name="sign_out_recordings">
+        <item quantity="one">%1$d recording that hasn\'t reached your PC will be deleted.</item>
+        <item quantity="other">%1$d recordings that haven\'t reached your PC will be deleted.</item>
+    </plurals>
+    <string name="sign_out_unreached">Signed out here. On your PC, forget this phone.</string>
+    <string name="try_again">Try again</string>
+    <string name="continue_">Continue</string>
+    <string name="request_gone">That request is gone.</string>
+    <string name="request_expired">%1$s\'s request expired.</string>
+    <string name="request_not_shown">Look at the request again.</string>
+    <string name="request_no_key">%1$s\'s request carries no usable key.</string>
+    <string name="request_changed">%1$s\'s request changed. Not approved.</string>
+    <string name="step_sign_in">Sign in with Google</string>
+    <string name="step_approve">Approve this phone</string>
+    <string name="step_changed">Your account\'s lock changed</string>
+
     <!-- The lookup box. -->
-    <string name="lookup_title">DeskIT · look up</string>
     <string name="looking_up">Looking up…</string>
     <string name="nothing_selected">Nothing selected.</string>
     <string name="copy">Copy</string>

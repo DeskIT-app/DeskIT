@@ -18,7 +18,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.text.SimpleDateFormat
@@ -29,10 +28,10 @@ import kotlin.concurrent.thread
 /**
  * What opens from the icon: a small home, not a form.
  *
- * Top to bottom — the state of the link to the PC as a lamp and a line;
- * a gold pill when the PC holds a newer build; the three set-up steps
- * only while one is still red; the second reading's proposals while any
- * wait; and the last things you said from this phone, a tap to copy.
+ * Top to bottom — a pill when the PC holds a newer build; the state of the
+ * link to the PC as a lamp and a word; only the set-up steps that are left;
+ * the second reading's proposals while any wait; and the last things you
+ * said from this phone, a tap to copy.
  * Everything that is a setting is behind the one Settings button. It is
  * the desktop's Home, cut for a pocket: a summary, and doors.
  */
@@ -53,11 +52,11 @@ class HomeActivity : Activity() {
     private var latestSeen = 0
     /** True while this build is below the PC's ime_min: the card blocks. */
     private var mustUpdate = false
-
-    private val version: String
-        get() = try {
-            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
-        } catch (e: Exception) { "?" }
+    /** The account's line among the steps, as the last look left it. */
+    private var accountStep = R.string.step_sign_in
+    private var accountDone = false
+    /** [Traces.wipes] as of what this page last drew. */
+    private var traces = Traces.wipes
 
     /** This build's versionCode — MAJOR*10000 + MINOR*100 + PATCH. */
     private val versionCode: Int
@@ -78,39 +77,21 @@ class HomeActivity : Activity() {
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
-        col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
-            val p = Skin.dp(this@HomeActivity, 20)
-            setPadding(p, Skin.dp(this@HomeActivity, 24), p, Skin.dp(this@HomeActivity, 32))
-        }
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(Skin.BG)
-            isVerticalScrollBarEnabled = false
-            addView(col, ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT)
-        })
+        col = Skin.page(this)
 
-        // The wordmark, the version, the one door to the settings.
+        // The wordmark and the one door to the settings.
         val head = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = Skin.dp(this@HomeActivity, 22) }
+            ).apply { bottomMargin = Skin.dp(this@HomeActivity, 18) }
         }
-        head.addView(Skin.text(this, wordmark(), 30f, Skin.FG, heavy = true).apply {
+        head.addView(Skin.title(this, wordmark(), 30f).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        head.addView(Skin.text(this, "v$version", 13f, Skin.FAINT).apply {
-            setPadding(0, 0, Skin.dp(this@HomeActivity, 14), 0)
-        })
-        head.addView(Skin.button(this, getString(R.string.settings)) {
+        head.addView(Skin.smallButton(this, getString(R.string.settings)) {
             startActivity(Intent(this, SettingsActivity::class.java))
-        }.apply {
-            val px = Skin.dp(this@HomeActivity, 16); val py = Skin.dp(this@HomeActivity, 10)
-            setPadding(px, py, px, py)
-            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
         })
         col.addView(head)
 
@@ -122,14 +103,13 @@ class HomeActivity : Activity() {
         updateCard = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = Skin.pressable(this@HomeActivity, Skin.ACCENT_SOFT, Skin.CARD_HI,
-                                        Skin.ACCENT_EDGE, 18)
+            background = Glass(this@HomeActivity, Skin.GLASS_LEAD)
             val p = Skin.dp(this@HomeActivity, 16)
             setPadding(p, p, p, p)
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = Skin.dp(this@HomeActivity, 14) }
+            ).apply { bottomMargin = Skin.dp(this@HomeActivity, 12) }
             isClickable = true
             setOnClickListener {
                 if (updateUrl.isNotEmpty()) {
@@ -157,13 +137,12 @@ class HomeActivity : Activity() {
         val state = Skin.card(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = Skin.pressable(this@HomeActivity, Skin.CARD, Skin.CARD_HI)
             isClickable = true
             setOnClickListener { check() }
         }
         lamp = LampView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(Skin.dp(this@HomeActivity, 56),
-                                                     Skin.dp(this@HomeActivity, 56))
+            layoutParams = LinearLayout.LayoutParams(Skin.dp(this@HomeActivity, 44),
+                                                     Skin.dp(this@HomeActivity, 44))
             colour = Skin.PAUSED
             halo = false
         }
@@ -173,9 +152,10 @@ class HomeActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 .apply { marginStart = Skin.dp(this@HomeActivity, 14) }
         }
-        stateTitle = Skin.text(this, getString(R.string.checking), 18f, Skin.FG, heavy = true)
-        stateLine = Skin.text(this, "", 13f, Skin.DIM).apply {
+        stateTitle = Skin.title(this, getString(R.string.checking), 19f)
+        stateLine = Skin.text(this, "", 14f, Skin.DIM).apply {
             setPadding(0, Skin.dp(this@HomeActivity, 4), 0, 0)
+            visibility = View.GONE
         }
         lines.addView(stateTitle)
         lines.addView(stateLine)
@@ -199,9 +179,48 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        Account.settle(this)
+        traces = Traces.wipes
+        accountDone = Lock.holdsKey(this)
         buildSteps()
         buildSaid()
         check()
+        lookAtAccount()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) Traces.focused(this)
+    }
+
+    /** The page as this phone stands now, after the words went: [Traces]. */
+    private fun redrawIfWiped() {
+        if (traces == Traces.wipes) return
+        traces = Traces.wipes
+        buildSaid()
+        check()
+    }
+
+    /** Where the account stands, on a thread: the first step's words and dot. */
+    private fun lookAtAccount() {
+        thread {
+            val st = Lock.look(this)
+            runOnUiThread { redrawIfWiped() }
+            // No answer, or Keystore said no: that says nothing about the
+            // account, so the step keeps its words. The page says what is wrong.
+            if (st is Lock.State.NotNow || st is Lock.State.Trouble) return@thread
+            runOnUiThread {
+                accountDone = st is Lock.State.Ready
+                accountStep = when (st) {
+                    is Lock.State.SignedOut, is Lock.State.Ready -> R.string.step_sign_in
+                    is Lock.State.NoLock -> R.string.no_lock_title
+                    is Lock.State.Changed -> R.string.step_changed
+                    is Lock.State.Declined -> R.string.declined_title
+                    else -> R.string.step_approve
+                }
+                buildSteps()
+            }
+        }
     }
 
     private fun wordmark(): CharSequence {
@@ -216,22 +235,23 @@ class HomeActivity : Activity() {
         val url = Prefs.url(this)
         val token = Prefs.token(this)
         if (token.isEmpty()) {
-            state(Skin.PAUSED, false, getString(R.string.no_token_title),
-                  getString(R.string.no_token_line))
+            state(Skin.PAUSED, false, getString(R.string.no_token_title), "")
+            buildReview(null)
             return
         }
         stateTitle.text = getString(R.string.checking)
+        val wipes = Traces.wipes
         thread {
             val pcVersion = Transcriber.health(url)
             val versions = if (pcVersion != null) Transcriber.versions(url, token) else null
             val pending = if (pcVersion != null) Notify.poll(this) else null
             runOnUiThread {
+                if (wipes != Traces.wipes) return@runOnUiThread
                 if (pcVersion == null) {
                     state(Skin.PAUSED, false, getString(R.string.unreachable_title),
                           getString(R.string.unreachable_line))
                 } else {
-                    state(Skin.LISTENING, true, getString(R.string.connected_title),
-                          getString(R.string.connected_line, pcVersion))
+                    state(Skin.LISTENING, true, getString(R.string.connected_title), "")
                     showUpdate(versions)
                 }
                 buildReview(pending)
@@ -280,6 +300,7 @@ class HomeActivity : Activity() {
         lamp.halo = halo
         stateTitle.text = title
         stateLine.text = line
+        stateLine.visibility = if (line.isEmpty()) View.GONE else View.VISIBLE
     }
 
     // ---- the steps ----
@@ -296,6 +317,9 @@ class HomeActivity : Activity() {
     private fun buildSteps() {
         stepsCard.removeAllViews()
         val steps = ArrayList<Triple<String, Boolean, () -> Unit>>()
+        steps.add(Triple(getString(accountStep), accountDone) {
+            startActivity(Intent(this, AccountActivity::class.java))
+        })
         steps.add(Triple(getString(R.string.step_mic), hasMic()) {
             requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 1)
         })
@@ -310,30 +334,28 @@ class HomeActivity : Activity() {
                 requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 2)
             })
         }
-        if (steps.all { it.second }) { stepsCard.visibility = View.GONE; return }
-        stepsCard.visibility = View.VISIBLE
-        stepsCard.addView(Skin.eyebrow(this, getString(R.string.steps_title)))
-        stepsCard.addView(Skin.gap(this, 6))
-        for ((label, done, go) in steps) {
+        // Only what is left to do. A step that is done leaves the page.
+        val left = steps.filter { !it.second }
+        stepsCard.visibility = if (left.isEmpty()) View.GONE else View.VISIBLE
+        for ((label, _, go) in left) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, Skin.dp(this@HomeActivity, 10), 0, Skin.dp(this@HomeActivity, 10))
-                isClickable = !done
-                if (!done) setOnClickListener { go() }
+                isClickable = true
+                setOnClickListener { go() }
             }
             row.addView(View(this).apply {
-                background = Skin.face(this@HomeActivity,
-                    if (done) Skin.GREEN else Skin.ACCENT, radius = 6, stroke = 0)
-                layoutParams = LinearLayout.LayoutParams(Skin.dp(this@HomeActivity, 10),
-                                                         Skin.dp(this@HomeActivity, 10))
+                background = Skin.face(this@HomeActivity, Skin.ACCENT, radius = 6, stroke = 0)
+                layoutParams = LinearLayout.LayoutParams(Skin.dp(this@HomeActivity, 8),
+                                                         Skin.dp(this@HomeActivity, 8))
                     .apply { marginEnd = Skin.dp(this@HomeActivity, 14) }
             })
-            row.addView(Skin.text(this, label, 16f, if (done) Skin.DIM else Skin.FG).apply {
+            row.addView(Skin.text(this, label, 15f, Skin.FG).apply {
+                typeface = Skin.fontLabel(this@HomeActivity)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
-            row.addView(Skin.text(this, if (done) "✓" else "→", 16f,
-                                  if (done) Skin.GREEN else Skin.ACCENT_TEXT))
+            row.addView(Skin.text(this, "›", 19f, Skin.MUTED))
             stepsCard.addView(row)
         }
     }
@@ -355,7 +377,7 @@ class HomeActivity : Activity() {
         reviewCard.removeAllViews()
         if (items.isNullOrEmpty()) { reviewCard.visibility = View.GONE; return }
         reviewCard.visibility = View.VISIBLE
-        reviewCard.addView(Skin.eyebrow(this, getString(R.string.second_reading)))
+        reviewCard.addView(Skin.eyebrow(this, getString(R.string.did_you_mean)))
         reviewCard.addView(Skin.gap(this, 4))
         for (p in items) {
             val row = LinearLayout(this).apply {
@@ -374,11 +396,6 @@ class HomeActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             })
-            row.addView(Skin.text(this, getString(R.string.did_you_mean_row,
-                getString(if (p.fromPhone) R.string.the_phone else R.string.the_desk)),
-                12f, Skin.ACCENT_TEXT).apply {
-                setPadding(0, Skin.dp(this@HomeActivity, 4), 0, 0)
-            })
             reviewCard.addView(row)
         }
     }
@@ -387,6 +404,8 @@ class HomeActivity : Activity() {
 
     private fun buildSaid() {
         saidCard.removeAllViews()
+        // Nothing said yet is nothing to show.
+        saidCard.visibility = if (Prefs.said(this).isEmpty()) View.GONE else View.VISIBLE
         val head = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -396,18 +415,14 @@ class HomeActivity : Activity() {
         })
         val rows = Prefs.said(this)
         if (rows.isNotEmpty()) head.addView(
-            Skin.text(this, getString(R.string.clear), 12f, Skin.FAINT).apply {
-                isClickable = true
-                setOnClickListener { Prefs.clearSaid(this@HomeActivity); buildSaid() }
+            Skin.link(this, getString(R.string.clear)) {
+                Prefs.clearSaid(this@HomeActivity)
+                Skin.settle(col)
+                buildSaid()
             })
         saidCard.addView(head)
         saidCard.addView(Skin.gap(this, 6))
-        if (rows.isEmpty()) {
-            saidCard.addView(Skin.text(this, getString(R.string.said_empty), 15f, Skin.DIM).apply {
-                setPadding(0, Skin.dp(this@HomeActivity, 8), 0, Skin.dp(this@HomeActivity, 4))
-            })
-            return
-        }
+        if (rows.isEmpty()) return
         val today = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         val clock = SimpleDateFormat("HH:mm", Locale.US)
         val day = SimpleDateFormat("d MMM · HH:mm", Locale.US)
@@ -420,14 +435,14 @@ class HomeActivity : Activity() {
                 isClickable = true
                 setOnClickListener {
                     (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager)
-                        .setPrimaryClip(ClipData.newPlainText("DeskIT", s))
+                        .setPrimaryClip(ClipData.newPlainText(Traces.CLIP, s))
                     Toast.makeText(this@HomeActivity, getString(R.string.copied),
                                    Toast.LENGTH_SHORT).show()
                 }
             }
             row.addView(Skin.text(this,
                 if (today.format(stamp) == now) clock.format(stamp) else day.format(stamp),
-                12f, Skin.FAINT))
+                12f, Skin.MUTED))
             row.addView(Skin.text(this, s, 16f, Skin.FG).apply {
                 maxLines = 4
                 ellipsize = android.text.TextUtils.TruncateAt.END
