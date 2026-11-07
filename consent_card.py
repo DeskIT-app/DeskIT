@@ -132,6 +132,8 @@ TEXTS: dict[str, dict] = {
         # again.
         "version": "deskit-terms-0+en-2026-11-06",
         "title": "Open an account?",
+        # On Home, to someone who already has one
+        "again": "Your account",
         # On Home: `changed` is two lines of a row, 110 characters with
         # "Say yes again? " and a batched neighbour, and what does not fit
         # goes in `more`, on the note. A test holds both: a row cut off
@@ -215,7 +217,7 @@ def _asked_again(kinds: tuple[str, ...]) -> dict:
     more = " ".join(str(card.get("more") or "") for card in cards).strip()
     # a provider's card only: nothing else here runs on a key of the person's
     own = ", on your own key" if blocks.get(ACCOUNT) == _KEY else ""
-    return {"kinds": list(kinds), "title": str(cards[0].get("title", kinds[0])),
+    return {"kinds": list(kinds), "title": str(cards[0].get("again") or cards[0].get("title", kinds[0])),
             "text": f"Say yes again? {changed}" if changed else f"Say yes again? What leaves: {what}.",
             "note": f"{more + ' ' if more else ''}To {whom}{own}. Off again: {off}."}
 

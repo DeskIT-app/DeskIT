@@ -50111,6 +50111,7 @@ def test_home_asks_about_the_account_and_what_was_said_on_one_row():
 
     both = cc.asked_again(["account", "history_sync"])
     assert [r["kinds"] for r in both] == [["account", "history_sync"]], both
+    assert both[0]["title"] == "Your account", "this row is read by someone who has one"
     assert cc.TEXTS["account"]["changed"] in both[0]["text"]
     assert cc.TEXTS["history_sync"]["changed"] in both[0]["text"]
     assert "own key" not in both[0]["note"], both[0]["note"]
