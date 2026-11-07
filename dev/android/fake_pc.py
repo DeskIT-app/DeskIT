@@ -96,11 +96,14 @@ class Stop:
     """One request caught at the server's door. [caught] when it arrives; with
     [hold] it waits there for go(), as a server holding a poll open does.
     [cut]: the socket goes instead of a reply, and [land] says whether the
-    request was carried out first, a reply lost, or not at all."""
+    request was carried out first, a reply lost, or not at all. [answer] is
+    (status, text, type): somebody else answers, a gateway in front of the
+    server, and the server hears nothing of it."""
 
-    def __init__(self, method: str, table: str, hold: bool, cut: bool, land: bool):
+    def __init__(self, method: str, table: str, hold: bool, cut: bool, land: bool, answer=None):
         self.method, self.table = method, table
         self.hold, self.cut, self.land = hold, cut, land
+        self.answer = answer
         self.caught = threading.Event()
         self.released = threading.Event()
 
@@ -143,6 +146,14 @@ class _Door(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _page(self, status: int, text: str, kind: str):
+        body = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _go(self, method: str):
         account = self.server.account
         if account is None:                     # stopped: as good as no server
@@ -152,7 +163,7 @@ class _Door(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         try:
-            body = json.loads(raw) if raw else None
+            body = json.loads(raw) if raw and not self.path.startswith("/transcribe") else None
         except ValueError:
             self._send(400, {"message": "not JSON"})
             return
@@ -160,7 +171,9 @@ class _Door(http.server.BaseHTTPRequestHandler):
             account.route(self, method, body)
         except Refuse as e:
             log.info("refused %s %s: %s", method, self.path.split("?")[0], e.message)
-            self._send(e.status, {"code": e.code, "message": e.message})
+            # supabase/auth's shape with no version header, and PostgREST's
+            self._send(e.status, {"code": e.status, "error_code": e.code, "msg": e.message}
+                       if self.path.startswith("/auth/") else {"code": e.code, "message": e.message})
         if self.cut:
             self.close_connection = True
             self.connection.close()
@@ -201,6 +214,10 @@ class FakeAccount:
         self.sessions: dict[str, dict] = {}         # session id -> the session
         #: how the next refresh is answered, for the test that wants a refusal
         self.refuse_refresh = False
+        #: tokens that say their hour is nearly up, so that every call refreshes
+        self.short_tokens = False
+        #: refreshes that presented a token behind the active one
+        self.behind = 0
         self.calls: list[tuple[str, str]] = []
         self.stops: list[Stop] = []
         self.broadcasts: list[dict] = []
@@ -243,9 +260,9 @@ class FakeAccount:
             self._server = None
 
     def stop_at(self, method: str, table: str, *, hold: bool = True, cut: bool = False,
-                land: bool = True) -> Stop:
+                land: bool = True, answer=None) -> Stop:
         """The next such request stops at the door: Stop says what happens to it."""
-        stop = Stop(method, table, hold, cut, land)
+        stop = Stop(method, table, hold, cut, land, answer)
         with self.mutex:
             self.stops.append(stop)
         return stop
@@ -261,6 +278,9 @@ class FakeAccount:
             return False
         if stop.hold:
             stop.released.wait(18)              # the phone gives up at 20
+        if stop.answer is not None:
+            h._page(*stop.answer)
+            return True
         h.cut = stop.cut
         return stop.cut and not stop.land
 
@@ -406,9 +426,10 @@ class FakeAccount:
                          "not-signed"))
 
     def _session_json(self, sid: str, session: dict) -> dict:
+        hour = 5 if self.short_tokens else 3600
         return {"access_token": session["access"], "refresh_token": session["refresh"],
-                "token_type": "bearer", "expires_in": 3600,
-                "expires_at": int(time.time()) + 3600,
+                "token_type": "bearer", "expires_in": hour,
+                "expires_at": int(time.time()) + hour,
                 "user": {"id": self.uid, "email": self.email, "is_anonymous": False,
                          "created_at": now_iso(),
                          "user_metadata": {"full_name": self.name}}}
@@ -416,7 +437,7 @@ class FakeAccount:
     def _new_session(self) -> dict:
         sid = str(uuid.uuid4())
         session = {"id": sid, "access": self._token(sid), "refresh": uuid.uuid4().hex,
-                   "used": [], "expired": False}
+                   "parent": "", "older": set(), "refreshed": time.time(), "expired": False}
         self.sessions[sid] = session
         return self._session_json(sid, session)
 
@@ -462,16 +483,7 @@ class FakeAccount:
                     h._send(200, self._new_session())
                 return
             if grant == "refresh_token":
-                token = str(body.get("refresh_token") or "")
-                with self.mutex:
-                    s = next((x for x in self.sessions.values() if x["refresh"] == token), None)
-                    if s is None or self.refuse_refresh:
-                        raise Refuse(400, "refresh_token_not_found",
-                                     "Invalid Refresh Token: Refresh Token Not Found")
-                    s["access"] = self._token(s["id"])
-                    s["refresh"] = uuid.uuid4().hex
-                    s["expired"] = False
-                    h._send(200, self._session_json(s["id"], s))
+                self._refresh(h, str(body.get("refresh_token") or ""))
                 return
         if path == "logout" and method == "POST":
             s = self._bearer(h)
@@ -486,6 +498,33 @@ class FakeAccount:
             h._send(204)
             return
         raise Refuse(404, "not_found", f"no such auth call: {method} {path}")
+
+    def _refresh(self, h, token: str):
+        """As supabase/auth's RefreshTokenGrant does it. The active token rotates.
+        One behind it is a reply that never reached the client, at any age, and
+        answers the active token. Further behind is the same within ten seconds of
+        the last refresh; after that it is reuse, and the session ends."""
+        with self.mutex:
+            s = next((x for x in self.sessions.values() if token == x["refresh"]
+                      or token == x["parent"] or token in x["older"]), None)
+            if s is None or self.refuse_refresh:
+                raise Refuse(400, "refresh_token_not_found",
+                             "Invalid Refresh Token: Refresh Token Not Found")
+            if token == s["refresh"]:
+                if s["parent"]:
+                    s["older"].add(s["parent"])
+                s["parent"] = token
+                s["refresh"] = uuid.uuid4().hex
+                s["refreshed"] = time.time()
+            else:
+                self.behind += 1
+                if token != s["parent"] and time.time() - s["refreshed"] >= 10:
+                    self.sessions.pop(s["id"], None)
+                    raise Refuse(400, "refresh_token_already_used",
+                                 "Invalid Refresh Token: Already Used")
+            s["access"] = self._token(s["id"])
+            s["expired"] = False
+            h._send(200, self._session_json(s["id"], s))
 
     # ---- the tables ----
 
@@ -652,6 +691,9 @@ class FakeAccount:
         if path == "/api/version":
             h._send(200, {"pc": "1.0.6", "ime_min": 0, "ime_latest": 0})
             return
+        if path == "/transcribe":
+            h._send(200, {"text": "words", "backend": "fake", "seconds": 0.1})
+            return
         h._send(200, {"items": list(self.proposals)})
 
     def route(self, h, method: str, body):
@@ -663,7 +705,7 @@ class FakeAccount:
         log.info("%s %s", method, path)
         if self._stopped(h, method, path):
             return
-        if path in ("/health", "/api/version", "/review"):
+        if path in ("/health", "/api/version", "/review", "/transcribe"):
             self._pc_door(h, path)
             return
         if path.startswith("/auth/v1/"):

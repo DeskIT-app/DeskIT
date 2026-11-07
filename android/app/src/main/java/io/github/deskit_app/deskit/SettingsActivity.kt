@@ -309,6 +309,7 @@ class SettingsActivity : Activity() {
     }
 
     private fun signOut() {
+        Lock.leaving(this)              // here: a look may hold Lock across the network
         askingSignOut = false
         leaving = true
         drawAccount()

@@ -31,10 +31,12 @@ import java.util.Base64
  * threads cannot spend one refresh token, ten seconds before its hour is up. A
  * refresh spends the old token on the server, so the new one goes into memory
  * before anything else, and to disk as soon as the phone can seal it ([seal]).
- * A 401 is one refresh and one retry; a second 401, or a refresh the server
- * refuses, is [gone]: the session goes and so do the person's words ([Traces]).
- * The key and the recordings stay, so the same account back on this phone needs
- * no second Approve.
+ * A 401 is one refresh and one retry; a second 401 from the server itself, or the
+ * auth server's own refusal of the refresh token ([Reply.endsTheSession]), is
+ * [gone]: the session goes and so do the person's words ([Traces]). The key and
+ * the recordings stay, so the same account back on this phone needs no second
+ * Approve. A phone that cannot seal does not refresh at all, because it could not
+ * keep what it got: the token it would send stays good until the phone is opened.
  *
  * The publishable key is public by design: it is in sb.py, in every install
  * and in the keep-alive workflow. Which server this build speaks to is a
@@ -61,6 +63,9 @@ object Account {
     private const val REFRESH_MARGIN_S = 10L
     /** sb.TIMEOUT_S. */
     private const val TIMEOUT_MS = 20000
+    /** supabase/auth's codes for a refresh token that will never work again. */
+    private val ENDED = setOf("refresh_token_not_found", "refresh_token_already_used",
+                              "session_not_found", "session_expired", "user_banned")
 
     const val GONE_ELSEWHERE = "Signed out from another device."
     const val GONE_WORDS = "This phone was signed out."
@@ -98,6 +103,25 @@ object Account {
             JSONObject(body)
         } catch (e: Exception) {
             null
+        }
+
+        /**
+         * The auth server's own word that a refresh token is finished, off its
+         * `error_code`. Nothing else ends a session here, because what follows
+         * is the person's words going: a gateway's 403 page or a rotated
+         * publishable key says nothing about the session. An older auth server
+         * sends no code, only the reason, and "Not Issued By This Server" has a
+         * code and is a refusal of one request, not an end.
+         */
+        fun endsTheSession(): Boolean {
+            if (status !in 400..499) return false
+            val o = obj() ?: return false
+            val code = o.optString("error_code", "").ifEmpty { o.optString("code", "") }
+            if (code in ENDED) return true
+            if (code.isNotEmpty() && code.toIntOrNull() == null) return false
+            return listOf("msg", "error_description").any {
+                o.optString(it, "").startsWith("Invalid Refresh Token")
+            }
         }
 
         /** sb._server_said: one readable line, never a token. */
@@ -155,22 +179,27 @@ object Account {
     /**
      * A session sealed here that will never open again: the screen lock was
      * taken away and the Keystore key with it. Nobody pressed anything and no
-     * server said so, but the phone is out of the account all the same.
+     * server said so, but the phone is out of the account all the same, so the
+     * copy in memory goes too: asked to carry on with it, the phone would join as
+     * a new device and lose that at its next start.
      */
     private fun lost(c: Context) {
         if (!sp(c).getBoolean(KEY_HELD, false)) return
         Log.w("DeskIT", "account: the session here can no longer open")
         Traces.wipe(c)
         sp(c).edit().remove(KEY_HELD).commit()
+        cached = null
+        unsealed = null
     }
 
     /**
-     * [lost], for a screen about to draw what was said. It runs on the main
-     * thread, so it stays off this object's lock: a refresh holds that for as
-     * long as the network takes.
+     * [lost], for a screen about to draw what was said and for a look. A session
+     * in memory says nothing about whether the sealed copy still opens: the
+     * process outlives the screen lock. It runs on the main thread, so it stays
+     * off this object's lock: a refresh holds that for as long as the network takes.
      */
     fun settle(c: Context) {
-        if (cached != null || !sp(c).getBoolean(KEY_HELD, false)) return
+        if (!sp(c).getBoolean(KEY_HELD, false)) return
         val opens = try {
             Sealed.get(c, SESSION) != null
         } catch (e: Sealed.NotNow) {
@@ -306,14 +335,14 @@ object Account {
 
     private fun refresh(c: Context): Session {
         val s = session(c) ?: throw Failed("Not signed in.")
+        if (!Sealed.sealsNow(c)) throw Sealed.NotNow("a refresh waits for the seal", Sealed.locked(c))
         val r = call(c, "POST", "/auth/v1/token?grant_type=refresh_token",
                      JSONObject().put("refresh_token", s.refresh).toString(), null)
         val data = r.obj()
         if (r.status != 200 || data == null || data.optString("access_token", "").isEmpty()) {
-            if (r.status in listOf(400, 401, 403, 404)) {
-                // The refresh token was revoked or used elsewhere. "Refresh
-                // Token Not Found" is the session deleted on the server: Sign
-                // out of every PC, or Forget.
+            if (r.endsTheSession()) {
+                // Revoked, or used elsewhere. "Refresh Token Not Found" is the
+                // session deleted on the server: Sign out of every PC, or Forget.
                 gone(c, if (r.said().contains("not found", ignoreCase = true))
                             GONE_ELSEWHERE else GONE_WORDS)
                 throw Failed("You were signed out. Sign in again.")
@@ -348,6 +377,9 @@ object Account {
                 synchronized(this) { refresh(c) }
                 continue
             }
+            // PostgREST's own answers carry a code. A gateway's page does not,
+            // and says nothing about a token the auth server has just given.
+            if (r.obj()?.has("code") != true) throw Failed(r.said())
             gone(c, GONE_WORDS)
             throw Failed("You were signed out. Sign in again.")
         }
@@ -420,15 +452,17 @@ object Account {
             throw Failed("That sign-in didn't work. Try again.")
         }
         Sealed.delete(c, PKCE)
+        // Someone else's phone until now, whichever road they left it by. Before
+        // the new session is stored, because storing it is what changes whose
+        // phone this says it is: a kill after that leaves nothing to notice by.
         val was = sp(c).getString(KEY_UID, "").orEmpty()
-        sp(c).edit().remove(KEY_WORDS).apply()
-        val s = store(c, data)
-        if (was.isNotEmpty() && was != s.uid) {
-            // Someone else's phone until now, whichever road they left it by.
+        val uid = data.optJSONObject("user")?.optString("id", "").orEmpty()
+        if (was.isNotEmpty() && was != uid) {
             Traces.wipe(c)
             Lock.dropRecordings(c)
         }
-        return s
+        sp(c).edit().remove(KEY_WORDS).apply()
+        return store(c, data)
     }
 
     /**

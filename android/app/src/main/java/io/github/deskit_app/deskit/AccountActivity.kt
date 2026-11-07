@@ -168,8 +168,12 @@ class AccountActivity : Activity() {
         look { Lock.sameCode(this, st.code) { early -> runOnUiThread { show(early) } } }
     }
 
-    /** "Use another account", which is leaving: [Lock.signOut]. */
+    /**
+     * "Use another account", which is leaving: [Lock.signOut]. Its first half is
+     * here and not behind whatever poll is out, because this is the press.
+     */
     private fun leave() {
+        Lock.leaving(this)
         show(Lock.State.Leaving)
         look {
             Lock.signOut(this)

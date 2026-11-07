@@ -128,6 +128,31 @@ object Sealed {
         KeyStore.getInstance(STORE).apply { load(null) }.deleteEntry(ALIAS)
     }
 
+    /**
+     * Can [put] seal at this moment? The question goes to Keystore, because
+     * that is who says no: KeyguardManager still reads "locked" for a moment
+     * after it has opened (measured on Android 14, 2026-11-07, in an activity
+     * the unlocking had resumed), and a key made before the screen lock seals
+     * on a locked phone all the same.
+     */
+    @Synchronized
+    fun sealsNow(c: Context): Boolean = try {
+        val key = stored()
+        if (key == null) !locked(c)
+        else {
+            Cipher.getInstance(MODE).apply { init(Cipher.ENCRYPT_MODE, key) }.doFinal(ByteArray(1))
+            true
+        }
+    } catch (e: KeyPermanentlyInvalidatedException) {
+        true                            // put makes a new key
+    } catch (e: GeneralSecurityException) {
+        false
+    } catch (e: ProviderException) {
+        false
+    } catch (e: IOException) {
+        false
+    }
+
     /** Keep [plain] under [name], replacing what was there. */
     @Synchronized
     fun put(c: Context, name: String, plain: ByteArray) {

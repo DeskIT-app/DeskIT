@@ -21,6 +21,10 @@ import kotlin.concurrent.thread
  * what only a running keyboard holds (`--es ime plant|read|now|late`). The
  * keyboard's fields are private and an emulator has no voice to fill them with,
  * so this reaches the live service by reflection, as LeakCanary does.
+ *
+ * And two calls a locked phone can be caught making, for a receiver runs under
+ * the lock screen: one account read (`--es rest 1`), and a dictation on the old
+ * road (`--es dictate 1`), which takes the pasted line and no session.
  */
 class ProbeReceiver : BroadcastReceiver() {
 
@@ -32,6 +36,30 @@ class ProbeReceiver : BroadcastReceiver() {
         if (intent.hasExtra("wipe")) {
             Traces.wipe(c)
             Log.i("DeskIT", "probe: wiped")
+            return
+        }
+        if (intent.hasExtra("rest")) {
+            val done = goAsync()
+            thread {
+                val said = try {
+                    "${Account.rest(c, "GET", "profiles?select=lock_id&limit=1").status}"
+                } catch (e: Account.Failed) {
+                    "failed"
+                } catch (e: Sealed.NotNow) {
+                    "notnow"
+                }
+                Log.i("DeskIT", "probe: rest=$said")
+                done.finish()
+            }
+            return
+        }
+        if (intent.hasExtra("dictate")) {
+            val done = goAsync()
+            thread {
+                val r = Transcriber.send(Prefs.url(c), Prefs.token(c), ByteArray(64))
+                Log.i("DeskIT", "probe: dictated=${r is Transcriber.Result.Ok}")
+                done.finish()
+            }
             return
         }
         if (intent.hasExtra("say") || intent.hasExtra("url")) {
