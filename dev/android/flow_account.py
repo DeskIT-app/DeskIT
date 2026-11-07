@@ -1329,7 +1329,7 @@ def flow_another_account_killed():
         second.start()
         drive.tap(STEP_SIGN_IN, 10)
         assert browser_opens(second, 0), "the browser never asked the account"
-        drive.as_app("mkfifo", pipe)
+        drive.as_app("toybox", "mkfifo", pipe)   # Android 8 has no bare mkfifo
         drive.shell("am", "start", "-a", "android.intent.action.VIEW",
                     "-d", f"deskit://auth?code={second.authorized[-1]['code']}")
         check("the exchange is done", until(lambda: bool(second.sessions), 20))
