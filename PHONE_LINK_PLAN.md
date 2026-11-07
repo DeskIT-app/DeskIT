@@ -1346,6 +1346,7 @@ Stages 2 and 2b follow as lanes of their own once stage 1 stands.
   and twice on 2026-11-07, the last on the file as it stands, each in a block that rolls itself back: anon may not call it,
   an unsealed `link` is refused, another person's row and session stay, a session over already answers true, delete and
   insert under one `pairings` id pass the real policies while `expires_at` stays frozen, and nothing was left behind.
+  Applied to the project on 2026-11-07, the statements checked by hash against this file first.
 - **A `link` row.** `vault.seal_json(key, obj, "device/{uid}/{device_id}")`, the template named `vault.AAD_DEVICE`. A PC:
   `{"v": 1, "kind": "pc", "cert": "<SHA-256 of the DER, hex>", "addrs": ["192.168.68.50"], "port": 8766, "proto": 1,
   "words_sync": true}`. A phone: `{"v": 1, "kind": "phone", "cert": "<the DER, base64>", "proto": 1, "backup": true}`. An
