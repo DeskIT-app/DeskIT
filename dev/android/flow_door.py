@@ -193,16 +193,26 @@ def tap_status() -> None:
     drive.shell("input", "tap", x, y)
 
 
-def hold_and_say(seconds: float = 1.6) -> None:
+def hold_and_say(seconds: float = 2.6) -> None:
     """A real press, held and let go: the real recorder, with a voice the emulator
-    has not got. Blocks until the finger is up."""
-    x, y = spot("pill")
-    finger = threading.Thread(target=lambda: drive.shell(
-        "input", "swipe", x, y, x, y, int(seconds * 1000), check=False))
-    finger.start()
-    time.sleep(0.5)
-    fa.told("--es", "ime", "loud")
-    finger.join()
+    has not got. Blocks until the finger is up. The voice is the probe's, put on the
+    recorder while the finger is down, by a bare broadcast: `am broadcast` returns
+    once the receiver has run, where told() first reads and clears the log, which
+    took Android 8's emulator past the end of a 1.6 s press. A voice that still came
+    too late leaves the keyboard saying No sound, having sent nothing, and the press
+    is made again, once."""
+    for _ in range(2):
+        x, y = spot("pill")
+        finger = threading.Thread(target=lambda: drive.shell(
+            "input", "swipe", x, y, x, y, int(seconds * 1000), check=False))
+        finger.start()
+        time.sleep(0.6)
+        drive.shell("am", "broadcast", "--receiver-foreground", "-n", f"{PKG}/.ProbeReceiver",
+                    "--es", "ime", "loud", timeout=60)
+        finger.join()
+        if "No sound" not in status():
+            return
+        print("      the probe's voice came too late: the press again", flush=True)
 
 
 def said() -> str:
@@ -738,6 +748,12 @@ def flow_two_pcs():
         acct.stop()
 
 
+def zeros(name: str, size: int) -> None:
+    """A recording of [size] zero bytes in the app's spool: dd, because Android 8's
+    head has no -c."""
+    drive.as_app("sh", "-c", f"'dd if=/dev/zero of=files/spool/{name} bs={size // 10} count=10 2>/dev/null'")
+
+
 def flow_spool_rules():
     """The cap and the week, on the phone's own disk."""
     acct = fa.fresh()
@@ -750,14 +766,14 @@ def flow_spool_rules():
         old = f"{now - 8 * 24 * 3600 * 1000:013d}-aaaaaaaa.wav"
         kept = f"{now - 6 * 24 * 3600 * 1000:013d}-bbbbbbbb.wav"
         for name in (old, kept):
-            drive.as_app("sh", "-c", f"'head -c 40000 /dev/zero > files/spool/{name}'")
+            zeros(name, 40_000)
         ask("drain")
         files = fa.recordings().split()
         check("past the week it goes", old not in files, str(files))
         check("a day short of it stays", kept in files, str(files))
         for i in range(6):
             name = f"{now - (5 - i) * 3600 * 1000:013d}-cccccc0{i}.wav"
-            drive.as_app("sh", "-c", f"'head -c 10000000 /dev/zero > files/spool/{name}'")
+            zeros(name, 10_000_000)
         out = ask("keep")
         files = fa.recordings().split()
         check("past 50 MB the oldest goes first, and the keeper is told", "dropped=2" in out, out)
