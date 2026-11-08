@@ -233,6 +233,10 @@ def propose(acct: fake_pc.FakeAccount) -> None:
 def leave_traces(acct: fake_pc.FakeAccount) -> None:
     """A person's ordinary day: a sentence in Said and copied from there, the PC's
     line pasted, and a proposal from the second reading on Home and on the shade."""
+    # Nothing of ours up while the line goes in: Home asks again every 8 s, and a
+    # poll then would ring the proposal, mark it rung, and lose it to the
+    # force-stop below, which takes the app's shade with it.
+    drive.kill()
     propose(acct)
     plant(acct)
     told("--es", "link", "plant")                # where the PCs are, as a door leaves it
