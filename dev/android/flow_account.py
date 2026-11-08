@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -535,6 +536,30 @@ def flow_forget():
                                                        for e in acct.events("changed")) >= 2, 10))
         drive.gone(f"^{name}$", 15)
         check("it leaves the list", True)
+    finally:
+        acct.stop()
+
+
+def flow_dead_rows():
+    """Rows of installs that went (M17): no door, nobody seen for a month. The list
+    leaves them out, and keeps a copy with no door that was here this month, so it
+    can still be forgotten."""
+    acct = fresh()
+    try:
+        join(acct)
+        for name, device, days in (("GONE-PC", "73333333-7777-4777-8777-777777777777", 40),
+                                   ("STILL-PC", "74444444-7777-4777-8777-777777777777", 0)):
+            acct.write_pc_row(device=device, name=name)
+            with acct.mutex:
+                r = next(r for r in acct.tables["devices"] if r["id"] == device)
+                r["link"] = None
+                r["last_seen"] = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        to_settings()
+        check("a copy with no door, seen today, is listed", drive.wait("^STILL-PC$", 20) is not None)
+        check("an install with no door, unseen for 40 days, is not",
+              drive.find("^GONE-PC$") is None, drive.screen()[:300])
+        check("the PC with its door is listed as before", drive.find(f"^{acct.pc_name}$") is not None,
+              drive.screen()[:300])
     finally:
         acct.stop()
 

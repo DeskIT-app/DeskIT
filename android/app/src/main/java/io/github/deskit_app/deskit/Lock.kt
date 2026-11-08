@@ -69,6 +69,13 @@ object Lock {
     private const val FORGOTTEN = "forgotten"
     private const val FILE = "lock"
 
+    /**
+     * A row with no door, not this device's, unseen this long: an install that went
+     * (M17). Listed, it would stand among the live ones for good. A copy that was
+     * here this month stays, to be forgotten by hand.
+     */
+    private const val GONE_AFTER_S = 30L * 24 * 3600
+
     private const val PREF_ROW_SIG = "row_sig"
     private const val PREF_ROW_AT = "row_at"
     private const val PREF_STATE = "state"
@@ -838,6 +845,7 @@ object Lock {
                     continue
                 }
             }
+            if (link == null && id != me && whenS(r.text("last_seen")) < nowS() - GONE_AFTER_S) continue
             val isPhone = link?.text("kind") == "phone" || r.text("platform").startsWith("android")
             val cert = link?.text("cert").orEmpty().let { field ->
                 if (!isPhone) field.lowercase()
