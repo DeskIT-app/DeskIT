@@ -7413,6 +7413,17 @@ def test_the_stranger_asks_for_ports_of_its_own() -> None:
     assert main.index("reset(home") < main.index("seed_ports(home)") < main.index("start(home, env)")
 
 
+def _another_process_wrote_consents(rows: list[dict]) -> None:
+    """consent.json as another process leaves it. privacy.rows() goes by the
+    file's stamp, and on a runner two writes a millisecond apart can carry the
+    same one, which reads as no write at all: 891cb9d failed on that alone,
+    twice in a row. That is a test's timing, never a person's press."""
+    import privacy
+
+    privacy._write_file(rows)
+    privacy._rows_cache["mtime"] = None
+
+
 def test_a_withdraw_on_the_desk_shuts_the_door_with_offline_mode_on() -> None:
     """Withdraw runs in the desk's process, and the app hears of it when
     something reads the consent file. With Offline mode on nothing does,
@@ -7441,7 +7452,7 @@ def test_a_withdraw_on_the_desk_shuts_the_door_with_offline_mode_on() -> None:
                 assert "Offline mode" in str(desk_settings.trouble_card({"phone": app._phone_status()}))
                 watch = threading.Thread(target=app._watch_hook, daemon=True)
                 watch.start()
-                privacy._write_file([r for r in privacy.rows() if r["kind"] != "account"])
+                _another_process_wrote_consents([r for r in privacy.rows() if r["kind"] != "account"])
                 assert _until(lambda: not app.phone_door.running, 5), "the door outlived the consent"
             card = desk_settings.trouble_card({"phone": app._phone_status()})
             assert card["button"] == "" and "account is off" in card["said"], card
@@ -7476,7 +7487,7 @@ def test_a_consent_tear_down_runs_outside_the_consent_lock() -> None:
     with _consented("account"), _patched(privacy, "_resets", {}):
         privacy.on_change("account", reset)
         row = next(r for r in privacy.rows() if r["kind"] == "account")
-        privacy._write_file([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+        _another_process_wrote_consents([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
         privacy.rows()
         assert free == [True], free
 
@@ -7489,11 +7500,11 @@ def test_words_that_moved_do_not_shut_the_door_while_home_cannot_ask() -> None:
 
     with _consented("account"):
         row = next(r for r in privacy.rows() if r["kind"] == "account")
-        privacy._write_file([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+        _another_process_wrote_consents([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
         assert not privacy.granted("account"), "a stale row is no yes with the internet on"
         with _patched(privacy, "_gates", dict(privacy._gates, offline=True)):
             assert privacy.stale() == [] and privacy.granted("account")
-            privacy._write_file([])
+            _another_process_wrote_consents([])
             assert not privacy.granted("account"), "no row is no yes, Offline or not"
 
 
@@ -48897,6 +48908,11 @@ def test_with_both_syncs_off_the_account_pass_makes_the_lock_and_hears_a_phone()
             tk_rows, web_rows = rows_of(lock)
             assert any("Galaxy S26 asks to join your account" in t and code in t for t in tk_rows), tk_rows
             assert any("Galaxy S26 asks to join your account" in t and code in t for t in web_rows), web_rows
+            # a name brings no marks of its own: it is drawn beside that code
+            asked_row = next(r for r in fake.tables["pairings"] if r["id"] == pid)
+            asked_row["device_name"] = "\u202eGalaxy S26\u2069"
+            assert sb.pending_pairings()[0]["name"] == "Galaxy S26"
+            asked_row["device_name"] = "Galaxy S26"
             assert any(t.startswith("Make a recovery key") for t in tk_rows), "the row did not come with the phone"
             assert any(t.startswith("Make a recovery key") for t in web_rows)
 
@@ -50462,10 +50478,10 @@ def test_turn_on_wakes_the_worker():
                 assert "*" in sb._pending, "Turn on left the worker asleep"
                 # another process answers a stale row: only the file changes
                 row = next(r for r in privacy.rows() if r["kind"] == "account")
-                privacy._write_file([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+                _another_process_wrote_consents([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
                 assert privacy.rows() and not privacy.allowed("account")
                 sb._pending.clear()
-                privacy._write_file([row])
+                _another_process_wrote_consents([row])
                 assert privacy.allowed("account")
                 assert "*" in sb._pending, "a yes given on Home never reached the app's worker"
     finally:
@@ -54774,6 +54790,11 @@ def test_the_lock_over_the_pipe_and_the_join_notification():
         note = received[0]
         assert note["source"] == "account" and note["kind"] == "input"
         assert note["title"] == "laptop asks to join your account" and "H7QM-3K2P" in note["body"]
+        # a name that would turn the line around stays out of the one-line title
+        app._pairing_asked({**request, "id": "req-10", "name": "ה-Yoav של S26 Ultra"})
+        assert received[-1]["title"] == "A device asks to join your account", received[-1]
+        assert "H7QM-3K2P" in received[-1]["body"]
+        del received[1:]
         assert note["link"] == notify_mod.DESK_LINK == "deskit://home", note
         assert notify_mod.label_for("account") == "Your account"
         assert not hasattr(cc, "pairing_card") and not hasattr(cc, "PAIRING")

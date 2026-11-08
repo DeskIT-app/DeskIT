@@ -834,6 +834,11 @@ def request_name() -> str:
     return f"{device_name()[:room].rstrip()} · {copy}"
 
 
+#: The marks that move text around them. A request's name comes from the
+#: asking device and is drawn beside the code a person compares.
+_BIDI_MARKS = re.compile("[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+
+
 def _app_version() -> str:
     try:
         import version
@@ -2881,7 +2886,8 @@ def pending_pairings() -> list[dict]:
     out: list[dict] = []
     for reqs in asking.values():
         r = reqs[-1]
-        entry = {"id": str(r.get("id") or ""), "name": str(r.get("device_name") or "") or "another device",
+        asker = _BIDI_MARKS.sub("", str(r.get("device_name") or ""))
+        entry = {"id": str(r.get("id") or ""), "name": asker or "another device",
                  "code": "", "created_at": str(r.get("created_at") or ""),
                  "device": str(r.get("device_id") or "")}
         if len(reqs) > 1:
