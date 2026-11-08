@@ -300,12 +300,14 @@ def flow_other_doors():
     try:
         real_join(acct)
         pc = acct._door_pc
+        # Nothing of ours up while the proposal appears: Home, which asks again every 8 s
+        # while nobody answers, could ring it and lose it to a force-stop (leave_traces).
+        drive.kill()
         pc.review = [{"id": "20261107-120000-0001", "when": "2026-11-07 12:00:00", "seconds": 1.0,
                       "text": fa.HEARD, "proposed": fa.MEANT, "source": "phone",
                       "changes": [{"before": fa.HEARD, "after": fa.MEANT, "kind": "replace",
                                    "span": [0, 1], "why": "the sentence"}]}]
         drive.shell("pm", "grant", PKG, "android.permission.POST_NOTIFICATIONS", check=False)
-        drive.kill()
         drive.home()
         check("Home reads Connected for a joined phone with no pasted line",
               drive.wait("^Connected$", 25) is not None)
