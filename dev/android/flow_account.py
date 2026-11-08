@@ -175,8 +175,7 @@ def log_forget() -> None:
 
 def told(*args, wait: float = 15) -> str:
     """One word to the debug probe, and the line it answers with."""
-    _log_kept.append(drive.logcat())
-    drive.logcat_clear()
+    _log_kept.append(drive.logcat_take())
     # The foreground queue: the background one is serial, and a network change or a new
     # PIN sends it system broadcasts that hold a probe for the whole of adb's patience.
     drive.shell("am", "broadcast", "--receiver-foreground", "-n", f"{PKG}/.ProbeReceiver", *args,

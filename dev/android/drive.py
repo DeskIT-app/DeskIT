@@ -205,3 +205,9 @@ def logcat_clear() -> None:
 
 def logcat(tag: str = "DeskIT") -> str:
     return adb("logcat", "-d", "-s", f"{tag}:*", check=False)
+
+
+def logcat_take(tag: str = "DeskIT") -> str:
+    """The log so far, then the log cleared, in one command on the phone. As two adb
+    calls, a line written between them was lost: a race line, once, in first_join."""
+    return adb("shell", f"logcat -d -s '{tag}:*'; logcat -b all -c", check=False)
