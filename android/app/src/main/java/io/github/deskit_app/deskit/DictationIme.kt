@@ -624,11 +624,14 @@ class DictationIme : InputMethodService() {
      * Every field the cursor lands in, the keyboard on screen or not: a phone back on
      * its home screen is one too, and text committed there goes nowhere with no
      * complaint. So this is what moves [session], and not [onStartInputView], which
-     * never hears of a field with no keyboard over it.
+     * never hears of a field with no keyboard over it. Only a restart is the same
+     * field again: a fresh start is a new one even under the same package and id,
+     * because Android 8 starts input for a window with nothing to type into, an
+     * app's own included, and a field with no id is -1 in every window.
      */
     override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
         super.onStartInput(info, restarting)
-        val moved = info?.fieldId != editor?.fieldId ||
+        val moved = !restarting || info?.fieldId != editor?.fieldId ||
                 info?.packageName != editor?.packageName
         editor = info
         if (moved) {
