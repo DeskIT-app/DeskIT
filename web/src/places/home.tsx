@@ -79,7 +79,7 @@ export default function HomePlace({ sub }: { sub: string }) {
           <div className="sub2">Nothing else on the desk needs you right now.</div>
           <div className="state">
             <span className={`lamp ${home.bar.lamp}`} /><b>{home.bar.word}</b>
-            {home.hold_key !== "off" ? (
+            {home.hold_key !== "off" && home.bar.hears ? (
               <><span>·</span><span>hold</span><Caps caps={[home.hold_key]} /><span>and speak.</span></>
             ) : null}
           </div>
@@ -112,7 +112,7 @@ export default function HomePlace({ sub }: { sub: string }) {
         </div>
       </div>
 
-      {home.report ? <ReportSheet view={home.report} holdKey={home.hold_key} /> : null}
+      {home.report ? <ReportSheet view={home.report} holdKey={home.bar.hears ? home.hold_key : "off"} /> : null}
     </div>
   );
 }

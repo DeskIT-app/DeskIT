@@ -201,6 +201,11 @@ AUTO_PUNCTUATE_MIN_WORDS = 3
 _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
                              "screens", "notify_dismiss", "shelf"})
 
+# The most anything waits for the load a process start runs (a warm-up, the
+# tour, a quit). Two minutes is a cold disk, a slow card and the first start
+# after an update, end to end.
+START_LOAD_WAIT_S = 120.0
+
 # How old the last dictation may be before a report stops blaming it.
 # Five minutes covers "that came out wrong, let me say why" — the press
 # that follows a bad transcript by the time it takes to read it — and
@@ -524,6 +529,15 @@ class App:
         self._waker = wake_mod.Waker(60 * float(getattr(
             getattr(cfg, "local", None), "warm_after_away_min", 0) or 0))
         self._refused_at = 0.0
+        # The load a process start runs behind live keys (start(then_load)):
+        # set while none is ahead. The warm-ups and the tour wait on it.
+        self._load_settled = threading.Event()
+        self._load_settled.set()
+        self._load_thread: threading.Thread | None = None
+        # The splash narrating a load, (splash, its log handler): main()'s
+        # at a process start, _load_work's own at a Start press. Whoever
+        # ends it takes it from here, so it can only be ended once.
+        self._load_splash: tuple | None = None
         if not self._model_wanted:
             self.machine.set_dictation_off(True)
         # awake.py: the machine held awake for as long as this runs (the
@@ -1509,7 +1523,11 @@ class App:
         # not grey.
         if getattr(self, "_model_state", "on") == "off":
             self._activity = "paused"
-            self.dot.hide()
+            # The one exception is the dot in his hand: a move shows it
+            # with the model off (_dot_move_begin) and its end hides it.
+            moving = getattr(self.dot, "moving", None)
+            if not (callable(moving) and moving()):
+                self.dot.hide()
             return
         self._activity = state
         self.dot.set_state(state)
@@ -2358,7 +2376,25 @@ class App:
         log.info("%s", message)
         return message
 
-    def start(self) -> None:
+    def start(self, *, then_load: bool = False, splash=None,
+              splash_log=None) -> None:
+        """Everything that needs no speech model, and then, with
+        `then_load`, the model behind it on its own thread.
+
+        THE KEYS NEVER WAIT FOR THE MODEL (the owner, 2026-11-06: "there
+        are features like taking a screenshot, sleep mode ... that need no
+        model at all, and they are not available until the model loads").
+        The 25 seconds used to happen inside App(), before the hook, the
+        cards and the control channel's answers existed, so every key on
+        the desk was dead through them, whichever way the app was started;
+        only a start with the model switched off escaped it. Now a process
+        start is always a --no-model start, and the load is what Start
+        does. `splash` is main()'s, handed over so the load narrates on
+        the picture the start already put up."""
+        if then_load:
+            self._load_settled.clear()
+            if splash is not None:
+                self._load_splash = (splash, splash_log)
         # The stream runs from here to stop() whatever the model does: a
         # stopped WASAPI stream refused to start again on his headset
         # (AUDCLNT_E_UNSUPPORTED_FORMAT, 2026-09-18 22:36, after the
@@ -2421,7 +2457,7 @@ class App:
         self._start_account()
         if self.locked():
             self._lock()
-        elif self._model_state == "off":
+        elif self._model_state == "off" and not then_load:
             # no dot from the first frame: alive, not listening
             self._set_state("paused")
             log.info("up without the model — every key that needs no model "
@@ -2479,6 +2515,43 @@ class App:
                             "hotkey is unaffected", e)
                 self.phone = None
         self._start_learning()
+        if then_load:
+            self.load_model(at_start=True)
+
+    def _review_wanted(self) -> bool:
+        rcfg = getattr(self.cfg, "review", None)
+        return bool(rcfg is not None and rcfg.enabled
+                    and self.recent is not None)
+
+    def _review_engine(self):
+        """The second reading's engine, built and not started."""
+        import review as review_mod
+        return review_mod.Engine(
+            self.cfg, self.transcriber, self.vocab, self.recent,
+            review_mod.Store(paths.REVIEW_FILE),
+            model_lock=self._model_lock,
+            quiet=self._learning_quiet, app_dir=paths.DATA_DIR,
+            on_suggest=self._review_show,
+            on_accept=self._review_fix,
+            # The local repair as a proposal (polish.py, `when =
+            # "cloud"`): the reading runs it on a dictation the
+            # cloud did not repair before the paste. Under
+            # "always" it already ran there; under "known" and
+            # "never" it is not wanted behind the paste either.
+            repair=(self._local_repair
+                    if self.cfg.polish.when == "cloud" else None))
+
+    def _absorb_decisions(self) -> None:
+        """A proposal answered on the desk, learned now. Reading a
+        dictation takes the model and learning an answer does not — it
+        writes vocab.json — so with the model off (no engine running) one
+        is built for this and never started; a word accepted then is in
+        the list at once and not at the next load."""
+        try:
+            engine = getattr(self, "_review", None) or self._review_engine()
+            engine.absorb_decisions()
+        except Exception:                                    # noqa: BLE001
+            log.exception("the answered proposals were not learned")
 
     def _start_learning(self) -> None:
         """The second reading and the study pass — the two engines that
@@ -2500,25 +2573,10 @@ class App:
         # instead of the study pass: the same three decodes serve both,
         # shown as a card rather than learned in silence. Same guarded
         # shape as the study block under it, for the same reason.
-        rcfg = getattr(self.cfg, "review", None)
-        if rcfg is not None and rcfg.enabled and self.recent is not None \
+        if self._review_wanted() \
                 and hasattr(self.transcriber, "study_decode"):
             try:
-                import review as review_mod
-                self._review = review_mod.Engine(
-                    self.cfg, self.transcriber, self.vocab, self.recent,
-                    review_mod.Store(paths.REVIEW_FILE),
-                    model_lock=self._model_lock,
-                    quiet=self._learning_quiet, app_dir=paths.DATA_DIR,
-                    on_suggest=self._review_show,
-                    on_accept=self._review_fix,
-                    # The local repair as a proposal (polish.py, `when =
-                    # "cloud"`): the reading runs it on a dictation the
-                    # cloud did not repair before the paste. Under
-                    # "always" it already ran there; under "known" and
-                    # "never" it is not wanted behind the paste either.
-                    repair=(self._local_repair
-                            if self.cfg.polish.when == "cloud" else None))
+                self._review = self._review_engine()
                 self._review.start()
             except Exception as e:      # noqa: BLE001 — optional feature
                 log.info("second reading unavailable (%s)", e)
@@ -2552,6 +2610,10 @@ class App:
 
     MODEL_OFF_WORDS = ("the model is off — press Start in the desk to load it "
                        "(about 25 seconds); every other key works")
+    MODEL_LOADING_WORDS = ("the model is still loading — a few more seconds; "
+                           "every other key already works")
+    # Held for one swap (_splash_done), so one lock for every App is plenty.
+    _load_splash_lock = threading.Lock()
     ROOM_OFF_WORDS = ("the speech model stepped aside for {name} — it comes "
                       "back by itself after {name} closes; every other key "
                       "works")
@@ -2645,7 +2707,8 @@ class App:
         elif kind == "model":
             self._say("the Hebrew model is here — the next dictation loads it")
 
-    def load_model(self, *, for_room: bool = False) -> dict:
+    def load_model(self, *, for_room: bool = False,
+                   at_start: bool = False) -> dict:
         """Start, with the process already up: the model back (about 25 s,
         narrated by the same splash a process start shows), the learning
         engines, the hold keys.
@@ -2654,33 +2717,41 @@ class App:
         splash and no cue, the game has only just closed. A Start the
         PERSON presses while the model stood aside for a game is theirs
         to make: it loads, and the room does not take it again until the
-        game is over (room.Ladder.keep_speech)."""
+        game is over (room.Ladder.keep_speech).
+
+        `at_start`: the load every process start runs behind live keys
+        (start(then_load)). Nobody pressed anything, so the room keeps
+        its say, and the splash is the one already up."""
         if self._model_state == "on":
             return {"ok": False, "error": "the model is loaded"}
         if self._model_state == "loading":
             return {"ok": True, "message": "still loading"}
         if self._model_state == "unloading":
             return {"ok": False, "error": "the model is still unloading — a moment"}
-        if not for_room:
+        if not for_room and not at_start:
             # Applied by the room's own thread at its next look: this is a
             # pipe handler, and the ladder is that thread's to move.
             self._room_took_model = False
             self._room_keep_speech = True
         self._model_state = "loading"
+        if not for_room:
+            self._model_off_words = self.MODEL_LOADING_WORDS
         self._set_state("busy")
-        threading.Thread(target=self._load_work, args=(for_room,), daemon=True,
-                         name="model-load").start()
+        self._load_thread = threading.Thread(
+            target=self._load_work, args=(for_room, at_start), daemon=True,
+            name="model-load")
+        self._load_thread.start()
         return {"ok": True, "message": "loading the model — about 25 seconds"}
 
-    def _load_work(self, quiet: bool = False) -> None:
+    def _load_work(self, quiet: bool = False, at_start: bool = False) -> None:
         # The splash a process start shows — "the animation that the
         # model is loading", his words when Start in the desk loaded it
         # in silence (22:37) — narrating the same log lines, landing in
         # the dot with the ready cue. Never in the way of the load: a
         # splash that cannot be built is skipped, not a failed load.
-        splash, splash_log = None, None
         try:
-            if getattr(self.cfg, "splash", True) and not quiet:
+            if getattr(self.cfg, "splash", True) and not quiet \
+                    and getattr(self, "_load_splash", None) is None:
                 splash = overlay_mod.Splash()
                 _dot = getattr(self.cfg, "dot", None)
                 splash.dot_corner = str(getattr(_dot, "corner", "bottom-right"))
@@ -2689,11 +2760,20 @@ class App:
                 splash.start()
                 splash_log = SplashLog(splash)
                 log.addHandler(splash_log)
+                self._load_splash = (splash, splash_log)
                 splash.status("loading the transcription model…")
         except Exception:                                    # noqa: BLE001
             log.debug("no splash for this load", exc_info=True)
-            splash = None
         self._say("loading the model…")
+        try:
+            self._load_steps(at_start)
+        finally:
+            # getattr: the test suite builds half-initialised Apps
+            settled = getattr(self, "_load_settled", None)
+            if settled is not None:
+                settled.set()
+
+    def _load_steps(self, at_start: bool) -> None:
         try:
             fresh = get_transcriber(self.cfg, self._hotwords,
                                     english_later=True)
@@ -2703,7 +2783,16 @@ class App:
             self._set_state("paused")
             self._say(f"the model did not load: {str(e).splitlines()[0][:120]}")
             log.exception("the model did not load")
-            self._splash_done(splash, splash_log, "the model did not load", None)
+            self._splash_done("the model did not load", None)
+            return
+        stopping = getattr(self, "_stopping", None)
+        if stopping is not None and stopping.is_set():
+            # The app quit under the load (stop() waits for this thread):
+            # nothing is left to hand the model to.
+            closer = getattr(fresh, "close", None)
+            if callable(closer):
+                closer()
+            log.info("the app quit while the model loaded — dropped")
             return
         with self._model_lock:
             self.transcriber = fresh
@@ -2712,20 +2801,35 @@ class App:
         self._model_state = "on"
         self.machine.set_dictation_off(False)
         self.dot.show()                   # before the splash lands in it
-        self._set_state("ready")
-        self._say("listening again")
-        log.info("model loaded again — hold '%s' and speak", self.cfg.hotkey)
+        # The keys were live through the load, so a pause may be standing
+        # (the pause key, a full-screen game): the dot says so.
+        self._set_state("paused" if self.machine.paused else "ready")
+        self._say("listening" if at_start else "listening again")
+        log.info("model loaded — hold '%s' and speak", self.cfg.hotkey)
+        key_source = getattr(fresh, "key_source", None)
+        if key_source:
+            log.info("api key from: %s", key_source)
         ready = f"ready — hold {str(self.cfg.hotkey).title()} and speak"
-        self._splash_done(splash, splash_log, ready, on_land=lambda: beep("ready"))
+        self._splash_done(ready, on_land=lambda: beep("ready"))
 
-    @staticmethod
-    def _splash_done(splash, splash_log, text: str, on_land) -> None:
+    def _splash_done(self, text: str | None, on_land=None,
+                     linger_ms: int | None = None) -> None:
+        """The load's splash ends, once, whoever gets here first — the
+        load's last line or a quit under it."""
+        if getattr(self, "_load_splash", None) is None:
+            return
+        with self._load_splash_lock:
+            pair, self._load_splash = self._load_splash, None
+        if pair is None:
+            return
+        splash, splash_log = pair
         if splash_log is not None:
             log.removeHandler(splash_log)
-        if splash is None:
-            return
         try:
-            splash.finish(text, on_land=on_land)
+            if linger_ms is None:
+                splash.finish(text, on_land=on_land)
+            else:
+                splash.finish(text, linger_ms=linger_ms, on_land=on_land)
         except Exception:                                    # noqa: BLE001
             log.debug("the splash did not finish cleanly", exc_info=True)
 
@@ -2768,8 +2872,14 @@ class App:
                          name="room").start()
 
     def _after_room(self, work) -> None:
-        """A start-up warm-up, once the room has had its first look."""
+        """A start-up warm-up, once the room has had its first look and
+        the start's load is over: the language models have always gone on
+        the card after the speech model, and the measurements were taken
+        in that order. Bounded, so a load that hangs costs a warm-up."""
         self._room_looked.wait(10)
+        settled = getattr(self, "_load_settled", None)
+        if settled is not None:
+            settled.wait(START_LOAD_WAIT_S)
         work()
 
     def _room_loop(self) -> None:
@@ -2915,6 +3025,8 @@ class App:
 
     def stop(self) -> None:
         self._stopping.set()      # ends the fullscreen and question waits
+        # A quit under the start's load: the picture goes with the press.
+        self._splash_done(None, linger_ms=0)
         # The hold first: it is the one thing here that changed the
         # MACHINE (the wake hold, a pinned sleep timer), and the rest of
         # this method cannot fail in a way that should leave that in place.
@@ -2960,6 +3072,12 @@ class App:
         if timer is not None:
             timer.cancel()
         self.recorder.close()
+        # Last, with the keys already gone: the load cannot be interrupted,
+        # and a process that exits under it dies inside the GPU driver.
+        # Waiting is what a quit during a start has always cost.
+        loading = getattr(self, "_load_thread", None)
+        if loading is not None and loading.is_alive():
+            loading.join(START_LOAD_WAIT_S)
 
     def control_command(self, command: str, args: dict) -> dict:
         """One dashboard request -> one reply. Runs on the control thread.
@@ -3007,10 +3125,10 @@ class App:
                 # The dashboard decided a proposal straight in review.json;
                 # learn it now rather than at the engine's next idle tick.
                 # On a thread: the learning writes vocab.json.
-                engine = getattr(self, "_review", None)
-                if engine is None:
+                if getattr(self, "_review", None) is None \
+                        and not self._review_wanted():
                     return {"ok": False, "error": "the second reading is off"}
-                threading.Thread(target=engine.absorb_decisions, daemon=True,
+                threading.Thread(target=self._absorb_decisions, daemon=True,
                                  name="review-absorb").start()
                 return {"ok": True}
             if command == "read":
@@ -4480,8 +4598,13 @@ class App:
         machine = getattr(self, "machine", None)
         mode = _DOT_FOR.get(getattr(machine, "state", None))
         if mode is None:
+            model = getattr(self, "_model_state", "on")
             if getattr(machine, "paused", False):
                 mode = "paused"
+            elif model == "off":
+                mode = "off"          # never "Listening" with nothing to hear
+            elif model != "on":
+                mode = "loading"
             else:
                 mode = "busy" if self._activity == "busy" else "listening"
         note = ""
@@ -4780,6 +4903,15 @@ class App:
         if not dot.move(overlay_mod.DOT_FRAME_S, hold=True):
             self._say("there is no dot to move")
             return False
+        if getattr(dot, "hidden", False):
+            # With the model off there is no dot on the screen, and where
+            # it sits needs no model: it comes up for the move, and
+            # _dot_move_end puts it away. The painter maps it on its next
+            # frame; the frame below is drawn around that rectangle.
+            dot.show()
+            until = time.monotonic() + 0.5
+            while dot.rect is None and time.monotonic() < until:
+                time.sleep(0.02)
         self._dot_move_from = (int(dot.x), int(dot.y))
         self._shelf_close()
         frame = getattr(self, "move_frame", None)
@@ -4828,6 +4960,10 @@ class App:
         if name is None:
             return None
         return overlay_mod.corner_spot(name, work, box, margin)
+
+    def wait_for_load(self, timeout: float = 0.0) -> bool:
+        """Until the start's load is over; at once when none is ahead."""
+        return self._load_settled.wait(timeout or START_LOAD_WAIT_S)
 
     def _dot_move_end(self, keep: bool, verb: str = "done") -> None:
         """The framed move is over. `keep` leaves the dot where the last
@@ -4880,6 +5016,9 @@ class App:
             self._say("the dot is back where it was")
         finally:
             dot.end_move()
+            # getattr: the test suite builds half-initialised Apps
+            if getattr(self, "_model_state", "on") == "off":
+                dot.hide()            # it only came up for the move
 
     def _shelf_screens(self) -> None:
         """The screens off or back, then the row says which. Own thread:
@@ -7760,10 +7899,11 @@ def main() -> int:
     if leftover:
         log.warning("%s", leftover)
     try:
-        splash.status("starting…" if no_model else
-                      "loading the transcription model…")
+        splash.status("starting…")
+        # model=False whatever load_at_start says: the load happens behind
+        # the keys, in app.start() below (App.start says why).
         app = App(cfg, config_path=Path(args.config) if args.config else None,
-                  model=not no_model)
+                  model=False)
     except TranscriptionError as e:   # missing key, stub backend, ...
         return fail(str(e))
     except (ValueError, ConfigError) as e:   # unknown hotkey/chord name
@@ -7788,7 +7928,7 @@ def main() -> int:
         lock.release()
         return 0
     try:
-        app.start()
+        app.start(then_load=not no_model, splash=splash, splash_log=splash_log)
     except OSError as e:
         return fail(str(e))
     stage["app"] = app
@@ -7820,11 +7960,16 @@ def main() -> int:
         open_dashboard()
     if not args.fake and app.tour_due():
         # The tour (D36): the guide itself, four cards beside the dot,
-        # on the first start after the wizard. The dot is up (app.start
-        # mapped it) and the card only enqueues.
-        log.info("the tour: first start, showing it beside the dot")
-        app.tour_card.show(0)
-    log.info("ready — hold '%s' for %s%s, release to paste. %s",
+        # on the first start after the wizard. The dot comes up when the
+        # load lands; with no load ahead, at once (the card only enqueues).
+        def show_tour() -> None:
+            app.wait_for_load()
+            log.info("the tour: first start, showing it beside the dot")
+            app.tour_card.show(0)
+        threading.Thread(target=show_tour, daemon=True, name="tour").start()
+    log.info("%s hold '%s' for %s%s, release to paste. %s",
+             "keys live, the model loading behind them —" if not no_model
+             else "ready —",
              cfg.hotkey,
              "Hebrew or English" if cfg.auto_language else "Hebrew",
              f", '{cfg.english_hotkey}' for English" if cfg.english_hotkey
@@ -7948,9 +8093,6 @@ def main() -> int:
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              paths.TRANSCRIPTS_LOG)
-    key_source = getattr(app.transcriber, "key_source", None)
-    if key_source:
-        log.info("api key from: %s", key_source)
     if not is_elevated():
         log.info("note: running non-elevated — dictation into run-as-admin "
                  "windows will not work (see README)")
@@ -7959,7 +8101,6 @@ def main() -> int:
         log.warning("%d recording(s) from earlier could not be transcribed "
                     "and are waiting in pending\\ — run "
                     'main.py --drain to turn them into text', len(waiting))
-    log.removeHandler(splash_log)
     # THE CUE BELONGS TO THE PICTURE, NOT TO THIS LINE. `beep("ready")`
     # used to be called here, one statement earlier — and finish() only
     # SCHEDULES the release, so the sound arrived 3.63 s before the light
@@ -7974,8 +8115,13 @@ def main() -> int:
     # of milliseconds, and it would be spent on the single frame the skin
     # goes to some length not to stall (skin/boot.py, clock.absorb).
     cues.ensure_files()
-    splash.finish(f"ready — hold {cfg.hotkey.title()} and speak",
-                  on_land=lambda: beep("ready"))
+    if no_model:
+        log.removeHandler(splash_log)
+        splash.finish("ready — every key works, and Start loads the model",
+                      on_land=lambda: beep("ready"))
+    else:
+        # the load's now: its last line lands the light in the dot
+        splash.status("loading the transcription model…")
     try:
         quit_signal.wait()   # released by --stop; Ctrl+C also lands here
         log.info("stop requested")

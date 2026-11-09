@@ -33111,9 +33111,9 @@ def test_the_bar_holds_only_the_buttons_the_state_allows() -> None:
 
     Screens off is the third button in the bar and it is not one of the
     model's — it is the thing he presses every evening, asked for the day
-    before — but it now comes and goes on the same question as Stop
-    rather than on one of its own, because a button appearing 25 seconds
-    after its neighbours is the flicker he was looking at."""
+    before. It left with Stop until 2026-11-06, when he named it among
+    the things that need no model and could not be used without one: it
+    stays for as long as an app answers now, whatever the model does."""
     import dashboard as dash
 
     with _window() as board:
@@ -33138,20 +33138,26 @@ def test_the_bar_holds_only_the_buttons_the_state_allows() -> None:
                                             "run"}, _bar_buttons(board)
         board._refresh(BAR_OFF)
         assert _bar_buttons(board) == {"run": "Start"}, _bar_buttons(board)
-        # THE PROCESS UP AND THE MODEL OFF (2026-09-18) reads the same
-        # way as nothing running: one button, Start — which loads the
-        # model rather than the process. Loading is the word while it
+        # THE PROCESS UP AND THE MODEL OFF (2026-09-18): Start, which
+        # loads the model rather than the process, and Screens off, which
+        # never needed one (2026-11-06). Loading is the word while it
         # comes; the chip says Model off / Loading.
         board._refresh(BAR_MODEL_OFF)
-        assert _bar_buttons(board) == {"run": "Start"}, _bar_buttons(board)
+        assert _bar_buttons(board) == {"bar_screens": "Screens off",
+                                       "run": "Start"}, _bar_buttons(board)
         assert board.parts["state"].cget("text") == "Model off"
         assert board.parts["uptime"].cget("text").startswith("up ")
         assert not dash._has_halo("off")
         board._refresh(BAR_LOADING)
         assert _bar_buttons(board)["run"] == "Loading…", _bar_buttons(board)
         assert board.parts["state"].cget("text") == "Loading"
+        assert "bar_screens" in _bar_buttons(board), _bar_buttons(board)
         board._refresh(BAR_ON)
         assert _bar_buttons(board)["run"] == "Pause"
+        # A pause outranks the model's word: every key is dead while it
+        # stands, and this button is what lifts it.
+        board._refresh({**BAR_MODEL_OFF, "paused": True})
+        assert _bar_buttons(board)["run"] == "Resume", _bar_buttons(board)
 
 
 def test_stop_in_the_bar_unloads_the_model_and_start_loads_it() -> None:
@@ -40772,7 +40778,7 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     assert "models_mod.wanted(cfg)" not in src and "packs_mod.wanted(cfg, facts)" not in src
     assert "facts=facts)" in src and "outcome.installed_pack" in src
     assert 'carried = getattr(outcome, "downloads", None)' in src
-    started = src.index("    try:\n        app.start()")
+    started = src.index("    try:\n        app.start(then_load=not no_model")
     assert src.index("carried.pause()") < src.index("carried.join()") < started
     assert started < src.index("app.carry_downloads(carried)")
     assert "downloads_mod.wanted(cfg, facts)" in src
@@ -47882,7 +47888,7 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     assert "bring_up_the_keys" not in inspect.getsource(dash.Dashboard.__init__)
     main_src = (REPO / "main.py").read_text("utf-8")
     assert 'parser.add_argument("--no-model"' in main_src
-    assert "model=not no_model" in main_src
+    assert "then_load=not no_model" in main_src
     # no start opens a download window any more — --no-model included:
     # the parts come down in the background (downloads.py, 2026-10-03);
     # the window is the desk's own --download-model button only
@@ -51601,6 +51607,193 @@ def test_the_web_desk_home_says_what_the_tk_home_says():
             ("Start", False, "not running", "idle"), bar
         assert home["head"] == "Nothing is waiting." and home["pile"] == []
         assert home["strip"]["awake"].startswith("Nothing is running"), home["strip"]
+
+
+def test_screens_off_stays_in_the_web_bar_whatever_the_model_does():
+    """The owner, 2026-11-06: "features like taking a screenshot, sleep
+    mode ... need no model at all, and they are not available until the
+    model loads". The page draws Screens off on `screens_up` and Stop on
+    `stop`, and only the running app answers the first. A pause outranks
+    Start: it is what stands between him and every key."""
+    import deskweb
+
+    model_off = {**_WEB_STATUS, "model": "off"}
+    with _web_desk(model_off) as (model, _folder, asked):
+        bar = model.home()["bar"]
+        assert (bar["run"], bar["stop"], bar["screens_up"]) == ("Start", False, True), bar
+        assert bar["word"] == "Model off" and bar["hears"] is False, bar
+        assert model.home()["strip"]["awake"].startswith("The model is off — every key"), \
+            model.home()["strip"]
+    with _web_desk({**_WEB_STATUS, "model": "loading"}) as (model, _folder, _asked):
+        home = model.home()
+        bar = home["bar"]
+        assert (bar["run"], bar["stop"], bar["screens_up"]) == ("Loading…", True, True), bar
+        assert "already works" in home["strip"]["awake"], home["strip"]
+    with _web_desk({**_WEB_STATUS, "model": "on"}) as (model, _folder, _asked):
+        bar = model.home()["bar"]
+        assert (bar["run"], bar["stop"], bar["screens_up"]) == ("Pause", True, True), bar
+        assert bar["hears"] is True, "Home stopped saying hold the key and speak"
+    with _web_desk(None) as (model, _folder, _asked):
+        assert model.home()["bar"]["screens_up"] is False, "nothing running to darken a screen"
+    with _web_desk({**model_off, "paused": True, "activity": "paused"}) as (model, _f, asked):
+        bar = model.home()["bar"]
+        assert (bar["run"], bar["word"], bar["hears"]) == ("Resume", "Paused", False), bar
+        assert not model.home()["strip"]["awake"].startswith("The model is off"), \
+            "'every key works' under a pause that stops them"
+        model.act("run")
+        assert any(a[0] == "toggle" for a in asked), asked
+    here = Path(__file__).resolve().parent
+    src = (here / "web" / "src" / "app.tsx").read_text(encoding="utf-8")
+    assert "scrk${bar?.screens_up" in src and 'bar?.screens_up && act({ act: "screens" })' in src, \
+        "the page went back to asking the Stop button's question"
+    assert deskweb.LOOKS["off"][1] == "Model off"
+
+
+def test_a_process_start_never_makes_the_keys_wait_for_the_model():
+    """The root of his report of 2026-11-06. main() used to build the
+    model inside App(), before app.start(): for those 25 seconds there was
+    no hook, no dot, no card, and every pipe verb but `status` answered
+    "still starting up". Held here on the source, because the whole point
+    is the ORDER of main(), which no test App walks: the App is built
+    without the model on every start, and the load is asked of app.start,
+    behind the keys. dev\\user_sim.py walks the same order at a person's
+    pace."""
+    src = (Path(__file__).resolve().parent / "main.py").read_text(encoding="utf-8")
+    body = src[src.index("def main() -> int:"):]
+    build = body.index("app = App(cfg,")
+    assert "model=False)" in body[build:build + 200], "main() loads the model in App() again"
+    assert "get_transcriber(" not in body[build:], "a load on main()'s own thread"
+    start = body.index("app.start(then_load=not no_model")
+    assert body.index('stage["app"] = app') > start > build
+
+    start_src = src[src.index("    def start(self, *, then_load"):
+                     src.index("    def _review_wanted(self)")]
+    assert start_src.index("self.hook.start()") \
+        < start_src.index("self.load_model(at_start=True)"), "the load went back in front of the keys"
+    assert start_src.rstrip().endswith("self.load_model(at_start=True)"), \
+        "something after the load waits for it"
+
+
+def test_a_load_at_start_leaves_the_room_its_say_and_ends_the_splash_once():
+    """Nobody pressed Start, so the game ladder keeps its say; the splash
+    ends once whichever way the load ends; the warm-ups are let through
+    even by a load that failed."""
+    import types
+    import main as main_mod
+
+    calls = []
+    app = types.SimpleNamespace(
+        _model_state="off", _room_took_model=True, _room_keep_speech=False,
+        _model_off_words="", MODEL_LOADING_WORDS="wait",
+        _set_state=lambda s: calls.append(s),
+        _load_work=lambda quiet, at_start: calls.append(("work", quiet, at_start)))
+    assert main_mod.App.load_model(app, at_start=True)["ok"]
+    app._load_thread.join(2)
+    assert calls == ["busy", ("work", False, True)], calls
+    assert (app._room_took_model, app._room_keep_speech) == (True, False), \
+        "a start was read as the person's own Start"
+    assert app._model_off_words == "wait", "a hold key told to press Start during a load"
+    pressed = types.SimpleNamespace(
+        _model_state="off", _room_took_model=True, _room_keep_speech=False,
+        _model_off_words="", MODEL_LOADING_WORDS="wait", _set_state=lambda s: None,
+        _load_work=lambda quiet, at_start: None)
+    assert main_mod.App.load_model(pressed)["ok"]
+    assert (pressed._room_took_model, pressed._room_keep_speech) == (False, True), \
+        "the person's own Start stopped holding the room off"
+
+    class Splash:
+        def __init__(self):
+            self.ended = []
+
+        def finish(self, *a, **k):
+            self.ended.append((a, k))
+
+    splash = Splash()
+    me = types.SimpleNamespace(_load_splash=(splash, None),
+                               _load_splash_lock=threading.Lock())
+    main_mod.App._splash_done(me, "ready", on_land=None)
+    main_mod.App._splash_done(me, None, linger_ms=0)
+    assert len(splash.ended) == 1 and splash.ended[0][0] == ("ready",), splash.ended
+
+    settled = threading.Event()
+    loading = types.SimpleNamespace(
+        _load_splash=None, _load_settled=settled, cfg=types.SimpleNamespace(splash=False),
+        _say=lambda s: None,
+        _load_steps=lambda at_start: (_ for _ in ()).throw(RuntimeError("no card")))
+    try:
+        main_mod.App._load_work(loading)
+    except RuntimeError:
+        pass
+    assert settled.is_set(), "a load that raised left the warm-ups waiting two minutes"
+
+
+def test_the_shelf_never_says_listening_with_no_model_behind_it():
+    """The panel's head read Listening with the model off: `_activity`
+    says paused then and the machine does not."""
+    import types
+    import main as main_mod
+
+    def state(model, paused=False, activity="ready"):
+        app = types.SimpleNamespace(
+            machine=types.SimpleNamespace(state=hotkey_mod.IDLE, paused=paused),
+            _model_state=model, _activity=activity, _rec_at=0.0, _started_at=0.0,
+            _shelf_stop_armed=False, _stats={}, _stats_lock=threading.Lock())
+        return main_mod.App._shelf_state(app)["mode"]
+
+    assert state("off", activity="paused") == "off"
+    assert state("loading", activity="busy") == "loading"
+    assert state("unloading") == "loading"
+    assert state("on") == "listening"
+    assert state("on", activity="busy") == "busy"
+    assert state("off", paused=True) == "paused", "a pause says so first"
+    import shelf_card
+    for mode in ("off", "loading"):
+        assert shelf_card.STATE_WORD[mode] and shelf_card.STATE_COLOUR[mode]
+
+
+def test_an_answer_on_the_desk_is_learned_with_the_model_off():
+    """Accepting a proposal is vocabulary work, not speech: with no engine
+    running (the model off) a real one is built for the answer and never
+    started, and the word is in the list now, not at the next load."""
+    import types
+    import main as main_mod
+    import review as review_mod
+
+    folder = Path(tempfile.mkdtemp(prefix="absorb-", dir=_SCRATCH_HOME))
+    learned = []
+    vocab = types.SimpleNamespace(learn=lambda heard, meant: learned.append((heard, meant)),
+                                  save=lambda: None)
+    app = types.SimpleNamespace(
+        cfg=types.SimpleNamespace(review=types.SimpleNamespace(enabled=True, local_model=False),
+                                  study=None, polish=types.SimpleNamespace(when="never")),
+        transcriber=types.SimpleNamespace(name="off"), vocab=vocab,
+        recent=types.SimpleNamespace(dir=folder), _review=None,
+        _model_lock=threading.Lock(), _learning_quiet=lambda: True,
+        _review_show=None, _review_fix=None, _local_repair=None)
+    app._review_wanted = lambda: main_mod.App._review_wanted(app)
+    app._review_engine = lambda: main_mod.App._review_engine(app)
+    app._absorb_decisions = lambda: main_mod.App._absorb_decisions(app)
+    with _patched(paths, "REVIEW_FILE", folder / "review.json"), \
+            _patched(paths, "DATA_DIR", folder), \
+            _patched(review_mod.Engine, "start", lambda self: (_ for _ in ()).throw(
+                AssertionError("an engine started with no model"))):
+        store = review_mod.Store(paths.REVIEW_FILE)
+        store.add({"id": "r0", "status": review_mod.PENDING, "text": "הרליסס",
+                   "proposed": "ה-releases",
+                   "changes": [{"before": "הרליסס", "after": "ה-releases"}]})
+        assert store.decide("r0", "accepted", by="dashboard")
+        assert main_mod.App.control_command(app, "review_absorb", {}) == {"ok": True}
+        deadline = time.monotonic() + 3
+        while not learned and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert learned == [("הרליסס", "ה-releases")], learned
+        deadline = time.monotonic() + 3
+        while store.unlearned() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not store.unlearned(), "learned, and left to be learned again at the load"
+    # the second reading switched off in Settings stays a refusal
+    off = types.SimpleNamespace(_review=None, _review_wanted=lambda: False)
+    assert main_mod.App.control_command(off, "review_absorb", {})["ok"] is False
 
 
 def test_the_web_desk_buttons_answer_with_home():

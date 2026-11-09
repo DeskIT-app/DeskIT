@@ -188,9 +188,11 @@ INK, INK_FALLBACKS = load_ink()
 # The dot's colour per app state, and the pile's colour per kind. Both
 # read out of the table above and nowhere else.
 STATE_COLOUR = {"listening": "cool", "recording": "recording",
-                "locked": "locked", "paused": "idle", "busy": "amber"}
+                "locked": "locked", "paused": "idle", "busy": "amber",
+                "off": "idle", "loading": "amber"}
 STATE_WORD = {"listening": "Listening", "recording": "Recording",
-              "locked": "Locked on", "paused": "Paused", "busy": "Working"}
+              "locked": "Locked on", "paused": "Paused", "busy": "Working",
+              "off": "Model off", "loading": "Loading"}
 
 # One colour and one word per thing that can be waiting. The four
 # notification kinds keep notify_card.KIND_COLOUR's meanings, so a card
