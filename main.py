@@ -5016,7 +5016,8 @@ class App:
             self._say("the dot is back where it was")
         finally:
             dot.end_move()
-            if self._model_state == "off":
+            # getattr: the test suite builds half-initialised Apps
+            if getattr(self, "_model_state", "on") == "off":
                 dot.hide()            # it only came up for the move
 
     def _shelf_screens(self) -> None:

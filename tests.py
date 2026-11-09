@@ -40778,7 +40778,7 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     assert "models_mod.wanted(cfg)" not in src and "packs_mod.wanted(cfg, facts)" not in src
     assert "facts=facts)" in src and "outcome.installed_pack" in src
     assert 'carried = getattr(outcome, "downloads", None)' in src
-    started = src.index("    try:\n        app.start()")
+    started = src.index("    try:\n        app.start(then_load=not no_model")
     assert src.index("carried.pause()") < src.index("carried.join()") < started
     assert started < src.index("app.carry_downloads(carried)")
     assert "downloads_mod.wanted(cfg, facts)" in src
