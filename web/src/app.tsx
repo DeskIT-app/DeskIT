@@ -224,8 +224,8 @@ function TopBar({ place, go, bar, locked, pressed, act }: {
            onClick={() => bar?.stop && act({ act: "stop" })}>
         <i className="ic">{IC.stop}</i>Stop
       </div>
-      <div className={`btn gap8 scrk${bar?.stop ? "" : " gone"}${pressed === "screens:" ? " down" : ""}`}
-           onClick={() => bar?.stop && act({ act: "screens" })}>
+      <div className={`btn gap8 scrk${bar?.screens_up ? "" : " gone"}${pressed === "screens:" ? " down" : ""}`}
+           onClick={() => bar?.screens_up && act({ act: "screens" })}>
         <i className="ic">{bar?.screens === "Screens on" ? IC.sun : IC.moon}</i>{bar?.screens ?? "Screens off"}
       </div>
       <div className={`btn run${pressed === "run:" ? " down" : ""}`} onClick={() => act({ act: "run" })}>

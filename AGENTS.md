@@ -110,9 +110,13 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   sentences, no "Everything", no fold, no Text/Cards/Speed tabs — each
   removed on the owner's word.
 - **The bar's buttons follow the state and nothing else**
-  (`_paint_bar_buttons`). Model off: ONE button, Start. Model on or
+  (`_paint_bar_buttons`, `deskweb.Model._bar`). Model off: Start, with
+  Screens off beside it — it asks for no model, so since 2026-11-06 it
+  stays for as long as an app answers (`screens_up`). Model on or
   paused: Pause (Resume) and Stop, with Screens off between them. His
-  rule, 2026-09-07, and he gave it twice. Stop used to ARM — the first
+  rule, 2026-09-07, and he gave it twice. A standing pause outranks the
+  model's word: the button says Resume, because the keys are dead until
+  it lifts. Stop used to ARM — the first
   press only turned the word into "Stop again" — and he read that word,
   could not tell what it was for, and asked for it gone. Do not put a
   confirmation back. The 25 seconds of model loading it was paying for
@@ -127,12 +131,34 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   the learning engines go, `transcribers/off.py` stands in, and the
   hook, the dot, the cards and every key that needs no model keep
   working — `hotkey.set_dictation_off` refuses only the hold keys with
-  `MODEL_OFF_WORDS`. status()["model"] is on/off/loading/unloading; the
-  chip says Model off and the bar reads one button, Start. **Opening
-  the desk with nothing running starts the app WITHOUT the model**
-  (`dashboard.bring_up_the_keys` → `launch.start_app(model=False)` →
-  `main.py --no-model` → `App(cfg, model=False)`: 0.7 s to a live hook,
-  grey dot, every tap key working; the model download offer is skipped).
+  `MODEL_OFF_WORDS` (`MODEL_LOADING_WORDS` while it loads).
+  status()["model"] is on/off/loading/unloading; the chip says Model
+  off and the bar reads Start and Screens off.
+  **No start makes a key wait for the model** (2026-11-06, his report:
+  "features like taking a screenshot, sleep mode ... need no model at
+  all, and they are not available until the model loads", and "they
+  must work with the model on as well as off"). The load used to happen
+  inside `App()`, in front of `app.start()`: the hook, the cards and
+  every pipe verb but `status` did not exist for those 25 seconds, on
+  every start with `[local] load_at_start` on, which is the default. So
+  `main()` always builds `App(cfg, model=False)`, and
+  `app.start(then_load=True)` loads behind the live keys on the same
+  thread Start uses (`load_model(at_start=True)`: the room keeps its
+  say, main()'s splash is handed over and lands in the dot). Measured
+  on the real `main()` with the real model: the pipe answers at 1.2 s,
+  the hook is up and Screens off works at 1.9 s, with the model still
+  loading. The heartbeat that stands in for the hook lost 139 ms at
+  worst to the load (15 ms to the imports), against the 300 ms Windows
+  allows. The warm-ups wait for the load (`_load_settled`), so the
+  language models still go on the card second; a quit under a load
+  waits for it (`stop()`, the process would die inside the GPU driver).
+  What needs the model is only what turns speech into text: the hold
+  keys, the latch, the phone's dictation, a SPOKEN question to the ask
+  card, the second reading's reading and the study pass. Answering a
+  proposal does not (`_absorb_decisions`), moving the dot does not (it
+  comes up for the move), and a new key asks for the model only if it
+  turns speech into text: `dev\user_sim.py` presses every tap key the
+  app binds in all three states.
   The whole
   process quits from Settings > About > Quit DeskIT or the shelf —
   never from the bar's Stop, a start-up included: the first version
@@ -258,7 +284,7 @@ exactly what classic did.
    pretend load, the paste and the clipboard stubbed, no singleton, no
    pipe, silent) driven at a person's pace: the desk's buttons through
    the pipe verbs the desk sends, the keys through `machine.handle`,
-   eight scenarios in the order a person meets them, one table at the
+   its scenarios in the order a person meets them, one table at the
    end. Its first run caught a `--no-model` start dying in `__init__`
    (a line that read `self.dot` before the dot existed) that no unit
    test saw. Run it hidden after any change to start/stop/load/unload,

@@ -475,9 +475,9 @@ TABS: tuple[Tab, ...] = (
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),
             Friendly("local.load_at_start", "Have it ready to dictate the moment it starts",
-                     "Off, DeskIT starts light — every key that does not "
-                     "need the speech model works at once, and Start on "
-                     "the desk gets it ready when you want to dictate."),
+                     "Every key that does not need the speech model works "
+                     "at once either way. Off, the model waits until you "
+                     "press Start on the desk."),
             Friendly("awake.hold", "Keep the computer awake while DeskIT runs",
                      "The machine will not fall asleep on its own timer "
                      "while the app is running. The screens may still go "
