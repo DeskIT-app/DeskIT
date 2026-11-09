@@ -73,9 +73,9 @@ for six weeks. What `server.py` does all day now is take the Claude hook's `/not
 
 | Fact | Reading | What it means |
 |---|---|---|
-| Two routers | PC → TP-Link Deco X50 `192.168.68.1` → `10.100.102.1` → the internet (traceroute) | Double NAT. A phone on the first router's own Wi-Fi is NOT on the PC's network |
-| UPnP | The X50 answers, `GetExternalIPAddress` comes back EMPTY, NAT-PMP refuses | Opening a port by UPnP reaches only the second router. "Just open a port" does not work in his own home |
-| Public address | A public IPv4, `IPv6: no` | No IPv6 road to the PC today. The Deco ships with IPv6 off, so this may be one toggle away (M10) |
+| Two routers | PC → a mesh router → the provider's router → the internet (traceroute) | Double NAT. A phone on the first router's own Wi-Fi is NOT on the PC's network |
+| UPnP | The mesh router answers, `GetExternalIPAddress` comes back EMPTY, NAT-PMP refuses | Opening a port by UPnP reaches only the second router. "Just open a port" does not work in his own home |
+| Public address | A public IPv4, `IPv6: no` | No IPv6 road to the PC today. The mesh router may ship with IPv6 off, so this may be one toggle away (M10) |
 | NAT behaviour | `MappingVariesByDestIP: false`, UDP works, and WebRTC's reflexive port equals the local port on two STUN servers | The home side is as easy as NAT gets for a direct connection: both routers keep the port |
 | Windows network type | Ethernet = **Public** | D22 said "no rule on the public profile, the page says home Wi-Fi". On his own PC that would have blocked the phone |
 | Firewall rules | `NotifyOnListen` on; an inbound allow exists for `python.exe` (Public only), none for `pythonw.exe`; the app runs under `pythonw.exe` | The first listen raises the Windows dialog, which needs his UAC yes |
@@ -187,7 +187,7 @@ Nobody can promise this; the published numbers say what to expect.
 **The home side is good, and IPv6 may settle it.** His home NAT is the easy kind (§1), so hole punching
 has a fair chance. IPv6 is better still: with no NAT in the way, WebRTC reaches the other side directly
 through both firewalls. APNIC, IPv6-capable share, 2026-11-03: Pelephone 92.8%, HOT Mobile 71.5%, Partner
-68.1%, Cellcom 41.4%; home lines: Bezeq 84.1%, HOT 82.6%. His home shows no IPv6, and TP-Link's Deco ships
+68.1%, Cellcom 41.4%; home lines: Bezeq 84.1%, HOT 82.6%. His home shows no IPv6, and his mesh router may ship
 with it off (M10). For a stranger on an Israeli home line and a mobile network, the direct road may be IPv6
 far more often than the 2016 numbers suggest, but no one has measured that pair.
 
@@ -290,20 +290,21 @@ is stage 2b's, a few minutes each. M4, M11 and M13 are checked while stage 1 is 
 |---|---|---|---|
 | M1 | He, 1 min | Tailscale on the phone, on mobile data, away from the Wi-Fi. I run `tailscale ping` and read `tailscale status` on the PC: direct or relayed? | Whether a direct path exists from his carrier at all (Tailscale tries harder than WebRTC, so a direct here does not prove stage 3, while a relay here nearly disproves it) |
 | M2 | He, 1 min | On mobile data, the WebRTC project's Trickle ICE page with two STUN servers: do the two reflexive ports match? A screenshot is enough | Whether his carrier's NAT is the hard kind (§3.1) |
-| M3 | Done 2026-11-06 | At home: the phone's Wi-Fi address. His phone is on `192.168.68.x`, the PC's network, not on the first router's | Stage 1 works as it stands in his own home. This is a check of one home; nothing in the product depends on it |
+| M3 | Done 2026-11-06 | At home: the phone's Wi-Fi address. His phone is on the PC's network, not on the first router's | Stage 1 works as it stands in his own home. This is a check of one home; nothing in the product depends on it |
 | M4 | Half done 2026-11-07 | A throwaway TLS door on every interface under `pythonw.exe`, on his PC's Public Ethernet. The first listen adds Block rules for the program at once, TCP and UDP, on Public and Private, while Windows' dialog is up. One press of Allow turns both to Allow through an elevated COM object, no `netsh`, and they name the program on every port. His S26's Chrome on the same network then reached the door, which dropped it for having no client certificate, and the door opened again at once on the same port. Stage 1's real door opened after Approve with no second dialog. So a Cancel leaves the Block rules standing: read from the firewall's own events, not pressed. **Not run:** a real Cancel and "The phone can't connect?" behind it, which need a rule changed by a person, and the Store package's manifest rule | On the common road Allow is one press and no `netsh`. The button is still unproven on a real firewall |
 | M6 | Done 2026-11-06 | `RTCPeerConnection` in a WebView owned by the keyboard, to a hidden WebView2 on the PC: works on the emulator (§6.3) | Stage 3 can stay free of native libraries, pending M8 |
 | M7 | Done 2026-11-06 | A browser page meeting a hidden WebView2 through Realtime and STUN, the whole road in 1.06 s (§6.2). A public topic, for the probe; the real one is private | The hello's road |
 | M8 | Me and his phone | The first real direct connection: phone on mobile data, a throwaway page, hidden WebView2 at home. Nothing is published for it: the page loads over Tailscale one last time (`tailscale serve --set-path`), Tailscale goes off, the page connects. Also watched for: no firewall dialog on his screen from the engine | The proof of stage 3, or its end |
 | M9 | Me, at night | Opus 16/24/32 kbps against WAV on the six public sets, more than one run each | Stage 2's compression |
-| M10 | He, 2 min | The Deco app's IPv6 setting: is it off? With another router in front, TP-Link's FAQ for its routers says Pass-Through (Bridge); it does not name the Deco, so the app's words may differ. I re-run `tailscale netcheck` | Whether his home has IPv6. If it does, most Israeli mobile networks reach it directly with no NAT at all (§3.1) |
-| M11 | Partly done 2026-11-06 | Auto Blocker was on and stopped the APK with its own message, naming where to turn it off (Settings > Security and privacy > Auto Blocker). With it off the APK installed, and One UI asked nothing more. The mic in it is still to check | The guide's first step on a Galaxy is Auto Blocker, as written |
+| M10 | He, 2 min | The mesh router's IPv6 setting, in its app: is it off? With another router in front, its maker's FAQ says Pass-Through (Bridge) for its other routers and does not name this one, so the app's words may differ. I re-run `tailscale netcheck` | Whether his home has IPv6. If it does, most Israeli mobile networks reach it directly with no NAT at all (§3.1) |
+| M11 | Done 2026-11-09 | Auto Blocker was on and stopped the APK with its own message, naming where to turn it off (Settings > Security and privacy > Auto Blocker). With it off the APK installed, and One UI asked nothing more. The mic: a dictation in a chat app through the keyboard, 2026-11-09 (M18) | The guide's first step on a Galaxy is Auto Blocker, as written |
 | M12 | A borrowed iPhone, 10 min | The throwaway page, tab and Home Screen, on plain Wi-Fi and on mobile data: does the channel open, does the mic ask every launch, does the text copy | Whether stage 4's iPhone promise is true |
 | M13 | He, 2 min | The second router's uplink unplugged, mobile data on: does the keyboard still reach the PC over Wi-Fi | Whether "no internet needed" is true on his phone (stage 1, the bound Wi-Fi network) |
 | M14 | Done 2026-11-06 | A phone (Kotlin, no library) and a page (WebCrypto only) joining the lock against the real `vault.py`: same code on both sides, the key out of the hand-over, a vault row opened, an edit the PC could read. Not run: a removal, and the code as stage 1 changes it; test vectors hold both | The whole account road of stages 1, 2b and 4 (§1) |
 | M15 | He and I, with his yes | One real Hebrew clip from the phone through his Groq key, the free tier's real limits read off his console, `language` set and unset, and a real POST from a browser origin (the preflight already passes) | Stage 2b's words and the web page's backup |
 | M17 | Done 2026-11-07 | The whole join on the real project, his S26 and his Dev copy: the request reached Home through the account's channel, Approve on the PC and Same code on the phone, the PC's row went out, and the door opened for one phone. What it found: the phone listed 16 dead rows beside the live PC (installs and resets of September and October, no `link`, no `session_id`), a Hebrew device name turned the join card's title around, and the code was not on the phone's Home. The first went to `phone-keyboard-door`, the second is fixed, the third waits for a picture | Stage 1's account road works on a real phone. The keyboard on that road is the next lane |
 | M16 | Done 2026-11-06 | The Google sign-in on his S26 (Android 17, SDK 37), debug build: the browser, the return through `deskit://auth`, a session sealed on the phone. The join's code in 146 ms. The client key made in 9 ms, signing in 4 ms, in secure hardware, unlocked only | Stage 1's first step stands. `deskit://auth` is on the project's allowed list |
+| M18 | Done 2026-11-09 | The keyboard on the home road, his S26 and his Dev copy. `phone-keyboard-door`'s APK installed over the M17 build. On its first open the phone's client certificate changed once (§12: a phone's `cert` can change under one id); the row went out with `changed: devices`, and the PC took the new certificate at once: its door saw the old one, then two minutes later the new. A dictation in a chat app came through the door, and the PC's `seen` marks the new certificate `dictated`. In his words, faster than before. On the way: the old package's keyboard is called DeskIT too and still names Tailscale, so the switcher showed one DeskIT until Home's `Turn the keyboard on` step was done | Stage 1's keyboard road works on a real phone at home. Left: M13, and a dictation with the PC off |
 
 M1, M2 and M10 take him five minutes and decide stage 3. They do not hold up stages 1, 2 and 2b.
 
@@ -528,7 +529,11 @@ every new network Public unless told otherwise, so most strangers will be there 
   network, so the common case has no race at all.
 - **The LAN race is bound to the Wi-Fi `Network`.** With mobile data on, Android does not route an app to a Wi-Fi that
   has no internet, so "no internet needed" fails without this: `ConnectivityManager` finds the Wi-Fi network and
-  `Network.openConnection()` opens on it. It needs `ACCESS_NETWORK_STATE`, which the manifest lacks. M13.
+  `Network.openConnection()` opens on it. It needs `ACCESS_NETWORK_STATE` and `CHANGE_NETWORK_STATE`, both normal
+  permissions granted with no prompt, both in the manifest. Measured on an emulator with its Wi-Fi left without
+  internet and mobile data the default: not bound, `ConnectException`; bound with the first alone, the door while the
+  Wi-Fi is in the foreground and `EPERM` on bind once Android has put it in the background; with both, the door either
+  way. No request for the network is needed. Whether his phone puts such a Wi-Fi in the background is M13.
 - **The spool.** Today the audio is one in-memory slot: the next dictation overwrites it and a killed process loses it.
   Every recording goes to app-private storage until a PC has it: capped (50 MB, oldest first, with a notice), kept 7
   days, sent on the next link, and a text that returns to a field that is gone lands in Said with a notification. A
@@ -948,7 +953,7 @@ Both ends already own a WebRTC engine, and it was proved today:
 | Hidden WebView2, cold process to open data channel, two peers in one page | 1.9 s; 4.8 MB/s; 222 MB private while alive |
 | A WebView owned by a real `InputMethodService`, emulator (WebView 113, Android 14), through the emulator's NAT, to a hidden WebView2 on this PC, meeting through a mailbox | Connected. Channel open 1.46 s after the page started, 2.34 s after the keyboard view was created; `WebView` built in 446 ms; 1 MiB up and the text back in 682 ms |
 | The keyboard hidden and shown five times, the WebView kept, a new connection each time | Came back every time: channel open 0.4-1.6 s, the answer 20 ms later. The keyboard's process: 30 MB before the WebView, 70 MB with it, flat over the rounds |
-| Candidates | The keyboard's WebView showed its real address with no flag. WebView2 shows a `….local` name unless started with `--disable-features=WebRtcHideLocalIpsWithMdns`; with it, `192.168.68.50` and no virtual adapter |
+| Candidates | The keyboard's WebView showed its real address with no flag. WebView2 shows a `….local` name unless started with `--disable-features=WebRtcHideLocalIpsWithMdns`; with it, the PC's own LAN address and no virtual adapter |
 | The desk's exact flags (`webdesk.BASE_ARGS`, the feature merged into its one `--disable-features`), STUN given as IP literals | Reflexive address gathered: his public address, the SAME port as the local one on both STUN servers (65505 and 65507), so both routers preserve ports. By name, with the browser's DNS shut, only `host` came back, as intended |
 
 So one file, `link.js`, does the connection in all three places: the web page, the keyboard's hidden WebView,
@@ -1349,7 +1354,7 @@ Stages 2 and 2b follow as lanes of their own once stage 1 stands.
   insert under one `pairings` id pass the real policies while `expires_at` stays frozen, and nothing was left behind.
   Applied to the project on 2026-11-07, the statements checked by hash against this file first.
 - **A `link` row.** `vault.seal_json(key, obj, "device/{uid}/{device_id}")`, the template named `vault.AAD_DEVICE`. A PC:
-  `{"v": 1, "kind": "pc", "cert": "<SHA-256 of the DER, hex>", "addrs": ["192.168.68.50"], "port": 8766, "proto": 1,
+  `{"v": 1, "kind": "pc", "cert": "<SHA-256 of the DER, hex>", "addrs": ["192.0.2.10"], "port": 8766, "proto": 1,
   "words_sync": true}`. A phone: `{"v": 1, "kind": "phone", "cert": "<the DER, base64>", "proto": 1, "backup": true}`. An
   unknown field is ignored. A phone's `cert` can change under one `id`, and that is no forgetting: a key made once a screen
   lock has appeared, or a software key on a phone whose Keystore will not do TLS. Its row says which one is in use, and
