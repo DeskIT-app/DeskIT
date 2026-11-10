@@ -36,10 +36,12 @@ env:
   # 10.9.9 gave the same bytes as 25.7.0); ci.yml builds with the same one
   NODE_VERSION: "22.23.4"
 
+# Read-only for every job; the one job that writes (`release`, at the end)
+# asks for its own. The jobs that install packages and run a build (pages,
+# stage) hold nothing worth taking: no write to the repository, no OIDC
+# token, no attestation right (audit 2026-11-09).
 permissions:
-  contents: write        # the draft release and its assets (step 14)
-  id-token: write        # the build attestation (step 8)
-  attestations: write
+  contents: read
 
 jobs:
   # 6a, built APART: the web desk's pages come out of an npm toolchain —
@@ -60,11 +62,11 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -77,7 +79,7 @@ jobs:
           if ($LASTEXITCODE) { throw "npm run build failed" }
           if (-not (Test-Path dist/index.html)) { throw "web/dist has no index.html" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: web-dist
           path: web/dist/
@@ -88,6 +90,12 @@ jobs:
     needs: pages
     runs-on: windows-latest
     timeout-minutes: 180        # step 10b may wait up to two hours for the owner's approval
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      vt_permalink: ${{ steps.virustotal.outputs.permalink }}
+      vt_verdict: ${{ steps.virustotal.outputs.verdict }}
     defaults:
       run:
         shell: pwsh
@@ -95,7 +103,9 @@ jobs:
       SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}   # read by step 10b's `if`
     steps:
       # 0. checkout — the tag and VERSION must agree
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: VERSION matches the tag
         run: |
@@ -108,7 +118,7 @@ jobs:
           Write-Host "building DeskIT $version"
         id: version
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -120,7 +130,8 @@ jobs:
       # 1. wheelhouse — every wheel by hash, binary only, nothing compiled
       - name: Wheelhouse
         run: |
-          python -m pip install --upgrade pip
+          # the pip the lock pins (requirements.lock), not whatever is newest
+          python -m pip install pip==26.2.1
           python -m pip download -r requirements.lock --require-hashes --no-deps --only-binary=:all: `
             --platform win_amd64 --python-version 3.11 --implementation cp --abi cp311 `
             --dest wheels
@@ -195,7 +206,7 @@ jobs:
       #     none of it: the pages job's BUILT pages go in at
       #     paths.WEB_DIST, app\web\dist, before step 7 lists every file,
       #     and nothing but index.html and assets\ — no source map.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: web-dist
           path: stage/app/web/dist
@@ -216,7 +227,9 @@ jobs:
       #     LICENSE.txt and Tcl's license.terms (13.3, D24)
       - name: THIRD-PARTY-NOTICES.txt
         run: |
-          python -m pip install pip-licenses
+          # exact versions, the whole closure (pip-licenses 5.5.5 needs prettytable,
+          # which needs wcwidth; resolved 2026-11-10)
+          python -m pip install pip-licenses==5.5.5 prettytable==3.18.0 wcwidth==0.9.4
           pip-licenses --python stage/python/python.exe --with-license-file --with-urls `
             --with-authors --format=plain-vertical --output-file generated-notices.txt
           $header = "THIRD-PARTY NOTICES for DeskIT $env:DESKIT_VERSION, built $(Get-Date -Format yyyy-MM-dd)`n" +
@@ -247,14 +260,18 @@ jobs:
           python stage/app/manifest.py verify stage
           if (-not (Select-String -Path stage/MANIFEST.sha256 -Pattern "  app/web/dist/index.html$" -Quiet)) { throw "the manifest does not cover the web desk's pages" }
 
-      # 8a. attest — the manifest's provenance, what the FAQ's "read the
-      #     build attestation" line points to (D12 lock 5). GitHub signs
-      #     attestations for public repositories; a private one skips.
-      - name: Attest MANIFEST.sha256
-        if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: stage/MANIFEST.sha256
+      # 8a/8b, the attestations, are in the `release` job below: they need
+      # id-token and attestations write, and this job installs packages.
+
+      # 7b. sbom — what ships, as CycloneDX, from the staged tree's own
+      #     installed distributions (stdlib only: packaging/make_sbom.py).
+      #     Attested beside the installer in the release job.
+      - name: SBOM
+        run: |
+          python packaging/make_sbom.py --site stage/python/Lib/site-packages `
+            --python "${{ env.PYTHON_VERSION }}" --version "${{ steps.version.outputs.version }}" `
+            --out "sbom.cdx.json"
+          if ($LASTEXITCODE) { throw "make_sbom.py failed" }
 
       # `import webview, clr` because release.yml never runs pip check: the
       # web desk's five wheels go in without dependency resolution, and this
@@ -302,7 +319,7 @@ jobs:
       - name: Unsigned installer as a run artifact
         if: ${{ github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != '' }}
         id: unsigned
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unsigned-installer
           path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
@@ -310,7 +327,7 @@ jobs:
 
       - name: SignPath signing request
         if: ${{ github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -382,13 +399,6 @@ jobs:
           Start-Sleep -Seconds 3
           if (Test-Path $app) { Get-ChildItem -Recurse $app | Select-Object -First 20; throw "APP_DIR survived the uninstall" }
 
-      # 8b. attest — the installer itself, after the smoke test passed
-      - name: Attest the installer
-        if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
-
       # 13. virustotal — the installer to VirusTotal's free API; more than
       #     VT_MAX_DETECTIONS engines (a repository variable, default 2)
       #     fail the run so a bad build never reaches users (D19). Without
@@ -435,15 +445,75 @@ jobs:
           Write-Host $verdict
           if ($hits -gt [int]$env:VT_MAX_DETECTIONS) { throw "VirusTotal: $hits detections, more than VT_MAX_DETECTIONS=$env:VT_MAX_DETECTIONS — not released. $permalink" }
 
-      - uses: actions/upload-artifact@v4
+      # everything the `release` job attests and attaches goes to it as this
+      # run's artifact, all under dist\ (so the download lands as dist\)
+      - name: Gather the release files
+        run: |
+          Copy-Item stage/THIRD-PARTY-NOTICES.txt dist/THIRD-PARTY-NOTICES.txt
+          Copy-Item sbom.cdx.json "dist/DeskIT-${{ steps.version.outputs.version }}.cdx.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: DeskIT-${{ steps.version.outputs.version }}
           path: |
             dist/DeskIT-Setup-*.exe
+            dist/DeskIT-Setup.exe
             dist/DeskIT-Setup-*.exe.sha256
             dist/latest.json
             dist/MANIFEST.sha256
             dist/virustotal.txt
+            dist/THIRD-PARTY-NOTICES.txt
+            dist/DeskIT-*.cdx.json
+          if-no-files-found: error
+
+  # 8, 13-14. The one job that may write: it attests (id-token,
+  # attestations) and creates the DRAFT release (contents). It installs
+  # nothing and builds nothing — it takes the stage job's finished files,
+  # byte for byte, and the attestation subjects are those bytes.
+  release:
+    needs: stage
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write        # the draft release and its assets (step 14)
+      id-token: write        # the build attestations (step 8)
+      attestations: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: DeskIT-${{ needs.stage.outputs.version }}
+          path: dist
+
+      # 8a. attest — the manifest's provenance, what the FAQ's "read the
+      #     build attestation" line points to (D12 lock 5). GitHub signs
+      #     attestations for public repositories; a private one skips.
+      - name: Attest MANIFEST.sha256
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/MANIFEST.sha256
+
+      # 8b. attest — the installer itself (it passed the smoke test in the
+      #     stage job), then the SBOM of what is inside it
+      - name: Attest the installer
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe
+
+      - name: Attest the SBOM
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        with:
+          subject-path: dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe
+          sbom-path: dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json
 
       # 14. release — a DRAFT with the notes from CHANGELOG.md under the
       #     version's heading, then the fixed block: SHA-256, VirusTotal,
@@ -456,7 +526,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = "${{ steps.version.outputs.version }}"
+          $version = "${{ needs.stage.outputs.version }}"
           $repo = "${{ github.repository }}"
           $log = Get-Content CHANGELOG.md -Raw -Encoding utf8
           $section = ""
@@ -471,8 +541,8 @@ jobs:
           if ($LASTEXITCODE -eq 0 -and $found.tag_name) { $previous = $found.tag_name }
           $global:LASTEXITCODE = 0
           $sha = (Get-Content "dist/DeskIT-Setup-$version.exe.sha256" -Raw).Split(" ")[0]
-          $vt = "${{ steps.virustotal.outputs.permalink }}"
-          $vtLine = if ($vt) { "VirusTotal: $vt (${{ steps.virustotal.outputs.verdict }})" } else { "VirusTotal: not scanned" }
+          $vt = "${{ needs.stage.outputs.vt_permalink }}"
+          $vtLine = if ($vt) { "VirusTotal: $vt (${{ needs.stage.outputs.vt_verdict }})" } else { "VirusTotal: not scanned" }
           $prevLine = if ($previous) { "Previous version, for rollback: https://github.com/$repo/releases/tag/$previous" } else { "Previous version: none — this is the first release" }
           $body = @(
             $section, "",
@@ -482,24 +552,26 @@ jobs:
             "Build attestation: https://github.com/$repo/attestations",
             "Code signing policy: https://github.com/$repo/blob/main/CODE_SIGNING_POLICY.md",
             $prevLine,
-            "Install: download the installer, or ``winget install YoavShimron.DeskIT`` once the manifest is merged."
+            "Install: download the installer, or ``winget install YoavShimron.DeskIT`` once the manifest is merged.",
+            "", "**Verify this download.** In PowerShell, run ``Get-FileHash .\DeskIT-Setup.exe -Algorithm SHA256`` and compare the result with the SHA-256 above. Then run ``gh attestation verify DeskIT-Setup.exe --repo $repo`` to check that GitHub's build, from this repository, made the file."
           ) -join "`n"
           [IO.File]::WriteAllText("dist/notes.md", $body, (New-Object Text.UTF8Encoding $false))
           Get-Content dist/notes.md
 
       - name: Draft release
         if: ${{ github.ref_type == 'tag' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
-          prerelease: ${{ contains(steps.version.outputs.version, '-beta') }}
-          name: DeskIT ${{ steps.version.outputs.version }}
+          prerelease: ${{ contains(needs.stage.outputs.version, '-beta') }}
+          name: DeskIT ${{ needs.stage.outputs.version }}
           body_path: dist/notes.md
           files: |
-            dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
+            dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe
             dist/DeskIT-Setup.exe
-            dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe.sha256
+            dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe.sha256
             dist/latest.json
             dist/MANIFEST.sha256
-            stage/THIRD-PARTY-NOTICES.txt
+            dist/THIRD-PARTY-NOTICES.txt
+            dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json
           retention-days: 14
