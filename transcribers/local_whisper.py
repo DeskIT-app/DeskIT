@@ -413,7 +413,9 @@ class LocalWhisperTranscriber:
         """Second model, loaded lazily and sharing the device we settled on.
         On an installed copy the detector, too, must be on disk and
         verified (models.source); a missing one is Hebrew-only, said
-        once by the caller, never a download."""
+        once by the caller, never a download. In the checkout one the
+        global cache holds whole is its folder too (models.cached): no
+        revision request to huggingface.co at every load."""
         source = models_mod.source(model_name)
         from faster_whisper import WhisperModel
         # the Hebrew model's number format, whatever the ladder settled

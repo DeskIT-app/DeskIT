@@ -66,9 +66,17 @@ class SpooledItem:
 
 
 class Spool:
-    def __init__(self, directory: Path, keep: int = 100):
+    def __init__(self, directory: Path, keep: int = 100, ring: bool = False):
+        """`ring`: a ring of recent recordings (main.py's recent\\), where
+        dropping the oldest once it is full IS the design, so the drop is
+        said at DEBUG. The pending spool's drop is speech that was never
+        transcribed, and stays a WARNING. Counted 2026-11-10 off app.log:
+        444 "spool full" WARNINGs in 18 days, on 411 of 419 pastes — the
+        ring of 50 doing its job, the largest WARNING by three times, and
+        what made `WARNING` useless to grep for a real problem."""
         self.dir = directory
         self.keep = keep
+        self.ring = ring
 
     def save(self, wav: bytes, seconds: float, note: str,
              extra: dict | None = None) -> SpooledItem:
@@ -115,6 +123,7 @@ class Spool:
         """Never let the spool grow without bound; drop the oldest."""
         items = self.pending()
         for item in items[:max(0, len(items) - self.keep)]:
-            log.warning("spool full — dropping oldest recording %s",
-                        item.wav_path.name)
+            log.log(logging.DEBUG if self.ring else logging.WARNING,
+                    "spool full — dropping oldest recording %s",
+                    item.wav_path.name)
             item.discard()

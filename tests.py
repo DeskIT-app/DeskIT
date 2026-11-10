@@ -1062,6 +1062,45 @@ def test_spool_replays_oldest_first_and_trims() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_recent_ring_drops_its_oldest_without_a_warning() -> None:
+    """A full ring of recent recordings dropping its oldest is the ring
+    working — 444 WARNINGs in 18 days of app.log, on 411 of 419 pastes
+    (2026-11-09 audit). It is DEBUG now; the pending spool's drop is
+    speech never transcribed and stays a WARNING; and main's recent\\ is
+    the ring."""
+    import logging
+
+    import main as main_mod
+    from spool import Spool
+
+    records: list[logging.LogRecord] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    app_log = logging.getLogger("app")
+    catch = _Catch(level=logging.DEBUG)
+    level = app_log.level
+    app_log.setLevel(logging.DEBUG)
+    app_log.addHandler(catch)
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-ring-"))
+    try:
+        ring, pending = Spool(tmp / "recent", keep=2, ring=True), Spool(tmp / "pending", keep=2)
+        for i in range(3):
+            ring.save(b"x", float(i), "")
+            pending.save(b"x", float(i), "err")
+        assert len(ring.pending()) == 2 and len(pending.pending()) == 2
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+        shutil.rmtree(tmp, ignore_errors=True)
+    drops = sorted(r.levelname for r in records if "spool full" in r.getMessage())
+    assert drops == ["DEBUG", "WARNING"], drops
+    src = Path(main_mod.__file__).read_text("utf-8")
+    assert re.search(r"Spool\(paths\.RECENT_DIR, keep=cfg\.vocab\.keep_audio,\s+ring=True\)", src)
+
+
 def test_config_accepts_model_list_and_legacy_single_model() -> None:
     import tempfile
 
@@ -2227,6 +2266,96 @@ def test_a_paste_stays_out_of_clipboard_history_and_a_kept_copy_does_not() -> No
     assert ("chord", "ctrl+v") in partly, partly
     assert sum(1 for e in partly if e[0] == "format") == 2, partly
     assert any("CanUploadToCloudClipboard did not go on" in line for line in lines), lines
+
+
+def test_the_recording_is_kept_behind_the_chord_and_the_stages_are_logged() -> None:
+    """The 2026-11-09 audit, dictation-speed F8 and F1. recent\\ was saved
+    in FRONT of the paste — the wav, the sidecar and the ring's trim, 6-11
+    ms p50 on this PC — with a "spool full" WARNING on 411 of 419 pastes;
+    it is saved BEHIND the chord now, on every way out of the paste (one
+    that landed, one whose focus moved), and the ring's drop is DEBUG. And
+    the pasted line carries the stages of the wait — the language check
+    and the decoder that last_timing measured on every dictation and
+    nobody wrote down — as numbers only."""
+    import logging
+
+    import main as main_mod
+    from recorder import frames_to_wav
+    from spool import Spool
+
+    class _Timed(_Flaky):
+        last_timing = {"detect_s": 0.183, "decode_s": 0.351}
+
+    at_chord: list[int] = []
+    records: list[logging.LogRecord] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    class _Watch(_FakeInjector):
+        moves = False
+
+        def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                                marker=None):
+            at_chord.append(len(app.recent.pending()))
+            if self.moves:
+                self.focus = 1          # he clicked somewhere else
+            return super().replace_placeholder(placeholder, text, chord,
+                                               delay, hwnd, marker)
+
+        def inject(self, text, chord, delay):
+            at_chord.append(len(app.recent.pending()))
+            return super().inject(text, chord, delay)
+
+    app_log = logging.getLogger("app")
+    catch = _Catch(level=logging.DEBUG)
+    level = app_log.level
+    app_log.setLevel(logging.DEBUG)
+    app_log.addHandler(catch)
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-keep-"))
+    fake = _Watch()
+    wav = frames_to_wav([np.zeros(1600, dtype=np.int16)], 16000)
+    try:
+        with _patched(main_mod, "injector", fake):
+            app = _worker_app(_Timed(fail_times=0, text="שלום לכולם"), tmp)
+            app.recent = Spool(tmp / "recent", keep=1, ring=True)
+            first = app.recent.save(wav, 1.0, "")       # the ring is full
+            app._handle(wav, 2.0, fake.focus, released=time.monotonic() - 0.5)
+            assert at_chord == [1], at_chord    # nothing new before the chord
+            [kept] = app.recent.pending()
+            assert kept.wav_path != first.wav_path, "the oldest stays"
+            assert app._last["wav"] == str(kept.wav_path), app._last
+            # the focus moved: the text goes to the clipboard, the
+            # recording is still kept, after the attempt
+            fake.moves = True
+            app._handle(wav, 3.0, fake.focus)    # a later name in the ring
+            assert at_chord == [1, 1], at_chord
+            assert ("clipboard", "שלום לכולם") in fake.calls, fake.calls
+            [kept2] = app.recent.pending()
+            assert kept2.wav_path != kept.wav_path
+            assert app._last["wav"] == str(kept2.wav_path), app._last
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+        shutil.rmtree(tmp, ignore_errors=True)
+    drops = [r for r in records if "spool full" in r.getMessage()]
+    assert len(drops) == 2 and all(r.levelno == logging.DEBUG for r in drops), \
+        [(r.levelname, r.getMessage()) for r in drops]
+    pasted = [r.getMessage() for r in records if r.getMessage().startswith("pasted ")]
+    assert len(pasted) == 1, pasted
+    line = pasted[0]
+    assert re.search(r"\(\d+\.\d s to the paste via \S+: \d+\.\d s decode, "
+                     r"\d+\.\d s repair;", line), line
+    assert " — stages (s): queue 0.5" in line, line
+    for stage in ("language check 0.18", "decoder 0.35", "marker wait ",
+                  "hands off "):
+        assert stage in line, (stage, line)
+    assert re.search(r", paste \d+\.\d\d$", line), line
+    assert "rolling wait" not in line, "no rolling, no stage for it"
+    assert not re.search("[֐-׿]", line), "a word of the dictation in app.log"
+    assert main_mod.stage_line() == ""
+    assert main_mod.stage_line(a=None, b_c=1.234) == "stages (s): b c 1.23"
 
 
 def test_a_marker_thread_that_will_not_start_does_not_lose_the_dictation() -> None:
@@ -28683,6 +28812,42 @@ class _NoCorpus:
         return False
 
 
+def test_the_second_reading_waits_out_a_grace_after_the_paste() -> None:
+    """The 2026-11-09 audit, dictation-speed F7: the reading began within
+    one 0.2 s poll of the paste, and its first decode (beam 8, the whole
+    clip) holds the model for up to 6.5 s — a short phrase released inside
+    it waits. Before a reading STARTS, quiet must now hold for grace_s
+    without a break, and a press inside it (quiet going False) starts the
+    count again. grace_s 0 is the old wait exactly; the app passes
+    GRACE_S; the checks between decodes keep the old quiet."""
+    import main as main_mod
+    import review as review_mod
+
+    def engine(quiet, grace_s):
+        e = review_mod.Engine.__new__(review_mod.Engine)
+        e._stop, e._quiet, e._grace_s = threading.Event(), quiet, grace_s
+        return e
+
+    def timed(e, limit_s=10.0):
+        began = time.monotonic()
+        e._wait_quiet(limit_s)
+        return time.monotonic() - began
+
+    assert timed(engine(lambda: True, 0.0)) < 0.1, "no grace: the old wait"
+    waited = timed(engine(lambda: True, 0.6))
+    assert 0.55 <= waited < 1.0, waited
+    # a press at 0.3-0.7 s: the count starts again when it is over
+    t0 = time.monotonic()
+    waited = timed(engine(lambda: not (0.3 <= time.monotonic() - t0 < 0.7), 0.6))
+    assert 1.28 <= waited < 2.0, waited
+    # never past the bound, however busy he is
+    assert timed(engine(lambda: False, 0.6), limit_s=0.5) < 0.9
+    assert review_mod.GRACE_S >= 2.0
+    src = Path(main_mod.__file__).read_text("utf-8")
+    assert "grace_s=review_mod.GRACE_S" in src
+    assert review_mod.Engine.__init__.__kwdefaults__["grace_s"] == 0.0
+
+
 def test_the_sidecar_keeps_what_the_three_readings_actually_said() -> None:
     """A reading that proposes nothing is exactly when the evidence
     matters. On 2026-09-05 the worst clip of the day — an English
@@ -30457,6 +30622,34 @@ def test_the_hold_pins_the_timers_and_puts_them_back() -> None:
         assert not (Path(d) / awake_mod.STATE_NAME).exists(), "marker left"
         record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
         assert "pinned to never" in record and "timers restored" in record, record
+
+
+def test_awake_log_is_cut_back_to_its_tail_at_a_line() -> None:
+    """awake.log was the one log nothing trimmed: 2.7 MB, 8,444 lines on
+    2026-11-10, a vitals line every 10 minutes since 2026-09-17. Past
+    LOG_MAX it is cut to its last LOG_KEEP bytes, from the next whole line
+    — the newest lines kept, the oldest gone, no half line at the top.
+    recover() writes through the same _append."""
+    import awake as awake_mod
+
+    assert awake_mod.LOG_MAX >= 2 * awake_mod.LOG_KEEP >= 200_000
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        path = Path(d) / awake_mod.LOG_NAME
+        e = awake_mod.Engine.__new__(awake_mod.Engine)
+        e.log_path = path
+        with _patched(awake_mod, "LOG_MAX", 2000), _patched(awake_mod, "LOG_KEEP", 900):
+            for i in range(200):
+                e._log(f"  vitals | line {i:03d} " + "x" * 20)
+                assert path.stat().st_size <= 2000 + 100, (i, path.stat().st_size)
+            lines = path.read_text("utf-8").splitlines()
+            assert lines[-1].endswith("line 199 " + "x" * 20), lines[-1]
+            assert all(re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \| ", l) for l in lines), lines[:2]
+            numbers = [int(re.search(r"line (\d{3})", l).group(1)) for l in lines]
+            assert numbers == list(range(numbers[0], 200)) and numbers[0] > 100, numbers[:3]
+            path.write_bytes(b"y" * 5000)        # one long line, no newline in the tail
+            e._log("after the cut")
+            assert path.read_text("utf-8").splitlines()[-1].endswith("| after the cut")
+            assert path.stat().st_size < 100, path.stat().st_size
 
 
 def test_a_leftover_awake_marker_is_recovered_at_the_next_start() -> None:
@@ -41613,19 +41806,25 @@ def test_models_state_and_source_on_an_installed_copy():
 
 
 def test_models_portable_mode_untouched():
-    """The checkout and a portable copy (D4): the hub name goes to the
-    loader as it always did, no folder is looked at, env() sets nothing,
-    and the step is never wanted."""
+    """The checkout and a portable copy (D4): with nothing in the global
+    cache the hub name goes to the loader as it always did, no folder of
+    models.py's is looked at, env() sets nothing, and the step is never
+    wanted. (A model the cache HAS is its folder:
+    test_a_model_on_disk_loads_with_no_network.)"""
+    import huggingface_hub.constants as hub_constants
     import models
 
     class _NoDisk:
         def __truediv__(self, other):
             raise AssertionError(f"MODELS_DIR was touched: {other}")
 
-    with _patched(paths, "PORTABLE", True), _patched(paths, "MODELS_DIR", _NoDisk()):
+    empty = tempfile.mkdtemp(prefix="deskit-hubcache-")
+    with _patched(paths, "PORTABLE", True), _patched(paths, "MODELS_DIR", _NoDisk()), \
+            _patched(hub_constants, "HF_HUB_CACHE", empty):
         assert models.source("ivrit-ai/whisper-large-v3-turbo-ct2") == "ivrit-ai/whisper-large-v3-turbo-ct2"
         assert models.env() == {}
         assert not models.wanted(config_mod.Config())
+    shutil.rmtree(empty, ignore_errors=True)
     assert paths.PORTABLE, "this suite runs in the checkout"
     before = dict(os.environ)
     try:
@@ -41634,6 +41833,92 @@ def test_models_portable_mode_untouched():
     finally:
         os.environ.clear()
         os.environ.update(before)
+
+
+def test_a_model_on_disk_loads_with_no_network():
+    """The 2026-11-09 footprint audit, F3: in the checkout the English
+    detector was handed to WhisperModel by its hub NAME, and faster-whisper
+    then asked huggingface.co for the revision at every load although
+    every file was on disk — 30 GETs in app.log over 2026-10-23..11-08,
+    none of them through net.py. Now a model the global cache holds whole
+    is handed over as its snapshot FOLDER, which is the branch of
+    WhisperModel.__init__ that never calls download_model; the lookup
+    itself is local_files_only. Nothing here may touch the Hub's HTTP
+    client. A model the cache does not have (or has in part) is still the
+    name: the download it always was. An installed copy was offline
+    already — its verified folder and HF_HUB_OFFLINE
+    (test_models_state_and_source_on_an_installed_copy)."""
+    import inspect
+
+    import faster_whisper
+    import faster_whisper.transcribe as fw_transcribe
+    import httpx
+    import huggingface_hub.constants as hub_constants
+    import models
+    import transcribers.local_whisper as lw
+
+    # the library's own order: a folder is loaded, only a name downloads
+    init = inspect.getsource(fw_transcribe.WhisperModel.__init__)
+    assert init.index("os.path.isdir(model_size_or_path)") < init.index("download_model("), \
+        "faster-whisper no longer loads a folder before it looks at the Hub"
+
+    tried: list = []
+
+    def refuse(self, request, *a, **k):
+        tried.append(str(request.url))
+        raise AssertionError(f"the Hub was asked: {request.url}")
+
+    built: list = []
+
+    class _FakeModel:
+        def __init__(self, model, device, compute_type, **kw):
+            built.append(model)
+
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+        def detect_language(self, *a, **k):
+            return "he", 1.0, [("he", 1.0)]
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-hubcache-"))
+    try:
+        commit = "c" * 40
+        store = tmp / "models--deskit-test--cached-ct2"
+        snap = store / "snapshots" / commit
+        snap.mkdir(parents=True)
+        (store / "refs").mkdir()
+        (store / "refs" / "main").write_text(commit, "utf-8")
+        for name in ("config.json", "model.bin", "tokenizer.json",
+                     "vocabulary.json", "preprocessor_config.json"):
+            (snap / name).write_bytes(b"{}")
+        partial = tmp / "models--deskit-test--partial-ct2"
+        (partial / "snapshots" / commit).mkdir(parents=True)
+        (partial / "refs").mkdir()
+        (partial / "refs" / "main").write_text(commit, "utf-8")
+        (partial / "snapshots" / commit / "config.json").write_bytes(b"{}")
+        with _patched(paths, "PORTABLE", True), \
+                _patched(hub_constants, "HF_HUB_CACHE", str(tmp)), \
+                _patched(httpx.Client, "send", refuse), \
+                _patched(faster_whisper, "WhisperModel", _FakeModel), \
+                _patched(lw, "_register_cuda_dlls", lambda: None):
+            assert Path(models.source("deskit-test/cached-ct2")).resolve() == snap.resolve()
+            assert models.source("deskit-test/partial-ct2") == "deskit-test/partial-ct2", \
+                "a snapshot without model.bin is the download it always was"
+            assert models.source("deskit-test/not-here") == "deskit-test/not-here"
+            assert models.source("large-v3") == "large-v3", "a size name is the Hub's"
+            assert models.source(str(snap)) == str(snap), "a folder of the person's own"
+            # the English detector's load, the one that knocked every start
+            t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+            t.device = "cpu"
+            t._load("deskit-test/cached-ct2")
+            # and the Hebrew model by name, through the whole constructor
+            lw.LocalWhisperTranscriber("deskit-test/cached-ct2", "he",
+                                       device="cpu", english_model="")
+        assert [Path(b).resolve() for b in built] == [snap.resolve()] * 2, built
+        assert all(os.path.isdir(b) for b in built), "a name reached WhisperModel"
+        assert tried == [], tried
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_models_env_is_set_on_an_installed_copy():
@@ -41850,9 +42135,11 @@ def test_models_partial_never_loads():
             assert built == [str(e.folder)], built
             assert t._english is None, "an absent detector is Hebrew-only, not a download"
             assert transcribers.get_transcriber(cfg).name == "local"
-        # the checkout: the name, as always
+        # the checkout with nothing in the cache: the name, as always
+        import huggingface_hub.constants as hub_constants
         with _patched(faster_whisper, "WhisperModel", _FakeModel), \
-                _patched(lw, "_register_cuda_dlls", lambda: None):
+                _patched(lw, "_register_cuda_dlls", lambda: None), \
+                _patched(hub_constants, "HF_HUB_CACHE", str(tmp / "no-hub-cache")):
             built.clear()
             lw.LocalWhisperTranscriber("ivrit-ai/whisper-large-v3-turbo-ct2", "he", english_model="")
             assert built == ["ivrit-ai/whisper-large-v3-turbo-ct2"], built

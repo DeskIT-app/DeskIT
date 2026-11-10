@@ -234,13 +234,57 @@ def require(repo: str, path: Path | None = None) -> Path:
     raise ModelMissing(repo, word, why)
 
 
+#: What faster-whisper's own download asks the Hub for
+#: (faster_whisper.utils.download_model's allow_patterns, 1.2.1), and of
+#: those the files a loader cannot do without: no tokenizer.json and
+#: faster-whisper fetches one from the Hub itself.
+HUB_PATTERNS = ["config.json", "preprocessor_config.json", "model.bin",
+                "tokenizer.json", "vocabulary.*"]
+_NEEDED = ("config.json", "model.bin", "tokenizer.json")
+
+
+def cached(repo: str) -> str | None:
+    """The global Hugging Face cache's own snapshot of `repo`, found with
+    NO network (`local_files_only`), or None when it is not all there.
+
+    Why it exists: given a hub NAME, WhisperModel asks the Hub for the
+    revision on every load even when every file is on disk — measured in
+    app.log, a `GET huggingface.co/api/models/<repo>/revision/main` (and,
+    with huggingface_hub 1.27, `/api/agent-harnesses`) at every start of
+    the checkout and every room-for-a-game recovery: 30 such lines over
+    2026-10-23..11-08, none in network.log, because they leave through
+    huggingface_hub's own httpx and not through net.py. Handed the
+    snapshot FOLDER instead, faster-whisper never calls download_model.
+    The price: the checkout keeps the revision it has until the folder is
+    removed, which is what an installed copy (models.lock) does anyway."""
+    if repo.count("/") != 1:
+        return None                # a size name ("large-v3") is the Hub's
+    try:
+        # Lazily, and only here: the hub is imported after models.env()
+        # (test_models_env_is_set_on_an_installed_copy), and a portable
+        # copy, the only caller, sets nothing there.
+        from huggingface_hub import snapshot_download
+        folder = snapshot_download(repo, local_files_only=True,
+                                   allow_patterns=HUB_PATTERNS)
+    except Exception:              # noqa: BLE001 — not cached, or partial
+        return None
+    if all((Path(folder) / name).is_file() for name in _NEEDED):
+        return str(folder)
+    return None
+
+
 def source(repo: str) -> str:
-    """What WhisperModel is given for `repo`: the hub name on a portable
-    or developer copy (D4 — the global cache, as always), a folder the
-    person named themselves, or on an installed copy the verified folder
-    — never the name, so the library can only load and never fetch."""
-    if paths.PORTABLE or Path(repo).is_dir():
+    """What WhisperModel is given for `repo`: a folder the person named
+    themselves; on a portable or developer copy (D4 — the global cache, as
+    always) the cache's snapshot folder when it is all there and the hub
+    name only when it is not, so a model on disk loads with no network
+    and a missing one downloads as it always did; on an installed copy
+    the verified folder — never the name, so the library can only load
+    and never fetch."""
+    if Path(repo).is_dir():
         return repo
+    if paths.PORTABLE:
+        return cached(repo) or repo
     return str(require(repo))
 
 
