@@ -31001,6 +31001,243 @@ def test_notify_summary_that_never_comes_leaves_the_old_card() -> None:
         assert cfg.notify.summary_model == "qwen/qwen3.8-27b"
 
 
+def test_notify_never_shows_a_finish_for_the_session_he_is_looking_at() -> None:
+    """628 of 2,035 cards (31%) were up about two seconds and gone: the
+    arrival watcher's first look comes ARRIVAL_POLL_S after the card, and
+    a finish for the session he was watching was written up, drawn and
+    taken down. The same test the watcher runs (rule B: the Claude window
+    in front, this session's focus stamp the newest) is asked at the
+    door: yes is no sentence, no card, the item seen `by viewing`. Only a
+    `done`; never a test; not with dismiss_on_arrival off; no store read
+    while Claude is not in front; and the hook's copy still folds in."""
+    import notify
+
+    focus = {"S1": 2000.0, "S2": 1000.0}
+    front = [True]
+    asked_front: list = []
+    reads: list = []
+
+    def fake_front(hwnd):
+        asked_front.append(hwnd)
+        return front[0]
+
+    def fake_focus(roots=None):
+        reads.append(roots)
+        return dict(focus)
+
+    def log_of(d) -> str:
+        return (Path(d) / "notify.log").read_text("utf-8")
+
+    def drawn(card) -> set:
+        return {int(c["id"]) for c in card.shown}
+
+    # The watcher's own first look is pushed past the test, so every
+    # "seen" here is the door's.
+    with _patched(notify, "in_front", fake_front), \
+            _patched(notify, "focus_times", fake_focus), \
+            _patched(notify, "session_roots", lambda: []), \
+            _patched(notify, "ARRIVAL_POLL_S", 600.0):
+        with tempfile.TemporaryDirectory() as d:
+            card = _FakeNotifyCard()
+            fake = _FakeSummary("המשפט")
+            eng = notify.Engine(Path(d), _notify_cfg(interrupt="input"),
+                                card=card, summary=fake)
+            try:
+                reply = eng.receive({"source": "claude-code", "kind": "done",
+                                     "session": "S1", "body": "One.",
+                                     "text": "One.", "via": "transcript"})
+                _awake_until(lambda: eng.store.items()[0].get("seen"))
+                assert eng.store.items()[0]["seen"] is True, eng.store.items()
+                assert fake.asked == [] and card.shown == [], (fake.asked,
+                                                               card.shown)
+                assert eng.state()["held"] == 0, eng.state()
+                text = log_of(d)
+                assert "VIEWING #1 | he is looking at its session" in text, text
+                assert "DISMISSED #1 by viewing | 1 marked seen" in text, text
+                assert "SUMMARY #1" not in text, "no sentence was asked"
+                # The hook's copy of the same finish still folds in, unseen.
+                folded = eng.receive({"source": "claude-code", "kind": "done",
+                                      "session": "S1", "body": "One.",
+                                      "text": "One.", "hwnd": 4321})
+                assert folded.get("folded") is True, folded
+                assert card.shown == [] and len(eng.store.items()) == 1
+                # Another session's finish: he is in Claude, not there.
+                eng.receive({"source": "claude-code", "kind": "done",
+                             "session": "S2", "body": "Two.", "text": "Two."})
+                _awake_until(lambda: card.shown)
+                assert card.shown[-1]["id"] == 2 and len(fake.asked) == 1
+                # The window not in front: the store is not even read.
+                front[0], n = False, len(reads)
+                eng.receive({"source": "claude-code", "kind": "done",
+                             "session": "S1", "body": "Three.",
+                             "text": "Three."})
+                _awake_until(lambda: card.shown[-1]["id"] == 3)
+                assert card.shown[-1]["id"] == 3 and len(reads) == n, reads
+                front[0] = True
+                # A finish with no sentence to wait for is asked at the door.
+                eng.summary_on = False
+                quiet = eng.receive({"source": "claude-code", "kind": "done",
+                                     "session": "S1", "body": "Four."})
+                assert quiet["seen"] is True and quiet["held"] is False, quiet
+                assert 4 not in drawn(card) and 1 not in drawn(card), card.shown
+                assert "VIEWING #4" in log_of(d)
+                assert "SUPERSEDED #3 by #4" in log_of(d), "the session spoke again"
+                # A permission, a test, a sender with no session: shown.
+                ask = eng.receive({"source": "claude-code", "kind": "input",
+                                   "session": "S1", "title": "May I?"})
+                assert "seen" not in ask and card.shown[-1]["id"] == ask["id"]
+                test = eng.test()
+                assert card.shown[-1]["id"] == test["id"]
+                n = len(asked_front)
+                eng.receive({"source": "phone", "kind": "done", "body": "x"})
+                assert len(asked_front) == n, "no session, nothing to ask"
+            finally:
+                eng.stop()
+        # The watcher switched off: the door does not ask either.
+        with tempfile.TemporaryDirectory() as d:
+            card = _FakeNotifyCard()
+            eng = notify.Engine(Path(d), _notify_cfg(dismiss_on_arrival=False,
+                                                     summarize=False),
+                                card=card)
+            try:
+                n = len(asked_front)
+                reply = eng.receive({"source": "claude-code", "kind": "done",
+                                     "session": "S1", "body": "One."})
+                assert "seen" not in reply and len(card.shown) == 1, reply
+                assert len(asked_front) == n
+            finally:
+                eng.stop()
+    # And a question that cannot be answered is no.
+    with tempfile.TemporaryDirectory() as d:
+        eng = notify.Engine(Path(d), _notify_cfg(), card=_FakeNotifyCard())
+        try:
+            def broken(_hwnd):
+                raise OSError("no desktop")
+            with _patched(notify, "in_front", broken):
+                assert eng._looking_at({"kind": "done", "session": "S1"}) is False
+        finally:
+            eng.stop()
+
+
+def test_the_sentence_stops_waiting_for_a_groq_it_cannot_reach() -> None:
+    """Every "cannot reach Groq" in notify.log waited out the whole
+    second. Two failures to reach it in a row (a NetError, a timeout from
+    the read) shut the door for BREAK_S: the next finishes are not asked
+    and do not wait. Then one asks again; a failure there shuts it at
+    once, an answer opens it. One slow answer alone shuts nothing — all
+    19 in the log were followed by a sentence — and neither does an HTTP
+    refusal or a missing key, which cost nothing to repeat."""
+    import net
+    import notify
+    import translate
+
+    now = [0.0]
+    script: list = []
+    built: list = []
+
+    class FakeGroq:
+        def __init__(self, *a, **k):
+            built.append(k.get("purpose"))
+
+        def translate(self, text):
+            what = script.pop(0)
+            if isinstance(what, BaseException):
+                raise what
+            return what
+
+    def cut() -> translate.TranslationError:
+        try:
+            raise net.NetError("The read operation timed out")
+        except net.NetError as e:
+            try:
+                raise translate.TranslationError(
+                    f"cannot reach Groq at x ({e.reason})") from e
+            except translate.TranslationError as err:
+                return err
+
+    def read_timeout() -> translate.TranslationError:
+        try:
+            raise TimeoutError("timed out")
+        except TimeoutError as e:
+            try:
+                raise translate.TranslationError(
+                    f"Groq request failed: {e}") from e
+            except translate.TranslationError as err:
+                return err
+
+    with _patched(translate, "GroqTranslator", FakeGroq):
+        s = notify.Summary(clock=lambda: now[0])
+        script[:] = [cut(), "המשפט הראשון."]
+        assert s.ask("x", 1.0)[0] == "", "one failure"
+        assert s.ask("x", 1.0) == ("המשפט הראשון.", ""), "one alone shuts nothing"
+        script[:] = [cut(), read_timeout()]
+        assert s.ask("x", 1.0)[0] == "" and s.ask("x", 1.0)[0] == ""
+        asked = len(script)
+        t0 = time.monotonic()
+        sentence, why = s.ask("x", 1.0)
+        assert sentence == "" and "not asked" in why, why
+        assert time.monotonic() - t0 < 0.1 and len(script) == asked == 0
+        now[0] += notify.BREAK_S + 1
+        script[:] = [cut()]
+        assert s.ask("x", 1.0)[0] == "" and "not asked" in s.ask("x", 1.0)[1], \
+            "after the pause one asks, and its failure shuts the door at once"
+        now[0] += notify.BREAK_S + 1
+        script[:] = ["המשפט."]
+        assert s.ask("x", 1.0) == ("המשפט.", ""), "an answer opens it"
+        script[:] = [cut(), "שוב."]
+        assert s.ask("x", 1.0)[0] == "" and s.ask("x", 1.0) == ("שוב.", "")
+        # Answers that are not a road down never shut it.
+        refused = translate.TranslationError("Groq returned HTTP 401: no")
+        try:
+            raise net.SecretMissing("groq")
+        except net.SecretMissing as e:
+            try:
+                raise translate.TranslationError(f"cannot reach Groq ({e})") from e
+            except translate.TranslationError as err:
+                missing = err
+        script[:] = [cut(), refused, cut(), missing, cut(), "כן."]
+        for _ in range(5):
+            assert "not asked" not in s.ask("x", 1.0)[1]
+        assert s.ask("x", 1.0) == ("כן.", "")
+        assert built and set(built) == {"summary"}
+    assert notify.unreachable(None) is False
+    assert notify.unreachable(ValueError("x")) is False
+    assert notify.unreachable(ConnectionResetError()) is True
+
+
+def test_notify_log_keeps_its_tail_and_stays_bounded() -> None:
+    """notify.log was never trimmed (906 KB in 54 days on the owner's
+    PC). Past LOG_MAX it is cut back to its newest LOG_KEEP bytes, at a
+    whole line, and the newest line is always there; under it nothing is
+    touched; a file that is not there is not an error."""
+    import notify
+
+    assert notify.LOG_MAX > notify.LOG_KEEP > 0
+    with tempfile.TemporaryDirectory() as d:
+        eng = notify.Engine(Path(d), _notify_cfg(), card=_FakeNotifyCard())
+        path = Path(d) / "notify.log"
+        try:
+            with _patched(notify, "LOG_MAX", 4000), \
+                    _patched(notify, "LOG_KEEP", 1500):
+                for i in range(200):
+                    eng._log(f"LINE {i:03d} " + "x" * 30)
+                    assert path.stat().st_size <= 4000 + 80, i
+                lines = path.read_text("utf-8").splitlines()
+                assert lines[-1].endswith("LINE 199 " + "x" * 30), lines[-1]
+                assert all(" | LINE " in line for line in lines), lines[0]
+                assert len(lines) < 200
+                small = path.stat().st_size
+                assert notify.trim_log(path, most=small) is False
+                assert path.stat().st_size == small, "under the bound: untouched"
+            assert notify.trim_log(Path(d) / "absent.log") is False
+            assert notify.trim_log(path, most=10, keep=100) is True
+            last = path.read_text("utf-8")
+            assert last.count("\n") == 1 and last.startswith("20"), last
+            assert last.rstrip().endswith("LINE 199 " + "x" * 30), last
+        finally:
+            eng.stop()
+
+
 def test_the_notify_route_is_token_gated_and_fast() -> None:
     """POST /notify: 401 before anything runs, 200 with the engine's
     reply verbatim, 400 for what is not a JSON object (an empty body
@@ -31558,6 +31795,62 @@ def test_the_hook_names_the_session_the_notification_came_from() -> None:
                    "code entry deep link gated off",
                    "already imported as local_"):
         assert needle in module, needle
+
+
+def test_a_session_link_miss_is_read_once_until_the_file_changes() -> None:
+    """An id no session file holds read all forty newest files, 510 ms on
+    the owner's PC, and on the tail's one poll thread that held every
+    other finish behind it. Each file keeps the answer it gave an id
+    against its (mtime, size): asked again, an unchanged file is not
+    read; a changed or a new one is; a hit is not read again either."""
+    import notify_hook as hook
+
+    def _store(root: Path, name: str, body: dict) -> Path:
+        folder = root / "acct" / "org"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{name}.json"
+        path.write_text(json.dumps(body), "utf-8")
+        return path
+
+    desk = "6abc45c7-8df5-460d-a90f-cbadbbbd4cb2"
+    live = "add068f2-9cd4-4904-b19c-d73859fad53e"
+    gone = "e571c05f-4c3d-4099-ae25-45311dfce70b"
+    other = "ae7aac5f-afaf-4a53-b7d9-fb776655faab"
+    reads: list = []
+    real = hook._store_bytes
+
+    def counted(path):
+        reads.append(Path(path).name)
+        return real(path)
+
+    with tempfile.TemporaryDirectory() as d, \
+            _patched(hook, "_store_bytes", counted):
+        root = Path(d)
+        a = _store(root, f"local_{desk}", {"sessionId": f"local_{desk}",
+                                           "cliSessionId": live})
+        assert hook.session_link(gone, root=root) == "" and len(reads) == 1
+        assert hook.session_link(gone, root=root) == "" and len(reads) == 1, \
+            "an unchanged file is not read again for the same id"
+        want = f"claude://resume?session={desk}"
+        assert hook.session_link(live, root=root) == want and len(reads) == 2
+        assert hook.session_link(live, root=root) == want and len(reads) == 2
+        # A new file that holds the missed id: only that one is read.
+        _store(root, f"local_{other}", {"sessionId": f"local_{other}",
+                                        "cliSessionId": "x",
+                                        "priorCliSessionIds": [gone]})
+        assert hook.session_link(gone, root=root) == \
+            f"claude://resume?session={other}", reads
+        assert reads[2:] == [f"local_{other}.json"], reads
+        # A file that changed is read again.
+        a.write_text(json.dumps({"sessionId": f"local_{desk}",
+                                 "cliSessionId": live,
+                                 "priorCliSessionIds": ["y", "z"]}), "utf-8")
+        n = len(reads)
+        assert hook.session_link(live, root=root) == want
+        # (the other file is read too only when the two stamps tie, and
+        # then once: `live` is not an id it was asked about)
+        assert reads[n:].count(a.name) == 1 and len(reads[n:]) <= 2, reads
+    assert hook.ANSWERS_PER_FILE > 0 and "_ANSWERS" in inspect.getsource(hook)
 
 
 def test_the_session_store_is_found_where_the_app_keeps_it_now() -> None:

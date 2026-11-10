@@ -384,6 +384,24 @@ LOCAL = "local_"
 STORE_MAX = 40                    # session files opened before giving up
 UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
                   r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# WHAT A FILE WAS FOUND TO SAY, so a miss is paid once (2026-11-10). An
+# id no file holds — a session run in a terminal, a cloud one — reads all
+# STORE_MAX files: 16 MB on the owner's PC that day, 510 ms cold (the
+# audit's figure; 640 ms in a fresh process here), and on the app's tail
+# thread that stalls every other finish behind it. So each file keeps,
+# against its (mtime_ns, size) — notify.py's _FOCUS_SEEN uses the same
+# mark for the same files — the answer it gave for each id asked: a file
+# that has not changed is not read again for that id. Only a file being
+# written is. The hook is a new process every time and starts empty;
+# for it, the bytes are searched before anything is decoded (40 files,
+# warm: 25.5 ms as text, 10.5 ms as bytes).
+_ANSWERS: dict[str, tuple] = {}   # path -> ((mtime_ns, size), {id: link})
+ANSWERS_PER_FILE = 32             # ids remembered per file, oldest out
+
+
+def _store_bytes(path: Path) -> bytes:
+    """One session file, whole — a function so a test can count reads."""
+    return path.read_bytes()
 
 
 def session_roots(local=None, appdata=None) -> list[Path]:
@@ -445,32 +463,57 @@ def session_link(session_id, root=None) -> str:
         return ""
     try:
         roots = [Path(root)] if root is not None else session_roots()
-        files = sorted((p for r in roots for p in r.glob(f"*/*/{LOCAL}*.json")),
-                       key=lambda p: p.stat().st_mtime, reverse=True)
-        for path in files[:STORE_MAX]:
+        stats = []
+        for p in (p for r in roots for p in r.glob(f"*/*/{LOCAL}*.json")):
             try:
-                text = path.read_text("utf-8")
+                stats.append((p, p.stat()))
             except OSError:
                 continue
-            if ident not in text:
-                continue
+        stats.sort(key=lambda ps: ps[1].st_mtime_ns, reverse=True)
+        needle = ident.encode("ascii")
+        newest = stats[:STORE_MAX]
+        for path, st in newest:
+            mark = (st.st_mtime_ns, st.st_size)
+            memo = _ANSWERS.get(str(path))
+            if memo is None or memo[0] != mark:
+                memo = _ANSWERS[str(path)] = (mark, {})
+            said = memo[1]
+            if ident in said:
+                if said[ident]:
+                    return said[ident]
+                continue              # read before, unchanged since: no
             try:
-                data = json.loads(text)
-            except ValueError:
-                continue
-            if not isinstance(data, dict):
-                continue
-            prior = data.get("priorCliSessionIds")
-            prior = prior if isinstance(prior, list) else []
-            if data.get("cliSessionId") != ident and ident not in prior:
-                continue              # the id was IN the file, but not as
-                                      # one of this session's own episodes
-            local = str(data.get("sessionId") or "")
-            uuid = local[len(LOCAL):] if local.startswith(LOCAL) else ""
-            if not UUID.match(uuid):
-                continue              # `local_ditto_…` — a cloud session,
-                                      # whose id resume will not take
-            return f"claude://resume?session={uuid}"
+                raw = _store_bytes(path)
+            except OSError:
+                continue              # not remembered: asked again next time
+            link = ""
+            if needle in raw:
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    data = None
+                if isinstance(data, dict):
+                    prior = data.get("priorCliSessionIds")
+                    prior = prior if isinstance(prior, list) else []
+                    # the id can be IN the file without being one of this
+                    # session's own episodes — only these two fields MEAN it
+                    if data.get("cliSessionId") == ident or ident in prior:
+                        local = str(data.get("sessionId") or "")
+                        uuid = local[len(LOCAL):] if local.startswith(LOCAL) \
+                            else ""
+                        # `local_ditto_…` is a cloud session, whose id
+                        # resume will not take
+                        if UUID.match(uuid):
+                            link = f"claude://resume?session={uuid}"
+            if len(said) >= ANSWERS_PER_FILE:
+                said.pop(next(iter(said)))
+            said[ident] = link
+            if link:
+                return link
+        if len(_ANSWERS) > 4 * STORE_MAX:
+            keep = {str(p) for p, _st in newest}
+            for name in [n for n in _ANSWERS if n not in keep]:
+                del _ANSWERS[name]
     except Exception:                 # noqa: BLE001
         return ""
     return ""

@@ -134,6 +134,14 @@ from pathlib import Path
 log = logging.getLogger("app")
 
 LOG_NAME = "notify.log"        # beside the app, awake.log's shape
+# notify.log is cut back to its newest LOG_KEEP bytes, at a line, once it
+# passes LOG_MAX — launch.py's rule for spawn.log, at this file's size.
+# Nothing trimmed it before 2026-11-10: 906 KB, 8,774 lines since
+# 2026-09-17 on the owner's PC (about 17 KB a day, 48 KB on the busiest),
+# so the bound is reached about two months from now and keeps the last
+# two months or so — the window the audits count from.
+LOG_MAX = 2_000_000
+LOG_KEEP = 1_000_000
 STORE_NAME = "notify.json"     # beside the app, review.json's shape
 KINDS = ("done", "input", "error", "info")
 TITLE_MAX, BODY_MAX, SOURCE_MAX, PROJECT_MAX, SESSION_MAX = 80, 400, 40, 60, 64
@@ -201,6 +209,20 @@ EXCERPT_GAP = "\n[...]\n"
 SUMMARY_MAX = 200              # the sentence, as drawn: one body line or two
 _FENCE = re.compile(r"^`{3,}\w*$")   # a code fence a model wraps its answer in
 SUMMARY_WAIT_S = 1.0           # the ceiling when the config says nothing
+# WHEN GROQ CANNOT BE REACHED, STOP WAITING FOR IT (2026-11-10). A finish
+# whose sentence never comes waits out the whole ceiling before its card:
+# all 19 "cannot reach Groq" lines in notify.log took 1.05-1.14 s. Every
+# one of those was ONE slow answer ("The read operation timed out") and
+# the next finish had its sentence in 17 of 18 cases, so a door that shut
+# on the first failure would have taken the sentence off five cards that
+# came 4-88 s later and saved nothing. So the door shuts on the SECOND
+# failure to reach Groq in a row — a connection that did not happen, a
+# timeout — and stays shut for BREAK_S; then one finish asks again, and a
+# failure there shuts it at once. Any answer from Groq (a sentence, a
+# 401, a 429) opens it: the road is there. A refused gate costs nothing
+# to skip (0.00 s in the log), so it is not counted.
+BREAK_AFTER = 2
+BREAK_S = 120.0
 VIA = "transcript"             # notify_tail.VIA: a finish read off its file
 TWIN_S = 120                   # how far back the same finish told twice is
                                # looked for; the hook trails by seconds
@@ -383,10 +405,16 @@ class Summary:
     """
 
     def __init__(self, model: str = SUMMARY_MODEL,
-                 language: str = "he") -> None:
+                 language: str = "he", *, clock=time.monotonic) -> None:
         self.model = str(model or SUMMARY_MODEL)
         lang = str(language or "he").strip()
         self.language = SUMMARY_LANGUAGES.get(lang.lower(), lang)
+        # The door that stops waiting for a Groq it cannot reach — see
+        # BREAK_AFTER. Two plain numbers: a race between two finishes'
+        # threads costs at most one wait more or less.
+        self._clock = clock
+        self._misses = 0
+        self._shut_until = 0.0
 
     def prompt(self) -> str:
         return SUMMARY_PROMPT.format(language=self.language)
@@ -405,13 +433,56 @@ class Summary:
         except Exception as e:            # noqa: BLE001 — no key, mostly
             return "", str(e).splitlines()[0][:80] if str(e) else \
                 type(e).__name__
+        left = self._shut_until - self._clock()
+        if left > 0:
+            return "", (f"Groq unreachable {BREAK_AFTER} times running — "
+                        f"not asked for {left:.0f} s more")
         try:
             reply = groq.translate(f"<message>\n{text}\n</message>")
         except Exception as e:            # noqa: BLE001 — late, refused, 429
+            self._count(e)
             why = str(e).splitlines()[0] if str(e) else type(e).__name__
             return "", why[:80]
+        self._misses, self._shut_until = 0, 0.0
         line = one_line(reply)
         return (line, "") if line else ("", "empty reply")
+
+    def _count(self, error) -> None:
+        """One failed ask, counted toward the door or opening it."""
+        if not unreachable(error):
+            self._misses, self._shut_until = 0, 0.0
+            return
+        self._misses += 1
+        if self._misses >= BREAK_AFTER:
+            self._shut_until = self._clock() + BREAK_S
+            # After the pause one finish asks again, and a failure there
+            # shuts the door at once rather than after two more waits.
+            self._misses = BREAK_AFTER - 1
+            log.info("notify: Groq unreachable %d times running — the one "
+                     "sentence is not asked for %g s", BREAK_AFTER, BREAK_S)
+
+
+def unreachable(error) -> bool:
+    """Did this failure never reach Groq? A net.NetError anywhere in its
+    chain (no route, refused, TLS, a timeout — translate.py wraps it) or
+    a bare timeout or dropped connection from the read; not a missing key
+    (net.SecretMissing is a NetError too, and costs nothing to repeat),
+    not an HTTP answer, not a refused host."""
+    try:
+        import net
+        reach, key = (net.NetError,), (net.SecretMissing,)
+    except Exception:                     # noqa: BLE001 — a cut-down copy
+        reach, key = (), ()
+    reach = reach + (TimeoutError, ConnectionError)
+    for _ in range(8):
+        if error is None:
+            return False
+        if key and isinstance(error, key):
+            return False
+        if isinstance(error, reach):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1148,6 +1219,13 @@ class Engine:
                       f"{fields['title']!r} | refused: off")
             return {"ok": False, "error": "notifications are off "
                                           "([notify] enabled = false)"}
+        # Is he already looking at the session this finish came from? A
+        # finish that waits for its sentence is asked that on the
+        # sentence's own thread, before the sentence (`_summarized`); any
+        # other finish is asked here, before the lock, because the store
+        # read under it is file IO (`_looking_at`).
+        looking = (not urgent and not (self.summary_on and text)
+                   and self._looking_at(fields))
         with self._lock:
             if not urgent:
                 twin = self._same_finish(fields)
@@ -1173,6 +1251,11 @@ class Engine:
             # again, so its older finish is describing a moment that has
             # passed and is retired here rather than shown.
             self._supersede(item)
+            if looking:
+                self._seen_at_arrival(item)
+                return {"ok": True, "id": item["id"],
+                        "unread": self.store.unread(), "coalesced": False,
+                        "held": False, "seen": True}
             # A card that names a session can now be taken down by him
             # walking into that session, so the watcher runs from here
             # until nothing unread names one. Armed before the hold, not
@@ -1401,7 +1484,22 @@ class Engine:
         """The sentence is in, or it is not: either way the finish it
         was holding becomes a card now. Runs on the timer's thread; the
         asking happens BEFORE the lock is taken, the rest under it, and
-        the same four endings as `_quiet` end here the same way."""
+        the same four endings as `_quiet` end here the same way.
+
+        He may already be looking at the session it came from, and then
+        there is no sentence and no card at all (`_looking_at`) — asked
+        first, because the answer to that costs nothing from Groq."""
+        with self._lock:
+            item = self._item(ident)
+        if item is not None and not item.get("seen") \
+                and self._looking_at(item):
+            with self._lock:
+                held = self._held.get(session)
+                if held is None or held["id"] != ident:
+                    return
+                del self._held[session]
+                self._seen_at_arrival(item)
+            return
         t0 = self._clock()
         sentence, why = "", "no summariser"
         try:
@@ -1433,6 +1531,45 @@ class Engine:
             if self._hold(item):
                 return
             self._raise(item)
+
+    def _looking_at(self, item) -> bool:
+        """Rule B at the door: is he looking, right now, at the session
+        this finish came from? Exactly the arrival watcher's test —
+        `viewing(item, focus_times(roots), in_front(hwnd))` — with the
+        cheap half first: no Claude window in front, no store read.
+
+        WHY AT THE DOOR (2026-11-10). The watcher's first look is
+        ARRIVAL_POLL_S after a card goes up, so a finish for the session
+        he was watching was written up by Groq, shown, and taken down
+        about two seconds later: 628 of the 2,035 cards in notify.log
+        (31%), 437 of them after a sentence nobody read. Only a `done`,
+        only while [notify] dismiss_on_arrival is on, and every doubt is
+        no — the watcher's own rules (see "WHY IT CANNOT EAT A CARD HE
+        NEVER SAW"). Never raises."""
+        if not self.arrive_on or str(item.get("kind", "")) != "done" \
+                or not session_keys(item):
+            return False
+        try:
+            if not in_front(item.get("hwnd")):
+                return False
+            return viewing(item, focus_times(session_roots()), True)
+        except Exception:                 # noqa: BLE001 — a doubt is no
+            log.info("notify: could not tell whether he is looking",
+                     exc_info=True)
+            return False
+
+    def _seen_at_arrival(self, item) -> None:
+        """A finish he is already looking at: seen as it lands, with the
+        watcher's own line under it (`by viewing`) so notify.log counts
+        both the same way, and one line before it saying it was at the
+        door. Nothing is cued, drawn or summarised. The lock is held by
+        the caller."""
+        ident = int(item["id"])
+        self._log(f"VIEWING #{ident} | he is looking at its session — no "
+                  f"sentence, no card")
+        log.info("notify: #%d not shown — he is looking at its session",
+                 ident)
+        self.dismiss(ident, by="viewing")
 
     def _raise(self, item, *, urgent: bool = False) -> bool:
         """Put one arrival on the screen: the cue, the column, the
@@ -1836,7 +1973,29 @@ class Engine:
 
     def _log(self, line: str) -> None:
         try:
+            trim_log(self.log_path)
             with self.log_path.open("a", encoding="utf-8") as fh:
                 fh.write(f"{_stamp()} | {line}\n")
         except OSError:
             pass
+
+
+def trim_log(path, most: int | None = None, keep: int | None = None) -> bool:
+    """Cut `path` back to its newest `keep` bytes, starting at a whole
+    line, once it is larger than `most` (LOG_MAX / LOG_KEEP when not
+    given). True when it was cut. Never raises: a log that cannot be
+    trimmed is still a log that can be written."""
+    most = LOG_MAX if most is None else int(most)
+    keep = LOG_KEEP if keep is None else int(keep)
+    path = Path(path)
+    try:
+        if path.stat().st_size <= most:
+            return False
+        tail = path.read_bytes()[-keep:]
+        cut = tail.find(b"\n")
+        if 0 <= cut < len(tail) - 1:
+            tail = tail[cut + 1:]     # the first line whole, or not at all
+        path.write_bytes(tail)
+        return True
+    except OSError:
+        return False
