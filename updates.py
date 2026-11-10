@@ -30,6 +30,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -48,6 +49,18 @@ log = logging.getLogger("app")
 #: The repository the feed lives in — the public one of D28.
 REPO = "DeskIT-app/DeskIT"
 API = f"https://api.github.com/repos/{REPO}/releases"
+#: The only installer URL a feed may name: one of THIS repository's
+#: release assets, the shape release.yml writes (`…/releases/download/
+#: v<version>/DeskIT-Setup-<version>.exe`). Until 2026-11-10 any
+#: `https://github.com/….exe` passed, so a feed could send every copy to
+#: another repository's release (security-local 3, the sceptic's
+#: addition). Each segment starts with a letter or a digit, so "." and
+#: ".." are not segments, and there is no query, fragment, port or
+#: escape for GitHub to read differently. The feed itself is still not
+#: signed; that needs a key the owner keeps.
+ASSET_URL = re.compile(r"^https://github\.com/" + re.escape(REPO)
+                       + r"/releases/download/[A-Za-z0-9][A-Za-z0-9._+-]{0,99}"
+                       r"/[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\.exe\Z")
 WINGET_ID = "YoavShimron.DeskIT"
 WINGET_COMMAND = f"winget upgrade {WINGET_ID}"
 CADENCE_S = 7 * 24 * 3600
@@ -92,8 +105,9 @@ class Release:
         v = str(data.get("version", "")).strip()
         version.parse(v)
         url = str(data.get("url", "")).strip()
-        if not url.startswith("https://github.com/") or not url.endswith(".exe"):
-            raise ValueError(f"latest.json url is not a GitHub release asset: {url!r}")
+        if not ASSET_URL.match(url):
+            raise ValueError(f"latest.json url is not one of this repository's "
+                             f"release assets: {url!r}")
         sha = str(data.get("sha256", "")).strip().lower()
         if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
             raise ValueError("latest.json sha256 is not 64 hex")

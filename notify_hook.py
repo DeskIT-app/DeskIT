@@ -16,9 +16,10 @@ owner's business, and a Stop with `stop_hook_active` set is a turn that
 is already being continued by a hook. The event is posted to the
 running app's `/notify` route on 127.0.0.1:[server] port with the
 phone bearer token from the secret store (secretstore.py, a DPAPI blob
-the app writes at start). If the app is not running, the post fails
-and the script exits 0 in silence — a hook must never make Claude wait
-on a card.
+the app writes at start). If the app is not running — its instance
+mutex is not there — nothing is sent at all, so the token never goes to
+whoever else holds the port, and the script exits 0 in silence — a hook
+must never make Claude wait on a card.
 
 Every payload also names the window the notification CAME FROM (`hwnd`
 and `app`), because a click on the card now raises it — see
@@ -571,15 +572,41 @@ def read_token(path=None) -> str | None:
     return token or None
 
 
+def app_is_here() -> bool:
+    """Is THIS copy's app running in this login session? Its instance
+    mutex (singleton.MUTEX_NAME, `Local\\` and so per session, `.dev` in
+    the checkout) is what says so. Any failure is False.
+
+    Asked before the bearer leaves (2026-11-09 audit, security-local 5):
+    the port in state.json is only where the app WAS. With the app down,
+    whatever holds that port — another Windows user's listener, since a
+    loopback port is shared by every session on the PC — was handed the
+    token on every Claude turn, and the token opens /review's pending
+    dictations. SO_EXCLUSIVEADDRUSE guards the port only while the app
+    holds it, and the mutex exists for exactly that span (it is taken
+    first at start, gone when the process is). What is left: the second
+    or two of a start between the mutex and the door's bind."""
+    try:
+        import singleton
+
+        return singleton.is_running()
+    except Exception:                     # noqa: BLE001
+        return False
+
+
 def post(payload: dict, url: str, token: str, timeout: float = 3.0) -> bool:
     """One POST; True on a 2xx. Any failure — no app, wrong port, bad
-    token, a slow reply — is False, never an exception.
+    token, a slow reply — is False, never an exception. With this copy's
+    app not running nothing is sent at all (`app_is_here`).
 
     Through net.py like every other request in the tree (D12), which is
     also why the bearer travels as a header the caller supplies: net.py
     admits a caller's own bearer for 127.0.0.1 only, and this is the one
     place that has a reason to — the token may have come from a file
-    named on the command line rather than the store."""
+    named on the command line rather than the store. net.py sends it to
+    127.0.0.1 past every proxy (net._LOCAL_OPENER)."""
+    if not app_is_here():
+        return False
     try:
         import net
 
