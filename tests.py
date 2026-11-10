@@ -40560,19 +40560,25 @@ def test_models_state_and_source_on_an_installed_copy():
 
 
 def test_models_portable_mode_untouched():
-    """The checkout and a portable copy (D4): the hub name goes to the
-    loader as it always did, no folder is looked at, env() sets nothing,
-    and the step is never wanted."""
+    """The checkout and a portable copy (D4): with nothing in the global
+    cache the hub name goes to the loader as it always did, no folder of
+    models.py's is looked at, env() sets nothing, and the step is never
+    wanted. (A model the cache HAS is its folder:
+    test_a_model_on_disk_loads_with_no_network.)"""
+    import huggingface_hub.constants as hub_constants
     import models
 
     class _NoDisk:
         def __truediv__(self, other):
             raise AssertionError(f"MODELS_DIR was touched: {other}")
 
-    with _patched(paths, "PORTABLE", True), _patched(paths, "MODELS_DIR", _NoDisk()):
+    empty = tempfile.mkdtemp(prefix="deskit-hubcache-")
+    with _patched(paths, "PORTABLE", True), _patched(paths, "MODELS_DIR", _NoDisk()), \
+            _patched(hub_constants, "HF_HUB_CACHE", empty):
         assert models.source("ivrit-ai/whisper-large-v3-turbo-ct2") == "ivrit-ai/whisper-large-v3-turbo-ct2"
         assert models.env() == {}
         assert not models.wanted(config_mod.Config())
+    shutil.rmtree(empty, ignore_errors=True)
     assert paths.PORTABLE, "this suite runs in the checkout"
     before = dict(os.environ)
     try:
@@ -40581,6 +40587,92 @@ def test_models_portable_mode_untouched():
     finally:
         os.environ.clear()
         os.environ.update(before)
+
+
+def test_a_model_on_disk_loads_with_no_network():
+    """The 2026-11-09 footprint audit, F3: in the checkout the English
+    detector was handed to WhisperModel by its hub NAME, and faster-whisper
+    then asked huggingface.co for the revision at every load although
+    every file was on disk — 30 GETs in app.log over 2026-10-23..11-08,
+    none of them through net.py. Now a model the global cache holds whole
+    is handed over as its snapshot FOLDER, which is the branch of
+    WhisperModel.__init__ that never calls download_model; the lookup
+    itself is local_files_only. Nothing here may touch the Hub's HTTP
+    client. A model the cache does not have (or has in part) is still the
+    name: the download it always was. An installed copy was offline
+    already — its verified folder and HF_HUB_OFFLINE
+    (test_models_state_and_source_on_an_installed_copy)."""
+    import inspect
+
+    import faster_whisper
+    import faster_whisper.transcribe as fw_transcribe
+    import httpx
+    import huggingface_hub.constants as hub_constants
+    import models
+    import transcribers.local_whisper as lw
+
+    # the library's own order: a folder is loaded, only a name downloads
+    init = inspect.getsource(fw_transcribe.WhisperModel.__init__)
+    assert init.index("os.path.isdir(model_size_or_path)") < init.index("download_model("), \
+        "faster-whisper no longer loads a folder before it looks at the Hub"
+
+    tried: list = []
+
+    def refuse(self, request, *a, **k):
+        tried.append(str(request.url))
+        raise AssertionError(f"the Hub was asked: {request.url}")
+
+    built: list = []
+
+    class _FakeModel:
+        def __init__(self, model, device, compute_type, **kw):
+            built.append(model)
+
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+        def detect_language(self, *a, **k):
+            return "he", 1.0, [("he", 1.0)]
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-hubcache-"))
+    try:
+        commit = "c" * 40
+        store = tmp / "models--deskit-test--cached-ct2"
+        snap = store / "snapshots" / commit
+        snap.mkdir(parents=True)
+        (store / "refs").mkdir()
+        (store / "refs" / "main").write_text(commit, "utf-8")
+        for name in ("config.json", "model.bin", "tokenizer.json",
+                     "vocabulary.json", "preprocessor_config.json"):
+            (snap / name).write_bytes(b"{}")
+        partial = tmp / "models--deskit-test--partial-ct2"
+        (partial / "snapshots" / commit).mkdir(parents=True)
+        (partial / "refs").mkdir()
+        (partial / "refs" / "main").write_text(commit, "utf-8")
+        (partial / "snapshots" / commit / "config.json").write_bytes(b"{}")
+        with _patched(paths, "PORTABLE", True), \
+                _patched(hub_constants, "HF_HUB_CACHE", str(tmp)), \
+                _patched(httpx.Client, "send", refuse), \
+                _patched(faster_whisper, "WhisperModel", _FakeModel), \
+                _patched(lw, "_register_cuda_dlls", lambda: None):
+            assert Path(models.source("deskit-test/cached-ct2")).resolve() == snap.resolve()
+            assert models.source("deskit-test/partial-ct2") == "deskit-test/partial-ct2", \
+                "a snapshot without model.bin is the download it always was"
+            assert models.source("deskit-test/not-here") == "deskit-test/not-here"
+            assert models.source("large-v3") == "large-v3", "a size name is the Hub's"
+            assert models.source(str(snap)) == str(snap), "a folder of the person's own"
+            # the English detector's load, the one that knocked every start
+            t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+            t.device = "cpu"
+            t._load("deskit-test/cached-ct2")
+            # and the Hebrew model by name, through the whole constructor
+            lw.LocalWhisperTranscriber("deskit-test/cached-ct2", "he",
+                                       device="cpu", english_model="")
+        assert [Path(b).resolve() for b in built] == [snap.resolve()] * 2, built
+        assert all(os.path.isdir(b) for b in built), "a name reached WhisperModel"
+        assert tried == [], tried
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_models_env_is_set_on_an_installed_copy():
@@ -40797,9 +40889,11 @@ def test_models_partial_never_loads():
             assert built == [str(e.folder)], built
             assert t._english is None, "an absent detector is Hebrew-only, not a download"
             assert transcribers.get_transcriber(cfg).name == "local"
-        # the checkout: the name, as always
+        # the checkout with nothing in the cache: the name, as always
+        import huggingface_hub.constants as hub_constants
         with _patched(faster_whisper, "WhisperModel", _FakeModel), \
-                _patched(lw, "_register_cuda_dlls", lambda: None):
+                _patched(lw, "_register_cuda_dlls", lambda: None), \
+                _patched(hub_constants, "HF_HUB_CACHE", str(tmp / "no-hub-cache")):
             built.clear()
             lw.LocalWhisperTranscriber("ivrit-ai/whisper-large-v3-turbo-ct2", "he", english_model="")
             assert built == ["ivrit-ai/whisper-large-v3-turbo-ct2"], built
