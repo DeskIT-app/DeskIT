@@ -3252,7 +3252,10 @@ class ReviewCard(HintCard):
         if self._up is not None and self._up.get("id") == sid:
             return False                  # the one on screen, told twice
         self._waiting = [c for c in self._waiting if c.get("id") != sid]
-        if len(self._waiting) < self.WAIT_MAX:
+        # With nothing up, the head of the line is the next card and not
+        # one that waits behind it: WAIT_MAX is counted behind the card.
+        room = self.WAIT_MAX + (1 if self._up is None else 0)
+        if len(self._waiting) < room:
             self._waiting.append(item)
         else:
             # Not lost: review.Store.add put it in the pile before the

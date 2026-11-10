@@ -1708,19 +1708,22 @@ exactly what classic did.
   `main.py`; it must not import `overlay.py`.
   **THE HUSH IS ONLY HALF WIRED, AND THIS IS THE HONEST STATE OF IT.**
   `main.py::_hush_overlays` calls `hush()` on the notification card, the
-  review card and the hint card, but only the NOTIFICATION card obeys on
-  the path that actually runs. `skin.on()` is true on this machine, so
-  all three take their glass loops, and only `skin\notify.py` reads the
-  flag; `skin\hint.py` and `skin\review.py` do not, and the hint card's
-  Tk loop does not either. Both of those cards take clicks on glass
+  review card and the hint card, but only the NOTIFICATION card obeys it
+  whole on the path that actually runs. `skin.on()` is true on this
+  machine, so all three take their glass loops. `skin\notify.py` reads
+  the flag. `skin\review.py` reads it since 2026-11-10 for two things
+  only: no review card is MAPPED while it is set (the card's line would
+  otherwise bring the next one up mid-drag every time one left) and the
+  clock waits; a review card already up stays where it is, under the
+  selector. `skin\hint.py` does not read it, and the hint card's Tk loop
+  does not either. The hint card takes clicks on glass
   (`HTCLIENT`/`HTCAPTION`), so one arriving mid-drag still maps over the
   selector and eats the drag. That is NOT a regression — the affinity
-  flag never touched z-order or hit-testing, so they could always do it —
-  but it is an unfinished mitigation, and one artefact is new: those two
-  are now in the frozen backdrop AND can still map live, so the owner can
+  flag never touched z-order or hit-testing, so it could always do it —
+  but it is an unfinished mitigation, and one artefact is new: it is now
+  in the frozen backdrop AND can still map live, so the owner can
   briefly see the same card twice. Finishing it means reading `_hushed`
-  in `skin\hint.py` and `skin\review.py`. Do not write it up as done
-  until it is.
+  in `skin\hint.py`. Do not write it up as done until it is.
   **The one exemption is the clip bar** (`ClipBar._build` and
   `_build_frame`), and the line is STILL versus MOVING, not ours versus
   theirs. A screenshot has an instant to freeze; a recording does not, so
