@@ -29,7 +29,8 @@ import kotlin.concurrent.thread
  * What opens from the icon: a small home, not a form.
  *
  * Top to bottom — a pill when the PC holds a newer build; the state of the
- * link to the PC as a lamp and a word; only the set-up steps that are left;
+ * link to the PC as a lamp and a word, or, while this phone's join waits, the
+ * code to compare and its press; only the set-up steps that are left;
  * the second reading's proposals while any wait; and the last things you
  * said from this phone, a tap to copy.
  * Everything that is a setting is behind the one Settings button. It is
@@ -55,6 +56,20 @@ class HomeActivity : Activity() {
     /** The account's line among the steps, as the last look left it. */
     private var accountStep = R.string.step_sign_in
     private var accountDone = false
+    /** The link's card, which stands aside while the code is shown. */
+    private lateinit var stateCard: View
+    /**
+     * The code screen's own card while this phone's join waits, null otherwise: the
+     * code where the person looks, not behind a step (M17).
+     */
+    private var codeCard: View? = null
+    /** What [codeCard] shows: a poll that finds the same draws nothing, and takes no focus. */
+    private var codeDrawn = ""
+    /** The code a press is out on: a look that left before the press does not undo it. */
+    private var pressing = ""
+    private var resumed = false
+    /** While the join waits, Home looks again as the code screen does, and only while it is up. */
+    private val lookAgain = Runnable { lookAtAccount() }
     /** [Traces.wipes] as of what this page last drew. */
     private var traces = Traces.wipes
     /**
@@ -167,6 +182,7 @@ class HomeActivity : Activity() {
         lines.addView(stateLine)
         state.addView(lines)
         col.addView(state)
+        stateCard = state
 
         // The steps, while one is still left.
         stepsCard = Skin.card(this)
@@ -185,6 +201,7 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         Account.settle(this)
         traces = Traces.wipes
         accountDone = Lock.holdsKey(this)
@@ -196,7 +213,9 @@ class HomeActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        resumed = false
         col.removeCallbacks(again)
+        col.removeCallbacks(lookAgain)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -212,24 +231,71 @@ class HomeActivity : Activity() {
         check()
     }
 
-    /** Where the account stands, on a thread: the first step's words and dot. */
+    /** Where the account stands, on a thread: the first step's words and dot, or the code. */
     private fun lookAtAccount() {
+        col.removeCallbacks(lookAgain)
         thread {
             val st = Lock.look(this)
-            runOnUiThread { redrawIfWiped() }
-            // No answer, or Keystore said no: that says nothing about the
-            // account, so the step keeps its words. The page says what is wrong.
-            if (st is Lock.State.NotNow || st is Lock.State.Trouble) return@thread
+            runOnUiThread { account(st) }
+        }
+    }
+
+    /** What a look or a press found. On the main thread. */
+    private fun account(st: Lock.State) {
+        redrawIfWiped()
+        // No answer, or Keystore said no: that says nothing about the account, so
+        // the step keeps its words and a code on screen stays. The page says what is wrong.
+        if (st !is Lock.State.NotNow && st !is Lock.State.Trouble) {
+            val had = codeCard != null
+            accountDone = st is Lock.State.Ready
+            accountStep = when (st) {
+                is Lock.State.SignedOut, is Lock.State.Ready -> R.string.step_sign_in
+                is Lock.State.NoLock -> R.string.no_lock_title
+                is Lock.State.Changed -> R.string.step_changed
+                is Lock.State.Declined -> R.string.declined_title
+                else -> R.string.step_approve
+            }
+            showCode(st as? Lock.State.Waiting)
+            buildSteps()
+            if (had && codeCard == null) check(quietly = true)   // the join is done, or gone
+        }
+        if (codeCard != null && resumed) col.postDelayed(lookAgain, Lock.POLL_MS)
+    }
+
+    /**
+     * While this phone's join waits, Home's first row is the code screen's own card
+     * ([AccountScreens.waitingCard]), and the link's card stands aside: there is no
+     * PC to reach before the join is done.
+     */
+    private fun showCode(waiting: Lock.State.Waiting?) {
+        // A look that left before the press reads the press as not yet made.
+        val st = if (waiting != null && waiting.code == pressing && !waiting.pressed)
+            Lock.State.Waiting(waiting.code, waiting.email, waiting.word, true) else waiting
+        val key = if (st == null) "" else "${st.code}:${st.word}:${st.pressed}"
+        if (key == codeDrawn) return
+        codeDrawn = key
+        codeCard?.let { col.removeView(it) }
+        codeCard = null
+        if (st == null) {
+            stateCard.visibility = View.VISIBLE
+            return
+        }
+        val card = AccountScreens(this).waitingCard(st.code, st.word, st.pressed) { same(st) }
+        stateCard.visibility = View.GONE
+        col.addView(card, col.indexOfChild(stateCard))
+        codeCard = card
+    }
+
+    /** The code screen's press, on the code shown: [Lock.sameCode], answered at once on screen. */
+    private fun same(st: Lock.State.Waiting) {
+        pressing = st.code
+        showCode(Lock.State.Waiting(st.code, st.email, st.word, true))
+        col.removeCallbacks(lookAgain)
+        thread {
+            val after = Lock.sameCode(this, st.code)
             runOnUiThread {
-                accountDone = st is Lock.State.Ready
-                accountStep = when (st) {
-                    is Lock.State.SignedOut, is Lock.State.Ready -> R.string.step_sign_in
-                    is Lock.State.NoLock -> R.string.no_lock_title
-                    is Lock.State.Changed -> R.string.step_changed
-                    is Lock.State.Declined -> R.string.declined_title
-                    else -> R.string.step_approve
-                }
-                buildSteps()
+                pressing = ""
+                account(after)
             }
         }
     }
@@ -345,7 +411,8 @@ class HomeActivity : Activity() {
     private fun buildSteps() {
         stepsCard.removeAllViews()
         val steps = ArrayList<Triple<String, Boolean, () -> Unit>>()
-        steps.add(Triple(getString(accountStep), accountDone) {
+        // While the code is shown, the card is this step.
+        steps.add(Triple(getString(accountStep), accountDone || codeCard != null) {
             startActivity(Intent(this, AccountActivity::class.java))
         })
         steps.add(Triple(getString(R.string.step_mic), hasMic()) {

@@ -66,9 +66,15 @@ def fresh() -> fake_pc.FakeAccount:
 
 def to_account_page() -> None:
     drive.home()
-    # the account is the first step, whatever its words are
-    drive.tap(r"^(Sign in with Google|Approve this phone|Open DeskIT on your PC"
-              r"|Your account's lock changed|Your PC said Not now)$", 20)
+    # The account is the first step, whatever its words are. While this phone's join
+    # waits, Home carries the code itself, and the code screen is behind Settings.
+    step = (r"^(Sign in with Google|Approve this phone|Open DeskIT on your PC"
+            r"|Your account's lock changed|Your PC said Not now)$")
+    if re.match(CODE, drive.wait(f"{step}|{CODE}", 20)["text"]):
+        to_settings()
+        drive.tap("^Continue$", 15)
+    else:
+        drive.tap(step, 10)
 
 
 def to_settings() -> None:
@@ -688,8 +694,9 @@ def flow_forgotten_awake():
         drive.die()
         acct.write_forgotten([{"device": row["id"], "cert": fp, "at": fake_pc.now_iso()}])
         drive.home()
-        drive.wait("^Approve this phone$", 25)
-        nothing_on_home("found itself on the list")
+        # It asks to join again at once, so Home shows that request's code.
+        drive.wait(CODE, 25)
+        nothing_on_home("found itself on the list", CODE)
         no_traces(acct, "found itself on the list")
         check("the recordings go with the key", "a.wav" not in recordings())
         check("and the key is gone", "account_key.bin" not in sealed_files())
@@ -2059,6 +2066,56 @@ def flow_same_code():
         acct.approve(req["id"])
         drive.wait("This phone is ready", 20)
         check("the Approve after the press takes the key", "account_key.bin" in sealed_files())
+    finally:
+        acct.stop()
+
+
+def flow_home_code():
+    """The code where he looks (M17): while this phone's join waits, Home's first row
+    is the code screen's own card, its Same code is the code screen's press, and the
+    card goes by itself once the join is done. Both orders, as on the code screen."""
+    acct = fresh()
+    try:
+        sign_in(acct)
+        code = drive.wait(CODE, 30)["text"]          # the code screen, as the sign-in leaves it
+        back()                                       # and Home
+        drive.wait("^Settings$", 15)
+        check("Home shows the code that waits", drive.wait(f"^{code}$", 20) is not None)
+        check("asked as on the code screen", drive.find(r"^Same code on your PC\?$") is not None,
+              drive.screen()[:300])
+        check("with no Not connected yet beside it, and no step pointing at it",
+              drive.find(NOT_LINKED) is None and drive.find("^Approve this phone$") is None,
+              drive.screen()[:300])
+        drive.shot("home_code")
+        req = acct.requests()[-1]
+
+        # the press on Home first, the Approve after
+        drive.tap("^Same code$", 10)
+        check("pressed on Home, the card says what is left",
+              drive.wait("Press Approve on your PC", 10) is not None)
+        check("and offers no second press", drive.find("^Same code$") is None, drive.screen()[:300])
+        acct.approve(req["id"])
+        check("the Approve after Home's press takes the key",
+              until(lambda: "account_key.bin" in sealed_files(), 30), sealed_files())
+        check("and Home lets the card go by itself", until(lambda: drive.find(f"^{code}$") is None, 20),
+              drive.screen()[:300])
+    finally:
+        acct.stop()
+    acct = fresh()
+    try:
+        sign_in(acct)
+        code = drive.wait(CODE, 30)["text"]
+        back()
+        drive.wait(f"^{code}$", 20)
+
+        # the Approve first, the press on Home after
+        acct.approve(acct.requests()[-1]["id"])
+        time.sleep(7)
+        check("an Approve alone is not enough, on Home either", "account_key.bin" not in sealed_files())
+        drive.tap("^Same code$", 10)
+        check("Home's press after the Approve takes the key",
+              until(lambda: "account_key.bin" in sealed_files(), 30), sealed_files())
+        check("and the card goes", until(lambda: drive.find(f"^{code}$") is None, 20), drive.screen()[:300])
     finally:
         acct.stop()
 
