@@ -77,6 +77,8 @@ class Pc:
         self.arrived = threading.Event()
         self.model_off = False
         self.asked_off = 0
+        #: A sentence the PC answers every dictation with, as main.py raises its own.
+        self.fail: str | None = None
         self.review: list[dict] = []
         self.decided: list[tuple[str, str]] = []
         self.routes = server_mod.Routes(
@@ -93,9 +95,11 @@ class Pc:
         if self.model_off:
             self.asked_off += 1
             raise RuntimeError("The speech model is off. Start it on the PC.")
+        if self.fail is not None:
+            raise RuntimeError(self.fail)
         self.heard.append(wav)
         self.last_at = time.perf_counter()
-        return self.text, "fake", None
+        return (self.text(wav) if callable(self.text) else self.text), "fake", None
 
     def _translate(self, text: str):
         return "in-english", "fake"
@@ -193,6 +197,60 @@ def tap_status() -> None:
     drive.shell("input", "tap", x, y)
 
 
+#: The line's few words for a dictation nobody answered.
+NO_ANSWER = "Your PC didn't answer"
+
+
+def row() -> dict:
+    """The keyboard's line as it stands: its words, and whether Send again and the X
+    are up, and whether Send again's word is cut."""
+    out = status()
+    words = re.search(r"status=(.*?) reachable=", out)
+    touch = re.search(r"touch=(\d+)", out)
+    board = re.search(r"board=(\d+)", out)
+    mic = re.search(r"mic=(\d+)", out)
+    return {"status": words.group(1) if words else "", "send": "send=true" in out,
+            "drop": "drop=true" in out, "cut": "cut=true" in out, "raw": out,
+            "touch": int(touch.group(1)) if touch else 0, "board": int(board.group(1)) if board else 0,
+            "ellipsis": "ellipsis=true" in out, "mic": int(mic.group(1)) if mic else 0}
+
+
+def row_is(words: str, *, send: bool = True) -> bool:
+    """The line ends in [words], with the X, and with Send again or without it."""
+    r = row()
+    return r["status"].endswith(words) and r["send"] == send and r["drop"]
+
+
+def tap_key(name: str) -> None:
+    """A real tap on one of the line's keys, where the keyboard says it is."""
+    x, y = spot(name)
+    drive.shell("input", "tap", x, y)
+
+
+def send_again() -> None:
+    tap_key("sendKey")
+
+
+def drop_waiting() -> None:
+    tap_key("dropKey")
+
+
+def back_up(pc: "Pc") -> None:
+    """The PC up again, and the phone with it: a door that comes back can land on
+    another port, and the phone reads the account's rows at most every 30 s
+    (Link.READ_EVERY_MS), so a press made at once can find nobody yet."""
+    pc.up()
+    assert until(lambda: "nobody" not in ask("reach"), 45), "the phone never found the PC again"
+
+
+def private_field() -> None:
+    """The keyboard up on a password field."""
+    drive.shell("am", "start", "-n", f"{PKG}/.FieldProbe", "--ez", "private", "true")
+    assert until(lambda: "pending" in fa.told("--es", "ime", "read"), 20), "no keyboard came up"
+    assert until(lambda: "private=true" in status(), 15), "the keyboard never saw a private field"
+    time.sleep(1)
+
+
 def hold_and_say(seconds: float = 2.6) -> None:
     """A real press, held and let go: the real recorder, with a voice the emulator
     has not got. Blocks until the finger is up. The voice is the probe's, put on the
@@ -228,7 +286,7 @@ def spool_empty() -> bool:
 
 
 def job() -> None:
-    """The system gives the background its turn: a network has come."""
+    """The system gives the sweep its turn, now: the hour of whatever waits."""
     drive.shell("cmd", "jobscheduler", "run", "-f", PKG, "1", check=False)
 
 
@@ -330,7 +388,7 @@ def flow_other_doors():
 
 def flow_killed_between():
     """The process dies with a recording on disk and nothing sent: nothing is lost,
-    and it lands in Said with a notification, the field long gone."""
+    nothing goes by itself, and the keyboard offers it at the next open."""
     acct = fa.fresh()
     try:
         real_join(acct)
@@ -338,15 +396,32 @@ def flow_killed_between():
         drive.shell("pm", "grant", PKG, "android.permission.POST_NOTIFICATIONS", check=False)
         pc.down()
         check("a recording goes on the disk first", "kept=true" in ask("keep"))
+        out = ask("job")
+        check("and its hour's sweep is asked for, with no network to wait for",
+              "job=SpoolSweep" in out and "network=0" in out, out)
         drive.die()
         check("the process is gone", not drive.pid())
         check("and the recording is not", until(lambda: len(fa.recordings().split()) == 1, 5),
               fa.recordings())
         pc.up()
-        job()
-        check("the next link sends it, with nobody in front", until(lambda: bool(pc.heard), 20))
-        check("it lands in Said", until(lambda: SENTENCE in said(), 10), said()[:300])
-        check("with a notification", until(lambda: SENTENCE in drive.notifications(), 10))
+        job()                                    # the sweep, a PC up and a network there
+        time.sleep(3)
+        check("the sweep sends nothing", not pc.heard and not pc.arrived.is_set())
+        check("and inside the hour it deletes nothing", len(fa.recordings().split()) == 1,
+              fa.recordings())
+        drive.home()
+        drive.wait("^Connected$", 25)
+        time.sleep(2)
+        check("Home, finding the PC, sends nothing either", not pc.heard)
+        fa.back()
+        field()
+        check("the keyboard offers it, and says nothing it does not know",
+              until(lambda: row_is("Not sent"), 15), status())
+        send_again()
+        check("a press sends it", until(lambda: len(pc.heard) == 1, 20))
+        check("into the field the keyboard is on", until(lambda: SENTENCE in in_field(), 10),
+              in_field()[:300])
+        check("with no notification", SENTENCE not in drive.notifications())
         check("and the spool has let it go", until(lambda: not fa.recordings().split(), 10),
               fa.recordings())
 
@@ -354,7 +429,6 @@ def flow_killed_between():
         pc.heard.clear()
         pc.hold.clear()
         pc.arrived.clear()
-        field()
         hold_and_say()
         check("on its way to the PC", pc.arrived.wait(15))
         drive.die()
@@ -363,7 +437,12 @@ def flow_killed_between():
         check("the phone does not know that, and keeps it", len(fa.recordings().split()) == 1,
               fa.recordings())
         job()
-        check("so it goes again: a duplicate at the PC, and no word lost",
+        time.sleep(2)
+        check("still nothing goes by itself", len(pc.heard) == 1)
+        field()
+        check("the keyboard offers it again", until(lambda: row_is("Not sent"), 15), status())
+        send_again()
+        check("so a press sends it again: a duplicate at the PC, and no word lost",
               until(lambda: len(pc.heard) == 2, 20))
         check("and the spool lets it go once answered", until(lambda: not fa.recordings().split(), 10))
     finally:
@@ -373,8 +452,8 @@ def flow_killed_between():
 
 
 def flow_pc_off():
-    """A PC that is off: the sentence that is true, the recording kept, and the text
-    when the PC comes back."""
+    """A PC that is off: why in a few words, Send again into the field the person is
+    in, a second no seen as one, and nothing that goes by itself."""
     acct = fa.fresh()
     try:
         real_join(acct)
@@ -383,32 +462,76 @@ def flow_pc_off():
         field()
         hold_and_say()
         check("up, it lands", until(lambda: len(pc.heard) == 1, 15))
+        board = row()["board"]
         pc.down()
         hold_and_say()
-        check("the keyboard says what is true, and offers the tap",
-              says(UNREACHED + ".*tap to retry"), status())
+        check("the keyboard says why in a few words, with Send again and the X",
+              until(lambda: row_is(NO_ANSWER), 25), status())
+        r = row()
+        check("each a thumb's 48dp to the touch, and the keyboard no taller for them",
+              r["touch"] >= 48 and abs(r["board"] - board) <= 1, f"touch {r['touch']} board {r['board']} was {board}")
         drive.shot("door_unreached")
         check("the lamp goes grey with it", "reachable=false" in status(), status())
         check("and the recording stays", until(lambda: "waiting=1" in spooled(), 5), spooled())
-        pc.up()
-        tap_status()
-        check("a tap sends it", until(lambda: len(pc.heard) == 2, 20))
+
+        # A second press with the PC still off: seen going, and seen coming back no.
+        mic = r["mic"]
+        seen = []
+        send_again()
+        check("a press is seen on its way", until(
+            lambda: (lambda x: seen.append(x) or x["status"].startswith("Sending"))(row()), 5, 0.1),
+              status())
+        check("and the mic holds still under it", seen and seen[-1]["mic"] == mic,
+              f"mic {seen[-1]['mic'] if seen else '?'} was {mic}")
+        check("and a second no comes back as one: why, and Send again again",
+              until(lambda: row_is(NO_ANSWER), 25), status())
+        check("nothing reached the PC, and the recording still waits",
+              len(pc.heard) == 1 and "waiting=1" in spooled(), spooled())
+
+        back_up(pc)
+        pc.hold.clear()
+        pc.arrived.clear()
+        send_again()
+        check("a press sends it", pc.arrived.wait(20))
+        time.sleep(4)                            # past the line's 3 s, with the one that waited in hand
+        r = row()
+        check("and the mic holds still while it is on its way", r["mic"] == mic
+              and r["status"].startswith("Sending"), f"mic {r['mic']} was {mic}: {r['status']}")
+        pc.hold.set()
+        check("it lands", until(lambda: len(pc.heard) == 2, 20))
         check("into the same field", until(lambda: in_field().count(SENTENCE) >= 2, 10), in_field()[:300])
         check("and the spool lets it go", until(spool_empty, 10), spooled())
+        check("and the line is the keyboard's own again", until(lambda: not row()["drop"], 10), status())
 
+        # Off again, and the field gone before anybody pressed.
         pc.down()
         hold_and_say()
-        check("off again, the same sentence", says(UNREACHED), status())
+        check("off again, the same few words", until(lambda: row_is(NO_ANSWER), 25), status())
         drive.shell("input", "keyevent", "4")    # the keyboard away
         drive.shell("input", "keyevent", "4")    # and the field with it
         time.sleep(0.5)
         check("the recording outlives its field", until(lambda: "waiting=1" in spooled(), 5), spooled())
-        pc.up()
+        back_up(pc)
         job()
-        check("it lands in Said when the PC is back", until(lambda: said().count(SENTENCE) >= 3, 20),
-              said()[:300])
-        check("with a notification, on the road's own words", until(
-            lambda: SENTENCE in drive.notifications(), 10))
+        drive.home()
+        check("Home says Connected", drive.wait("^Connected$", 25) is not None)
+        time.sleep(2)
+        check("and neither Home nor the sweep sent it: not at the PC, not in Said, not on the shade",
+              len(pc.heard) == 2 and said().count(SENTENCE) == 2 and SENTENCE not in drive.notifications(),
+              f"{len(pc.heard)} {said()[:200]}")
+        fa.back()
+        field()                                  # another field, later
+        # Its words are the last try's, or none once a knock has found the PC: the knock
+        # is at most once a minute, so either may be on the line here.
+        check("opened later, the keyboard offers it",
+              until(lambda: row_is("Not sent") or row_is(NO_ANSWER), 15), status())
+        drive.shot("door_waiting_later")
+        send_again()
+        check("and a press puts it where the person is now", until(lambda: SENTENCE in in_field(), 15),
+              in_field()[:300])
+        check("with no notification", SENTENCE not in drive.notifications())
+        fa.back()
+        fa.back()
         drive.home()
         check("Home says Connected", drive.wait("^Connected$", 25) is not None)
         pc.down()
@@ -488,7 +611,13 @@ def flow_wrong_pin():
         drive.home()
         drive.wait("^Connected$", 30)
         check("the true row, and the phone takes the new pin", True)
-        check("what waited goes", until(lambda: len(pc.heard) == n + 1, 20))
+        time.sleep(2)
+        check("Home sends nothing of what waits", len(pc.heard) == n)
+        fa.back()
+        field()
+        check("the keyboard offers it", until(lambda: row()["send"], 15), status())
+        send_again()
+        check("and a press sends it to the true door", until(lambda: len(pc.heard) == n + 1, 20))
     finally:
         acct._door_pc.down()
         acct.stop()
@@ -548,17 +677,23 @@ def flow_every_road_out():
         pc.hold.clear()
         pc.arrived.clear()
         ask("keep")
-        drive.tap("Connected|Can't reach")       # Home asks again
-        check("a send out of the spool is on its way", pc.arrived.wait(20))
+        fa.back()
+        field()
+        check("the keyboard offers what waits", until(lambda: row()["send"], 15), status())
+        send_again()
+        check("a press sends it on its way", pc.arrived.wait(20))
         fa.told("--es", "wipe", "1")
         check("the wipe took the addresses", "link_routes.bin" not in fa.sealed_files(), fa.sealed_files())
         pc.hold.set()
         time.sleep(1.5)
         check("what comes back lands nowhere: not in Said", SENTENCE not in said(), said()[:300])
         check("not on the shade", SENTENCE not in drive.notifications())
+        check("not in the field", SENTENCE not in in_field(), in_field()[:200])
         check("and the addresses stay gone", "link_routes.bin" not in fa.sealed_files(), fa.sealed_files())
         check("a recording that went out with the wipe is still here for the same person",
               len(fa.recordings().split()) == 1, fa.recordings())
+        fa.back()
+        fa.back()
 
         # Sign out: everything.
         drive.kill()
@@ -757,30 +892,54 @@ def zeros(name: str, size: int) -> None:
 
 
 def flow_spool_rules():
-    """The cap and the week, on the phone's own disk."""
+    """The hour and the cap, on the phone's own disk, and a sweep that only deletes."""
     acct = fa.fresh()
     try:
         real_join(acct)
         pc = acct._door_pc
-        pc.down()
-        now = int(time.time() * 1000)
+        now = fa.phone_ms()
+        minute = 60_000
         drive.as_app("mkdir", "-p", "files/spool")
-        old = f"{now - 8 * 24 * 3600 * 1000:013d}-aaaaaaaa.wav"
-        kept = f"{now - 6 * 24 * 3600 * 1000:013d}-bbbbbbbb.wav"
+        old = f"{now - 61 * minute:013d}-aaaaaaaa.wav"
+        kept = f"{now - 50 * minute:013d}-bbbbbbbb.wav"
         for name in (old, kept):
             zeros(name, 40_000)
-        ask("drain")
-        files = fa.recordings().split()
-        check("past the week it goes", old not in files, str(files))
-        check("a day short of it stays", kept in files, str(files))
+        ask("sweep")                             # the sweep asked for, and nothing pruned yet
+        fa.log_forget()
+        job()
+        check("past its hour it goes, by the sweep", until(lambda: old not in fa.recordings(), 15)
+              and until(lambda: "the sweep took 1" in fa.log_so_far(), 10), fa.recordings())
+        check("ten minutes short of it stays", kept in fa.recordings().split(), fa.recordings())
+        check("and the sweep sent nothing, the PC up and all", not pc.heard and not pc.arrived.is_set())
+        out = ask("job")
+        wait = int(re.search(r"wait=(\d+)", out).group(1)) if "wait=" in out else -1
+        check("the next sweep is the next one's hour, and asks for no network",
+              "job=SpoolSweep" in out and "network=0" in out and 8 * minute < wait <= 10 * minute, out)
+        late = f"{now - 61 * minute:013d}-eeeeeeee.wav"
+        zeros(late, 40_000)
+        drive.shell("input", "keyevent", "3")    # away first: a Home already in front is not opened
+        time.sleep(1)
+        drive.home()
+        check("Home's open takes one past its hour", until(lambda: late not in fa.recordings(), 10),
+              fa.recordings())
+        fa.back()
+        zeros(late, 40_000)
+        field()
+        check("and so does the keyboard's", until(lambda: late not in fa.recordings(), 10), fa.recordings())
+        fa.back()
+        fa.back()
         for i in range(6):
-            name = f"{now - (5 - i) * 3600 * 1000:013d}-cccccc0{i}.wav"
+            name = f"{now - (5 - i) * minute:013d}-cccccc0{i}.wav"
             zeros(name, 10_000_000)
         out = ask("keep")
         files = fa.recordings().split()
-        check("past 50 MB the oldest goes first, and the keeper is told", "dropped=2" in out, out)
+        check("past 50 MB the oldest goes first, as a net that says nothing on screen",
+              "dropped=2" in out, out)
         check("the oldest two were the two that went", kept not in files
               and not [f for f in files if f.endswith("cccccc00.wav")], str(files))
+        drive.as_app("rm", "-rf", "files/spool")
+        ask("prune")
+        check("with nothing on the disk, no sweep", "job=none" in ask("job"), ask("job"))
     finally:
         acct._door_pc.down()
         acct.stop()
@@ -851,8 +1010,14 @@ def flow_locked():
         check("and it is still in the account", bool(acct.sessions) and "account_key.bin" in fa.sealed_files())
         check("the recording waits", "waiting=1" in spooled(), spooled())
         fa.unlock(pin)
-        ask("drain")
-        check("unlocked, it goes", until(lambda: len(pc.heard) == n + 1, 20))
+        time.sleep(2)
+        check("unlocked, nothing goes by itself", len(pc.heard) == n)
+        field()
+        check("the keyboard offers it", until(lambda: row()["send"], 15), status())
+        send_again()
+        check("and a press sends it", until(lambda: len(pc.heard) == n + 1, 20))
+        fa.back()
+        fa.back()
     finally:
         drive.shell("locksettings", "clear", "--old", pin, check=False)
         acct._door_pc.down()
@@ -1109,6 +1274,221 @@ def flow_timing():
         print(f"      the PC off, until the keyboard says so: {off} ms", flush=True)
         check("measured", UNREACHED in out and port > 0, out)
     finally:
+        acct._door_pc.down()
+        acct.stop()
+
+
+def pc_words() -> dict:
+    """The PC's own sentences as main.py and models.py write them today, read from
+    the files: a change there is a change here."""
+    import ast
+
+    import models as models_mod
+
+    words = {}
+    for node in ast.walk(ast.parse((ROOT / "main.py").read_text("utf-8"))):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in ("MODEL_OFF_WORDS", "ROOM_OFF_WORDS", "LOCK_WORDS")):
+            words[node.targets[0].id] = ast.literal_eval(node.value)
+    words["absent"] = models_mod._WHY["absent"]
+    return words
+
+
+class NotThePc(http.server.ThreadingHTTPServer):
+    """Something at the pasted address that answers 200 with a page of its own, as a
+    portal or a proxy would: not the PC's JSON."""
+
+    def __init__(self):
+        class Page(http.server.BaseHTTPRequestHandler):
+            def _page(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = b"<html><body>Welcome to the network</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = _page
+
+            def log_message(self, *a):
+                pass
+
+        super().__init__(("127.0.0.1", 0), Page)
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def stop(self):
+        self.shutdown()
+        self.server_close()
+
+
+def flow_reasons():
+    """Why, in a few words, for every kind of no a dictation can meet, on the real
+    keyboard: the PC's own sentences as main.py and models.py write them, the
+    phone's own words, the old road's token, an answer that is not the PC's. And
+    a private field, where none of it is offered."""
+    said = pc_words()
+    acct = fa.fresh()
+    old = page = None
+    try:
+        real_join(acct)
+        pc = acct._door_pc
+        field()
+        pc.down()
+        kinds = [
+            ("no_answer", None, NO_ANSWER),
+            ("model_off", said["MODEL_OFF_WORDS"], "The model is off on your PC"),
+            ("model_for_a_game", said["ROOM_OFF_WORDS"].format(name="a game"),
+             "The model is off on your PC"),
+            ("pc_signed_out", said["LOCK_WORDS"], "Your PC is signed out"),
+            ("pc_no_model", said["absent"].format(repo="the model", size="1.6 GB"),
+             "Your PC's speech model isn't ready"),
+            ("pc_error", "", "Your PC answered with error 503"),
+            ("pc_own_words", "the microphone on this PC is busy", "The microphone on this PC is busy"),
+        ]
+        for kind, words, expect in kinds:
+            if words is not None and not pc.door.port:
+                back_up(pc)
+            pc.fail = words
+            hold_and_say()
+            check(f"{kind}: {expect}", until(lambda: row_is(expect), 25), status())
+            drive.shot(f"reason_{kind}")
+            drop_waiting()
+            check(f"{kind}: and the X deletes it", until(
+                lambda: "waiting=0" in spooled() and not row()["drop"], 10), spooled())
+        pc.fail = None
+        check("none of it reached the PC as a dictation", not pc.heard)
+
+        for kind, expect in (("locked", "The phone was locked"),
+                             ("keystore", "The phone's secure storage didn't answer")):
+            fa.told("--es", "ime", f"fail:{kind}")
+            check(f"{kind}: {expect}", until(lambda: row_is(expect), 10), status())
+            drive.shot(f"reason_{kind}")
+            drop_waiting()
+
+        pc.down()
+        old = old_door(pc)
+        fa.told("--es", "url", f"http://10.0.2.2:{old.port}", "--es", "token", "the-wrong-token")
+        hold_and_say()
+        check("token: Your PC refused the token", until(lambda: row_is("Your PC refused the token"), 25),
+              status())
+        drive.shot("reason_token")
+        drop_waiting()
+        page = NotThePc()
+        fa.told("--es", "url", f"http://10.0.2.2:{page.server_port}", "--es", "token", "any")
+        hold_and_say()
+        check("not the PC: Couldn't read the answer", until(lambda: row_is("Couldn't read the answer"), 25),
+              status())
+        drive.shot("reason_unreadable")
+
+        # It waits; a password field offers none of it, and the field after it does again.
+        private_field()
+        r = row()
+        check("a private field: neither Send again nor the X, and the field's own words",
+              not r["send"] and not r["drop"] and "private" in r["status"], r["raw"])
+        fa.back()
+        fa.back()
+        field()
+        check("the next field offers it again", until(lambda: row()["send"], 15), status())
+        drop_waiting()
+    finally:
+        if old:
+            old.stop()
+        if page:
+            page.stop()
+        acct._door_pc.down()
+        acct.stop()
+
+
+def flow_two_waiting():
+    """Two that did not arrive: the line counts them, a press sends them all, oldest
+    first, each at the cursor; one that fails mid-run stops it with what is left; the
+    X deletes everything that waits and sends nothing."""
+    said = pc_words()
+    acct = fa.fresh()
+    try:
+        real_join(acct)
+        pc = acct._door_pc
+        # The PC tells the two apart by their length: the older is the shorter.
+        pc.text = lambda wav: "the-longer-one" if len(wav) > 100_000 else "the-shorter-one"
+        field()
+        pc.down()
+        hold_and_say(2.0)
+        assert until(lambda: row_is(NO_ANSWER), 25), status()
+        hold_and_say(4.0)
+        check("two wait, counted, with why", until(lambda: row_is("2 not sent · " + NO_ANSWER), 25), status())
+        drive.shot("two_waiting")
+        back_up(pc)
+        send_again()
+        check("a press sends them all", until(lambda: len(pc.heard) == 2, 30), str(len(pc.heard)))
+        check("oldest first, each at the cursor", until(
+            lambda: re.search("the-shorter-one.*the-longer-one", in_field()) is not None, 10), in_field()[:300])
+        check("and nothing waits", until(spool_empty, 10), spooled())
+
+        # The first lands, the second meets a model that went off between the two.
+        pc.down()
+        hold_and_say(2.0)
+        assert until(lambda: row_is(NO_ANSWER), 25), status()
+        hold_and_say(4.0)
+        assert until(lambda: row_is("2 not sent · " + NO_ANSWER), 25), status()
+        back_up(pc)
+
+        def then_off(wav):
+            pc.fail = said["MODEL_OFF_WORDS"]
+            return "the-first-of-two"
+        pc.text = then_off
+        send_again()
+        check("one that fails mid-run stops it: what is left, and why as it is now",
+              until(lambda: row_is("The model is off on your PC"), 30), status())
+        check("the first landed", "the-first-of-two" in in_field(), in_field()[:300])
+        check("and one waits", "waiting=1" in spooled(), spooled())
+        pc.fail = None
+
+        # The X takes everything, and sends nothing.
+        pc.down()
+        hold_and_say()
+        assert until(lambda: row_is("2 not sent · " + NO_ANSWER), 25), status()
+        heard = len(pc.heard)
+        drop_waiting()
+        check("the X deletes everything that waits", until(lambda: spool_empty() and not row()["drop"], 10),
+              spooled())
+        pc.up()
+        time.sleep(2)
+        check("and sends nothing", len(pc.heard) == heard)
+    finally:
+        acct._door_pc.down()
+        acct.stop()
+
+
+def flow_small_phone():
+    """A 320dp phone and larger text: the words may wrap, Send again and the X are
+    never cut, and the keyboard still sends."""
+    acct = fa.fresh()
+    try:
+        real_join(acct)
+        pc = acct._door_pc
+        field()
+        pc.down()
+        hold_and_say()
+        assert until(lambda: row_is(NO_ANSWER), 25), status()
+        hold_and_say()
+        assert until(lambda: row_is("2 not sent · " + NO_ANSWER), 25), status()
+        for name, density, scale in (("320dp", "540", "1.0"), ("larger_text", "reset", "1.3"),
+                                     ("320dp_larger_text", "540", "1.3")):
+            drive.shell("wm", "density", density)
+            drive.shell("settings", "put", "system", "font_scale", scale)
+            time.sleep(3)
+            check(f"{name}: why, Send again and the X are there, none of them cut short",
+                  until(lambda: (lambda r: r["send"] and r["drop"] and not r["cut"] and not r["ellipsis"]
+                                 and r["touch"] >= 48 and "not sent" in r["status"])(row()), 20), status())
+            drive.shot(f"row_{name}")
+        back_up(pc)
+        send_again()
+        check("and on the smallest, a press sends them", until(lambda: len(pc.heard) == 2, 30))
+    finally:
+        drive.shell("wm", "density", "reset", check=False)
+        drive.shell("settings", "put", "system", "font_scale", "1.0", check=False)
         acct._door_pc.down()
         acct.stop()
 

@@ -31,8 +31,38 @@
     <string name="field_changed">The text moved on — left it alone</string>
     <string name="cannot_undo">Nothing of mine to undo</string>
     <string name="undone">Removed</string>
-    <!-- %1$s is the failure. The recording is still in memory. -->
-    <string name="tap_to_retry">%1$s — tap to retry</string>
+
+    <!-- A recording that did not reach the PC waits on the keyboard, an hour at
+         most, and goes only on a press, into the field you are in then (the
+         owner, 2026-11-10). The line says why in a few words, and only what the
+         phone knows: a guess is never put as a fact. -->
+    <string name="send_again">Send again</string>
+    <string name="cd_send_again">Send what did not reach your PC</string>
+    <string name="cd_drop_waiting">Delete what did not reach your PC</string>
+    <string name="sending">Sending…</string>
+    <!-- A press sends everything that waits, oldest first. -->
+    <string name="sending_of">Sending %1$d of %2$d…</string>
+    <string name="not_sent">Not sent</string>
+    <string name="not_sent_many">%1$d not sent</string>
+    <!-- %1$d is how many wait, %2$s why the last try came to nothing. -->
+    <string name="not_sent_why">%1$d not sent · %2$s</string>
+    <!-- Why, one kind each. Nobody answered on any road this phone has: -->
+    <string name="why_no_answer">Your PC didn\'t answer</string>
+    <!-- The PC answered that its model is unloaded (Stop in the desk, or room for a game): -->
+    <string name="why_model_off">The model is off on your PC</string>
+    <!-- The PC answered that it has no account signed in: -->
+    <string name="why_signed_out">Your PC is signed out</string>
+    <!-- The PC answered that its model is not downloaded, not finished, or old: -->
+    <string name="why_no_model">Your PC\'s speech model isn\'t ready</string>
+    <!-- The phone could not open what it sealed: locked, or its Keystore not answering. -->
+    <string name="why_locked">The phone was locked</string>
+    <string name="why_keystore">The phone\'s secure storage didn\'t answer</string>
+    <!-- The pasted line's token, refused by the PC it points at: -->
+    <string name="why_token">Your PC refused the token</string>
+    <!-- Something answered, and not with anything the phone could read: -->
+    <string name="why_unreadable">Couldn\'t read the answer</string>
+    <!-- The PC answered with an error and no sentence of its own: -->
+    <string name="why_error">Your PC answered with error %1$d</string>
 
     <!-- A password field is not a place to dictate: the audio and the text
          would both leave the phone, and the text would land in

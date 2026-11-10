@@ -4,6 +4,7 @@ import android.util.Log
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.util.Locale
 
 /**
  * POSTs the audio to the PC and returns its transcript. Every route the PC
@@ -263,6 +264,11 @@ object Transcriber {
             // that refused this phone reads as nothing else from here.
             Log.i("DeskIT", "transcriber: no answer on $path: ${e.javaClass.simpleName}")
             Result.Err(road.unreached, Why.UNREACHED)
+        } catch (e: org.json.JSONException) {
+            // Something answered 2xx with what is not the PC's JSON: a portal's
+            // page, a proxy's. Its own words would be a parser's.
+            Log.i("DeskIT", "transcriber: an answer on $path that is not JSON")
+            Result.Err(UNREADABLE)
         } catch (e: Exception) {
             Result.Err(e.message ?: "failed")
         } finally {
@@ -280,9 +286,43 @@ object Transcriber {
     /** The pasted line's own failure, as it always read. */
     const val BAD_TOKEN = "bad token — check setup"
 
+    /** An answer that was not the PC's JSON. */
+    const val UNREADABLE = "the answer could not be read"
+
     private fun errorFrom(body: String, code: Int): String = try {
         JSONObject(body).optString("error").ifEmpty { "server error $code" }
     } catch (_: Exception) {
         "server error $code"
     }
+}
+
+/**
+ * What a PC's own sentence is about, for the few words the keyboard says of it.
+ * Apart from [Transcriber], so the JVM can hold it with no org.json.
+ */
+object PcWords {
+    enum class About { MODEL_OFF, SIGNED_OUT, NO_MODEL, ERROR, OTHER }
+
+    /**
+     * Read by how the PC opens its sentences: main.py's MODEL_OFF_WORDS and
+     * ROOM_OFF_WORDS, its LOCK_WORDS, models.py's _WHY, and Transcriber's own
+     * "server error N". Anything else is the PC's to say, word for word.
+     */
+    fun about(message: String): About {
+        val m = message.trim().lowercase(Locale.ROOT)
+        return when {
+            m.startsWith("the model is off") ||
+                m.startsWith("the speech model stepped aside") -> About.MODEL_OFF
+            m.startsWith("sign in to use deskit") -> About.SIGNED_OUT
+            m.startsWith("the hebrew model") -> About.NO_MODEL
+            errorCode(m) != null -> About.ERROR
+            else -> About.OTHER
+        }
+    }
+
+    /** N of "server error N", or null. */
+    fun errorCode(message: String): Int? =
+        SERVER_ERROR.matchEntire(message.trim())?.groupValues?.get(1)?.toIntOrNull()
+
+    private val SERVER_ERROR = Regex("server error (\\d{3})")
 }

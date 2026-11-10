@@ -1052,16 +1052,22 @@ object Lock {
     /** The cached rows go: they name the PCs' addresses. A wipe's, and [Traces] calls it. */
     fun dropRows(c: Context) = Sealed.delete(c, ROWS)
 
-    /** How many recordings no PC has yet. Named before Sign out deletes them. */
-    fun recordings(c: Context): Int = Spool.files(c).count()
+    /**
+     * How many recordings no PC has yet. Named before Sign out deletes them, and
+     * never one already past its hour.
+     */
+    fun recordings(c: Context): Int {
+        Spool.prune(c)
+        return Spool.files(c).count()
+    }
 
     /**
      * Recordings no PC has yet are the only copy of those words, so unlike
      * [Traces] they outlive a session that merely ended: a reply lost on a bad
-     * network can end one with nobody having asked, and the same person's next
-     * sign-in sends them on. They go when this phone leaves or learns it was
-     * forgotten, and before another account can reach them: that account's PC
-     * would write them down.
+     * network can end one with nobody having asked, and the same person, signed
+     * in again within the recording's hour, finds it on the keyboard. They go when
+     * this phone leaves or learns it was forgotten, and before another account can
+     * reach them: that account's PC would write them down.
      */
     fun dropRecordings(c: Context) {
         File(c.filesDir, Spool.DIR).deleteRecursively()

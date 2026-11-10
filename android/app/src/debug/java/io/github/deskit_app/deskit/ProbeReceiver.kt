@@ -27,9 +27,14 @@ import kotlin.concurrent.thread
  * road (`--es dictate 1`), which takes the pasted line and no session.
  *
  * And the road to the PC, which a flow cannot reach by what is on screen, every
- * one the real path: `--es link reach|dictate|keep|drain|count|pcs|soft|plant`. The
- * recording is a second of silence, a real WAV, which the PC's real to_wav reads.
+ * one the real path: `--es link reach|dictate|keep|prune|sweep|job|count|pcs|soft|plant`.
+ * The recording is a second of silence, a real WAV, which the PC's real to_wav reads.
  * `try:<port>` is one raw connect on each network, with nothing of ours in the way.
+ * `job` is the sweep JobScheduler holds, as JobScheduler holds it.
+ *
+ * `--es ime fail:locked|keystore` hands the running keyboard the answer a locked
+ * phone's road gives, through its own deliver: the one failure an emulator's
+ * keyboard cannot be in front of for real, because a locked phone shows none.
  */
 class ProbeReceiver : BroadcastReceiver() {
 
@@ -161,7 +166,7 @@ class ProbeReceiver : BroadcastReceiver() {
     private fun link(c: Context, what: String): String = when (what) {
         "reach" -> "reach=" + (Link.reach(c) ?: "nobody")
         "keep" -> Spool.keep(c, silence()).let {
-            Spool.free(it)
+            Spool.free(c, it)
             "kept=${it.file != null} dropped=${it.dropped}"
         }
         "dictate" -> {
@@ -172,12 +177,22 @@ class ProbeReceiver : BroadcastReceiver() {
                     "dictated=${r.text}"
                 }
                 is Transcriber.Result.Err -> {
-                    Spool.free(item)
+                    Spool.free(c, item)
                     "refused=${r.why} ${r.message}"
                 }
             }
         }
-        "drain" -> "more=${Spool.drain(c)}"
+        "prune" -> "gone=${Spool.prune(c)}"
+        "sweep" -> {
+            Spool.sweepLater(c)
+            "asked"
+        }
+        "job" -> {
+            val j = c.getSystemService(android.app.job.JobScheduler::class.java).getPendingJob(1)
+            if (j == null) "job=none"
+            else "job=${j.service.className.substringAfterLast('.')} wait=${j.minLatencyMillis} " +
+                "network=${j.networkType}"
+        }
         "parts" -> {
             // Where a dictation's time goes, one piece at a time.
             fun ms(t: Long) = (System.nanoTime() - t) / 1_000_000
@@ -362,25 +377,56 @@ class ProbeReceiver : BroadcastReceiver() {
             Log.i("DeskIT", "probe: said")
             return
         }
+        if (what.startsWith("fail:")) {
+            // What a locked phone's road answers, through the keyboard's own deliver.
+            val words = Sealed.words(c, Sealed.NotNow("probe", locked = what == "fail:locked"))
+            val item = Spool.keep(c, silence())
+            DictationIme::class.java.getDeclaredMethod("deliver", Transcriber.Result::class.java,
+                                                       SpoolFiles.Item::class.java,
+                                                       Int::class.java, Int::class.java)
+                .apply { isAccessible = true }
+                .invoke(k, Transcriber.Result.Err(words), item, held("session").getInt(k), Traces.wipes)
+            Log.i("DeskIT", "probe: failed")
+            return
+        }
         when (what) {
             "plant" -> {
                 held("pending").set(k, "held-words")
-                held("kept").set(k, SpoolFiles.Item(null, ByteArray(8)))
+                @Suppress("UNCHECKED_CAST")
+                (held("unsaved").get(k) as ArrayList<SpoolFiles.Item>).add(SpoolFiles.Item(null, ByteArray(8)))
             }
             "now" -> comeBack(k, "landed-words", false)
             "late" -> comeBack(k, "late-words", true)
             "loud" -> loud(k)
             "where" -> {
-                Log.i("DeskIT", "probe: ${at(k, "pill")} ${at(k, "status")}")
+                Log.i("DeskIT", "probe: ${at(k, "pill")} ${at(k, "status")} ${at(k, "sendKey")} " +
+                    at(k, "dropKey"))
                 return
             }
             "status" -> {
-                Log.i("DeskIT", "probe: status=${(held("status").get(k) as? android.widget.TextView)?.text}" +
-                    " reachable=${held("reachable").getBoolean(k)} busy=${held("busy").getBoolean(k)}")
+                fun shown(name: String) = (held(name).get(k) as? android.view.View)?.visibility == android.view.View.VISIBLE
+                fun wide(name: String) = shown(name) && (held(name).get(k) as? android.widget.TextView)?.let {
+                    // Cut is when the words want more room than the key was given.
+                    it.paint.measureText(it.text.toString()) + it.paddingLeft + it.paddingRight > it.width + 1
+                } ?: false
+                val line = held("status").get(k) as? android.widget.TextView
+                val d = c.resources.displayMetrics.density
+                fun tall(name: String) = ((held(name).get(k) as? android.view.View)?.height ?: 0) / d
+                // The keyboard is the line's row's parent: how tall it stands, in dp.
+                val board = (line?.parent?.parent as? android.view.View)?.height ?: 0
+                val ellipsis = line?.layout?.let { it.getEllipsisCount(it.lineCount - 1) > 0 } ?: false
+                Log.i("DeskIT", "probe: status=${line?.text}" +
+                    " reachable=${held("reachable").getBoolean(k)} busy=${held("busy").getBoolean(k)}" +
+                    " send=${shown("sendKey")} drop=${shown("dropKey")} cut=${wide("sendKey")}" +
+                    " touch=${minOf(tall("sendKey"), tall("dropKey")).toInt()} board=${(board / d).toInt()}" +
+                    " ellipsis=$ellipsis lines=${line?.lineCount ?: 0}" +
+                    " private=${held("privateField").getBoolean(k)} mic=${tall("pill").toInt()}")
                 return
             }
         }
+        @Suppress("UNCHECKED_CAST")
+        val unsaved = held("unsaved").get(k) as List<SpoolFiles.Item>
         Log.i("DeskIT", "probe: ime pending=${held("pending").get(k) != null} " +
-            "wav=${held("kept").get(k) != null} said=${Prefs.said(c).size}")
+            "wav=${unsaved.isNotEmpty()} said=${Prefs.said(c).size}")
     }
 }

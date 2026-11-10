@@ -203,6 +203,9 @@ class HomeActivity : Activity() {
         super.onResume()
         resumed = true
         Account.settle(this)
+        // A recording's hour is up at whatever opens first.
+        val app = applicationContext
+        thread { Spool.prune(app) }
         traces = Traces.wipes
         accountDone = Lock.holdsKey(this)
         buildSteps()
@@ -336,8 +339,7 @@ class HomeActivity : Activity() {
             }
             val versions = if (reached != null) Link.versions(this) else null
             val pending = if (reached != null) Notify.poll(this) else null
-            if (reached != null) Spool.kick(this)
-            else if (Spool.waiting(this)) Spool.schedule(this)
+            // A recording that did not reach the PC is the keyboard's to offer: Home sends nothing.
             runOnUiThread {
                 if (wipes != Traces.wipes) return@runOnUiThread
                 if (reached == null) {

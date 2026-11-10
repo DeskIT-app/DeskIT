@@ -26,9 +26,9 @@ import android.util.Log
  * and token, which are a key to the PC and would put those proposals back on Home
  * at the next look; and where the PCs are: the addresses that answered and the
  * rows they came from ([Link.forget]). The keyboard holds a transcript waiting for
- * a field and the last recording in hand, and a dictation can be on its way back
- * or out of the spool: all of them read [wipes], in this one process, and let go
- * when it has moved.
+ * a field, the recordings the disk refused and why the last try failed, and a
+ * dictation can be on its way, a fresh one or one sent again: all of them read
+ * [wipes], in this one process, and let go when it has moved.
  *
  * Recordings no PC has yet are not here, because they are the only copy of those
  * words: [Lock.dropRecordings] has the rule. What stays is the phone's own: the

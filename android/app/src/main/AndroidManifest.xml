@@ -89,9 +89,9 @@
             android:name=".ReviewReceiver"
             android:exported="false" />
 
-        <!-- A turn at the recordings no PC has yet, only while there are some. -->
+        <!-- The recordings' hour, only while there are some: it deletes, and never sends. -->
         <service
-            android:name=".SpoolJob"
+            android:name=".SpoolSweep"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 

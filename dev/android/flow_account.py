@@ -221,6 +221,11 @@ def recordings() -> str:
     return drive.as_app("ls", "files/spool", check=False)
 
 
+def phone_ms() -> int:
+    """The phone's own clock, which names its recordings: the host's can be minutes off."""
+    return int(drive.shell("date", "+%s").strip()) * 1000
+
+
 def plant(acct: fake_pc.FakeAccount) -> None:
     told("--es", "say", SAID, "--es", "url", f"http://10.0.2.2:{acct.port}",
          "--es", "token", acct.door_token)
@@ -718,11 +723,15 @@ def flow_sign_out():
         leave_traces(acct)
         recording("a.wav")
         recording("b.wav")
+        past = f"{phone_ms() - 61 * 60_000:013d}-dddddddd.wav"
+        recording(past)                          # past its hour: not one to name
         to_settings()
         drive.wait("^Sign out$", 20)
         drive.tap_scrolling("^Sign out$")
         drive.wait("2 recordings that haven't reached your PC will be deleted", 10)
         check("the recordings are named first", True)
+        check("and one past its hour is not among them: it has gone", past not in recordings(),
+              recordings())
         drive.tap("^Stay signed in$")
         drive.gone("2 recordings", 10)
         check("Stay signed in changes nothing", acct.row_of(row["id"]) is not None)
