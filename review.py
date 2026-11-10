@@ -960,6 +960,22 @@ class Store:
             self._save(data)
 
 
+def still_pending(path, sid: str) -> bool:
+    """Is proposal `sid` still a question? What the card asks before it
+    shows a proposal that waited its turn, and once a second about the
+    one on screen: the desk and the phone answer straight into this
+    file, from another process or another thread, and tell nobody.
+
+    A Store of its own on purpose. The card's loop is where a click has
+    to feel immediate, and the engine's store holds its lock across the
+    lock file's wait (up to five seconds when another process has it);
+    a read needs neither. False ONLY for a proposal that is there and
+    answered: one that is not in the file, or a file that would not
+    read, is not an answer."""
+    item = Store(path).get(str(sid))
+    return item is None or item.get("status", PENDING) == PENDING
+
+
 def suggestion_from(item, result: dict, *, hwnd: int = 0) -> dict:
     """The store's record of one reading with changes in it."""
     meta = item.meta

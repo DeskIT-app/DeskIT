@@ -28884,6 +28884,377 @@ def test_the_review_card_sits_mid_height_on_the_right_and_stays_where_put(
     assert top.origin(400, 200, (2560, 1440), 26)[1] == 14 - 26
 
 
+# ---- the review card's line (2026-11-10): a second proposal waits behind
+# the first instead of taking its place
+
+def _review_proposal(sid: str) -> dict:
+    return {"id": sid, "text": "טוב, אז הלכתי לאכול מטוס עם החברים",
+            "changes": [{"before": "מטוס", "after": "מנטוס", "why": "x",
+                         "kind": "replace", "span": [4, 5],
+                         "family": "context", "support": 1}]}
+
+
+def _review_line(**kw):
+    """A ReviewCard whose line is driven by hand: no window and no thread
+    of its own — the test is the loop. `pump(now)` does with the queue
+    what both presenters do, and says whether the card on screen had to
+    come down."""
+    card = overlay_mod.ReviewCard(**kw)
+    card._thread = threading.current_thread()      # so callers enqueue
+
+    def pump(now: float) -> bool:
+        down = False
+        while True:
+            try:
+                item = card._q.get_nowait()
+            except queue.Empty:
+                return down
+            down = card._q_take(item, now) or down
+
+    return card, pump
+
+
+def test_a_second_proposal_waits_behind_the_review_card_and_never_replaces_it(
+        ) -> None:
+    """The owner's report: he dictated, then dictated again at once, both
+    got a proposal, and the second card took the first one's place — the
+    first was left in the desk's pile only. The card on screen is never
+    replaced now: the next waits, says so on the card ("+1"), and comes
+    up when the first leaves, oldest first, with its own whole clock."""
+    verdicts = []
+    card, pump = _review_line(
+        on_verdict=lambda sid, v: verdicts.append((sid, v)), seconds=20)
+    gap = card.GAP_S
+    assert gap > 0.5, "longer than a double click: the next card's " \
+                      "buttons land under the same pointer"
+    t = time.monotonic()
+    card.show(_review_proposal("a"))
+    card.show(_review_proposal("b"))
+    assert not card.visible(), "show only enqueues; the loop puts it up"
+    assert not pump(t), "nothing was up to take down"
+    up = card._q_next(t)
+    assert up["id"] == "a" and card.current() == "a" and card.visible()
+    assert card.waiting() == 1 and up["waiting"] == 1, \
+        "the card on screen says one is behind it"
+    assert card._q_next(t + 5) is None and card.current() == "a", \
+        "b waits — it never takes a's place"
+    # a's clock runs out: no verdict; b comes up after the beat
+    card.timed_out()
+    assert not card.visible() and verdicts == []
+    assert card._q_next(time.monotonic()) is None, "a beat with nothing up"
+    b = card._q_next(time.monotonic() + gap + 0.01)
+    assert b["id"] == "b" and b["seconds"] == 20.0 and b["waiting"] == 0, b
+    # answered on the card: the verdict goes out and the place is free
+    card.pressed("accept")
+    assert verdicts == [("b", "accepted")] and not card.visible()
+    assert pump(t + 30), "the loop is told to take b down"
+    assert card._q_next(t + 40) is None and card.waiting() == 0
+    # a press with nothing up must not empty the line (a bare None is hide)
+    card.pressed("later")
+    assert card._q.empty()
+
+    # A LONG LINE: WAIT_MAX wait for the card, the rest are in the pile only
+    for sid in "cdefgh":
+        card.show(_review_proposal(sid))
+    assert not pump(t + 50)
+    assert card._q_next(t + 50)["id"] == "c"
+    assert card.waiting() == card.WAIT_MAX == 3, card.waiting()
+    assert [c["id"] for c in card._waiting] == ["d", "e", "f"], \
+        "oldest first; g and h were never the card's"
+    assert card._up["waiting"] == 3
+    card.show(_review_proposal("c"))               # the same one, told twice
+    card.show(_review_proposal("e"))
+    assert not pump(t + 51)
+    assert [c["id"] for c in card._waiting] == ["d", "f", "e"] \
+        and card.current() == "c"
+
+    # ANSWERED SOMEWHERE ELSE — the shelf's door — while it waits ...
+    card.drop("f")
+    assert not pump(t + 52), "f was not the one on screen"
+    assert [c["id"] for c in card._waiting] == ["d", "e"] \
+        and card._up["waiting"] == 2
+    # ... and while it is the card on screen
+    card.drop("c")
+    assert not card.visible(), "at once, on the caller's thread: its keys " \
+                               "must not answer it a second time"
+    assert pump(t + 53), "the window comes down"
+    assert card._q_next(t + 53 + gap / 2) is None
+    assert card._q_next(t + 53 + gap + 0.01)["id"] == "d"
+    assert verdicts == [("b", "accepted")], "nobody pressed c on the card"
+
+    # a selection on screen (hush) holds the next one; hide() lets all go
+    card.pressed("later")
+    assert pump(t + 60)
+    assert card._q_next(t + 70, hold=True) is None and card.waiting() == 1
+    card.hide()
+    assert not pump(t + 71), "nothing was up"
+    assert card.waiting() == 0 and card._q_next(t + 80) is None
+    card.show(_review_proposal("z"))
+    pump(t + 81)
+    assert card._q_next(t + 81)["id"] == "z"
+    card.hide()
+    assert pump(t + 82) and not card.visible() and card._up is None
+
+    off = overlay_mod.ReviewCard.off()
+    off.show(_review_proposal("a"))
+    off.drop("a")
+    assert off._q.empty() and off.waiting() == 0
+
+
+def test_a_proposal_answered_on_the_desk_or_the_phone_is_never_shown_after(
+        ) -> None:
+    """The desk and the phone write their verdict straight into
+    review.json and tell nobody, so the line asks: once every ASK_S about
+    the card on screen and the ones behind it, and again at the moment
+    one would come up. The pencil's box holds the place while it is
+    open. And "cannot tell" is never read as "answered"."""
+    answered = set()
+    card, pump = _review_line(still_open=lambda sid: sid not in answered)
+    t = time.monotonic()
+    for sid in "abc":
+        card.show(_review_proposal(sid))
+    pump(t)
+    assert card._q_next(t)["id"] == "a"
+    answered.add("b")
+    assert not card._q_answered(t + card.ASK_S / 2), \
+        "not asked again inside ASK_S"
+    assert [c["id"] for c in card._waiting] == ["b", "c"]
+    assert not card._q_answered(t + card.ASK_S + 0.1), "a is still open"
+    assert [c["id"] for c in card._waiting] == ["c"] \
+        and card._up["waiting"] == 1, "b left the line, and the count"
+    answered.add("a")
+    assert card._q_answered(t + 2 * card.ASK_S + 0.2) and not card.visible(), \
+        "the card on screen was answered on the desk: it comes down"
+    answered.add("c")
+    assert card._q_next(t + 10) is None and card.waiting() == 0, \
+        "c was answered while it waited — passed over, never shown"
+
+    broken, pump_b = _review_line(still_open=lambda sid: 1 / 0)
+    broken.show(_review_proposal("a"))
+    pump_b(t)
+    assert broken._q_next(t)["id"] == "a" and not broken._q_answered(t + 5), \
+        "a question that cannot be asked is not an answer"
+
+    # THE PENCIL: its box stands where the card goes, so the next waits
+    box = {"open": False}
+    asked = []
+    pen, pump_p = _review_line(
+        held=lambda: box["open"],
+        on_edit=lambda sid, row, rect: (asked.append(sid),
+                                        box.update(open=True)))
+    pen.show(_review_proposal("a"))
+    pen.show(_review_proposal("b"))
+    pump_p(t)
+    assert pen._q_next(t)["id"] == "a"
+    pen.pressed("edit0")
+    assert asked == ["a"] and pump_p(t + 1)
+    assert pen._q_next(t + 1 + pen.GAP_S + 0.1) is None, "the box is open"
+    box["open"] = False
+    assert pen._q_next(t + 1 + pen.GAP_S + 0.2) is None, \
+        "a beat after the box closes, too"
+    assert pen._q_next(t + 30)["id"] == "b"
+
+    # review.still_pending, the question main.py hands the card
+    import review as review_mod
+    tmp = Path(tempfile.mkdtemp(prefix="review-open-"))
+    try:
+        path = tmp / "review.json"
+        assert review_mod.still_pending(path, "a"), "no file is no answer"
+        store = review_mod.Store(path)
+        base = dict(_review_proposal("a"), when="2026-11-10 10:00:00",
+                    status="pending", learned=False)
+        store.add(base)
+        store.add(dict(base, id="b"))
+        assert review_mod.still_pending(path, "a")
+        store.decide("a", "rejected", by="dashboard")
+        assert not review_mod.still_pending(path, "a") \
+            and review_mod.still_pending(path, "b")
+        store.decide("b", "accepted", by="phone")
+        assert not review_mod.still_pending(path, "b")
+        store.forget("b")
+        assert review_mod.still_pending(path, "b"), \
+            "gone from the file is not an answer"
+        path.write_text("{ not json", "utf-8")
+        assert review_mod.still_pending(path, "a"), \
+            "a file that will not read is not an answer"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_waiting_mark_keeps_clear_of_the_title_the_sentence_and_the_buttons(
+        ) -> None:
+    """One small quiet pill at the head's far end, "+1", and nothing
+    else on the card moves for it: same size, same regions, the rows and
+    the buttons pixel for pixel — and it is not a control."""
+    import review_card as rc
+    from PIL import ImageChops
+    card = rc.card_for(_review_proposal("s"), seconds=20)
+    assert rc.waiting_of(card) == 0 and rc.waiting_of({"waiting": 2}) == 2
+    assert rc.waiting_of({"waiting": -3}) == 0 \
+        and rc.waiting_of({"waiting": "x"}) == 0
+    for scale in (0.6, 1.0, 1.4):
+        s = rc.clamp_scale(scale)
+        plain = rc.compose(card, scale, 0.5, cache={})
+        marked = rc.compose(dict(card, waiting=1), scale, 0.5, cache={})
+        assert plain.size == marked.size == rc.measure(card, scale), \
+            "the mark changes no size"
+        box = ImageChops.difference(plain, marked).getbbox()
+        assert box, "one is waiting and the card does not say so"
+        x0, y0, x1, y1 = rc.waiting_box(card, scale)
+        assert x0 - 3 <= box[0] and box[2] <= x1 + 3 \
+            and y0 - 3 <= box[1] and box[3] <= y1 + 3, (scale, box)
+        head_h = int((rc.PAD + rc.HEAD_H) * s) - 1     # down to the clock
+        assert box[3] < head_h, "it stays in the head: clear of the clock, " \
+                                "the sentence and the buttons"
+        ink = plain.crop((0, 0, plain.width, head_h)).getchannel(
+            "A").getbbox()
+        assert box[2] + 20 * s < ink[0], \
+            (scale, "the mark and the title share a line and never meet")
+        three = rc.compose(dict(card, waiting=3), scale, 0.5, cache={})
+        wide = ImageChops.difference(plain, three).getbbox()
+        assert wide[2] <= x1 + 3, "+3 is the same pill as +1"
+    assert rc.regions(dict(card, waiting=3)) == rc.regions(card), \
+        "nothing new takes the mouse"
+    x0, y0, x1, y1 = rc.waiting_box(card, 1.0)
+    assert rc.hit_test(dict(card, waiting=1), 1.0, rc.SHADOW + (x0 + x1) / 2,
+                       rc.SHADOW + (y0 + y1) / 2) == (rc.HTCAPTION, rc.DRAG), \
+        "the mark drags like the rest of the face"
+    assert rc.flat(dict(card, waiting=2), 1.0, 1.0).size == rc.measure(card)
+
+
+def test_both_presenters_ask_the_line_and_the_app_tells_it() -> None:
+    """The glass loop and the Tk fallback make the same four calls, and
+    neither puts an arrival straight onto the screen — that line was the
+    bug. And main.py's two wires: the shelf's verdict leaves the line at
+    once, and no engine means no card."""
+    import types
+    import main as main_mod
+    here = Path(overlay_mod.__file__).resolve().parent
+    tk_loop = Path(overlay_mod.__file__).read_text("utf-8").split(
+        "class ReviewCard(HintCard):")[1].split(
+        "class ConsentCard(HintCard):")[0].split("def _build_and_loop")[1]
+    loops = [(tk_loop, "self")]
+    glass = here / "skin" / "review.py"
+    if glass.exists():                    # the look is deletable (SKIN.md)
+        loops.append((glass.read_text("utf-8").split("def run(card)")[1],
+                      "card"))
+    for body, me in loops:
+        for call in ("_q_take(item, now)", "_q_next(now, hold=",
+                     "_q_answered(now)", "timed_out()", "_hushed.is_set()"):
+            assert f"{me}.{call}" in body, (me, call)
+        # its own definition, and one call: with what the line handed over
+        assert body.count("put_up(") == 2 and "put_up(nxt)" in body, \
+            "an arrival goes to the line, never straight onto the screen"
+    src = (here / "main.py").read_text("utf-8")
+    assert "still_open=self._review_open" in src
+    assert "held=lambda: self._word_prompt.open()" in src
+
+    app = types.SimpleNamespace(_review=None)
+    assert main_mod.App._review_open(app, "a") is False, \
+        "the model is unloaded: nothing would hear the answer"
+    app._review = object()
+    assert main_mod.App._review_open(app, "no-such-proposal") is True
+    dropped, decided = [], []
+    app.review_card = types.SimpleNamespace(drop=dropped.append)
+    app._review = types.SimpleNamespace(
+        decide=lambda sid, verdict, by="card": decided.append(
+            (sid, verdict, by)))
+    main_mod.App._review_verdict(app, "a", "accepted")
+    assert dropped == ["a"] and decided == [("a", "accepted", "card")]
+    app._review = None
+    main_mod.App._review_verdict(app, "b", "rejected")
+    assert dropped == ["a", "b"] and len(decided) == 1
+
+
+def test_the_real_review_card_brings_the_next_proposal_up_when_one_leaves(
+        ) -> None:
+    """Both presenters for real, each on its own thread with its own
+    window (the Tk fallback, then the glass when the skin is there): the
+    first proposal stays up while two more arrive, each comes up in turn
+    when the one before it is answered, answered on the desk, closed or
+    out of time, and nothing new is mapped while a selection is on
+    screen. A subprocess, like every card that owns a Tcl interpreter."""
+    _run_window_script('''
+import os, time
+import overlay
+
+def until(ready, seconds=8.0):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if ready():
+            return True
+        time.sleep(0.02)
+    return False
+
+def proposal(sid):
+    return {"id": sid, "text": "טוב, אז הלכתי לאכול מטוס עם החברים",
+            "changes": [{"before": "מטוס", "after": "מנטוס", "why": "x",
+                         "kind": "replace", "span": [4, 5],
+                         "family": "context", "support": 1}]}
+
+def drive(label):
+    verdicts, answered = [], set()
+    card = overlay.ReviewCard(
+        x=60, y=60, seconds=30,
+        on_verdict=lambda sid, v: verdicts.append((sid, v)),
+        still_open=lambda sid: sid not in answered)
+    card.GAP_S, card.ASK_S = 0.3, 0.2
+    card.hovering = lambda: False      # the owner's pointer is not the test's
+    card.start()
+    assert card._thread is not None and card._thread.is_alive(), label
+    try:
+        for sid in "abc":
+            card.show(proposal(sid))
+        assert until(lambda: card.current() == "a" and card.rect), \\
+            (label, "the first proposal never came up")
+        assert until(lambda: card.waiting() == 2), (label, card.waiting())
+        time.sleep(0.6)
+        assert card.current() == "a", (label, "a newer one took its place")
+        place = card.rect
+        card.pressed("accept")
+        assert verdicts == [("a", "accepted")], (label, verdicts)
+        assert until(lambda: card.current() == "b" and card.rect), \\
+            (label, "the second never got its turn")
+        assert card.rect == place and card.waiting() == 1, (label, card.rect)
+        answered.add("b")                  # the desk wrote its verdict
+        assert until(lambda: card.current() == "c" and card.rect), \\
+            (label, "answered on the desk and still up")
+        assert verdicts == [("a", "accepted")], (label, verdicts)
+        # a selection on screen: nothing new is mapped until it ends
+        card.seconds = 0.8
+        card.hush()
+        card.show(proposal("d"))
+        card.pressed("later")              # c is closed
+        assert until(lambda: card.current() is None), label
+        time.sleep(0.9)
+        assert card.current() is None and card.waiting() == 1, \\
+            (label, "a card came up over the selection")
+        card.unhush()
+        assert until(lambda: card.current() == "d" and card.rect), label
+        # ... and d's own clock runs out: no verdict, nothing left
+        assert until(lambda: card.current() is None and card.rect is None), \\
+            (label, "the clock never ran out")
+        assert verdicts == [("a", "accepted")] and card.waiting() == 0, label
+    finally:
+        card.stop()
+    assert not card._thread.is_alive(), (label, "the loop did not end")
+
+fallback = []
+tk_loop = overlay.ReviewCard._build_and_loop
+overlay.ReviewCard._build_and_loop = \\
+    lambda self: (fallback.append(1), tk_loop(self))[1]
+glass = overlay.skin
+overlay.skin = None
+drive("tk")
+assert fallback == [1], "the Tk fallback is not what ran"
+if glass is not None and glass.on():
+    overlay.skin = glass
+    drive("glass")
+    assert fallback == [1], "the glass presenter gave up: Tk ran in its place"
+os._exit(0)
+''')
+
+
 def test_review_settings_are_in_the_real_config_and_checked_at_load() -> None:
     import shutil
     cfg = _hint_cfg()

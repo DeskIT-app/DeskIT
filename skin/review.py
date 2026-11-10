@@ -21,7 +21,11 @@ path. Two things it does that the hint card does not:
 
 Nothing here decides anything. A button press or a key becomes
 `card.pressed(name)`; the clock running out becomes `card.timed_out()`;
-what those MEAN is overlay.ReviewCard's business and main.py's.
+what those MEAN is overlay.ReviewCard's business and main.py's. WHICH
+proposal is up is not decided here either (2026-11-10): the loop hands
+everything off the queue to `card._q_take` and asks `card._q_next` for
+the one to put up, so a second proposal waits behind the first instead
+of taking its place — the same four calls the Tk fallback makes.
 """
 from __future__ import annotations
 
@@ -177,27 +181,43 @@ def run(card) -> None:
 
     try:
         while not card._closing.is_set():
+            now = time.monotonic()
             try:
                 while True:
                     item = card._q.get_nowait()
                     if item is overlay._DONE:
                         card._closing.set()
                         break
-                    if item is None:
+                    # The line is overlay.ReviewCard's (2026-11-10): an
+                    # arrival waits behind the card on screen instead of
+                    # replacing it, and only that card leaving — answered,
+                    # closed, hide() — brings the window down.
+                    if card._q_take(item, now):
                         take_down()
-                    else:
-                        put_up(item)
             except queue.Empty:
                 pass
             if card._closing.is_set():
                 break
-            now = time.monotonic()
             dt, last_tick = now - last_tick, now
+            # A screenshot selection is on screen (HintCard.hush). A card
+            # already up is underneath the selector, which mapped last, and
+            # stays where it is; a NEW window mapped now would land on top
+            # of it and eat the drag. So nothing comes up while it lasts —
+            # the line makes that a card every time one leaves, not only
+            # when a reading happens to land — and the clock waits, as it
+            # does on the Tk path, so the card is not spent unseen.
+            hushed = card._hushed.is_set()
+            if card._q_answered(now):
+                take_down()               # answered on the desk or the phone
+            if shown is None:
+                nxt = card._q_next(now, hold=hushed)
+                if nxt is not None:
+                    put_up(nxt)
             if shown is not None and glass is not None:
                 seconds = float(shown.get("seconds") or 0)
                 progress = 1.0
                 if deadline is not None:
-                    if card.hovering():
+                    if card.hovering() or hushed:
                         deadline += dt          # reading: the clock waits
                     left = deadline - now
                     if left <= 0:
