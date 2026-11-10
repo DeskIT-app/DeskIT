@@ -502,9 +502,10 @@ def run(status_dot) -> None:
             if status_dot._closing.is_set():
                 break
             if hidden:
-                # nothing to draw; the window's messages still turn over
+                # nothing to draw and nobody to answer: the window is off
+                # the screen, so it only waits for show() — which rings
                 glass.pump()
-                time.sleep(FRAME_S)
+                overlay.rest(status_dot._q, overlay.IDLE_S, FRAME_S)
                 continue
             # Move mode is a DEADLINE the StatusDot keeps, so this only
             # reads it — which is what makes it expire on its own if he
@@ -573,10 +574,29 @@ def run(status_dot) -> None:
             # given, so a frame goes out only when the picture or the
             # place would change; the messages still turn over every tick.
             # the size too: a resized window is a blank one until drawn
+            #
+            # AND A SETTLED DOT DOES NOT TICK EITHER (2026-11-10). Until
+            # then the loop still woke 45 times a second to find the same
+            # picture; now it RESTS on the queue (overlay._Queue.rest) until
+            # the next z-order check is due, at most IDLE_S. Everything that
+            # could change the picture wakes it at once: a state, hide/show,
+            # move mode, the alarm and a new position all ring the queue,
+            # and a hover, a click or a press on the disc is a message to
+            # the window, which ends the wait too. Move mode itself keeps
+            # the full frame rate — its deadline is read off the clock.
+            # Measured hidden on this PC over 15 s idle, the dot's thread:
+            # 62.6 context switches a second before, 3.0 after
+            # (reports\2026-11-09\fix-quiet-idle.md).
             shown = (dot.moving, glass.x, glass.y, glass.width)
             if dot.still(alarm_fill) and drawn[0] == shown:
                 glass.pump()
-                time.sleep(FRAME_S)
+                if dot.moving:
+                    time.sleep(FRAME_S)
+                else:
+                    due = next_check[0] - time.monotonic()
+                    overlay.rest(status_dot._q,
+                                 max(0.001, min(overlay.IDLE_S, due)),
+                                 FRAME_S)
                 continue
             dot.draw(glass.canvas, (time.perf_counter() - start) * 1000.0,
                      alarm_fill)

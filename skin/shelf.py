@@ -391,7 +391,23 @@ def run(shelf) -> None:
                 paint()
             if glass is not None:
                 glass.pump()
-            time.sleep(TICK_S)
+            # THE QUIET LOOP (2026-11-10). The panel is down nearly all
+            # day, and then the loop RESTS on the queue
+            # (overlay._Queue.rest) instead of ticking 50 times a second:
+            # opening it, a refresh, closing it and a hush all arrive
+            # through the queue. While it is up it rests too, until the
+            # next re-blit is due — a hover or a click is a message to the
+            # window and ends the wait at once — and a hover still to
+            # repaint (`dirty`, set inside pump) keeps the tick.
+            if glass is None:
+                overlay.rest(shelf._q, overlay.IDLE_S, TICK_S)
+            elif dirty:
+                time.sleep(TICK_S)
+            else:
+                overlay.rest(shelf._q,
+                             max(0.001, min(overlay.IDLE_S, last_paint
+                                            + UPTIME_S - time.monotonic())),
+                             TICK_S)
     except Exception:
         _log.info("skin shelf stopped early", exc_info=True)
     finally:

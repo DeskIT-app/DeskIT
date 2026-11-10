@@ -229,7 +229,16 @@ def run(card) -> None:
                 if dirty or now - last_paint >= REPAINT_S:
                     paint(progress)
                 glass.pump()
-            time.sleep(TICK_S)
+            # THE QUIET LOOP (2026-11-10). No card up and none waiting in
+            # the line is nothing to do: the loop RESTS on the queue
+            # (overlay._Queue.rest), and a proposal, hide(), a drop and a
+            # hush all arrive through it. A card on screen (its clock and
+            # still_open, ASK_S) and a line waiting out the GAP_S beat, a
+            # hush or the pencil's box keep TICK_S, exactly as before.
+            if shown is None and not card._waiting:
+                overlay.rest(card._q, overlay.IDLE_S, TICK_S)
+            else:
+                time.sleep(TICK_S)
     except Exception:
         _log.info("skin review card stopped early", exc_info=True)
     finally:

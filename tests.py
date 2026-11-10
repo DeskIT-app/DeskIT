@@ -5397,6 +5397,242 @@ def test_a_settled_dot_is_not_painted_again() -> None:
     assert ("gpu", False) in frames and ("gpu", True) not in frames, frames[:2]
 
 
+def test_an_overlay_queue_rests_until_something_wakes_it() -> None:
+    """THE IDLE FOOTPRINT (2026-11-10, the audit's F1). A painter with
+    nothing to show rests on its overlay._Queue instead of ticking: the
+    rest runs its time out when nothing happens, and ends at once for a
+    put, a ring, a _Signal set or cleared, a ring nobody was waiting for,
+    and a message to the resting thread. And a message nobody removes
+    wakes it ONCE: measured that day, without the PeekMessage after a wake
+    every following wait returned in 0.0 ms — a loop spinning a core."""
+    import ctypes
+    import ctypes.wintypes as wt
+    import overlay as overlay_mod
+
+    q = overlay_mod._Queue()
+    t0 = time.monotonic()
+    assert q.rest(0.15) is False
+    assert time.monotonic() - t0 >= 0.1, "a rest with nothing to wake it ran short"
+    flag = overlay_mod._Signal(q)
+    for name, wake in (("put", lambda: q.put("x")), ("ring", q.ring),
+                       ("set", flag.set), ("clear", flag.clear)):
+        threading.Timer(0.05, wake).start()
+        t0 = time.monotonic()
+        assert q.rest(3.0) is True, name
+        assert time.monotonic() - t0 < 1.0, (name, "woke late")
+    assert q.get_nowait() == "x" and q.empty()
+    q.ring()                                  # nobody resting: not lost
+    t0 = time.monotonic()
+    assert q.rest(3.0) is True and time.monotonic() - t0 < 0.5
+
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    u32.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                 ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+    u32.PostThreadMessageW.argtypes = [wt.DWORD, ctypes.c_uint,
+                                       ctypes.c_size_t, ctypes.c_ssize_t]
+    got: dict = {}
+    ready = threading.Event()
+
+    def resting() -> None:
+        u32.PeekMessageW(ctypes.byref(wt.MSG()), None, 0, 0, 0)  # its queue
+        ready.set()
+        t = time.monotonic()
+        got["woke"], got["first"] = q.rest(3.0), time.monotonic() - t
+        t = time.monotonic()
+        got["again"], got["second"] = q.rest(0.3), time.monotonic() - t
+
+    worker = threading.Thread(target=resting, daemon=True)
+    worker.start()
+    assert ready.wait(5)
+    time.sleep(0.05)
+    assert u32.PostThreadMessageW(worker.native_id, 0x0400, 0, 0)
+    worker.join(6)
+    assert got["woke"] is True and got["first"] < 1.0, got
+    assert got["again"] is False and got["second"] >= 0.2, (
+        "a message nobody removed made the rest spin", got)
+    # the dot's and the cards' queues are this one, and so are their flags
+    dot = overlay_mod.StatusDot()
+    card = overlay_mod.HintCard()
+    assert isinstance(dot._q, overlay_mod._Queue)
+    assert isinstance(dot._replace, overlay_mod._Signal)
+    assert isinstance(card._q, overlay_mod._Queue)
+    assert isinstance(card._hushed, overlay_mod._Signal)
+
+
+def test_a_still_dot_rests_and_wakes_for_what_changes_it() -> None:
+    """The settled dot no longer turns over 45 times a second to find the
+    same picture: it rests until the next z-order check (DOT_ON_TOP_S,
+    which still runs on its schedule), and a state, move mode and a new
+    position wake it at once. Move mode keeps the full frame rate. Driven
+    through skin.dot.run with a stand-in window that counts its pumps."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        import skia
+        from skin import dot as skin_dot
+    except Exception:
+        return
+    import overlay as overlay_mod
+
+    frames: list = []
+    pumps = [0]
+    checks = [0]
+
+    class FakeGlass:
+        def __init__(self, x, y, width, height, gpu=True, **_kw):
+            self.x, self.y, self.width, self.height = x, y, width, height
+            self.hwnd = 0
+            self._surface = skia.Surface(width, height)
+            self.canvas = self._surface.getCanvas()
+
+        def flush(self, alpha=1.0):
+            frames.append(time.monotonic())
+            return True
+
+        def move(self, x, y):
+            self.x, self.y = int(x), int(y)
+
+        def where(self):
+            return self.x, self.y
+
+        def pump(self):
+            pumps[0] += 1
+
+        def show(self): pass
+        def hide(self): pass
+        def raise_(self): pass
+        def close(self): pass
+
+    moving = [False]
+
+    class FakeStatus:
+        corner, x, y = "bottom-right", skin_dot.UNSET, skin_dot.UNSET
+        on_click, hidden, rect, hwnd = None, False, None, None
+
+        def __init__(self):
+            self._q = overlay_mod._Queue()
+            self._alive, self._closing = threading.Event(), threading.Event()
+            self._replace = overlay_mod._Signal(self._q)
+
+        def moving(self): return moving[0]
+        def alarming(self): return None
+        def alarm_busy(self): return False
+        def end_move(self): pass
+        def rest(self): pass
+
+    def dig(_hwnd):
+        checks[0] += 1
+        return None
+
+    status = FakeStatus()
+    with _patched(skin_dot, "Glass", FakeGlass), \
+            _patched(overlay_mod, "dig_out", dig), \
+            _patched(overlay_mod, "DOT_ON_TOP_S", 0.25):
+        runner = threading.Thread(target=skin_dot.run, args=(status,),
+                                  daemon=True)
+        runner.start()
+        try:
+            assert status._alive.wait(5), "the painter never came up"
+            time.sleep(0.4)                       # the first frame, settled
+            p0, c0 = pumps[0], checks[0]
+            time.sleep(1.2)
+            idle, looked = pumps[0] - p0, checks[0] - c0
+            assert idle <= 10, f"a still dot turned over {idle} times in 1.2 s"
+            assert looked >= 3, f"the z-order check ran {looked} times in 1.2 s"
+            n = len(frames)
+            t0 = time.monotonic()
+            status._q.put("locked")               # breathes: frames again
+            assert _until(lambda: len(frames) > n, 2), "a state did not wake it"
+            assert frames[n] - t0 < 0.3, "the state waited out the rest"
+            status._q.put("ready")
+            assert _until(lambda: status._q.empty(), 2)
+            time.sleep(0.6)                       # the fade back, settled
+            n = len(frames)
+            t0 = time.monotonic()
+            moving[0] = True
+            status._q.ring()                      # what StatusDot.move does
+            assert _until(lambda: len(frames) > n, 2), "move mode did not wake it"
+            assert frames[n] - t0 < 0.3
+            p0 = pumps[0]
+            time.sleep(0.3)
+            assert pumps[0] - p0 >= 6, "move mode lost its frame rate"
+            moving[0] = False
+            status._q.ring()
+            time.sleep(0.3)
+            n = len(frames)
+            t0 = time.monotonic()
+            status.x, status.y = 300, 300
+            status._replace.set()                 # a new position, from anywhere
+            assert _until(lambda: len(frames) > n, 2), "a new place did not wake it"
+            assert frames[n] - t0 < 0.3
+        finally:
+            status._q.put(overlay_mod._DONE)
+            runner.join(5)
+    assert not runner.is_alive()
+
+
+def test_idle_glass_cards_rest_and_wake_on_their_queue() -> None:
+    """With nothing to show, the notify, review, hint and shelf painters
+    used to poll their queues 33-50 times a second for the whole life of
+    the app. Now each rests on its overlay._Queue: in 0.6 s with nothing
+    up each looks at its queue a few times at most, and a put ends the
+    rest at once — _DONE stops every loop well inside IDLE_S. Run through
+    each skin loop itself; nothing idle builds a window."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        from skin import hint as s_hint
+        from skin import notify as s_notify
+        from skin import review as s_review
+        from skin import shelf as s_shelf
+    except Exception:
+        return
+    import overlay as overlay_mod
+    import shelf as shelf_mod
+
+    class Counting(overlay_mod._Queue):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def get_nowait(self):
+            self.polls += 1
+            return super().get_nowait()
+
+    loops = [(s_notify.run, overlay_mod.NotifyCard()),
+             (s_review.run, overlay_mod.ReviewCard()),
+             (s_hint.run, overlay_mod.HintCard()),
+             (s_shelf.run, shelf_mod.ShelfCard())]
+    threads = []
+    for run, card in loops:
+        card._q = Counting()
+        card._hushed = overlay_mod._Signal(card._q)
+        worker = threading.Thread(target=run, args=(card,), daemon=True)
+        worker.start()
+        threads.append(worker)
+        assert card._alive.wait(5), type(card).__name__
+    try:
+        time.sleep(0.3)
+        before = [card._q.polls for _run, card in loops]
+        time.sleep(0.6)
+        for (_run, card), was in zip(loops, before):
+            n = card._q.polls - was
+            assert n <= 3, f"an idle {type(card).__name__} looked {n} times"
+        for _run, card in loops:                 # a hush wakes it, idle too
+            card._hushed.set()
+            card._hushed.clear()
+    finally:
+        for (_run, card), worker in zip(loops, threads):
+            t0 = time.monotonic()
+            card._q.put(overlay_mod._DONE)
+            worker.join(3)
+            assert not worker.is_alive(), type(card).__name__
+            assert time.monotonic() - t0 < 0.6, (
+                f"{type(card).__name__} waited out its rest before _DONE")
+
+
 def test_status_dot_ignores_states_it_does_not_know() -> None:
     """set_state is called from the keyboard hook. A typo must not raise
     there — an exception inside the hook makes Windows drop it."""
@@ -26684,6 +26920,65 @@ def test_the_shelf_closes_when_he_presses_somewhere_else() -> None:
     assert app._dot_squares() == [dot]
 
 
+def test_the_shelfs_watch_and_refresh_sleep_while_the_panel_is_down() -> None:
+    """The outside-press watch used to wake every AWAY_S (40 times a
+    second) all day to read one attribute and find no panel, and the
+    refresher once a second for the same nothing. Now both wait on
+    `_opened` while the panel is down (2026-11-10): idle, they look a few
+    times at most; open, the watch keeps its beat at once; closed again,
+    they go back to sleep, and a stop is still noticed inside IDLE_S."""
+    import shelf as shelf_mod
+
+    looks = [0]
+
+    class Counting(shelf_mod.ShelfCard):
+        # every turn of the watch reads `rect` and every turn of the
+        # refresher asks `visible()`: the two are what is counted
+        def visible(self):
+            looks[0] += 1
+            return super().visible()
+
+        @property
+        def rect(self):
+            looks[0] += 1
+            return self.__dict__.get("_rect_now")
+
+        @rect.setter
+        def rect(self, value):
+            self.__dict__["_rect_now"] = value
+
+    card = Counting(on_away=lambda: None, on_refresh=lambda: None,
+                    spare=lambda: [])
+    card._thread = object()               # "started": show() enqueues
+    helpers = [threading.Thread(target=card._away_loop, daemon=True),
+               threading.Thread(target=card._refresh_loop, daemon=True)]
+    for helper in helpers:
+        helper.start()
+    try:
+        time.sleep(0.2)
+        n = looks[0]
+        time.sleep(0.8)
+        assert looks[0] - n <= 6, f"the panel is down and they looked {looks[0] - n} times"
+        card.rect = (0, 0, 10, 10)
+        card.show({"rows": []})
+        assert card._opened.is_set() and card.visible()
+        n = looks[0]
+        time.sleep(0.4)
+        assert looks[0] - n >= 8, "the watch lost its beat with the panel up"
+        card.hide()
+        card.rect = None
+        assert not card._opened.is_set()
+        time.sleep(0.2)
+        n = looks[0]
+        time.sleep(0.6)
+        assert looks[0] - n <= 6, "they did not go back to sleep"
+    finally:
+        card._closing.set()
+        for helper in helpers:
+            helper.join(overlay_mod.IDLE_S + 1.5)
+    assert not any(h.is_alive() for h in helpers), "a stop was not noticed"
+
+
 def test_a_saved_card_position_keeps_every_comment_in_the_config() -> None:
     """It is written from the overlay thread on every drag, so this is the
     line-editor's most frequent caller — a round-trip here would quietly
@@ -39227,6 +39522,60 @@ def test_the_consent_card_stands_up_on_the_hidden_desktop():
     finally:
         card.stop()
         card._thread.join(timeout=3)
+
+
+def test_the_consent_and_tour_cards_rest_while_nothing_is_up() -> None:
+    """Neither card has a skin presenter, so their Tk loops were the live
+    ones: 66 updates a second plus a 30 ms queue poll, all day, for cards
+    that are up a few times in a copy's life. Now the loop reads the queue
+    before each update and rests on it in between (overlay._pump_until's
+    `tick`/`rest_on`, 2026-11-10): idle, a few turns in 0.6 s; a card put
+    on the queue still maps at once, and a stop is still quick. Skipped
+    where Tk cannot open a window."""
+    import overlay as overlay_mod
+
+    class Counting(overlay_mod._Queue):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def get_nowait(self):
+            self.polls += 1
+            return super().get_nowait()
+
+    for card, ask in ((overlay_mod.ConsentCard(on_answer=lambda k, a: None),
+                       lambda c: c.show("cloud_audio")),
+                      (overlay_mod.TourCard(dot_at=lambda: (600, 500, 638, 538),
+                                            key="Right Ctrl"),
+                       lambda c: c.show(0))):
+        card._q = Counting()
+        card._hushed = overlay_mod._Signal(card._q)
+        card.start()
+        if card._thread is None or not card._alive.is_set():
+            return
+        try:
+            time.sleep(0.3)
+            n = card._q.polls
+            time.sleep(0.6)
+            idle = card._q.polls - n
+            assert idle <= 4, f"an idle {type(card).__name__} turned over {idle} times"
+            # the wake is the loop reading its queue; the map after it is
+            # Tk's own work (the first paint of a card, fonts and all)
+            n = card._q.polls
+            t0 = time.perf_counter()
+            ask(card)
+            assert _until(lambda: card._q.polls > n, 3), "the put never woke it"
+            woke = time.perf_counter() - t0
+            assert woke < 0.4, f"the card waited out the rest ({woke:.2f} s)"
+            assert _until(lambda: card.rect is not None, 3), "it never mapped"
+            card.hide()
+            assert _until(lambda: card.rect is None, 3)
+        finally:
+            t0 = time.monotonic()
+            card.stop()
+            card._thread.join(timeout=3)
+            assert not card._thread.is_alive()
+            assert time.monotonic() - t0 < 1.0, "a stop waited out the rest"
 
 
 # ------------------------------------------------------------ the tour (D36)

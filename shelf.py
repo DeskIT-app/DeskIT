@@ -131,10 +131,10 @@ REFRESH_S = 1.0
 # 50-150 ms, so nothing real is missed, and the question is two
 # GetAsyncKeyState calls and one GetCursorPos — the same three-microsecond
 # question capture.py asks about Escape forty times a second while a
-# selection is live. With the panel DOWN the loop still wakes on this
-# beat but asks nothing: it reads one attribute, finds no panel and goes
-# back to sleep, which is cheaper than the 50 Hz tick the panel's own
-# painter has run at for the whole life of the app since it was written.
+# selection is live. With the panel DOWN the loop used to wake on this
+# beat anyway, read one attribute and sleep again — 40 wake-ups a second
+# for nothing, all day; since 2026-11-10 it waits on `_opened` instead and
+# keeps this beat only while there is a panel to close.
 AWAY_S = 0.025
 # The buttons a press on which means "I am doing something over there".
 # Left and right: a left click is the case he described, and a right
@@ -224,6 +224,10 @@ class ShelfCard(overlay.HintCard):
         self._spare = spare
         self.rect = None            # the visible panel's screen rect, or None
         self._current = None        # the card dict on screen, or None
+        # Set exactly while `_current` is a card, under the same lock: the
+        # refresher and the watcher wait on it while the panel is down
+        # instead of waking on their beats for nothing (2026-11-10).
+        self._opened = threading.Event()
         self._state_lock = threading.Lock()
         self._refresher: threading.Thread | None = None
         self._watcher: threading.Thread | None = None
@@ -302,11 +306,13 @@ class ShelfCard(overlay.HintCard):
             return
         with self._state_lock:
             self._current = card
+            self._opened.set()
         self._q.put(card)
 
     def hide(self) -> None:
         with self._state_lock:
             self._current = None
+            self._opened.clear()
         if self._thread is not None:
             self._q.put(None)
 
@@ -386,6 +392,10 @@ class ShelfCard(overlay.HintCard):
         while not self._closing.wait(REFRESH_S):
             try:
                 if not self.visible() or self._on_refresh is None:
+                    # Down: wait for it to open (show() sets _opened)
+                    # rather than wake every second for nothing. IDLE_S
+                    # bounds the wait so a stop is still noticed.
+                    self._opened.wait(overlay.IDLE_S)
                     continue
                 fresh = self._on_refresh()
                 if fresh is not None and self.visible():
@@ -436,6 +446,13 @@ class ShelfCard(overlay.HintCard):
                     # dot, with the button still down while the dot's
                     # handler runs — is not read as a press away from it.
                     was_down = True
+                    if not self.visible():
+                        # Down, which is most of the day: wait for it to
+                        # open (show() sets _opened) instead of waking 40
+                        # times a second to read one attribute. Up, the
+                        # watch keeps AWAY_S; IDLE_S bounds the wait so a
+                        # stop is still noticed (2026-11-10).
+                        self._opened.wait(overlay.IDLE_S)
                     continue
                 down = any(user32.GetAsyncKeyState(vk) & 0x8000
                            for vk in AWAY_BUTTONS)
