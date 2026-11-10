@@ -289,6 +289,17 @@ def beep(kind: str) -> None:
     cues.play(kind)
 
 
+def stage_line(**spans: float | None) -> str:
+    """The tail of the "pasted" line in app.log: each stage of the wait
+    from the release to the chord, in seconds and in the order given,
+    leaving out what this dictation did not have (no release to start a
+    clock from, no rolling, a backend with no language check). Numbers
+    and stage names only, never a word of what was said (D8)."""
+    parts = [f"{name.replace('_', ' ')} {value:.2f}"
+             for name, value in spans.items() if value is not None]
+    return f"stages (s): {', '.join(parts)}" if parts else ""
+
+
 def language_label(language: str | None, shout: bool = False) -> str:
     """What to call a recording in the log. None = nothing was declared and
     the model will decide (Config.auto_language)."""
@@ -439,7 +450,8 @@ class App:
         # the audio that produced it. Without this the app can only be told
         # that a word is wrong, never SHOWN — and no vocabulary change can
         # ever be measured, only assumed. See dev\measure.py.
-        self.recent = (Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio)
+        self.recent = (Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio,
+                             ring=True)
                        if cfg.vocab.keep_audio > 0 else None)
         # His own bug list (problems.py). Next to `recent` because that is
         # where the evidence comes from: a report pins the clip out of the
@@ -2546,6 +2558,9 @@ class App:
                     review_mod.Store(paths.REVIEW_FILE),
                     model_lock=self._model_lock,
                     quiet=self._learning_quiet, app_dir=paths.DATA_DIR,
+                    # never the moment right after a paste, nor the start
+                    # of the next dictation (review.GRACE_S)
+                    grace_s=review_mod.GRACE_S,
                     on_suggest=self._review_show,
                     on_accept=self._review_fix,
                     # The local repair as a proposal (polish.py, `when =
@@ -5855,6 +5870,10 @@ class App:
                 # mistaken for this one's.
                 self._last_windows = list(
                     getattr(self.transcriber, "last_windows", None) or [])
+                # And what its language check and its decoder each cost
+                # (local_whisper's last_timing), for the pasted line.
+                self._last_timing = dict(
+                    getattr(self.transcriber, "last_timing", None) or {})
                 return text, self.transcriber.name
             except (RateLimitError, TooLongForCloud) as e:
                 local = self._local_backend()
@@ -5869,6 +5888,8 @@ class App:
                 self._last_words = list(
                     getattr(local, "last_words", None) or [])
                 self._last_windows = []
+                self._last_timing = dict(
+                    getattr(local, "last_timing", None) or {})
                 return text, local.name
 
     def _worker(self) -> None:
@@ -7026,6 +7047,7 @@ class App:
         # IS part of the wait. None means the whole recording is decoded
         # here exactly as it always was.
         head = rolled.finish() if rolled is not None else None
+        head_wait = (time.monotonic() - started) if rolled is not None else None
         if head is not None:
             log.info("rolling: %d window(s) covering %.1f of %.1f s were "
                      "decoded while you spoke (%.1f s of decoder time) — "
@@ -7066,12 +7088,20 @@ class App:
                 break
 
         latency = time.monotonic() - started
+        # the backend's own split of `latency`, read at once (a phone
+        # dictation through _transcribe may replace it); pieces have one
+        # each, so the whole carries none
+        timing = ({} if (pieces and len(pieces) > 1)
+                  else dict(getattr(self, "_last_timing", None) or {}))
+        marker_wait = None
         if marker_up is not None:
             # EVERY door below reads `shown` — the erase, the clear, the
             # clipboard fallback — so none of them may open before the
             # marker is up and its own paste has put the clipboard back.
             # A decode that beat it (2 in 230) waits here for the rest.
+            joined = time.monotonic()
             shown, marker = marker_up()
+            marker_wait = time.monotonic() - joined
 
         if text is None:
             # Nothing to paste. Take the marker back down so the user is not
@@ -7306,10 +7336,29 @@ class App:
         # recording transcribed in pieces has several, so it carries none.
         words = ([] if (pieces and len(pieces) > 1)
                  else list(getattr(self, "_last_words", []) or []))
-        # A silent recording (a dead microphone, see _on_stop) is not
-        # kept: recent\ is the labelled set every measurement in this repo
-        # is made against, and a wav with nobody in it is not a label.
-        if self.recent is not None and not silent:
+        # Remembered before the paste, not after: a transcript that landed
+        # on the clipboard because focus moved is still one worth teaching
+        # the app about. Its recording's path is filled in by keep(),
+        # right after the paste.
+        last = {"raw": text.strip(), "final": cleaned,
+                "when": time.strftime("%Y-%m-%d %H:%M:%S"), "wav": ""}
+        with self._last_lock:
+            self._last = last
+
+        def keep() -> None:
+            """The recording into recent\\ — BEHIND the chord, on every
+            way out of the paste (the `finally` below). It sat in front
+            of it until 2026-11-10: the whole wav, the sidecar and the
+            ring's trim, 6-11 ms p50 and up to 18 ms a dictation on this
+            PC (a full ring of 50, clips of 3-100 s), every one of them
+            inside the wait he feels (2026-11-09 audit, dictation-speed
+            F8). A silent recording (a dead microphone, see _on_stop) is
+            not kept: recent\\ is the labelled set every measurement in
+            this repo is made against, and a wav with nobody in it is not
+            a label."""
+            nonlocal kept
+            if self.recent is None or silent:
+                return
             try:
                 kept = self.recent.save(
                     wav, seconds, "",
@@ -7323,14 +7372,11 @@ class App:
             except OSError as e:
                 log.info("could not keep this recording for later "
                          "measurement: %s", e)
-        # Remembered before the paste, not after: a transcript that landed
-        # on the clipboard because focus moved is still one worth teaching
-        # the app about.
-        with self._last_lock:
-            self._last = {"raw": text.strip(), "final": cleaned,
-                          "when": time.strftime("%Y-%m-%d %H:%M:%S"),
-                          "wav": str(kept.wav_path) if kept else ""}
+                return
+            with self._last_lock:
+                last["wav"] = str(kept.wav_path)
 
+        hands_started = time.monotonic()
         if shown:
             self._hands_off()
         pasting = time.monotonic()
@@ -7395,6 +7441,9 @@ class App:
             beep("error")
             log.error("paste failed: %s — the text is in transcripts.log", e)
             return
+        finally:
+            # after the chord and its restore, whichever way it went
+            keep()
 
         if item:                      # transcribed at last: audio no longer
             item.discard()            # needed, drop it from the spool
@@ -7419,9 +7468,22 @@ class App:
                   f"{to_paste:.1f} s via {backend}"
                   + (f" ({latency:.1f} s decode + {repair_s:.1f} s repair)"
                      if repair_s >= 0.05 else ""))
+        # Where the seconds of that wait went, stage by stage, so the split
+        # is read instead of guessed (2026-11-09 audit, dictation-speed F1:
+        # the language check and the decoder were timed on every dictation
+        # in last_timing and written nowhere). Numbers only (D8).
+        stages = stage_line(
+            queue=None if released is None else started - released,
+            rolling_wait=head_wait,
+            language_check=timing.get("detect_s"),
+            decoder=timing.get("decode_s"),
+            marker_wait=marker_wait,
+            hands_off=pasting - hands_started,
+            paste=landed - pasting)
         log.info("pasted %d chars (%.1f s to the paste via %s: %.1f s "
-                 "decode, %.1f s repair; %s)",
-                 len(cleaned), to_paste, backend, latency, repair_s, status)
+                 "decode, %.1f s repair; %s)%s",
+                 len(cleaned), to_paste, backend, latency, repair_s, status,
+                 f" — {stages}" if stages else "")
         # AFTER the paste, never before: the reading is slower than the
         # text and must not be what the text waits for.
         self._review_submit(kept, hwnd)

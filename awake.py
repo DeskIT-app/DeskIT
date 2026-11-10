@@ -132,6 +132,15 @@ SYSTEM_EXECUTION_STATE = 16
 CREATE_NO_WINDOW = 0x08000000     # every spawn under pythonw needs it
 STATE_NAME = "awake_state.json"
 LOG_NAME = "awake.log"
+#: awake.log is cut back to its tail past LOG_MAX, at a line, the way
+#: launch.py cuts spawn.log. Nothing else trimmed it: 2,733,987 bytes and
+#: 8,444 lines on 2026-11-10, every one since 2026-09-17 — a ~300-byte
+#: vitals line every 10 minutes for as long as the hold is up, which is
+#: always (46 KB a day, 17 MB a year). LOG_KEEP is still five days of
+#: vitals, so a night or a weekend away is there to read on coming back.
+LOG_MAX = 500_000
+LOG_KEEP = 250_000
+_LOG_LOCK = threading.Lock()
 
 _kernel32 = None
 _user32 = None
@@ -969,6 +978,24 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _append(path: Path, line: str) -> None:
+    """One line onto awake.log, the file first cut back to its last
+    LOG_KEEP bytes (from the next whole line) once it is past LOG_MAX.
+    Raises OSError like the open it replaces; a cut that fails leaves the
+    file as it was and the line still goes on."""
+    path = Path(path)
+    with _LOG_LOCK:              # the vitals and keep-off threads both write
+        try:
+            if path.stat().st_size > LOG_MAX:
+                tail = path.read_bytes()[-LOG_KEEP:]
+                cut = tail.find(b"\n")
+                path.write_bytes(tail[cut + 1:] if cut >= 0 else b"")
+        except OSError:
+            pass
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+
+
 class Engine:
     """The hold and the screens for one process, and the truth.
 
@@ -1276,8 +1303,7 @@ class Engine:
 
     def _log(self, line: str) -> None:
         try:
-            with self.log_path.open("a", encoding="utf-8") as fh:
-                fh.write(f"{_stamp()} | {line}\n")
+            _append(self.log_path, f"{_stamp()} | {line}\n")
         except OSError:
             pass
 
@@ -1366,8 +1392,8 @@ def recover(app_dir: Path, run=None, *, log_path: Path | None = None) -> str | N
     except OSError:
         pass
     try:
-        with (Path(log_path) if log_path else Path(app_dir) / LOG_NAME).open("a", encoding="utf-8") as fh:
-            fh.write(f"{_stamp()} | RECOVERED | {message}\n")
+        _append(Path(log_path) if log_path else Path(app_dir) / LOG_NAME,
+                f"{_stamp()} | RECOVERED | {message}\n")
     except OSError:
         pass
     return message

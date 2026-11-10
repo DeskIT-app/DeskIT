@@ -86,6 +86,16 @@ ENGINE = 1
 
 STORE_NAME = "review.json"
 
+# Seconds of unbroken quiet before a reading STARTS (Engine grace_s, passed
+# by main.py). Without it the reading began within one 0.2 s poll of the
+# paste, and its first decode (beam 8, whole clip) is p50 1.8 s, max 6.5 s
+# on a 30-60 s clip — a short phrase released inside it waits for it
+# (2026-11-09 audit, dictation-speed F7). Counted 2026-11-10 off app.log:
+# of 416 pastes followed by a press, the next press came within 2 s of the
+# "pasted" line 26 times, within 3 s 41 times, within 5 s 52 times; 3 s
+# holds the reading back for 41 of those 52, and costs the card 3 s.
+GRACE_S = 3.0
+
 # A proposal touches at most this many words on either side. Beyond it a
 # change is a different sentence, not a misheard word — vocab.py draws the
 # same line for what a correction may teach.
@@ -993,7 +1003,8 @@ class Engine:
 
     def __init__(self, cfg, transcriber, vocab, recent, store: Store, *,
                  model_lock, quiet, app_dir: Path, on_suggest=None,
-                 on_accept=None, reader=None, corpus=None, repair=None):
+                 on_accept=None, reader=None, corpus=None, repair=None,
+                 grace_s: float = 0.0):
         import study as study_mod
 
         self._cfg = cfg
@@ -1004,6 +1015,9 @@ class Engine:
         self.store = store
         self._model_lock = model_lock
         self._quiet = quiet
+        # How long quiet must hold before a reading starts (GRACE_S from
+        # the app; 0, the old way, for a caller that drives _read itself)
+        self._grace_s = max(0.0, float(grace_s))
         self._on_suggest = on_suggest
         self._on_accept = on_accept
         # The local context pass behind the paste (read_one's `repair`);
@@ -1084,16 +1098,28 @@ class Engine:
         return self._spent["llm"] < self._rcfg.llm_per_day
 
     def _wait_quiet(self, limit_s: float = 90.0) -> None:
-        """Give a dictation in flight the GPU first. Bounded: the lock
-        protects correctness, this only protects latency."""
+        """Give a dictation in flight the GPU first — and, before a
+        reading STARTS, the moment after one (`grace_s`): quiet must have
+        held that long without a break, so a press inside it starts the
+        count again. Bounded: the lock protects correctness, this only
+        protects latency. The checks between the reading's decodes
+        (read_one's `pause`) are the same quiet as ever, with no grace."""
         deadline = time.monotonic() + limit_s
+        since = None
         while not self._stop.is_set() and time.monotonic() < deadline:
             try:
-                if self._quiet():
-                    return
+                quiet = self._quiet()
             except Exception:             # noqa: BLE001
                 return
-            time.sleep(0.2)
+            now = time.monotonic()
+            if not quiet:
+                since = None
+            else:
+                since = now if since is None else since
+                if now - since >= self._grace_s:
+                    return
+            time.sleep(0.2 if not quiet else
+                       max(0.0, min(0.2, since + self._grace_s - now)))
 
     # No "the sentences before this one" for the model, deliberately: the
     # first live card (2026-09-02) flipped a correct word because the

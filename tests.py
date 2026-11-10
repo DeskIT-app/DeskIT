@@ -1062,6 +1062,45 @@ def test_spool_replays_oldest_first_and_trims() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_recent_ring_drops_its_oldest_without_a_warning() -> None:
+    """A full ring of recent recordings dropping its oldest is the ring
+    working — 444 WARNINGs in 18 days of app.log, on 411 of 419 pastes
+    (2026-11-09 audit). It is DEBUG now; the pending spool's drop is
+    speech never transcribed and stays a WARNING; and main's recent\\ is
+    the ring."""
+    import logging
+
+    import main as main_mod
+    from spool import Spool
+
+    records: list[logging.LogRecord] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    app_log = logging.getLogger("app")
+    catch = _Catch(level=logging.DEBUG)
+    level = app_log.level
+    app_log.setLevel(logging.DEBUG)
+    app_log.addHandler(catch)
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-ring-"))
+    try:
+        ring, pending = Spool(tmp / "recent", keep=2, ring=True), Spool(tmp / "pending", keep=2)
+        for i in range(3):
+            ring.save(b"x", float(i), "")
+            pending.save(b"x", float(i), "err")
+        assert len(ring.pending()) == 2 and len(pending.pending()) == 2
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+        shutil.rmtree(tmp, ignore_errors=True)
+    drops = sorted(r.levelname for r in records if "spool full" in r.getMessage())
+    assert drops == ["DEBUG", "WARNING"], drops
+    src = Path(main_mod.__file__).read_text("utf-8")
+    assert re.search(r"Spool\(paths\.RECENT_DIR, keep=cfg\.vocab\.keep_audio,\s+ring=True\)", src)
+
+
 def test_config_accepts_model_list_and_legacy_single_model() -> None:
     import tempfile
 
@@ -2134,6 +2173,96 @@ def test_the_paste_time_runs_from_the_release_to_the_chord() -> None:
     to_paste, released, done, _chord_at, line = run(stale=True)
     assert to_paste >= 1.55, line
     assert to_paste <= (done - released) + 0.05, (line, done - released)
+
+
+def test_the_recording_is_kept_behind_the_chord_and_the_stages_are_logged() -> None:
+    """The 2026-11-09 audit, dictation-speed F8 and F1. recent\\ was saved
+    in FRONT of the paste — the wav, the sidecar and the ring's trim, 6-11
+    ms p50 on this PC — with a "spool full" WARNING on 411 of 419 pastes;
+    it is saved BEHIND the chord now, on every way out of the paste (one
+    that landed, one whose focus moved), and the ring's drop is DEBUG. And
+    the pasted line carries the stages of the wait — the language check
+    and the decoder that last_timing measured on every dictation and
+    nobody wrote down — as numbers only."""
+    import logging
+
+    import main as main_mod
+    from recorder import frames_to_wav
+    from spool import Spool
+
+    class _Timed(_Flaky):
+        last_timing = {"detect_s": 0.183, "decode_s": 0.351}
+
+    at_chord: list[int] = []
+    records: list[logging.LogRecord] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    class _Watch(_FakeInjector):
+        moves = False
+
+        def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                                marker=None):
+            at_chord.append(len(app.recent.pending()))
+            if self.moves:
+                self.focus = 1          # he clicked somewhere else
+            return super().replace_placeholder(placeholder, text, chord,
+                                               delay, hwnd, marker)
+
+        def inject(self, text, chord, delay):
+            at_chord.append(len(app.recent.pending()))
+            return super().inject(text, chord, delay)
+
+    app_log = logging.getLogger("app")
+    catch = _Catch(level=logging.DEBUG)
+    level = app_log.level
+    app_log.setLevel(logging.DEBUG)
+    app_log.addHandler(catch)
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-keep-"))
+    fake = _Watch()
+    wav = frames_to_wav([np.zeros(1600, dtype=np.int16)], 16000)
+    try:
+        with _patched(main_mod, "injector", fake):
+            app = _worker_app(_Timed(fail_times=0, text="שלום לכולם"), tmp)
+            app.recent = Spool(tmp / "recent", keep=1, ring=True)
+            first = app.recent.save(wav, 1.0, "")       # the ring is full
+            app._handle(wav, 2.0, fake.focus, released=time.monotonic() - 0.5)
+            assert at_chord == [1], at_chord    # nothing new before the chord
+            [kept] = app.recent.pending()
+            assert kept.wav_path != first.wav_path, "the oldest stays"
+            assert app._last["wav"] == str(kept.wav_path), app._last
+            # the focus moved: the text goes to the clipboard, the
+            # recording is still kept, after the attempt
+            fake.moves = True
+            app._handle(wav, 3.0, fake.focus)    # a later name in the ring
+            assert at_chord == [1, 1], at_chord
+            assert ("clipboard", "שלום לכולם") in fake.calls, fake.calls
+            [kept2] = app.recent.pending()
+            assert kept2.wav_path != kept.wav_path
+            assert app._last["wav"] == str(kept2.wav_path), app._last
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+        shutil.rmtree(tmp, ignore_errors=True)
+    drops = [r for r in records if "spool full" in r.getMessage()]
+    assert len(drops) == 2 and all(r.levelno == logging.DEBUG for r in drops), \
+        [(r.levelname, r.getMessage()) for r in drops]
+    pasted = [r.getMessage() for r in records if r.getMessage().startswith("pasted ")]
+    assert len(pasted) == 1, pasted
+    line = pasted[0]
+    assert re.search(r"\(\d+\.\d s to the paste via \S+: \d+\.\d s decode, "
+                     r"\d+\.\d s repair;", line), line
+    assert " — stages (s): queue 0.5" in line, line
+    for stage in ("language check 0.18", "decoder 0.35", "marker wait ",
+                  "hands off "):
+        assert stage in line, (stage, line)
+    assert re.search(r", paste \d+\.\d\d$", line), line
+    assert "rolling wait" not in line, "no rolling, no stage for it"
+    assert not re.search("[֐-׿]", line), "a word of the dictation in app.log"
+    assert main_mod.stage_line() == ""
+    assert main_mod.stage_line(a=None, b_c=1.234) == "stages (s): b c 1.23"
 
 
 def test_a_marker_thread_that_will_not_start_does_not_lose_the_dictation() -> None:
@@ -28524,6 +28653,42 @@ class _NoCorpus:
         return False
 
 
+def test_the_second_reading_waits_out_a_grace_after_the_paste() -> None:
+    """The 2026-11-09 audit, dictation-speed F7: the reading began within
+    one 0.2 s poll of the paste, and its first decode (beam 8, the whole
+    clip) holds the model for up to 6.5 s — a short phrase released inside
+    it waits. Before a reading STARTS, quiet must now hold for grace_s
+    without a break, and a press inside it (quiet going False) starts the
+    count again. grace_s 0 is the old wait exactly; the app passes
+    GRACE_S; the checks between decodes keep the old quiet."""
+    import main as main_mod
+    import review as review_mod
+
+    def engine(quiet, grace_s):
+        e = review_mod.Engine.__new__(review_mod.Engine)
+        e._stop, e._quiet, e._grace_s = threading.Event(), quiet, grace_s
+        return e
+
+    def timed(e, limit_s=10.0):
+        began = time.monotonic()
+        e._wait_quiet(limit_s)
+        return time.monotonic() - began
+
+    assert timed(engine(lambda: True, 0.0)) < 0.1, "no grace: the old wait"
+    waited = timed(engine(lambda: True, 0.6))
+    assert 0.55 <= waited < 1.0, waited
+    # a press at 0.3-0.7 s: the count starts again when it is over
+    t0 = time.monotonic()
+    waited = timed(engine(lambda: not (0.3 <= time.monotonic() - t0 < 0.7), 0.6))
+    assert 1.28 <= waited < 2.0, waited
+    # never past the bound, however busy he is
+    assert timed(engine(lambda: False, 0.6), limit_s=0.5) < 0.9
+    assert review_mod.GRACE_S >= 2.0
+    src = Path(main_mod.__file__).read_text("utf-8")
+    assert "grace_s=review_mod.GRACE_S" in src
+    assert review_mod.Engine.__init__.__kwdefaults__["grace_s"] == 0.0
+
+
 def test_the_sidecar_keeps_what_the_three_readings_actually_said() -> None:
     """A reading that proposes nothing is exactly when the evidence
     matters. On 2026-09-05 the worst clip of the day — an English
@@ -29927,6 +30092,34 @@ def test_the_hold_pins_the_timers_and_puts_them_back() -> None:
         assert not (Path(d) / awake_mod.STATE_NAME).exists(), "marker left"
         record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
         assert "pinned to never" in record and "timers restored" in record, record
+
+
+def test_awake_log_is_cut_back_to_its_tail_at_a_line() -> None:
+    """awake.log was the one log nothing trimmed: 2.7 MB, 8,444 lines on
+    2026-11-10, a vitals line every 10 minutes since 2026-09-17. Past
+    LOG_MAX it is cut to its last LOG_KEEP bytes, from the next whole line
+    — the newest lines kept, the oldest gone, no half line at the top.
+    recover() writes through the same _append."""
+    import awake as awake_mod
+
+    assert awake_mod.LOG_MAX >= 2 * awake_mod.LOG_KEEP >= 200_000
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        path = Path(d) / awake_mod.LOG_NAME
+        e = awake_mod.Engine.__new__(awake_mod.Engine)
+        e.log_path = path
+        with _patched(awake_mod, "LOG_MAX", 2000), _patched(awake_mod, "LOG_KEEP", 900):
+            for i in range(200):
+                e._log(f"  vitals | line {i:03d} " + "x" * 20)
+                assert path.stat().st_size <= 2000 + 100, (i, path.stat().st_size)
+            lines = path.read_text("utf-8").splitlines()
+            assert lines[-1].endswith("line 199 " + "x" * 20), lines[-1]
+            assert all(re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \| ", l) for l in lines), lines[:2]
+            numbers = [int(re.search(r"line (\d{3})", l).group(1)) for l in lines]
+            assert numbers == list(range(numbers[0], 200)) and numbers[0] > 100, numbers[:3]
+            path.write_bytes(b"y" * 5000)        # one long line, no newline in the tail
+            e._log("after the cut")
+            assert path.read_text("utf-8").splitlines()[-1].endswith("| after the cut")
+            assert path.stat().st_size < 100, path.stat().st_size
 
 
 def test_a_leftover_awake_marker_is_recovered_at_the_next_start() -> None:
