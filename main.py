@@ -1756,9 +1756,11 @@ class App:
         From the painter's thread or the hook's — so this only enqueues;
         the learning runs on the review thread."""
         # Out of the card's line at once, whichever door it came through:
-        # the engine may be minutes behind on a reading, and until it
+        # the engine may be in the middle of a reading, and until it
         # writes the verdict the file still says "pending".
-        self.review_card.drop(sid)
+        card = getattr(self, "review_card", None)
+        if card is not None:
+            card.drop(sid)
         engine = getattr(self, "_review", None)
         if engine is not None:
             engine.decide(sid, verdict, by="card")
