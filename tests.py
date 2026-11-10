@@ -7148,7 +7148,9 @@ def test_a_leaving_waits_for_the_app_and_finishes_before_the_door_binds() -> Non
         return sum(1 for c in fake.calls if c["path"] == "rest/v1/devices" and c["method"] == "POST")
 
     started = (REPO / "main.py").read_text("utf-8")
-    started = started[started.index("    def start(self) -> None:"):]
+    # "def start(self" and not the whole line: keys-before-model gave start()
+    # keyword arguments, and the anchor is the method, not its signature.
+    started = started[started.index("    def start(self"):]
     assert started.index("self._settle_left()") < started.index("self._doors()")
 
     try:
