@@ -179,6 +179,11 @@ ACCOUNT_DOS = {"google": "opening the browser",
 #: The lock verbs (dashboard._paint_lock) and what each says when it worked.
 LOCK_DOS = {"approve": "approving", "decline": "declined", "same_code": "noted",
             "lock_answer": None, "lock_restore": "put back"}
+#: Under a request to join (deskweb.JOIN_ONLY_IF, the same words): the
+#: name on it is the asker's own, and the code protects only a person
+#: looking at the new device (audit 2026-11-09, F10).
+JOIN_ONLY_IF = ("Approve only if you are adding this device yourself, right now, "
+                "and its screen shows the same code.")
 #: Files a button opens, by the name the page knows them by.
 FILES = ("app_log", "settings", "folder", "transcripts", "network_log")
 #: The papers on About (dashboard._about_rows), in its order.
@@ -1101,7 +1106,7 @@ class Place:
             ask = lock["pending"][0]
             said = f"{ask.get('name') or 'Another device'} signed in to your account and asks to join."
             said_code = str(ask.get("code") or "")
-            said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
+            said_sub = (f"{JOIN_ONLY_IF} "
                         "It then gets your account's key: your cloud keys and what you "
                         "said open there too.")
             buttons = [{"label": "Approve", "do": "lock.do", "arg": ["approve", str(ask.get("id") or "")]},

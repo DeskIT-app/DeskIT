@@ -161,6 +161,12 @@ POLL_MS = 800
 # deadline on purpose: shorter, and the desk would come back over a
 # light that is still up.
 DOT_WAIT_S = 210.0
+# Under every request to join that has an Approve (Home, the Account card;
+# deskweb.JOIN_ONLY_IF holds the same words): the name on a request is the
+# asker's own word, and the code protects only a person who is looking at
+# the new device (audit 2026-11-09, security-server F10).
+JOIN_ONLY_IF = ("Approve only if you are adding this device yourself, right now, "
+                "and its screen shows the same code.")
 # THE PILE IS AS TALL AS ITS ROWS. It was a fixed 286 px card with a
 # scroller inside it and "+N more", and the owner's photograph of it
 # on 2026-09-07 was rows in the middle of an empty card: the card grew
@@ -8057,9 +8063,8 @@ class Dashboard:
                 "eyebrow": "Your account", "eyebrow_right": False,
                 "text": f"{name} asks to join your account — its screen must show "
                         f"{ask.get('code') or '?'}",
-                "note": "Approve only if the code is exactly that. It then gets your account's "
-                        "key: your cloud keys and what you said open there too, and the key "
-                        "crosses sealed — the server cannot read it.",
+                # two lines on Home: the rule first, what it hands over after
+                "note": f"{JOIN_ONLY_IF} It then opens what you said and your cloud keys.",
                 "buttons": [("Approve", "gold",
                              lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                             ("Not now", "quiet",
@@ -8203,8 +8208,8 @@ class Dashboard:
             key = ("twins", ask.get("id"))
         elif pending:
             ask = pending[0]
-            text = (f"{ask.get('name') or 'Another device'} asks to join your account — "
-                    f"its screen must show  {ask.get('code') or '?'}")
+            text = (f"{ask.get('name') or 'Another device'} asks to join your account — only if "
+                    f"you are adding it right now: its screen shows  {ask.get('code') or '?'}")
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                        ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
             key = ("pending", ask.get("id"), ask.get("code"))
@@ -8356,7 +8361,7 @@ class Dashboard:
             ask = lock["pending"][0]
             said = f"{ask.get('name') or 'Another device'} signed in to your account and asks to join."
             said_code = str(ask.get("code") or "")
-            said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
+            said_sub = (f"{JOIN_ONLY_IF} "
                         "It then gets your account's key: your cloud keys and what you "
                         "said open there too.")
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),

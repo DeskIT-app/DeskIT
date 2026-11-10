@@ -168,7 +168,7 @@
     <string name="it_was_me">It was me</string>
     <string name="refused_title">Paused on this phone</string>
     <string name="refused_line">On your PC, press Sign out of every PC.</string>
-    <string name="asking_title">%1$s asks to join. Same code on its screen?</string>
+    <string name="asking_title">%1$s asks to join. Approve only if you are adding it yourself right now and its screen shows this code.</string>
     <string name="asking_more">It gets your account\'s key: your cloud keys and what you said open there too. The key crosses sealed, so the server can\'t read it.</string>
     <string name="approve">Approve</string>
     <string name="not_now">Not now</string>

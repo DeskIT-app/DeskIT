@@ -2345,6 +2345,7 @@ class App:
                             "title": ("A device asks to join your account" if rtl
                                       else f"{name} asks to join your account"),
                             "body": f"Its screen must show {request.get('code') or '?'}. "
+                                    f"Approve only if you are adding it yourself right now. "
                                     f"Open the desk: Approve or Not now on Home.",
                             "app": "DeskIT", "link": notify_mod.DESK_LINK})
         except Exception:                                    # noqa: BLE001

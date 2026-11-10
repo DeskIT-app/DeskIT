@@ -50621,6 +50621,119 @@ def test_dictation_does_not_starve_the_fifteen_minute_pass():
     assert sb._plan_turn(plan, set(), 1000.0 + 7310.0, False) is None, "a wait that ran out"
 
 
+def _worker_day(live_since, hours: float = 24.0, dictate_every: float | None = None) -> list[float]:
+    """start_worker's loop over a clock that is only numbers: when each whole
+    pass ran. ``live_since(t)`` is the socket's join time at t, or None; a
+    dictation nudges ``history`` every ``dictate_every`` seconds."""
+    import sb
+
+    plan: dict = {}
+    fulls: list[float] = []
+    t = sb.FIRST_DELAY_S
+    nudge = t + dictate_every if dictate_every else float("inf")
+    while t < hours * 3600:
+        named = set()
+        if t >= nudge:
+            named, nudge = {"history"}, t + dictate_every
+        if sb._plan_turn(plan, named, t, False, live_since(t)) is None:
+            fulls.append(t)
+        ended = t
+        while True:                        # the wait, the way the loop takes it
+            left = sb._plan_wait(plan, t, False, live_since(t)) - (t - ended)
+            if left <= 0:
+                break
+            step = min(left, sb.PACE_CHECK_S, max(nudge - t, 0.0))
+            t += step
+            if t >= nudge:
+                break
+    return fulls
+
+
+def test_a_live_socket_makes_the_safety_pass_hourly_and_a_drop_brings_back_the_quarter():
+    """footprint F2 (audit 2026-11-09): an idle hour was 36 requests to the
+    account server, 4 whole passes of 8 and the socket's hourly reconnect,
+    about 870 a day, while the live socket already brings every change from
+    another device. While the socket has been joined since the last whole
+    pass, the pass comes every CADENCE_LIVE_S; the moment it is not — no
+    socket, or one that dropped and came back, whose gap may have swallowed
+    a broadcast — it is CADENCE_S again, counted from the last pass, and the
+    worker sees that within PACE_CHECK_S."""
+    import sb
+
+    assert sb.CADENCE_LIVE_S == 3600.0 and sb.CADENCE_S == 900.0 and sb.PACE_CHECK_S <= 60.0
+    per_pass = 8                         # account 4, sync 3, history 1 (network.log, 2026-11-09)
+    without = _worker_day(lambda t: None)
+    held = _worker_day(lambda t: 0.0)
+    assert len(without) == 96 and len(held) == 24, (len(without), len(held))
+    print(f"    an idle day: {len(without) * per_pass} requests of whole passes without the "
+          f"socket, {len(held) * per_pass} with it")
+    # the socket as app.log shows it: dropped 3,600 s after each join, back 6 s later
+    def hourly(t):
+        k, into = divmod(t, 3606.0)
+        return None if into >= 3600.0 else k * 3606.0
+    assert len(_worker_day(hourly)) <= 26, len(_worker_day(hourly))
+    # it dies for good at 05:00: from the next minute on, the quarter again
+    dies = _worker_day(lambda t: 0.0 if t < 5 * 3600 else None)
+    after = [f for f in dies if f > 5 * 3600]
+    assert after and after[0] - 5 * 3600 <= sb.PACE_CHECK_S, after[:2]
+    assert all(b - a <= sb.CADENCE_S + 1 for a, b in zip(after, after[1:])), after
+    # dictating every minute: the nudges stay small, the whole pass stays hourly
+    busy = _worker_day(lambda t: 0.0, hours=2, dictate_every=60.0)
+    assert len(busy) == 2, busy
+    # the pure rule
+    assert sb._pace({"full": 100.0}, 50.0) == sb.CADENCE_LIVE_S
+    assert sb._pace({"full": 100.0}, 150.0) == sb.CADENCE_S, "a socket that came back after the pass"
+    assert sb._pace({"full": 100.0}, None) == sb.CADENCE_S and sb._pace({}, 0.0) == sb.CADENCE_S
+    assert sb._plan_wait({"full": 100.0}, 200.0, True, 50.0) == sb.PAIRING_POLL_S, "waiting is its own"
+
+
+def test_the_live_channel_renews_its_token_a_heartbeat_before_it_runs_out():
+    """app.log 2026-11-07..10: the channel dropped (phx_close) 57 times in
+    61 joins, each 3,600 s after its join. The token it was joined with ran
+    out, and _fresh's 10 s margin fell between two heartbeats 25 s apart, so
+    the renewed token came after the channel had closed: a new socket every
+    hour and a few seconds no broadcast reached. A heartbeat that finds less
+    than one more heartbeat (and the margin) left renews the token and sends
+    it on the channel before the old one runs out."""
+    import net as net_mod
+    import sb
+    import secretstore
+
+    try:
+        with _fixture_project() as fake, _consented("account"), \
+                _patched(sb, "LIVE_HEARTBEAT_S", 2.0), _patched(sb, "REFRESH_MARGIN_S", 0.2), \
+                _patched(sb, "LIVE_RETRY_S", (30.0,)), _patched(sb, "LIVE_ENABLED", True):
+            session = fake.session("p@example.com")
+            expires = time.time() + 3.5      # the first heartbeat finds 0.5-1.5 s left
+            session["expires_at"] = expires
+            secretstore.set("supabase_session", json.dumps(session))
+            sb.forget_cache()
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="", asked=False)
+            server = _FakeRealtime()
+            with _patched(net_mod, "_ws_connect", server.connect):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert server.joined.wait(5), "no join"
+                seen: list = []
+                deadline = time.monotonic() + 8
+                while not seen and time.monotonic() < deadline:
+                    seen = [m for m in server.got if m.get("event") == "access_token"]
+                    time.sleep(0.02)
+                renewed_at = time.time()
+                assert seen, "the renewed token never went on the channel"
+                assert renewed_at < expires, f"the token went {renewed_at - expires:.2f} s after it ran out"
+                assert fake.refreshes == 1, fake.refreshes
+                assert seen[0]["topic"] == f"realtime:user:{fake.UID}", seen[0]
+                assert seen[0]["payload"]["access_token"] == fake.TOKEN + "1", "not the renewed token"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+
+
 def test_a_pc_left_waiting_backs_off_and_asks_for_nothing_else():
     """Waiting to be approved it looked every 5 s for as long as it waited,
     with the settings and the words each turn: one copy left waiting was 2,880
@@ -51903,6 +52016,55 @@ def test_a_waiting_pc_says_a_phone_can_approve_it():
     assert "another device of yours" in model._lock_rows()[0]["note"]
 
 
+def test_a_request_to_join_says_approve_only_if_you_are_adding_it_now():
+    """Audit 2026-11-09 (security-server F10): the name on a request to
+    join is the asker's own word, and the code protects only a person who
+    is looking at the new device — a stolen session can ask as "Yoav's
+    laptop". So every place that offers Approve says first, in plain words,
+    to approve only if you are adding a device yourself right now: Home's
+    row in both desks (within the two lines Home shows), the banner over
+    the other places, the Settings card, and the notification."""
+    import dashboard
+    import desk_settings
+    import deskweb
+
+    assert dashboard.JOIN_ONLY_IF == deskweb.JOIN_ONLY_IF == desk_settings.JOIN_ONLY_IF
+    assert "only if you are adding" in deskweb.JOIN_ONLY_IF and "right now" in deskweb.JOIN_ONLY_IF
+    lock = {"state": "have", "id": "d8de920c", "code": "", "recovery": True, "error": "",
+            "changed": None, "pending": [{"id": "req-9", "name": "Yoav's laptop",
+                                          "code": "H7QM3-K2P9X", "created_at": ""}]}
+    board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    board.running = True
+    board.screen = "Said"
+    board.status = {"account": {"signed_in": True, "configured": True, "lock": lock}}
+    model = deskweb.Model.__new__(deskweb.Model)
+    model.running = True
+    model.status = board.status
+    model._lock_fresh, model._lock_typing, model._lock_asking = "", False, False
+    for desk, rows in (("tk", board._waiting_lock()), ("web", model._lock_rows())):
+        assert len(rows) == 1, (desk, rows)
+        note = rows[0]["note"]
+        assert note.startswith(deskweb.JOIN_ONLY_IF), (desk, note)
+        assert len(note) <= 150, f"{desk}: Home shows two lines of a note: {note}"
+        assert rows[0]["text"].startswith("Yoav's laptop asks to join your account")
+        assert "H7QM3-K2P9X" in rows[0]["text"]
+    banner = model._banner()
+    assert "only if you are adding it right now" in banner["text"] and "H7QM3-K2P9X" in banner["text"]
+    assert [b["label"] for b in banner["buttons"]] == ["Approve", "Not now"]
+    place = desk_settings.Place.__new__(desk_settings.Place)
+    place.running, place.status = True, board.status
+    place._lock_mode, place._lock_fresh = "", ""
+    card = place._card_lock(None)
+    assert card["code"] == "H7QM3-K2P9X" and card["sub"].startswith(desk_settings.JOIN_ONLY_IF), card
+    assert [b["label"] for b in card["buttons"]] == ["Approve", "Not now"]
+    # the phone approves a PC too, and its card's "more" is folded: the title says it
+    strings = (REPO / "android" / "app" / "src" / "main" / "res" / "values" / "strings.xml").read_text("utf-8")
+    title = re.search(r'<string name="asking_title">([^<]*)</string>', strings).group(1)
+    assert "Approve only if you are adding it yourself right now" in title, title
+    # the Tk banner and the Tk card are drawn, and read, in
+    # test_the_lock_card_on_the_privacy_tab
+
+
 def test_migration_0007_gives_a_device_its_link_and_forget_its_limits():
     """Static, and the coordinator dry-runs it before it is applied. The
     columns are under is_sealed() and a type, so no regex bound can hit
@@ -53155,10 +53317,10 @@ def test_sync_serializer_drops_sync_false():
              "capture.clip_folder", "dot.corner", "dot.x", "shelf.scale", "notify.enabled",
              "awake.screens_hotkey", "polish.ollama_model", "translate.ollama_url",
              "visual_qa.ollama_model", "updates.last_check", "setup.done", "account.device_id",
-             "sync.cursor", "review.local_model"]
+             "sync.cursor", "review.local_model", "history.keep_days"]
     travel = ["polish.when", "polish.groq_model", "gemini.models", "punctuate.auto",
               "vocab.enabled", "vocab.replace_after_hits", "review.enabled", "max_seconds",
-              "history.keep_days", "capture.copy_clip_path", "capture.always_save",
+              "capture.copy_clip_path", "capture.always_save",
               "lookup.model", "translate.target", "shelf.enabled", "auto_pause_fullscreen"]
     for key in local:
         assert not sync_mod.syncable(key), f"{key} would leave the PC"
@@ -53183,6 +53345,49 @@ def test_sync_serializer_drops_sync_false():
         pass
     else:
         raise AssertionError("a 70 KB blob was accepted")
+
+
+def test_a_setting_that_deletes_or_exposes_never_travels():
+    """sync.NEVER_SYNC (audit 2026-11-09, security-server F2): the settings
+    blob is plaintext and the server, or a stolen session, can write it, so
+    a value that would delete or expose something on the PC it lands on
+    never leaves and is ignored when it arrives: `history.keep_days = 1`
+    pruned transcripts.log to a day on every installed copy, and a line
+    break in the "..." marker is pasted into a terminal. Both ways, through
+    the real _sync_settings against the fake project."""
+    import sb
+    import sync as sync_mod
+
+    assert sync_mod.NEVER_SYNC == {"history.keep_days", "study.corpus_keep", "vocab.keep_audio",
+                                   "problems.keep_resolved", "feedback.placeholder"}
+    for key in sync_mod.NEVER_SYNC:
+        assert key in _config_paths(), f"{key} is not in defaults.toml: the rule guards nothing"
+        assert not sync_mod.syncable(key), key
+    mine = {"history.keep_days": 90, "study.corpus_keep": 400, "vocab.keep_audio": 50,
+            "problems.keep_resolved": 200, "feedback.placeholder": "...", "polish.when": "never"}
+    assert sync_mod.settings_payload(mine) == {"polish.when": "never"}
+    hostile = {"history.keep_days": 1, "study.corpus_keep": 0, "vocab.keep_audio": 0,
+               "problems.keep_resolved": 0, "feedback.placeholder": "x\r\ndel /q *\r\n",
+               "polish.when": "cloud"}
+    assert sync_mod.merge_settings(mine, hostile) == dict(mine, **{"polish.when": "cloud"})
+    defaults = config_mod.defaults_flat()
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"):
+            sb.sign_in_anonymous()
+            config_mod.save({"history.keep_days": 90, "polish.when": "never"})
+            assert sb.sync_now(only=["settings"])["settings"] == "pushed"
+            pushed = fake.tables["settings_sync"][0]["json"]
+            assert pushed.get("polish.when") == "never" and "history.keep_days" not in pushed, pushed
+            # the server writes the blob a hostile hand would
+            fake.tables["settings_sync"][0].update(json=hostile, updated_at="2026-11-10T10:00:00+00:00")
+            assert sb.sync_now(only=["settings"])["settings"] == "pulled"
+            here = config_mod.read_settings(paths.SETTINGS_FILE)
+            assert here.get("history.keep_days") == 90, here
+            assert not set(here) & (sync_mod.NEVER_SYNC - {"history.keep_days"}), here
+            assert here.get("polish.when") == "cloud", "a setting that is the person's still follows"
+            assert config_mod.load_layered().history.keep_days == 90
+    finally:
+        config_mod.save({k: defaults[k] for k in ("history.keep_days", "polish.when")})
 
 
 def test_sync_vocab_merges_as_a_union_with_tombstones():
@@ -53737,6 +53942,94 @@ def test_google_signin_round_trip_and_delete_me():
             assert not __import__("sync").cursor_path().exists()
             assert list(outbox.iterdir()) == []
             assert sb.status()["signed_in"] is False
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_delete_my_account_stops_while_report_files_are_left_on_the_server():
+    """Audit A16 (2026-11-09): Delete my account swallowed a failed storage
+    purge, read only the first 1000 names, took a refused list for an empty
+    folder and never read the delete's status — and then called delete_me,
+    after which nobody can reach reports/<uid>/ again, while the desk said
+    "nothing of yours is left on the server". Now a list or a delete the
+    server refuses, or a file still listed after the delete, stops BEFORE
+    delete_me with STORAGE_LEFT_WORDS: still signed in, nothing here wiped,
+    and the same press tries again. A folder past a page is read and
+    removed a page at a time."""
+    import net as net_mod
+    import sb
+    import secretstore
+
+    class Bucket:
+        """The reports bucket in memory in front of the fake project."""
+
+        def __init__(self, fake, files):
+            self.fake, self.files = fake, set(files)
+            self.refuse_list = self.refuse_delete = False
+            self.sticky: set = set()
+            self.deletes: list[int] = []
+
+        def __call__(self, method, url, headers, body, timeout_s):
+            path = urllib_parse.urlsplit(url).path.lstrip("/")
+            if path == "storage/v1/object/list/reports":
+                if self.refuse_list:
+                    return _FakeRaw(b'{"message":"the storage is busy"}', 503)
+                ask = json.loads(body)
+                under = ask["prefix"].rstrip("/") + "/"
+                names = sorted({f[len(under):].split("/")[0] for f in self.files if f.startswith(under)})
+                page = names[ask["offset"]:ask["offset"] + ask["limit"]]
+                return _FakeRaw(json.dumps([{"name": n} for n in page]).encode(), 200)
+            if path == "storage/v1/object/reports" and method == "DELETE":
+                if self.refuse_delete:
+                    return _FakeRaw(b'{"message":"internal error"}', 500)
+                names = json.loads(body)["prefixes"]
+                self.deletes.append(len(names))
+                self.files -= set(names) - self.sticky
+                return _FakeRaw(json.dumps([{"name": n} for n in names]).encode(), 200)
+            return self.fake(method, url, headers, body, timeout_s)
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-delete-left-"))
+    try:
+        outbox = d / "outbox"
+        outbox.mkdir()
+        queued = outbox / "aaaaaaaa-0000-0000-0000-00000000000b.json"
+        queued.write_text("{}", "utf-8")
+        with _fixture_project() as fake, _consented("account"), _patched(paths, "OUTBOX_DIR", outbox):
+            sb.sign_in_anonymous()
+            files = [f"{fake.UID}/r{i}/{name}" for i in range(3) for name in ("shot.jpg", "dictation.wav")]
+            bucket = Bucket(fake, files)
+            with _patched(net_mod, "_connect", bucket), _patched(sb, "STORAGE_PAGE", 2):
+                for why in ("refuse_delete", "refuse_list", "sticky"):
+                    bucket.refuse_list = why == "refuse_list"
+                    bucket.refuse_delete = why == "refuse_delete"
+                    bucket.sticky = {files[0]} if why == "sticky" else set()
+                    try:
+                        sb.delete_account()
+                    except sb.AccountError as e:
+                        said = str(e)
+                    else:
+                        raise AssertionError(f"{why}: the account was deleted with files left")
+                    assert said == sb.STORAGE_LEFT_WORDS.format(n=1 if why == "sticky" else "some"), (why, said)
+                    assert len(said) <= 200, "the desk cuts last_error at 200"
+                    assert not fake.deleted, f"{why}: delete_me ran with files left"
+                    assert sb.signed_in() and secretstore.get("supabase_session"), why
+                    assert queued.exists(), f"{why}: the outbox went with an account that stayed"
+                assert bucket.files == {files[0]}, bucket.files
+                # the press again, with the server well: everything, page by page
+                bucket.sticky = set()
+                bucket.deletes.clear()
+                sb.delete_account()
+                assert bucket.files == set() and bucket.deletes == [1], bucket.deletes
+                assert fake.deleted and not sb.signed_in()
+                assert list(outbox.iterdir()) == []
+            # a folder of five reports: listed in pages of two, removed in pages of two
+            fake.deleted = False
+            sb.sign_in_anonymous()
+            bucket = Bucket(fake, [f"{fake.UID}/r{i}/shot.jpg" for i in range(5)])
+            with _patched(net_mod, "_connect", bucket), _patched(sb, "STORAGE_PAGE", 2):
+                sb.delete_account()
+            assert bucket.files == set() and bucket.deletes == [2, 2, 1], bucket.deletes
+            assert fake.deleted
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -54790,6 +55083,7 @@ def test_the_lock_over_the_pipe_and_the_join_notification():
         note = received[0]
         assert note["source"] == "account" and note["kind"] == "input"
         assert note["title"] == "laptop asks to join your account" and "H7QM-3K2P" in note["body"]
+        assert "only if you are adding it yourself right now" in note["body"], note["body"]
         # a name that would turn the line around stays out of the one-line title
         app._pairing_asked({**request, "id": "req-10", "name": "ה-Yoav של S26 Ultra"})
         assert received[-1]["title"] == "A device asks to join your account", received[-1]
@@ -55050,6 +55344,7 @@ def test_the_lock_card_on_the_privacy_tab():
                                "pending": [{"id": "req-9", "name": "laptop", "code": "H7QM-3K2P", "created_at": ""}]}
             board._paint_lock()
             assert line.cget("text").startswith("laptop signed in") and code.cget("text") == "H7QM-3K2P"
+            assert sub.cget("text").startswith(__import__("dashboard").JOIN_ONLY_IF), sub.cget("text")
             assert labels() == ["Approve", "Not now"]
             board.parts["lock_strip"].winfo_children()[0]._command()
             assert sent[-1][1] == {"do": "approve", "kind": "req-9"}
@@ -55079,6 +55374,7 @@ def test_the_lock_card_on_the_privacy_tab():
             words = [w.cget("text") for w in board._lock_banner_card.body.winfo_children()
                      if w.winfo_class() == "Label"]
             assert any("laptop asks to join" in t and "H7QM-3K2P" in t for t in words), words
+            assert any("only if you are adding it right now" in t for t in words), words
             board._show("Home")
             board._fill_waiting()
             board._lock_tick()

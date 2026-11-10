@@ -71,6 +71,12 @@ log = logging.getLogger("app")
 #: The bar's places, in the Tk desk's order (dashboard.NAV) — every one
 #: drawn here.
 PLACES = ("Home", "Corrections", "Said", "Keys", "Settings")
+#: The line under every request to join that has an Approve (Home, the
+#: Settings card; the same words in dashboard.py and desk_settings.py). The
+#: name on a request is the asker's own word, and the code protects only a
+#: person who is looking at the new device (audit 2026-11-09, F10).
+JOIN_ONLY_IF = ("Approve only if you are adding this device yourself, right now, "
+                "and its screen shows the same code.")
 #: The most Home holds (dashboard.PILE_CAP).
 PILE_CAP = 3
 #: The page is drawn for this client area (the Tk desk's W, H).
@@ -862,9 +868,8 @@ class Model:
                 f"lock:ask:{ident}", now + 1, "warn",
                 f"{name} asks to join your account — its screen must show "
                 f"{ask.get('code') or '?'}",
-                "Approve only if the code is exactly that. It then gets your account's key: "
-                "your cloud keys and what you said open there too, and the key crosses "
-                "sealed — the server cannot read it.",
+                # two lines on Home: the rule first, what it hands over after
+                f"{JOIN_ONLY_IF} It then opens what you said and your cloud keys.",
                 [{"label": "Approve", "tone": "primary", "act": "lock.approve", "arg": ident},
                  {"label": "Not now", "tone": "quiet", "act": "lock.decline", "arg": ident}]))
         if lock.get("state") == "waiting":
@@ -990,7 +995,8 @@ class Model:
             ask = pending[0]
             ident = str(ask.get("id") or "")
             return {"text": f"{ask.get('name') or 'Another device'} asks to join your account — "
-                            f"its screen must show {ask.get('code') or '?'}",
+                            f"only if you are adding it right now: its screen shows "
+                            f"{ask.get('code') or '?'}",
                     "buttons": [{"label": "Approve", "tone": "primary", "act": "lock.approve",
                                  "arg": ident},
                                 {"label": "Not now", "tone": "quiet", "act": "lock.decline",
