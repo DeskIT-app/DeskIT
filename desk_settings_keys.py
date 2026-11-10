@@ -63,11 +63,34 @@ class Keys:
         if row is None:
             kr = self._keyrow()
             there, source = kr.stored(name)
-            row = {"state": "open", "verdict": "", "say": "", "tone": "dim"}
+            row = {"state": "open", "verdict": "", "say": "", "tone": "dim",
+                   "source": source if there else ""}
             if there:
                 self._lock_row(row, name, ("kept", "dim"), kr._where(source))
             self._rows[name] = row
         return row
+
+    def _found(self, row: dict, name: str) -> None:
+        """Where the key is now, asked again after a press changed it
+        (a save puts it in the store; a refusal or Remove may leave only
+        the one in the environment). One read per press, never per poll."""
+        there, source = self._keyrow().stored(name)
+        row["source"] = source if there else ""
+
+    @staticmethod
+    def _storage(row: dict, name: str) -> str:
+        """secretstore.storage_sentence — but only where it is TRUE. It
+        says the key is in Windows Credential Manager, and a key read from
+        an environment variable or the developer's .env file is not: the
+        Gemini row read "Saved in environment variable …" over "This key
+        is stored in Windows Credential Manager" (the 2026-11-09 audit).
+        Then the row's own line is the one sentence. With no key yet it
+        stays: it says where a pasted key goes."""
+        import secretstore
+        source = row.get("source") or ""
+        if source and not source.startswith("Windows Credential Manager"):
+            return ""
+        return secretstore.storage_sentence(name)
 
     def _words(self, name: str, key: str, **fmt) -> str:
         kr = self._keyrow()
@@ -83,7 +106,6 @@ class Keys:
     def read(self) -> list[dict]:
         """What the card draws, provider by provider. No value, ever:
         the dots are keyrow.DOTS, the same string for every key."""
-        import secretstore
         kr = self._keyrow()
         out = []
         with self._lock:
@@ -102,7 +124,7 @@ class Keys:
                     "placeholder": kr.WORDS["placeholder"].format(label=label),
                     "buttons": [{"label": t, "do": d, "primary": p} for t, d, p in buttons],
                     "say": row["say"], "tone": row["tone"],
-                    "storage": secretstore.storage_sentence(name),
+                    "storage": self._storage(row, name),
                 })
         return out
 
@@ -200,6 +222,7 @@ class Keys:
             kept = word != "bad"
         with self._lock:
             row = self._row(name)
+            self._found(row, name)
             row["verdict"] = word
             if word == "ok":
                 self._lock_row(row, name, ("saved", "ok"))
@@ -225,5 +248,6 @@ class Keys:
                 return ""
             row["state"] = "open"
             row["say"], row["tone"] = ("no key" if had else "no key to remove"), "faint"
+            self._found(row, name)
         return (f"{name}: the key is gone from Windows Credential Manager"
                 if had else f"{name}: there was no key")

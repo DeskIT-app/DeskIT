@@ -193,7 +193,7 @@ function Day({ lines, act, go }: { lines: DayLine[]; act: Press; go: (place: str
             <span className={`x${l.rtl ? " he" : ""}`} dir={l.rtl ? "rtl" : "ltr"}>{l.text}</span>
             <span className="m">{l.meta}</span>
           </div>
-        )) : <div className="line empty"><span className="x">Nothing dictated yet.</span></div>}
+        )) : <div className="line empty"><span className="x">Nothing yet today.</span></div>}
       </div>
     </div>
   );

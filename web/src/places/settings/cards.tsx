@@ -421,7 +421,7 @@ function KeyLine({ k, press, pressed }: { k: KeyRow; press: Press; pressed: stri
              onClick={() => void press({ do: "key.remove", arg: { name: k.name } }, keyOf("key.remove", k.name))}>Remove</div>
       </div>
       {k.say ? <div className={`ksay ${k.tone}`}>{k.say}</div> : null}
-      <div className="store">{k.storage}</div>
+      {k.storage ? <div className="store">{k.storage}</div> : null}
     </div>
   );
 }
