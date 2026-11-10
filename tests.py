@@ -26012,6 +26012,33 @@ def test_the_shelf_opens_on_the_key_and_the_same_key_closes_it() -> None:
     assert app._shelf_stop_armed is False, "closing disarms Stop"
 
 
+def test_the_shelf_lists_no_problem_reports() -> None:
+    """Reading the reports back left the product on 2026-10-01 (MASTER.md
+    §8) and Home's pile has none; the shelf still listed every open one
+    with Open and Close — 24 of his on 2026-11-09 — so the two counted
+    different piles (the 2026-11-09 audit). An open report is not on the
+    panel, and a "problem.*" verb that still arrives does nothing."""
+    import main as main_mod
+    import problems as problems_mod
+
+    folder = Path(tempfile.mkdtemp(prefix="shelf-problems-", dir=_SCRATCH_HOME))
+    store = problems_mod.Store(folder / "problems.json")
+    item = store.add({"text": "the dot vanished"})
+    assert [i["id"] for i in store.items(problems_mod.OPEN)] == [item["id"]]
+    app = main_mod.App.__new__(main_mod.App)
+    app.notify = app._review = None
+    app.problems = store
+    assert app._shelf_pile() == [], "an open report is on the shelf"
+    assert len(app._shelf_stamps()) == 2, "the shelf still watches the reports"
+    pushed = []
+    app._shelf_push = lambda: pushed.append(1)
+    app._shelf_close = lambda: pushed.append("closed")
+    app._shelf_row("problem.close", item["id"])
+    app._shelf_row("problem.open", item["id"])
+    assert pushed == [] and store.items(problems_mod.OPEN)[0]["id"] == item["id"]
+    assert not any(v.startswith("problem.") for v in main_mod.App._SHELF_LEAVES)
+
+
 def test_esc_closes_the_shelf_wherever_the_pointer_is() -> None:
     """The one deliberate difference from the review and notify cards.
     Those arrive uninvited, so they only claim Esc with the pointer on
@@ -58139,7 +58166,8 @@ def test_the_web_desk_home_says_what_the_tk_home_says():
     with _web_desk(_WEB_STATUS) as (model, folder, _asked):
         nids, sids = _web_desk_fill(folder)
         home = model.home()
-        assert home["head"] == "Four things want an answer.", home["head"]
+        # two proposals ask; the two Claude finishes are news, not questions
+        assert home["head"] == "Two things want an answer.", home["head"]
         assert home["sub"] == "The newest three are here, and one more is waiting.", home["sub"]
         assert len(home["pile"]) == 3
         ats = [r["at"] for r in home["pile"]]
@@ -58151,11 +58179,12 @@ def test_the_web_desk_home_says_what_the_tk_home_says():
         bar = home["bar"]
         assert (bar["lamp"], bar["word"], bar["run"], bar["stop"], bar["screens"]) == \
             ("listen", "Listening", "Pause", True, "Screens off"), bar
-        assert bar["meta"] == "up 1h 01m", bar
+        assert bar["meta"] == "on for an hour", bar
         assert home["dismiss_key"] == ["Ctrl", "Alt", "M"]
         assert home["unread"] == 2
         doors = {d["place"]: d["n"] for d in home["doors"]}
-        assert doors["Corrections"] == 2 and doors["Keys"] == len(config_mod.HOTKEY_FIELDS), doors
+        # the keys bound in the status (two), not len(HOTKEY_FIELDS)
+        assert doors["Corrections"] == 2 and doors["Keys"] == 2, doors
         review = next(r for r in model.pile() if r["kind"] == "review")
         assert review["meta"].startswith("one word changed"), review["meta"]
         assert review["rtl"] is True
@@ -58168,6 +58197,132 @@ def test_the_web_desk_home_says_what_the_tk_home_says():
             ("Start", False, "not running", "idle"), bar
         assert home["head"] == "Nothing is waiting." and home["pile"] == []
         assert home["strip"]["awake"].startswith("Nothing is running"), home["strip"]
+
+
+def test_the_web_desk_title_counts_only_what_asks_and_the_doors_move():
+    """The 2026-11-09 audit: Home's title said "Three things want an
+    answer" over a Claude finish, which asks nothing, and the Keys and
+    Settings doors said 16 and 8 on every day of the year. The title
+    counts what asks (a request for input does; a finish is news and
+    stays in the pile); Keys counts the bindings set, Settings what waits
+    for him there; the bar says how long in plain rounded words."""
+    import deskweb
+    import notify as notify_mod
+
+    status = dict(_WEB_STATUS, keys={"hotkey": "right ctrl", "dismiss_hotkey": "ctrl+alt+m",
+                                     "camera_hotkey": ""})
+    with _web_desk(status) as (model, _folder, _asked):
+        note = notify_mod.Store(paths.NOTIFY_FILE)
+        note.add({"title": "Claude finished", "body": "Done.", "kind": "done",
+                  "source": "claude-code", "label": "Claude Code"})
+        home = model.home()
+        assert len(home["pile"]) == 1 and home["unread"] == 1, home["pile"]
+        assert home["head"] == "Nothing wants an answer.", home["head"]
+        assert home["sub"] == ("One thing is here to read, and nothing else needs you "
+                               "right now."), home["sub"]
+        note.add({"title": "Claude needs your permission", "body": "Run the tests?",
+                  "kind": "input", "source": "claude-code", "label": "Claude Code"})
+        model._kept.clear()
+        home = model.home()
+        assert home["head"] == "One thing wants an answer.", home["head"]
+        assert home["sub"] == ("It is here with one more to read, and nothing else needs "
+                               "you right now."), home["sub"]
+        doors = {d["place"]: d for d in home["doors"]}
+        assert doors["Keys"]["n"] == 2, "a key turned off is not lit on the board"
+        assert (doors["Settings"]["n"], doors["Settings"]["w"]) == (0, "to look at")
+        assert doors["Settings"]["note"].startswith("nothing waiting"), doors["Settings"]
+        # an update and a model to download wait on Settings; the downloads
+        # row has nothing to press and a message is not Settings'
+        items = [{"kind": "update", "buttons": [{"tone": "primary"}]},
+                 {"kind": "hardware", "buttons": [{"tone": "primary"}]},
+                 {"kind": "hardware", "buttons": []},
+                 {"kind": "keys", "buttons": [{"tone": "primary"}]},
+                 {"kind": "notify", "asks": False, "buttons": [{"tone": "quiet"}]}]
+        settings_door = [d for d in model._doors(items) if d["place"] == "Settings"][0]
+        assert settings_door["n"] == 3 and settings_door["note"].startswith("waiting there")
+        assert [deskweb.asks(i) for i in items] == [True, True, False, True, False]
+    assert [deskweb.running_for(s) for s in (30, 600, 3700, 7 * 3600, 60 * 3600 + 1320)] == [
+        "just started", "on for 10 minutes", "on for an hour", "on for 7 hours", "on for 2 days"]
+
+
+def test_the_web_desk_rest_of_the_day_is_today():
+    """"The rest of the day" showed the newest dictation, picture and
+    look-up whatever their date — a picture from 2026-10-24 beside
+    "0 today" (the 2026-11-09 audit). Only today's are drawn now; the
+    picture folder is found where capture.py saves into it (the default
+    names Windows' Pictures, which a bare Path never found); and the Said
+    door counts a day busier than the hundred events the page holds."""
+    import datetime as dt
+    import types
+
+    import deskweb
+    import history as history_mod
+
+    pics = Path(tempfile.mkdtemp(prefix="webdesk-pics-", dir=_SCRATCH_HOME))
+    shots = pics / "DeskIT"
+    shots.mkdir()
+    old = shots / "shot old.png"
+    old.write_bytes(b"old")
+    then = time.time() - 16 * 86400
+    os.utime(old, (then, then))
+    cfg = types.SimpleNamespace(capture=types.SimpleNamespace(folder="{pictures}/DeskIT"))
+    now = dt.datetime.now()
+    before = now - dt.timedelta(days=1)
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked), \
+            _patched(paths, "known_folder", lambda name: pics), \
+            _patched(deskweb.config_mod, "load_layered", lambda *a, **k: cfg):
+        model._log = [history_mod.Event(before, "dictation", text="yesterday"),
+                      history_mod.Event(before, "lookup", text="a look-up yesterday")]
+        assert model._last_capture()[0] == old, "the default folder was not found"
+        assert model._rest() == [], "yesterday is not the rest of today"
+        (shots / "shot new.png").write_bytes(b"new")
+        model._capture_seen = None
+        model._log = [history_mod.Event(now, "lookup", text="a look-up"),
+                      history_mod.Event(now, "dictation", text="today")] + model._log
+        lines = {line["label"]: line for line in model._rest()}
+        assert set(lines) == {"Said", "Took", "Looked up"}, lines
+        assert lines["Said"]["meta"] == "1 today" and lines["Took"]["meta"] == "1 today"
+        assert lines["Took"]["text"].startswith("shot new.png"), lines["Took"]
+        # a day of 150 dictations: the page holds 100 events, the door all 150
+        day = [history_mod.Event(now, "dictation", text=str(i)) for i in range(150)]
+        with _patched(history_mod, "load", lambda limit=100: day[:limit]):
+            model._log = day[:100]
+            assert model._said_today() == 150
+    page = (REPO / "web" / "src" / "places" / "home.tsx").read_text("utf-8")
+    assert "Nothing yet today." in page and "Nothing dictated yet." not in page
+
+
+def test_web_desk_settings_says_where_a_key_is_only_where_it_is():
+    """secretstore.storage_sentence says the key is in Windows Credential
+    Manager. Under a key read from an environment variable it sat below
+    "Saved in environment variable …" — two contradicting sentences on
+    the privacy page (the 2026-11-09 audit). It is shown where it is true:
+    a key in the store, or no key yet (where a pasted one goes)."""
+    import desk_settings_keys
+    import keyrow
+    import secretstore
+
+    where = {"groq": (True, "Windows Credential Manager (DeskIT.test/groq)"),
+             "gemini": (True, "environment variable DESKIT_GEMINI_API_KEY")}
+    with _patched(keyrow, "stored", lambda name: where[name]), \
+            _patched(secretstore, "trial_passed", lambda name: None):
+        keys = desk_settings_keys.Keys()
+        rows = {r["name"]: r for r in keys.read()}
+        assert rows["groq"]["storage"] == secretstore.storage_sentence("groq")
+        assert rows["gemini"]["storage"] == "", rows["gemini"]["storage"]
+        assert rows["gemini"]["say"] == "Saved in environment variable DESKIT_GEMINI_API_KEY."
+        # a key pasted over the environment's is in the store: the sentence is true again
+        where["gemini"] = (True, "Windows Credential Manager (DeskIT.test/gemini)")
+        keys.checked("gemini", "ok")
+        rows = {r["name"]: r for r in keys.read()}
+        assert rows["gemini"]["storage"] == secretstore.storage_sentence("gemini")
+    with _patched(keyrow, "stored", lambda name: (False, "not found")):
+        rows = {r["name"]: r for r in desk_settings_keys.Keys().read()}
+    assert all(r["storage"] == secretstore.storage_sentence(n) for n, r in rows.items())
+    page = (REPO / "web" / "src" / "places" / "settings" / "cards.tsx").read_text("utf-8")
+    assert '{k.storage ? <div className="store">{k.storage}</div> : null}' in page
+    tk = (REPO / "dashboard.py").read_text("utf-8")
+    assert 'not source.startswith("Windows Credential Manager")' in tk
 
 
 def test_the_web_desk_buttons_answer_with_home():
@@ -58705,9 +58860,9 @@ def test_the_web_desk_corrections_says_what_the_tk_desk_says():
             assert panel["n"] == 4 and panel["said"] == "words it has learned to hear your way"
             assert [f["n"] for f in panel["facts"]] == [1, 2], panel["facts"]
             assert [f["said"] for f in panel["facts"]] == ["fixed on every dictation",
-                                                           "in the decoder's prompt"]
+                                                           "listened for as you speak"]
             assert panel["teach"] == ["Ctrl", "F9"], panel["teach"]
-            assert "40 at a time" in panel["how"][0]
+            assert panel["how"][0] == "It listens for the best 40 of them as you speak."
             # a search looks at both sides; the head says how many match
             found = place.read(q="  dev ")
             assert [w["heard"] for w in found["words"]] == ["הדב"]
@@ -58951,7 +59106,7 @@ def test_the_web_desk_corrections_page_is_the_tk_place():
                   "Cancel", "Save"):
         assert words in page and words in tk, words
     for words in ("both words are needed", "the two words are the same",
-                  "words it has learned to hear your way", "in the decoder's prompt",
+                  "words it has learned to hear your way",
                   "fixed on every dictation", "corrected once", "its own guess",
                   "teaches it a word", "from what it just wrote",
                   "accepted \u2014 the app will learn it", "that one was already decided",
@@ -58960,6 +59115,12 @@ def test_the_web_desk_corrections_page_is_the_tk_place():
                   "Say Yes to a second reading, press the teach key on a "):
         assert words in module.replace("\\u2014", "\u2014"), words
         assert words in tk, words
+    # the words the decoder is handed: one name on both desks, and never
+    # "the decoder's prompt" on a screen (the 2026-11-09 audit)
+    import deskweb
+    assert "deskweb.LISTENED_FOR" in module and "decoder's prompt\"" not in module
+    assert deskweb.LISTENED_FOR in tk and "Listened for" in page and "In the prompt" not in page
+    assert 'text="in the prompt"' not in tk
 
 
 # ======================================== web desk place: Said
@@ -59075,18 +59236,19 @@ def test_web_desk_said_draws_every_kind_of_row_in_the_tk_desks_words():
 
     newest = by["21:14"]
     assert newest["kind"] == "dict" and newest["glyph"] == "mic" and newest["tags"] == []
-    assert newest["secs"] == "11.0 s" and newest["meta"] == ["local", "0.4 s latency"]
+    # plain words, not the log's: "local" and "latency" were the developer's
+    assert newest["secs"] == "11.0 s" and newest["meta"] == ["on this PC", "ready in 0.4 s"]
     assert newest["text"] == "תשנה את כל הצבעים ל-Dev" and newest["rtl"] is True
     assert newest["copy"] is True and newest["pairs"] == []
-    assert by["21:09"]["tags"] == [{"t": "Recovered"}] and by["21:09"]["meta"] == ["local"]
+    assert by["21:09"]["tags"] == [{"t": "Recovered"}] and by["21:09"]["meta"] == ["on this PC"]
     assert by["16:29"]["tags"] == [{"t": "Polished", "g": "pip"}]
     assert by["16:29"]["text"] == "אני חושב שהשיחה השנייה כבר סיימה."
     assert by["17:52"]["tags"] == [{"t": "From laptop", "g": "laptop"}]
     assert by["23:12"]["tags"] == [{"t": "From the phone", "g": "phone"}]
-    assert by["23:12"]["meta"] == ["0.6 s latency"]
+    assert by["23:12"]["meta"] == ["ready in 0.6 s"]
     translated = by["19:44"]
     assert translated["kind"] == "trans" and translated["tags"] == [{"t": "Translated"}]
-    assert translated["rtl"] is False and translated["meta"] == ["gemini"]
+    assert translated["rtl"] is False and translated["meta"] == ["Gemini"]
     assert by["18:18"]["kind"] == "punct" and by["23:40"]["kind"] == "look"
     review = by["20:31"]
     assert review["kind"] == "learn" and review["glyph"] == "learned"
@@ -59100,7 +59262,7 @@ def test_web_desk_said_draws_every_kind_of_row_in_the_tk_desks_words():
     failed = by["15:30"]
     assert failed["kind"] == "fail" and failed["label"] == "Failed"
     assert failed["tags"] == [{"t": "Failed"}, {"t": "TranscriptionError"}]
-    assert failed["text"] == "rec-153000.wav" and failed["meta"] == ["local"]
+    assert failed["text"] == "rec-153000.wav" and failed["meta"] == ["on this PC"]
     gone = by["15:02"]
     assert gone["kind"] == "gone" and gone["dim"] is True and gone["copy"] is False
     assert gone["tags"] == [{"t": "Discarded"}] and gone["text"] == "hit the 400 s cap"
@@ -59115,8 +59277,13 @@ def test_web_desk_said_draws_every_kind_of_row_in_the_tk_desks_words():
                   "teach it a word",
                   "of what you said", "older still here", "there is no text on that one",
                   "copied {len(text)} characters",
-                  "The best of them go into the decoder's prompt before it listens"):
+                  "It listens for the best of them as you speak."):
         assert words in joined, words
+    # the developer's words are gone from both desks (the 2026-11-09 audit)
+    module = (REPO / "desk_said.py").read_text("utf-8")
+    for gone in ("transcripts.log, untouched", '"Open transcripts.log"', "decoder's prompt"):
+        assert gone not in module, gone
+    assert "transcripts.log, untouched" not in joined and '"Open transcripts.log"' not in joined
     for spaced, word in (("L A T E L Y", said["vocab"]["lately"]),
                          ("V O C A B U L A R Y", said["vocab"]["eyebrow"])):
         assert spaced in src and spaced.replace(" ", "").title() == word
@@ -59278,8 +59445,7 @@ def test_web_desk_said_keeps_the_vocabulary_beside_the_list():
         assert v["count"] == "3" and v["teach"] == ["Ctrl", "F9"]
         assert [(p["heard"], p["meant"]) for p in v["pairs"]] == [
             ("הרליסס", "ה-releases"), ("הדאשבורד", "ה-dashboard"), ("הריפו", "ה-repo")]
-        assert v["foot"] == ("The best of them go into the decoder's prompt before it "
-                             "listens — 40 at a time.")
+        assert v["foot"] == "It listens for the best 40 of them as you speak."
         assert v["w"] == "words" and v["w2"] == "it has learned to hear your way"
     dictations = [line for line in _SAID_LINES if "CORRECTED" not in line and "REVIEW" not in line]
     with _said_place(lines=dictations, remote=None, vocab=vocab, teach="", cap=None) \
@@ -59288,7 +59454,7 @@ def test_web_desk_said_keeps_the_vocabulary_beside_the_list():
         assert [(p["heard"], p["meant"], p["rtl"]) for p in v["pairs"]] == [
             ("kicard", "keyboard", False), ("ריפו", "repo", True), ("אינסטולר", "installer", True)]
         assert v["teach"] == ["off"]
-        assert v["foot"] == "The best of them go into the decoder's prompt before it listens."
+        assert v["foot"] == "It listens for the best of them as you speak."
     with _said_place(lines=dictations, remote=None) as (place, _folder, _c, _o):
         v = place.read()["vocab"]
         assert v["count"] == "—" and v["pairs"] == []
@@ -59362,7 +59528,7 @@ def test_web_desk_said_copies_the_logs_words_and_trusts_nothing_the_page_names()
             assert place.act("open", "C:\\Windows\\System32\\calc.exe")["ok"] is True
             assert opened == [history_mod.LOG, history_mod.LOG], opened
             with _patched(__import__("launch"), "open_path", lambda path: False):
-                assert place.act("open")["note"] == "could not open transcripts.log"
+                assert place.act("open")["note"] == "could not open the file"
             for do in ("delete", "Copy", "", "open.capture", "x" * 300):
                 refused = place.act(do, 1)
                 assert refused["ok"] is False and "is not a Said action" in refused["error"], do

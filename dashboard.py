@@ -2268,11 +2268,11 @@ class Dashboard:
                              cursor="hand2")
         p["more"].bind("<Button-1>", lambda _e: self._said_more())
 
-        tk.Label(self.sheet, text="Everything older is still in "
-                                 "transcripts.log, untouched.",
+        tk.Label(self.sheet, text="Everything older is still on this PC, "
+                                 "untouched.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8)).place(x=PAD, y=624)
-        wide = widgets.button_width("Open transcripts.log", icon=True)
-        ui.Button(self.sheet, "Open transcripts.log",
+        wide = widgets.button_width("Open the file", icon=True)
+        ui.Button(self.sheet, "Open the file",
                   lambda: launch.open_path(history.LOG), w=wide, h=30,
                   quiet=True, bg=ui.BG,
                   icon=ui.ICON["file"]).place(x=PAD + SAID_W - wide, y=616)
@@ -2461,10 +2461,8 @@ class Dashboard:
             foot, bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
             text=("teaches it a word from what it just wrote  ·  " if teach
                   else "")
-            + ("the best of them go into the decoder's prompt before it "
-               f"listens — {cap} at a time" if cap else
-               "the best of them go into the decoder's prompt before it "
-               "listens")
+            + (f"it listens for the best {cap} of them as you speak" if cap
+               else "it listens for the best of them as you speak")
             + "  ·  a word corrected twice is fixed on every dictation")
         p["vocab_hot"].pack(side="left", padx=(10 if teach else 0, 0))
         self._corr_stamp = None
@@ -2540,8 +2538,8 @@ class Dashboard:
                     f"\u201c{self._words_query.strip()}\u201d")
         elif entries:
             head = (f"{len(entries)} word{'' if len(entries) == 1 else 's'} "
-                    f"it has learned to hear your way  ·  {len(hot)} in the "
-                    f"decoder's prompt  ·  {ready} fixed on every dictation")
+                    f"it has learned to hear your way  ·  {len(hot)} listened "
+                    f"for as you speak  ·  {ready} fixed on every dictation")
         else:
             head = "Nothing learned yet."
         p["corr_head"].config(text=head)
@@ -2768,7 +2766,7 @@ class Dashboard:
                             WORD_ROW_H / 2 + 3, fill=ui.ACCENT, width=0,
                             tags="hot")
             row.create_text(CW - 196, WORD_ROW_H / 2, anchor="w",
-                            text="in the prompt", fill=ui.DIM,
+                            text="listened for", fill=ui.DIM,
                             font=(ui.UI, 9), tags="hot")
         pen = row.create_text(CW - 56, WORD_ROW_H / 2, text="\ue70f",
                               fill=ui.BG, font=(ui.ICONS, 11), tags="pen")
@@ -4218,10 +4216,8 @@ class Dashboard:
         p["vocab_hot"] = tk.Label(
             body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=inner,
             justify="left",
-            text=("The best of them go into the decoder's prompt before it "
-                  f"listens — {cap} at a time." if cap
-                  else "The best of them go into the decoder's prompt "
-                       "before it listens."))
+            text=(f"It listens for the best {cap} of them as you speak." if cap
+                  else "It listens for the best of them as you speak."))
         p["vocab_hot"].place(x=0, y=436)
 
     def _recent_pairs(self, limit: int) -> list:
@@ -7418,9 +7414,9 @@ class Dashboard:
                     "leave it, it gives up on its own and the dot goes "
                     "back to being a button.")
         elif moved:
-            where = f"at {info.get('x')}, {info.get('y')}"
-            said = ("Where you dropped it, and the panel opens beside it "
-                    "there. Move the dot picks it up again; Back to the "
+            where = "where you dropped it"
+            said = ("The panel opens beside it there. Move the dot picks "
+                    "it up again; Back to the "
                     "corner sends it home to the "
                     f"{info.get('corner', 'bottom-right')} of your main "
                     "screen.")
@@ -7684,6 +7680,12 @@ class Dashboard:
             self.parts["key_rows"][name] = row
             self.parts["key_fields"][name] = row.field
             self.parts["key_lines"][name] = row.note
+            # Only where it is true: a key read from the environment or
+            # .env is not in Credential Manager, and its row already says
+            # where it is (desk_settings_keys._storage, the 2026-11-09 audit)
+            there, source = keyrow.stored(name)
+            if there and not source.startswith("Windows Credential Manager"):
+                continue
             sentence, _lines = ui.clamp(secretstore.storage_sentence(name),
                                         ui.UI, 8, CW - 40, 3)
             tk.Label(body, text=sentence, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),

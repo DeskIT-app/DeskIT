@@ -5,7 +5,7 @@ it calls): the search, the filter chips (history.FILTERS), SAID_PAGE
 rows at a time behind a Show more (_said_more), the other PCs' REMOTE
 rows as "from <device>", the vocabulary panel beside the list
 (_vocab_panel: the count, the teach key, the last pairs it learned), a
-click on a row that copies it (_copy), and "Open transcripts.log". Same
+click on a row that copies it (_copy), and "Open the file". Same
 sources, same words — history.py is the reader both use, and the page
 only draws what this answers.
 
@@ -41,7 +41,7 @@ row by its id from the log this module read, never text the page
 sends; it goes on the clipboard through injector, the one writer of it
 (AGENTS: "Anything new that touches the clipboard goes through
 injector"), from this process, with a second try when another program
-holds it. "Open transcripts.log" opens that one fixed path.
+holds it. "Open the file" opens transcripts.log, that one fixed path.
 
 HOW IT IS REACHED. deskweb.Api.place("said", op, args) is the one caller
 (deskweb.PLACES_MOD); one Place per window, built with the window's
@@ -98,8 +98,12 @@ SUB = f"the last {HISTORY_ROWS} of what you said"
 #: under a filter or a search, which look through all of it
 SUB_ALL = "all of what you said"
 PLACEHOLDER = "Search everything you have said…"
-OLDER = "Everything older is still in transcripts.log, untouched."
-OPEN = "Open transcripts.log"
+#: plain words since the 2026-11-09 audit: the file's name was the
+#: developer's ("Everything older is still in transcripts.log")
+OLDER = "Everything older is still on this PC, untouched."
+OPEN = "Open the file"
+#: the engine's word on a row, where the log's word is the developer's
+ENGINE_WORDS = {"local": "on this PC", "groq": "Groq", "gemini": "Gemini"}
 EMPTY_OFF = "History is off (Settings > Privacy > Kept on this PC)."
 EMPTY_NONE = "Nothing here yet."
 EMPTY_MISS = "Nothing matches that."
@@ -282,10 +286,7 @@ class Place:
             "lately": "Lately",
             "pairs": self._vocab_pairs,
             "nothing": NOTHING_LEARNED,
-            "foot": ("The best of them go into the decoder's prompt before it "
-                     f"listens — {cap} at a time." if cap
-                     else "The best of them go into the decoder's prompt "
-                          "before it listens."),
+            "foot": deskweb.listens_for(cap),
         }
 
     def read(self, filter=None, q="", shown=SAID_PAGE, **extra) -> dict:  # noqa: A002 — the page's word
@@ -379,7 +380,7 @@ class Place:
             return self._copy(arg)
         if do == "open":
             if not launch.open_path(history.LOG):
-                return {"ok": True, "note": "could not open transcripts.log"}
+                return {"ok": True, "note": "could not open the file"}
             return {"ok": True, "note": ""}
         return {"ok": False, "error": f"{do[:40]!r} is not a Said action"}
 
@@ -441,9 +442,9 @@ def _row(event, ident: str) -> dict:
             tags.append({"t": _cap(bit)})
     meta = []
     if event.engine:
-        meta.append(event.engine)
+        meta.append(ENGINE_WORDS.get(event.engine.lower(), event.engine))
     if event.latency is not None:
-        meta.append(f"{event.latency:.1f} s latency")
+        meta.append(f"ready in {event.latency:.1f} s")
     pairs = []
     if event.kind == "learned":
         pairs = [_pair(str(w), str(r)) for w, r in (event.pairs or [])[:ROW_PAIRS]]

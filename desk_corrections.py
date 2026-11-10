@@ -354,12 +354,10 @@ class Place:
                 "n": n,
                 "said": "words it has learned to hear your way",
                 "facts": [{"dot": "fix", "n": ready, "said": "fixed on every dictation"},
-                          {"dot": "li", "n": len(hot), "said": "in the decoder's prompt"}],
+                          {"dot": "li", "n": len(hot), "said": deskweb.LISTENED_FOR}],
                 "teach": teach,
                 "teach_said": ["teaches it a word", "from what it just wrote"],
-                "how": [("The best of them go into the decoder's prompt before it "
-                         f"listens — {cap} at a time.") if cap else
-                        "The best of them go into the decoder's prompt before it listens.",
+                "how": [deskweb.listens_for(cap),
                         "A word corrected twice is fixed on every dictation."],
             },
         }

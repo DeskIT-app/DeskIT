@@ -306,7 +306,7 @@ function Row({ w, leaving, calm, edit, forget }: {
       <Pair w={w} />
       <span className="st" title={w.whole}><span className={`d ${w.dot}`} />{w.said}
         {w.rest ? <span className="q">·&nbsp;{w.rest}</span> : null}</span>
-      <span className="ls">{w.hot ? <><span className="d li" />In the prompt</> : null}</span>
+      <span className="ls">{w.hot ? <><span className="d li" />Listened for</> : null}</span>
       <span className="ac">
         <i className="ic pen" role="button" aria-label="Change" onClick={edit}>{IC.edit}</i>
         <i className="ic x" role="button" aria-label="Forget" onClick={forget}>{IC.close}</i>

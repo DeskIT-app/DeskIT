@@ -654,9 +654,11 @@ class Place:
                     "leave it, it gives up on its own and the dot goes "
                     "back to being a button.")
         elif moved:
-            where = f"At {info.get('x')}, {info.get('y')}"
-            said = ("Where you dropped it, and the panel opens beside it "
-                    "there. Move the dot picks it up again; Back to the "
+            # not "At 2506, 12": screen pixels are the developer's words
+            # (the 2026-11-09 audit)
+            where = "Where you dropped it"
+            said = ("The panel opens beside it there. Move the dot picks "
+                    "it up again; Back to the "
                     "corner sends it home to the "
                     f"{info.get('corner', 'bottom-right')} of your main "
                     "screen.")

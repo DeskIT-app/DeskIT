@@ -4658,8 +4658,7 @@ class App:
     # — the whole point of putting two buttons on every row is that the
     # pile can be emptied where it stands. One set, so the rule is
     # readable and reversible.
-    _SHELF_LEAVES = frozenset({"notify.open", "problem.open",
-                               "question.answer"})
+    _SHELF_LEAVES = frozenset({"notify.open", "question.answer"})
 
     def _tap_shelf(self) -> None:
         """The panel beside the dot: open it, or close the one that is up.
@@ -4877,8 +4876,7 @@ class App:
         """
         out = []
         for owner, attr in ((getattr(self, "notify", None), "store"),
-                            (getattr(self, "_review", None), "store"),
-                            (self, "problems")):
+                            (getattr(self, "_review", None), "store")):
             store = getattr(owner, attr, None) if owner is not None else None
             stamp = None
             if store is not None:
@@ -4975,20 +4973,11 @@ class App:
             except Exception:                    # noqa: BLE001
                 log.debug("shelf: could not read the second reading",
                           exc_info=True)
-        store = getattr(self, "problems", None)
-        if store is not None:
-            try:
-                for item in store.items(problems_mod.OPEN):
-                    rows.append({
-                        "kind": "problem",
-                        "id": item.get("id"),
-                        "text": str(item.get("text") or ""),
-                        "at": str(item.get("at") or ""),
-                        "pill": "",
-                        "answers": [("problem.open", "Open"),
-                                    ("problem.close", "Close")]})
-            except Exception:                    # noqa: BLE001
-                log.debug("shelf: could not read the problems", exc_info=True)
+        # NO PROBLEM REPORTS. Reading them back left the product on
+        # 2026-10-01 (MASTER.md §8: the master app reads them), and Home's
+        # pile has none — but this panel kept every open one with Open and
+        # Close, 24 of his on 2026-11-09, so the shelf and Home counted
+        # different piles (the 2026-11-09 audit). The report KEY stays.
         rows.sort(key=lambda r: str(r.get("at") or ""), reverse=True)
         return rows
 
@@ -5093,35 +5082,12 @@ class App:
             self._review_verdict(str(ident),
                                  "accepted" if verb == "accept"
                                  else "rejected")
-        elif source == "problem":
-            if verb == "open":
-                open_dashboard()
-            else:
-                threading.Thread(target=self._shelf_problem_close,
-                                 args=(str(ident),), daemon=True,
-                                 name="shelf-problem").start()
         else:
             return
         if do in self._SHELF_LEAVES:
             self._shelf_close()
         else:
             self._shelf_push()
-
-    def _shelf_problem_close(self, ident: str) -> None:
-        """Answered, and problems.md rewritten. Own thread: the store
-        takes a cross-process lock and the digest is written from scratch
-        every time — the same two steps the dashboard's own Close does
-        (dashboard._write_digest), and forgetting the second one leaves
-        the file the weekly routine reads a week out of date."""
-        store = getattr(self, "problems", None)
-        if store is None:
-            return
-        try:
-            store.resolve(ident, problems_mod.CLOSED, by="shelf")
-            problems_mod.digest(store, paths.PROBLEMS_FILE.with_name(problems_mod.DIGEST_NAME))
-            self._say("report closed")
-        except Exception:                        # noqa: BLE001
-            log.exception("shelf: could not close %s", ident)
 
     def _shelf_chrome(self, name: str) -> None:
         """The panel's own buttons. Pause and Screens change something the

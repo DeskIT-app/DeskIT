@@ -187,6 +187,44 @@ def human_time(seconds: float) -> str:
     return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
 
 
+def running_for(seconds: float) -> str:
+    """The bar's word for how long the app has been up, in plain rounded
+    words: "on for 2 days", never "up 60h 22m" (the 2026-11-09 audit:
+    the minutes were the developer's). Rounded DOWN — "2 days" is a
+    floor that stays true for the whole of the third."""
+    seconds = int(max(0, seconds))
+    if seconds < 120:
+        return "just started"
+    if seconds < 3600:
+        return f"on for {seconds // 60} minutes"
+    hours = seconds // 3600
+    if hours < 48:
+        return "on for an hour" if hours == 1 else f"on for {hours} hours"
+    return f"on for {seconds // 86400} days"
+
+
+#: What the learned words the decoder is handed (vocab's hotwords) are
+#: called on a screen — "in the decoder's prompt" was the developer's
+#: name for it (the 2026-11-09 audit). Corrections and Said, both desks.
+LISTENED_FOR = "listened for as you speak"
+
+
+def listens_for(cap) -> str:
+    """The one sentence under the vocabulary about those words."""
+    return (f"It listens for the best {cap} of them as you speak." if cap
+            else "It listens for the best of them as you speak.")
+
+
+def asks(row: dict) -> bool:
+    """Whether a row of the pile wants an answer. A row with nothing to
+    press asks nothing (the downloads row: "nothing to press"); a message
+    asks only when it is a request for input — a Claude FINISH is news,
+    and 87 of the last 100 cards were finishes (AGENTS.md rule 7), so
+    counting them made the title say "three things want an answer" over
+    one question and two pieces of news (the 2026-11-09 audit)."""
+    return bool(row.get("asks", bool(row.get("buttons"))))
+
+
 def stamp_of(text: str, fmt: str) -> float:
     try:
         return time.mktime(time.strptime(str(text)[:19], fmt))
@@ -494,7 +532,7 @@ class Model:
                "Resume" if s.get("paused") else "Pause")
         return {
             "lamp": lamp, "word": word,
-            "meta": f"up {human_time(uptime)}" if uptime else "not running",
+            "meta": running_for(uptime) if uptime else "not running",
             "run": run,
             # Stop only while there is a model to stop; Screens off with
             # it (dashboard._paint_bar_buttons, his rule of 2026-09-07)
@@ -531,6 +569,8 @@ class Model:
             rows.append({
                 "id": f"notify:{ident}", "kind": "notify", "at": at,
                 "source": str(item.get("source") or ""),
+                # only a request for input waits on him; a finish is news
+                "asks": str(item.get("kind") or "info") == "input",
                 "tone": {"done": "ok", "input": "q", "error": "bad"}.get(
                     str(item.get("kind") or "info"), "q"),
                 "glyph": "bell",
@@ -1045,7 +1085,11 @@ class Model:
 
     def _last_capture(self):
         try:
-            folder = Path(getattr(config_mod.load_layered().capture, "folder", "") or "")
+            # resolved the way capture.py saves into it: the default is
+            # "{pictures}/DeskIT", and as a bare Path that folder never
+            # existed, so a copy on the default never showed a picture
+            named = str(getattr(config_mod.load_layered().capture, "folder", "") or "")
+            folder = paths.resolve_folder(named) if named else None
         except Exception:                 # noqa: BLE001
             return None
         if not folder or not folder.is_dir():
@@ -1070,47 +1114,89 @@ class Model:
         self._capture_seen = (seen, found)
         return found
 
+    #: how far back _said_today reads on a day the page's hundred events do
+    #: not reach the start of: his busiest day held 114 dictations (the
+    #: 2026-11-09 audit), and the hundred events are every kind together
+    TODAY_MOST = 2000
+
     def _said_today(self) -> int:
+        """Today's dictations. The page holds the last hundred events of
+        every kind, so on a day busier than that a count of them stopped
+        at whatever share of the day fit — the Said door said fewer than
+        were said. Read further back then, once per change of the log."""
         today = time.strftime("%Y-%m-%d")
-        return sum(1 for e in self._log
-                   if e.kind == "dictation" and e.when.strftime("%Y-%m-%d") == today)
+        key = (self._log_stamp, today, len(self._log))
+        if self._said_seen is not None and self._said_seen[0] == key:
+            return self._said_seen[1]
+        events = self._log
+        if len(events) >= 100 and events[-1].when.strftime("%Y-%m-%d") == today:
+            try:
+                events = history.load(self.TODAY_MOST)
+            except Exception:             # noqa: BLE001 — a log being rotated
+                pass
+        n = sum(1 for e in events
+                if e.kind == "dictation" and e.when.strftime("%Y-%m-%d") == today)
+        self._said_seen = (key, n)
+        return n
+
+    _said_seen = None
 
     def _rest(self) -> list[dict]:
+        """The rest of the DAY: what he said, took and looked up today.
+        It showed the newest of each whatever its date, so a quiet day
+        read as a picture from 2026-10-24 beside "0 today" and yesterday's
+        lookup (the 2026-11-09 audit). A line with nothing from today is
+        not drawn; the page says so when none is."""
+        today = time.strftime("%Y-%m-%d")
         lines = []
         said = next((e for e in self._log if e.kind == "dictation"), None)
-        if said is not None:
+        if said is not None and said.when.strftime("%Y-%m-%d") == today:
             lines.append({"label": "Said", "when": said.when.strftime("%H:%M"),
                           "text": said.text or "", "rtl": is_rtl(said.text),
                           "meta": f"{self._said_today()} today", "go": "Said"})
         took = self._last_capture()
-        if took is not None:
+        if took is not None and time.strftime("%Y-%m-%d", time.localtime(took[1])) == today:
             path, when, day = took
             lines.append({"label": "Took", "when": time.strftime("%H:%M", time.localtime(when)),
                           "text": f"{path.name}  ·  in {path.parent.name}\\", "rtl": False,
                           "meta": f"{day} today", "act": "open.capture"})
         looked = next((e for e in self._log if e.kind == "lookup"), None)
-        if looked is not None:
+        if looked is not None and looked.when.strftime("%Y-%m-%d") == today:
             text = looked.text or looked.source or ""
             lines.append({"label": "Looked up", "when": looked.when.strftime("%H:%M"),
                           "text": text, "rtl": is_rtl(text), "meta": "—", "go": "Said"})
         return lines
 
+    #: the rows of the pile whose answer is on the Settings place: the
+    #: update (About), the model and the graphics card (Dictation), a
+    #: missing cloud key (Privacy)
+    SETTINGS_KINDS = ("update", "hardware", "keys")
+
     def _doors(self, items: list[dict]) -> list[dict]:
-        import settings as settings_mod
+        """Each door's number is what its place holds NOW. Keys said
+        len(HOTKEY_FIELDS) and Settings len(TABS) — 16 and 8 on every
+        day of the year, and 16 was not even true: a key turned off is
+        not lit on the board (the 2026-11-09 audit). Keys counts the
+        bindings set, which is what the board lights (keycaps.bindings
+        skips an empty one); Settings counts what waits for him there."""
         learned = words_learned()
         proposals = sum(1 for i in items if i["kind"] == "review")
         tail = ("the words it has learned" if learned is None
                 else f"the {learned} words learned so far")
+        bound = sum(1 for raw in self._keys().values() if str(raw or "").strip())
+        waiting = sum(1 for i in items if i["kind"] in self.SETTINGS_KINDS and asks(i))
         return [
             {"place": "Corrections", "glyph": "edit", "n": proposals, "w": "corrections",
              "note": (f"waiting for a yes or no, and {tail}" if proposals
                       else f"nothing to look at, and {tail}")},
             {"place": "Said", "glyph": "history", "n": self._said_today(), "w": "said today",
              "note": "the last hundred of them, with the search over them"},
-            {"place": "Keys", "glyph": "keyboard", "n": len(config_mod.HOTKEY_FIELDS),
+            {"place": "Keys", "glyph": "keyboard", "n": bound,
              "w": "keys", "note": "every one of them lit on a drawn keyboard"},
-            {"place": "Settings", "glyph": "settings", "n": len(settings_mod.TABS),
-             "w": "settings tabs", "note": "everything you can change, in plain words"},
+            {"place": "Settings", "glyph": "settings", "n": waiting, "w": "to look at",
+             "note": ("waiting there, and everything you can change, in plain words"
+                      if waiting else
+                      "nothing waiting, and everything you can change, in plain words")},
         ]
 
     def _strip(self) -> dict:
@@ -1141,17 +1227,29 @@ class Model:
         return {"awake": sentence, "phone": self.phone_live, "facts": facts}
 
     def _head(self, items: list[dict]) -> tuple[str, str]:
+        """The title counts what ASKS (see asks()); the line under it
+        says whether what he can see is all of the pile, finishes and
+        all, which stay in it."""
         count = len(items)
+        wanted = sum(1 for i in items if asks(i))
+        told = count - wanted             # here to read, asking nothing
         head = ("Nothing is waiting." if not count else
-                f"{count_word(count)} thing{'' if count == 1 else 's'} "
-                f"want{'s' if count == 1 else ''} an answer.")
+                "Nothing wants an answer." if not wanted else
+                f"{count_word(wanted)} thing{'' if wanted == 1 else 's'} "
+                f"want{'s' if wanted == 1 else ''} an answer.")
         extra = count - PILE_CAP
+        more = f"{count_word(told).lower()} more to read"
         sub = ("Nothing else on the desk needs you right now." if not count else
-               "It is here, and nothing else needs you right now." if count == 1 else
-               "They are all here, and nothing else needs you right now."
-               if count <= PILE_CAP else
                f"The newest {count_word(PILE_CAP).lower()} are here, and "
-               f"{count_word(extra).lower()} more {'is' if extra == 1 else 'are'} waiting.")
+               f"{count_word(extra).lower()} more {'is' if extra == 1 else 'are'} waiting."
+               if count > PILE_CAP else
+               ("It is here, and nothing else needs you right now." if count == 1 else
+                "They are all here, and nothing else needs you right now.") if not told else
+               (f"{count_word(count)} thing{'' if count == 1 else 's'} "
+                f"{'is' if count == 1 else 'are'} here to read, and nothing else needs you "
+                f"right now.") if not wanted else
+               f"{'It is' if wanted == 1 else 'They are'} here with {more}, and nothing "
+               f"else needs you right now.")
         return head, sub
 
     def _held(self) -> str:
