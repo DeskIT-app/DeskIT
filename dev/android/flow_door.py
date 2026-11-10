@@ -1485,10 +1485,18 @@ def flow_small_phone():
                   until(lambda: (lambda r: r["send"] and r["drop"] and not r["cut"] and not r["ellipsis"]
                                  and r["touch"] >= 48 and "not sent" in r["status"])(row()), 20), status())
             drive.shot(f"row_{name}")
+        # The longest words the row has for nobody answering, on the smallest.
+        wifi(False)
+        check("320dp and larger text, off the Wi-Fi: its words whole, Send again and the X too",
+              until(lambda: (lambda r: r["send"] and r["drop"] and not r["cut"] and not r["ellipsis"]
+                             and r["touch"] >= 48 and r["status"].endswith(NO_WIFI))(row()), 20), status())
+        drive.shot("row_320dp_larger_text_no_wifi")
+        wifi(True)
         back_up(pc)
         send_again()
         check("and on the smallest, a press sends them", until(lambda: len(pc.heard) == 2, 30))
     finally:
+        drive.shell("svc", "wifi", "enable", check=False)
         drive.shell("wm", "density", "reset", check=False)
         drive.shell("settings", "put", "system", "font_scale", "1.0", check=False)
         acct._door_pc.down()
@@ -1503,7 +1511,12 @@ def carried() -> list[str]:
 
 def wifi(on: bool) -> None:
     """The Wi-Fi on or off, as a person turns it from the shade, mobile data left as
-    it is, until Android has a Wi-Fi network or none."""
+    it is, until Android has a Wi-Fi network or none. Android 8's `svc wifi` is killed
+    (137) under the shell's own uid, so as root."""
+    if "uid=0" not in drive.shell("id"):
+        drive.adb("root")
+        time.sleep(3)
+        drive.adb("wait-for-device")
     drive.shell("svc", "wifi", "enable" if on else "disable")
     assert until(lambda: ("wifi" in carried()) == on, 90, 2), \
         f"the Wi-Fi never went {'on' if on else 'off'}: {carried()}"
