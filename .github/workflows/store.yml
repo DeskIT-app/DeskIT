@@ -67,7 +67,7 @@ jobs:
       FAMILY: YoavShimron.DeskITApp_d0r2ms77220w6
       PUBLISHER: CN=F51974FB-3E8A-4445-A554-758D2DCE56BB
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: The release
         id: release
@@ -211,7 +211,7 @@ jobs:
           if (Test-Path $lnk) { throw "the desktop shortcut outlived the package" }
           Write-Host "the desktop shortcut went with the package"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: DeskIT-App-${{ steps.release.outputs.version }}-msix
           path: |
@@ -219,7 +219,7 @@ jobs:
             dist/*.msix.sha256
           retention-days: 30
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: DeskIT-App-${{ steps.release.outputs.version }}-smoke
@@ -254,7 +254,7 @@ jobs:
             }
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: DeskIT-App-${{ steps.release.outputs.version }}-wack

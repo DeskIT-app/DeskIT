@@ -41902,29 +41902,101 @@ def test_release_workflow_has_every_step():
     /CHANNEL=winget forward through wingetcreate update."""
     yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
     for must in ("permissions:", "contents: write", "id-token: write", "attestations: write",
-                 "actions/attest-build-provenance@v2", "subject-path: stage/MANIFEST.sha256",
-                 "subject-path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe",
+                 "actions/attest-build-provenance@", "subject-path: dist/MANIFEST.sha256",
+                 "actions/attest-sbom@", "sbom-path: dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json",
+                 "Verify this download", "Get-FileHash .\\DeskIT-Setup.exe -Algorithm SHA256",
+                 "gh attestation verify DeskIT-Setup.exe --repo",
+                 "subject-path: dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe",
                  "!github.event.repository.private",
                  "secrets.VT_API_KEY", "vars.VT_MAX_DETECTIONS || '2'",
                  "api/v3/files/upload_url", "api/v3/analyses/", "VT_API_KEY is not set",
                  "more than VT_MAX_DETECTIONS", "https://www.virustotal.com/gui/file/",
-                 "softprops/action-gh-release@v2", "draft: true",
-                 "prerelease: ${{ contains(steps.version.outputs.version, '-beta') }}",
+                 "softprops/action-gh-release@", "draft: true",
+                 "prerelease: ${{ contains(needs.stage.outputs.version, '-beta') }}",
                  "body_path: dist/notes.md", "if: ${{ github.ref_type == 'tag' }}",
                  "CHANGELOG.md has no", "Previous version", "SHA-256:", "attestations",
-                 "stage/THIRD-PARTY-NOTICES.txt", "dist/latest.json", "dist/MANIFEST.sha256"):
+                 "dist/THIRD-PARTY-NOTICES.txt", "dist/latest.json", "dist/MANIFEST.sha256"):
         assert must in yml, must
-    order = [yml.index(x) for x in ("name: MANIFEST.sha256", "name: Attest MANIFEST.sha256",
+    order = [yml.index(x) for x in ("name: MANIFEST.sha256", "name: SBOM",
                                     "name: Installer", "name: Silent install, verify, uninstall",
-                                    "name: Attest the installer", "name: VirusTotal",
+                                    "name: VirusTotal", "  release:\n",
+                                    "name: Attest MANIFEST.sha256", "name: Attest the installer",
+                                    "name: Attest the SBOM",
                                     "name: Release notes", "name: Draft release")]
     assert order == sorted(order), "the steps are out of order"
+    # the write permissions live on the release job alone (audit 2026-11-09):
+    # every job that installs packages or builds is read-only
+    top, rest = yml.split("\njobs:\n", 1)
+    assert re.search(r"^permissions:\n  contents: read\n", top, re.M), "top level is not read-only"
+    assert not re.search(r"^  (contents|id-token|attestations): write", top, re.M)
+    jobs = re.split(r"^  (?=[a-z]+:\n)", rest, flags=re.M)
+    by = {j.split(":", 1)[0]: j for j in jobs if re.fullmatch(r"[a-z]+", j.split(":", 1)[0])}
+    assert set(by) == {"pages", "stage", "release"}, set(by)
+    for name in ("pages", "stage"):
+        assert "write" not in by[name].split("steps:")[0], f"{name} holds a write permission"
+        assert "contents: read" in by[name].split("steps:")[0], name
+    assert "contents: write" in by["release"] and "pip install" not in by["release"]
+    # pip: exact versions only, in the stage job
+    assert "pip-licenses==" in yml and "pip install --upgrade" not in yml
+    sb = (REPO / "packaging" / "make_sbom.py").read_text("utf-8")
+    assert "CycloneDX" in sb and "importlib" in sb
     winget = (REPO / ".github" / "workflows" / "winget.yml").read_text("utf-8")
     for must in ("types: [published]", "!github.event.release.prerelease", "secrets.WINGET_TOKEN",
                  "wingetcreate.exe update YoavShimron.DeskIT", "--submit", "WINGET_TOKEN is not set"):
         assert must in winget, must
     import updates
     assert updates.WINGET_ID == "YoavShimron.DeskIT"
+
+
+def test_every_third_party_action_is_pinned_to_a_commit():
+    """Every `uses:` of a remote action in .github/workflows names a full
+    40-hex commit with the tag in a comment (audit 2026-11-09: a moving
+    tag is a third party's push into a job that holds a token). And ci.yml
+    runs once per commit of ours: its pull_request run is for forks only."""
+    wf = REPO / ".github" / "workflows"
+    seen = 0
+    for f in sorted(wf.glob("*.yml")):
+        for n, line in enumerate(f.read_text("utf-8").splitlines(), 1):
+            m = re.match(r"\s*(?:- )?uses:\s*(\S+)(.*)$", line)
+            if not m or m.group(1).startswith("./"):
+                continue
+            seen += 1
+            assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", m.group(1)), f"{f.name}:{n} {m.group(1)}"
+            assert re.match(r"\s+#\s*v\d", m.group(2)), f"{f.name}:{n} has no tag comment"
+    assert seen >= 20, seen
+    ci = (wf / "ci.yml").read_text("utf-8")
+    assert ci.count("github.event.pull_request.head.repo.full_name != github.repository") == 2
+    assert "push:" in ci and "pull_request:" in ci
+
+
+def test_sbom_script_lists_the_staged_distributions():
+    """packaging/make_sbom.py: a CycloneDX 1.5 document from the
+    distributions installed in ONE folder, with purls, and the embedded
+    Python — stdlib only."""
+    import importlib.util
+    import json
+
+    spec = importlib.util.spec_from_file_location("make_sbom", REPO / "packaging" / "make_sbom.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    d = Path(tempfile.mkdtemp())
+    try:
+        info = d / "site" / "demo_pkg-1.2.3.dist-info"
+        info.mkdir(parents=True)
+        (info / "METADATA").write_text("Metadata-Version: 2.1\nName: Demo_Pkg\nVersion: 1.2.3\n"
+                                       "License-Expression: MIT\n", "utf-8")
+        out = d / "sbom.json"
+        assert mod.main(["--site", str(d / "site"), "--python", "3.11.9", "--version", "9.9.9",
+                         "--out", str(out)]) == 0
+        doc = json.loads(out.read_text("utf-8"))
+        assert doc["bomFormat"] == "CycloneDX" and doc["specVersion"] == "1.5"
+        names = {c["purl"]: c for c in doc["components"]}
+        assert "pkg:pypi/demo-pkg@1.2.3" in names and "pkg:generic/python@3.11.9" in names
+        assert names["pkg:pypi/demo-pkg@1.2.3"]["licenses"][0]["license"]["name"] == "MIT"
+        assert mod.main(["--site", str(d / "empty"), "--python", "3", "--version", "1",
+                         "--out", str(out)]) == 2
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_winget_manifest_fields():
@@ -46760,8 +46832,8 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
     # in .git/config, with the exact Node ci.yml builds with
     job = rel[rel.index("\n  pages:"):rel.index("\n  stage:")]
     for must in ("permissions:\n      contents: read", "persist-credentials: false",
-                 "actions/setup-node@v5", "node-version: ${{ env.NODE_VERSION }}",
-                 "npm ci --ignore-scripts", "npm run build", "actions/upload-artifact@v4",
+                 "actions/setup-node@", "node-version: ${{ env.NODE_VERSION }}",
+                 "npm ci --ignore-scripts", "npm run build", "actions/upload-artifact@",
                  "name: web-dist", "if-no-files-found: error"):
         assert must in job, must
     assert "secrets." not in job and "id-token" not in job, "the pages job holds a secret"
@@ -46770,7 +46842,7 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
     stage = rel[rel.index("\n  stage:"):]
     assert stage.index("needs: pages") < stage.index("steps:")
     archive = rel.index("- name: git archive")
-    take = rel.index("- uses: actions/download-artifact@v4")
+    take = rel.index("- uses: actions/download-artifact@")
     pages = rel.index("- name: The web desk's pages")
     listed = rel.index("- name: MANIFEST.sha256")
     assert archive < take < pages < listed, "the pages are placed after the manifest is written"
@@ -46788,7 +46860,7 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
     assert "app\\web\\dist\\index.html" in rel[rel.index("- name: Silent install, verify, uninstall"):]
     ci = (REPO / ".github" / "workflows" / "ci.yml").read_text("utf-8")
     job = ci[ci.index("\n  pages:"):]
-    for must in ("actions/setup-node@v5", f'node-version: "{".".join(node.groups())}"',
+    for must in ("actions/setup-node@", f'node-version: "{".".join(node.groups())}"',
                  "working-directory: web", "npm ci --ignore-scripts", "npm run build",
                  "permissions:\n      contents: read", "persist-credentials: false"):
         assert must in job, must
