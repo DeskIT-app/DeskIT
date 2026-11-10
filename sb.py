@@ -168,6 +168,18 @@ SIGNIN_TIMEOUT_S = 180
 #: The worker: first sync this long after start, then every CADENCE.
 FIRST_DELAY_S = 30.0
 CADENCE_S = 15 * 60.0
+#: ...and this often while the live socket has been joined since the last
+#: whole pass: every change on another device then came as a broadcast and
+#: the pass only confirms it. Counted 2026-11-09/10 in his network.log: an
+#: idle hour was 36 rows to the account server, 4 passes of 8 (account 4,
+#: sync 3, history 1) and the socket's hourly reconnect, 4. A socket that
+#: dropped and came back may have missed a broadcast in the gap, so the
+#: pace is CADENCE_S again until the next whole pass (``_pace``).
+CADENCE_LIVE_S = 60 * 60.0
+#: The worker sleeps in steps this long, so a socket that drops in the
+#: middle of an hour's wait puts it back on CADENCE_S within a minute. No
+#: request: a look at two numbers.
+PACE_CHECK_S = 60.0
 #: A nudge (a dictation just ended) waits this long for the next one
 #: — 5 s until 2026-09-20, when the live channel made the wait the
 #: largest part of the two seconds the owner asked for.
@@ -410,13 +422,16 @@ def _refresh() -> dict:
     return _store_session(data)
 
 
-def _fresh() -> dict:
-    """The session, refreshed first when its hour is (nearly) over."""
+def _fresh(margin: float | None = None) -> dict:
+    """The session, refreshed first when its hour is (nearly) over — when
+    no more than ``margin`` seconds of it are left, REFRESH_MARGIN_S unless
+    said (the live channel asks a heartbeat earlier)."""
     with _lock:
         session = _load_session()
         if session is None:
             raise AccountError("not signed in")
-        if float(session.get("expires_at") or 0) - time.time() <= REFRESH_MARGIN_S:
+        if float(session.get("expires_at") or 0) - time.time() <= (
+                REFRESH_MARGIN_S if margin is None else margin):
             session = _refresh()
         return session
 
@@ -1303,13 +1318,26 @@ def delete_account() -> None:
     auth user, every refresh token — then wipes the session, the
     account keys in state.json, the cursors and the outbox (8.5). The
     files stay, so LAST_ACCOUNT stays too, as a word and no longer an id:
-    what this account left here must not become the next account's."""
+    what this account left here must not become the next account's.
+
+    The purge has to be WHOLE before ``delete_me`` (audit A16, 2026-11-09):
+    once the auth user is gone nobody can reach reports/<uid>/ any more —
+    the delete policy is the uid's own and no sweep exists — and until then
+    a failed purge was a log line while the desk said "nothing of yours is
+    left on the server". So a purge that failed, or a folder that still
+    lists something after it, stops here with ``STORAGE_LEFT_WORDS``: the
+    account stays, signed in, and the same button tries again."""
     session = _fresh()
     uid = session["user"]["id"]
     try:
         _purge_storage(uid)
-    except Exception as e:                                   # noqa: BLE001
-        log.info("account: storage purge before delete_me: %s", e)
+        left = _stored_files(uid)
+    except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
+        log.info("account: the storage purge before delete_me failed (%s)", e)
+        raise AccountError(STORAGE_LEFT_WORDS.format(n="some")) from e
+    if left:
+        log.info("account: %d report file(s) still listed after the purge", len(left))
+        raise AccountError(STORAGE_LEFT_WORDS.format(n=len(left)))
     status, data = _rest("POST", "rpc/delete_me", purpose="account", payload={})
     if status not in (200, 204):
         raise AccountError(f"the server refused the deletion ({_server_said(status, data)})")
@@ -1340,25 +1368,54 @@ def delete_account() -> None:
     _signed_out()
 
 
+#: What Delete my account says when the report files would not all go
+#: (``delete_account``): plain words, under 200 characters (the desk cuts
+#: last_error there), and the way on is the button itself.
+STORAGE_LEFT_WORDS = ("Your account was not deleted: {n} report file(s) on the server could "
+                      "not be removed. Nothing else changed. Press Delete my account again.")
+#: The page one list call asks for, and the most names one delete call is
+#: sent: the 1000 the list always asked for. A folder past it is read, and
+#: removed, a page at a time (the live limits were not read from here).
+STORAGE_PAGE = 1000
+
+
 def _list_objects(prefix: str) -> list[str]:
-    """The names under one folder of the bucket (relative to it)."""
-    status, raw = _storage("POST", "object/list/reports", purpose="account",
-                           payload={"prefix": prefix, "limit": 1000, "offset": 0})
-    if status != 200:
-        return []
-    return [str(item.get("name")) for item in (_json(status, raw) or [])
-            if isinstance(item, dict) and item.get("name")]
+    """The names under one folder of the bucket (relative to it), every
+    page of them. A refusal RAISES: until 2026-11-10 it was an empty list,
+    and an empty list is what "nothing is left" looks like."""
+    names: list[str] = []
+    offset = 0
+    while True:
+        status, raw = _storage("POST", "object/list/reports", purpose="account",
+                               payload={"prefix": prefix, "limit": STORAGE_PAGE, "offset": offset})
+        items = _json(status, raw) if status == 200 else None
+        if not isinstance(items, list):
+            raise AccountError(f"the report files could not be listed ({_server_said(status, raw)})")
+        names += [str(item.get("name")) for item in items
+                  if isinstance(item, dict) and item.get("name")]
+        if len(items) < STORAGE_PAGE:
+            return names
+        offset += len(items)
+
+
+def _stored_files(uid: str) -> list[str]:
+    """Every object under reports/<uid>/ — they sit one folder down,
+    <uid>/<report_id>/<file> — as the full names a delete takes."""
+    return [f"{uid}/{folder}/{name}"
+            for folder in _list_objects(uid)
+            for name in _list_objects(f"{uid}/{folder}")]
 
 
 def _purge_storage(uid: str) -> int:
-    """Every object under reports/<uid>/ — they sit one folder down,
-    <uid>/<report_id>/<file> — removed by this client, which holds the
-    delete policy. How many went."""
-    files = [f"{uid}/{folder}/{name}"
-             for folder in _list_objects(uid)
-             for name in _list_objects(f"{uid}/{folder}")]
-    if files:
-        _storage("DELETE", "object/reports", payload={"prefixes": files}, purpose="account")
+    """Every object under reports/<uid>/, removed by this client, which
+    holds the delete policy, a page at a time. How many went; a delete
+    the server refused raises (its status went unread until 2026-11-10)."""
+    files = _stored_files(uid)
+    for start in range(0, len(files), STORAGE_PAGE):
+        status, raw = _storage("DELETE", "object/reports", purpose="account",
+                               payload={"prefixes": files[start:start + STORAGE_PAGE]})
+        if status not in (200, 204):
+            raise AccountError(f"the report files could not be removed ({_server_said(status, raw)})")
     return len(files)
 
 
@@ -2220,17 +2277,35 @@ def _worker_pass(vocab, on_sent, only) -> None:
     drain_outbox(on_sent)
 
 
-def _plan_turn(plan: dict, named: set, now: float, waiting: bool):
+def _pace(plan: dict, live_since: float | None) -> float:
+    """How often the whole pass comes: CADENCE_LIVE_S while the live socket
+    that is up now joined before the last whole pass (``live_since``, the
+    join's time.monotonic(), None with no socket), CADENCE_S otherwise — no
+    socket, or one that came back after that pass, whose gap may have
+    swallowed a broadcast. The next whole pass closes the gap."""
+    full = plan.get("full")
+    if live_since is not None and full is not None and live_since <= full:
+        return CADENCE_LIVE_S
+    return CADENCE_S
+
+
+def _live_since() -> float | None:
+    """When the socket that is up now joined, or None (``_pace``)."""
+    return _live_state.get("joined") if _live_state.get("on") else None
+
+
+def _plan_turn(plan: dict, named: set, now: float, waiting: bool,
+               live_since: float | None = None):
     """What one turn of the worker does, from what woke it: None a pass over
     everything, a list those stores, ``()`` a look at the lock alone. The
     15-minute pass was only ever the wait running out, and every nudge
     restarts the wait, so a person dictating more often than that never got
     one, and that pass is the account pass now: no forgotten list, no
     request to join, no hooks. So it comes due by the clock, whatever woke
-    the worker. A PC waiting to be approved wakes every few seconds, and a
-    wake like that looks at its request and no more: the settings and the
-    words each turn were half its requests."""
-    if "*" in named or now - plan.get("full", float("-inf")) >= CADENCE_S:
+    the worker — the clock of ``_pace``. A PC waiting to be approved wakes
+    every few seconds, and a wake like that looks at its request and no
+    more: the settings and the words each turn were half its requests."""
+    if "*" in named or now - plan.get("full", float("-inf")) >= _pace(plan, live_since):
         plan["full"] = now
         return None
     if named:
@@ -2241,23 +2316,25 @@ def _plan_turn(plan: dict, named: set, now: float, waiting: bool):
     return None
 
 
-def _plan_wait(plan: dict, now: float, waiting: bool) -> float:
-    """How long the worker sleeps. Waiting to be approved it looks every few
-    seconds for the life of the first request, which is a person walking
-    to their other device; after that it is one who has walked away, and
-    one copy left waiting was 2,880 requests an hour on a free tier. The
-    ``paired`` event still answers at once, and a press here starts the
-    quick looks again."""
+def _plan_wait(plan: dict, now: float, waiting: bool,
+               live_since: float | None = None) -> float:
+    """How long the worker sleeps after a turn: ``_pace``. Waiting to be
+    approved it looks every few seconds for the life of the first request,
+    which is a person walking to their other device; after that it is one
+    who has walked away, and one copy left waiting was 2,880 requests an
+    hour on a free tier. The ``paired`` event still answers at once, and a
+    press here starts the quick looks again."""
     if not waiting:
         plan.pop("asked", None)
-        return CADENCE_S
+        return _pace(plan, live_since)
     since = plan.setdefault("asked", now)
     return PAIRING_POLL_S if now - since < PAIRING_TTL_S else CADENCE_S
 
 
 def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
     """The app's background pass: FIRST_DELAY_S after start, then every
-    CADENCE_S, and NUDGE_SETTLE_S after a nudge (a dictation ended, a
+    CADENCE_S (CADENCE_LIVE_S while the live socket holds, ``_pace``), and
+    NUDGE_SETTLE_S after a nudge (a dictation ended, a
     consent opened, the person pressed Sync now) — over the stores the
     nudges named, or everything; a pass over everything starts with the
     account pass, which needs no sync. Starts the live thread beside it.
@@ -2295,18 +2372,28 @@ def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
                 seen = stamp
                 named.add("settings")
             only = _plan_turn(plan, named, time.monotonic(),
-                              _lock_state.get("state") == "waiting")
+                              _lock_state.get("state") == "waiting", _live_since())
             try:
                 _worker_pass(vocab, on_sent, only)
             except Exception:                                # noqa: BLE001
                 log.debug("account worker tripped", exc_info=True)
-            wait = _plan_wait(plan, time.monotonic(), _lock_state.get("state") == "waiting")
-            if _wake.wait(wait):
-                time.sleep(NUDGE_SETTLE_S)
-                with _lock:
-                    pressed = not _pending   # Same code, not a dictation
-                if pressed:
-                    plan.pop("asked", None)
+            # the wait is asked again every PACE_CHECK_S: the socket's
+            # state moves the pace, and an hour's wait must not outlive
+            # the socket it was measured for
+            ended = time.monotonic()
+            while True:
+                now = time.monotonic()
+                left = _plan_wait(plan, now, _lock_state.get("state") == "waiting",
+                                  _live_since()) - (now - ended)
+                if left <= 0:
+                    break
+                if _wake.wait(min(left, PACE_CHECK_S)):
+                    time.sleep(NUDGE_SETTLE_S)
+                    with _lock:
+                        pressed = not _pending   # Same code, not a dictation
+                    if pressed:
+                        plan.pop("asked", None)
+                    break
 
     _worker = threading.Thread(target=loop, daemon=True, name="account-sync")
     _worker.start()
@@ -2445,7 +2532,14 @@ def _live_once(vocab) -> bool:
             if time.monotonic() - beat >= LIVE_HEARTBEAT_S:
                 beat = time.monotonic()
                 send("heartbeat", {}, on_topic="phoenix")
-                fresh = _fresh()
+                # The channel closes the moment the token it holds runs out,
+                # and _fresh's 10 s margin falls between two heartbeats 25 s
+                # apart: app.log 2026-11-07..10 has the channel dropped
+                # (phx_close) 57 times in 61 joins, each 3,600 s after its
+                # join, then a new socket 6 s later — 4 requests an hour and
+                # a gap no broadcast reaches. So the token is renewed one
+                # heartbeat early, and sent below.
+                fresh = _fresh(LIVE_HEARTBEAT_S + REFRESH_MARGIN_S)
                 if str(fresh.get("access_token") or "") != token:
                     token = str(fresh.get("access_token") or "")
                     send("access_token", {"access_token": "{secret}"}, secret=SESSION_NAME)

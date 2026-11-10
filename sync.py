@@ -71,6 +71,25 @@ LOCAL_SUFFIXES: tuple[str, ...] = ("hotkey", "chord", "device", "folder",
 #: ...and whose last segment IS one of these: positions, the port, paths.
 LOCAL_LAST: frozenset[str] = frozenset({"x", "y", "scale", "port", "host",
                                         "path", "dir", "file"})
+#: Keys whose VALUE can destroy or expose what is on another PC: never
+#: pushed, and ignored in a pull. The blob is plaintext and the server
+#: (or a stolen session) can write it (audit 2026-11-09, security-server
+#: F2): `history.keep_days = 1` arriving here prunes transcripts.log to a
+#: day on every installed copy at its next start, and 0 stops writing it.
+#: Read 2026-11-10 over the 131 keys of defaults.toml that the rules above
+#: let through; these are the ones of that kind:
+#:   history.keep_days     prunes transcripts.log (history.apply)
+#:   study.corpus_keep     trims corpus\ (study.Corpus)
+#:   vocab.keep_audio      trims recent\, the recordings (spool.Spool)
+#:   problems.keep_resolved  drops answered reports from problems.json
+#:   feedback.placeholder  is PASTED at the cursor of every dictation: a
+#:                         line break in it runs in a terminal
+#: An allowlist of the Settings place's rows would not close it:
+#: history.keep_days is one of them (Privacy > KEPT ON THIS PC).
+NEVER_SYNC: frozenset[str] = frozenset({
+    "history.keep_days", "study.corpus_keep", "vocab.keep_audio",
+    "problems.keep_resolved", "feedback.placeholder",
+})
 
 #: The blob's cap, the migration's CHECK (64 KB).
 SETTINGS_MAX_BYTES = 65536
@@ -79,9 +98,10 @@ SETTINGS_MAX_BYTES = 65536
 def syncable(key: str) -> bool:
     """May this settings key leave the PC? False for everything that
     names a device, a folder, a key binding, a position, a port, the
-    hardware tier or a consent."""
+    hardware tier or a consent — and for ``NEVER_SYNC``, whose value
+    would delete or expose something on the PC it lands on."""
     key = str(key).strip()
-    if not key:
+    if not key or key in NEVER_SYNC:
         return False
     section, _, rest = key.partition(".")
     if not rest:                                   # a top-level key
