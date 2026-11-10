@@ -4028,7 +4028,10 @@ def test_the_dot_alarm_travels_to_the_centre_and_comes_back() -> None:
     dot._alarm_back = (ended - overlay_mod.DOT_ALARM_BACK_S / 2, k0, s0)
     half_at, half_size, _f = dot.alarm_frame(rest, box, work)
     assert box < half_size < size and half_at[0] > at[0], (half_at, at)
-    dot._alarm_back = (ended - overlay_mod.DOT_ALARM_BACK_S, k0, s0)
+    # A little past the end, not on it: time.monotonic() has 15.6 ms steps
+    # on Python 3.11, and at some uptimes (491,530 s on 2026-11-10) the
+    # difference landed a float ulp under DOT_ALARM_BACK_S and read busy.
+    dot._alarm_back = (ended - overlay_mod.DOT_ALARM_BACK_S - 0.05, k0, s0)
     assert not dot.alarm_busy()
     assert dot.alarm_frame(rest, box, work) == (rest, box, None), "home"
     dot.alarm(False)                        # idempotent
