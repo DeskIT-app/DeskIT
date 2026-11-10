@@ -25,7 +25,9 @@ sync. The pipe name IS the address.
 Access: a named pipe's default security descriptor grants full control to
 its creator and to administrators, and READ-only access to Everyone. Every
 command here arrives by WRITING, so another user on this machine cannot
-drive the app; this is not a remote surface at all.
+drive the app; this is not a remote surface at all (remote clients are
+refused by flag). What the descriptor cannot stop is a program creating
+the name FIRST — see FILE_FLAG_FIRST_PIPE_INSTANCE below.
 
 Both halves are deliberately dumb. The server owns no state — it is handed
 one callable and forwards to it — and the client returns None for "nothing
@@ -51,6 +53,18 @@ ERROR_MORE_DATA = 234
 # apart is the whole of the retry policy below.
 ERROR_FILE_NOT_FOUND = 2      # there is no pipe: probably nothing running
 ERROR_PIPE_BUSY = 231         # there is one, someone else is using it
+ERROR_ACCESS_DENIED = 5       # CreateNamedPipe: the name is already taken
+# The pipe name is machine-global, so another program — another Windows
+# user's included — can create it BEFORE this app does, and then every
+# command the desk sends (the recovery key typed on it among them) goes
+# to that program (2026-09-23 audit A58; 2026-11-09 security-local 6).
+# The first instance is therefore made with FILE_FLAG_FIRST_PIPE_INSTANCE,
+# which fails when the name already exists, and the app refuses to serve
+# beside it. pywin32 has the value in win32pipe on this build and not in
+# win32file, so it is spelled out. Remote clients are refused outright:
+# nothing on another machine has any business on this pipe.
+FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
+PIPE_REJECT_REMOTE_CLIENTS = 0x00000008
 
 log = logging.getLogger("app")
 
@@ -62,6 +76,20 @@ def _pipe_modules():
     import win32file
     import win32pipe
     return win32pipe, win32file
+
+
+def _instance(win32pipe, *, first: bool):
+    """One pipe instance. `first` adds FILE_FLAG_FIRST_PIPE_INSTANCE, so
+    it fails (ERROR_ACCESS_DENIED) when the name already exists."""
+    return win32pipe.CreateNamedPipe(
+        PIPE_NAME,
+        win32pipe.PIPE_ACCESS_DUPLEX
+        | (FILE_FLAG_FIRST_PIPE_INSTANCE if first else 0),
+        win32pipe.PIPE_TYPE_MESSAGE
+        | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT
+        | PIPE_REJECT_REMOTE_CLIENTS,
+        win32pipe.PIPE_UNLIMITED_INSTANCES,
+        MAX_MESSAGE, MAX_MESSAGE, 0, None)
 
 
 class ControlServer:
@@ -83,33 +111,63 @@ class ControlServer:
     """
 
     INSTANCES = 4
+    #: How long a refused first instance is tried again before the app
+    #: believes it. The pipe of a copy that is just leaving can outlive
+    #: its mutex by the 0.35 s main() waits for the bye cue, and a restart
+    #: that lands in that gap must not lose its channel for the session;
+    #: a program that took the name on purpose is still there after this.
+    FIRST_WAIT_S = 3.0
 
     def __init__(self, handler: Callable[[str, dict], dict]) -> None:
         self._handler = handler
         self._threads: list[threading.Thread] = []
         self._stopping = threading.Event()
         self._listening = threading.Event()
+        self._warned = False
 
     def start(self) -> bool:
         """True if the listener came up. A failure is logged and swallowed:
         the dashboard is a convenience, and dictation must not depend on
         it.
 
-        Waits for the first pipe instance to exist rather than just
-        starting the thread. WaitNamedPipe does NOT wait for a pipe that
-        has not been created yet — it fails immediately with "file not
-        found" — so returning before the thread got there would make the
-        first request after a start look exactly like "nothing is running".
+        The FIRST pipe instance is made here, before any thread, with
+        FILE_FLAG_FIRST_PIPE_INSTANCE: a name that already exists is
+        somebody else's pipe, and the answer is to refuse — a WARNING in
+        app.log, no channel — not to serve beside it. That is also why
+        the first request after a start cannot find "file not found":
+        WaitNamedPipe does NOT wait for a pipe that has not been created
+        yet, and this one exists before start() returns.
         """
         try:
-            _pipe_modules()
+            win32pipe, _win32file = _pipe_modules()
         except Exception as e:
             log.info("control channel unavailable (%s) — the dashboard will "
                      "not be able to see this instance", e)
             return False
+        self._stopping.clear()
+        deadline = time.monotonic() + max(0.0, self.FIRST_WAIT_S)
+        while True:
+            try:
+                first = _instance(win32pipe, first=True)
+                break
+            except Exception as e:
+                taken = getattr(e, "winerror", 0) == ERROR_ACCESS_DENIED
+                if taken and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    continue
+                if taken:
+                    log.warning(
+                        "control channel refused: a pipe named %s already "
+                        "exists and this app did not make it — the desk "
+                        "will not see or drive this instance until whatever "
+                        "holds the name is gone", PIPE_NAME)
+                else:
+                    log.warning("control channel did not come up (%r)", e)
+                return False
+        self._listening.set()
         self._threads = [
-            threading.Thread(target=self._run, daemon=True,
-                             name=f"control-{i}")
+            threading.Thread(target=self._run, args=(first if i == 0 else None,),
+                             daemon=True, name=f"control-{i}")
             for i in range(self.INSTANCES)]
         for thread in self._threads:
             thread.start()
@@ -140,18 +198,24 @@ class ControlServer:
 
     # -- control thread --
 
-    def _run(self) -> None:
+    def _run(self, handle=None) -> None:
         win32pipe, win32file = _pipe_modules()
         while not self._stopping.is_set():
-            handle = None
+            if handle is None:
+                try:
+                    handle = _instance(win32pipe, first=False)
+                except Exception as e:
+                    # Not a client hanging up: the name would not take
+                    # another instance. Said once at WARNING (the first
+                    # version said it at DEBUG and spun on it, four
+                    # threads at full speed), then a half-second pause.
+                    if not self._warned:
+                        self._warned = True
+                        log.warning("control channel: could not make a pipe "
+                                    "instance (%r)", e)
+                    self._stopping.wait(0.5)
+                    continue
             try:
-                handle = win32pipe.CreateNamedPipe(
-                    PIPE_NAME,
-                    win32pipe.PIPE_ACCESS_DUPLEX,
-                    win32pipe.PIPE_TYPE_MESSAGE
-                    | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
-                    win32pipe.PIPE_UNLIMITED_INSTANCES,
-                    MAX_MESSAGE, MAX_MESSAGE, 0, None)
                 self._listening.set()
                 win32pipe.ConnectNamedPipe(handle, None)
                 if self._stopping.is_set():
@@ -159,21 +223,26 @@ class ControlServer:
                 self._serve_one(win32pipe, win32file, handle)
             except Exception as e:
                 if not self._stopping.is_set():
-                    # A client that hangs up mid-message is routine; a
-                    # CreateNamedPipe failure is not, and both look the
-                    # same from here. Log at info and carry on rather than
-                    # killing the channel for the rest of the session.
+                    # A client that hangs up mid-message is routine (the
+                    # instance's own failures are above, at WARNING). Log
+                    # and carry on rather than killing the channel for the
+                    # rest of the session.
                     log.debug("control channel hiccup: %r", e)
             finally:
-                if handle is not None:
-                    try:
-                        win32pipe.DisconnectNamedPipe(handle)
-                    except Exception:
-                        pass
-                    try:
-                        win32file.CloseHandle(handle)
-                    except Exception:
-                        pass
+                try:
+                    win32pipe.DisconnectNamedPipe(handle)
+                except Exception:
+                    pass
+                try:
+                    win32file.CloseHandle(handle)
+                except Exception:
+                    pass
+                handle = None
+        if handle is not None:            # stopped before it was served
+            try:
+                win32file.CloseHandle(handle)
+            except Exception:
+                pass
 
     def _serve_one(self, win32pipe, win32file, handle) -> None:
         _, data = win32file.ReadFile(handle, MAX_MESSAGE)

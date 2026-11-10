@@ -280,6 +280,34 @@ def _consents() -> list[dict]:
 
 DIAGNOSE_LINES = 50
 
+#: Where a path ends: a separator, a quote, a space or a bracket.
+_PATH_END = r"(?=[\\/\s\"'`:;,)\]}>]|$)"
+#: Any other `X:\Users\<name>` — a short 8.3 name (`ABCDEF~1`) in a Temp
+#: path, another profile. The folders every PC has stay as they are.
+_PROFILE = re.compile(r"(?i)\b([a-z]:[\\/]+users[\\/]+)"
+                      r"(?!(?:public|default|default user|all users)" + _PATH_END + ")"
+                      r"([^\\/\s\"'`:*?<>|]+)" + _PATH_END)
+
+
+def no_profile(text: str) -> str:
+    """`text` with the Windows profile folder said as `%USERPROFILE%`,
+    and the name in any other `X:\\Users\\<name>` taken out, so a pasted
+    diagnostics block does not carry the Windows user name (2026-11-09
+    audit, security-local 10: 5 of the last 2,860 lines of the owner's
+    app.log held his profile path, and an installed copy's Setup log
+    holds it on most lines). Every separator spelling of the profile is
+    matched — backslash, doubled backslash (a repr), forward slash — and
+    case is ignored, as Windows ignores it. Paths, not prose: the bare
+    name alone in a sentence is not touched."""
+    if not text:
+        return text
+    home = os.path.expanduser("~")
+    parts = [p for p in re.split(r"[\\/]+", home) if p]
+    if len(parts) >= 2:
+        text = re.sub(r"(?i)" + r"[\\/]+".join(re.escape(p) for p in parts)
+                      + _PATH_END, "%USERPROFILE%", text)
+    return _PROFILE.sub(r"\1<user>", text)
+
 #: A Hebrew letter or point (the block, and the presentation forms): an
 #: app.log line holding one quotes words, and diagnose() leaves it out.
 HEBREW = re.compile("[֐-׿יִ-ﭏ]")
@@ -343,7 +371,7 @@ def diagnose(cfg=None) -> str:
             lines.extend(tail)
     except Exception:                     # noqa: BLE001
         pass
-    return redact.redact("\n".join(lines), stored=False)
+    return redact.redact(no_profile("\n".join(lines)), stored=False)
 
 
 def env(cfg=None) -> dict:

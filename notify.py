@@ -175,11 +175,16 @@ _CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # THE ONE THING IN A NOTIFICATION THAT IS NOT DRAWN. `link` is handed to
 # the SHELL when the card is clicked, so it is not cleaned, it is
-# ADMITTED: one scheme, one alphabet, one length. `claude://…` opens
-# whatever Windows has registered for it — the desktop app — and
-# everything else is not a link here and reads as none: no file:, no
-# http:, no path, no space, no quote, no backslash, no percent escape.
-_LINK = re.compile(r"^(?:claude://[A-Za-z0-9_\-./?=&:]{1,180}|deskit://home)$")
+# ADMITTED: exactly the shapes a sender in this tree makes, and nothing
+# else. `claude://resume?session=<uuid>` is the one link of the desktop
+# app's that notify_hook.session_link and notify_watch.link_of produce
+# (the app's other doors are gated off — notify_hook.py has the
+# measurements), and `deskit://home` is ours; everything else reads as
+# none. Until 2026-11-10 any `claude://` route in a wide alphabet passed,
+# so whoever held the loopback token could have a click open whatever
+# route the Claude app implements now or later (security-local 9).
+_LINK = re.compile(r"^(?:claude://resume\?session=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}"
+                   r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|deskit://home)$")
 #: The one link of the app's own: a click opens the desk on Home (the
 #: account lock's "another PC asks to join", 2026-09-21 — the owner
 #: wanted a notification on the right that takes him to Approve / Not

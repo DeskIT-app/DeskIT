@@ -241,14 +241,47 @@ def _claimed_since(mark: int | None) -> bool:
     return mark is not None and claim_mark() != mark
 
 
-def _put_text(text: str) -> None:
+#: Windows' three registered formats that keep a clipboard write out of
+#: Win+V's history, out of the cloud clipboard ("Sync across devices") and
+#: out of every clipboard manager that honours them (2026-09-23 audit A111,
+#: 2026-11-09 security-local 7): each is only a NAME that must be on the
+#: clipboard beside the text — the first with any data, the other two as a
+#: DWORD 0. deskweb.py writes the same three for a secret copy.
+PRIVATE_FORMATS = (("ExcludeClipboardContentFromMonitorProcessing", b"\0\0\0\0"),
+                   ("CanIncludeInClipboardHistory", b"\0\0\0\0"),
+                   ("CanUploadToCloudClipboard", b"\0\0\0\0"))
+
+
+def _keep_out_of_history() -> None:
+    """Put PRIVATE_FORMATS on the open, emptied clipboard. Best effort: a
+    format that will not go on costs the privacy of THIS write and never
+    the paste, so a failure is a log line."""
+    for name, value in PRIVATE_FORMATS:
+        try:
+            _write_format(win32clipboard.RegisterClipboardFormat(name), value)
+        except Exception as e:            # noqa: BLE001
+            log.info("clipboard: %s did not go on (%s) — this paste may "
+                     "show in clipboard history", name, type(e).__name__)
+
+
+def _put_text(text: str, private: bool = False) -> None:
     """The write itself, claiming nothing. For text this module is only
-    passing through the clipboard on its way somewhere else."""
+    passing through the clipboard on its way somewhere else.
+
+    `private` (paste_text's write: a transcript, the "..." marker, a
+    translation on its way to the paste chord, all taken back off after
+    it) adds PRIVATE_FORMATS in the SAME open session — the listeners
+    read the formats at CloseClipboard, so a second open would be too
+    late. A copy the person keeps (set_text, every Copy button, a moved
+    marker's fallback) and a restore of what was there go as they always
+    did: that is his clipboard, and his history."""
     with _board_lock:
         _open_clipboard()
         try:
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+            if private:
+                _keep_out_of_history()
         except Exception as e:
             # Windows 1418 and its neighbours come out of pywin32 as a bare
             # error, and every `except ClipboardBusyError` in the app was
@@ -375,7 +408,7 @@ def paste_text(text: str, paste_chord: str, restore_delay_ms: int) -> None:
     during a dictation. It is one keystroke away now.
     """
     with _board_lock:
-        _put_text(text)
+        _put_text(text, private=True)
         time.sleep(SETTLE_SECONDS)
         send_chord(paste_chord)
         _chord.at = time.monotonic()

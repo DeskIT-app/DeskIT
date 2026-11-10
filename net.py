@@ -474,6 +474,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect())
+#: For 127.0.0.1, NO proxy of any kind (2026-11-09 audit, security-local
+#: 4). urllib's default ProxyHandler takes HTTP_PROXY or the registry's
+#: static ProxyServer, and Windows' `<local>` bypass covers only names
+#: without a dot — so 127.0.0.1 itself went to the proxy, and with it the
+#: hook's `Authorization: Bearer` and Claude's message, in clear text
+#: (Lib\urllib\request.py, _proxy_bypass_winreg_override, read in
+#: 3.11.9). A request for this PC never needs anybody between; the
+#: remote hosts keep the system's proxy, which a work PC may need.
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                            _NoRedirect())
 
 
 def _connect(method: str, url: str, headers: dict, body: bytes | None,
@@ -483,8 +493,9 @@ def _connect(method: str, url: str, headers: dict, body: bytes | None,
     ``NetError`` for everything that never got one."""
     req = urllib.request.Request(url, data=body, headers=headers,
                                  method=method.upper())
+    local = (urllib.parse.urlsplit(url).hostname or "").lower() == LOOPBACK
     try:
-        return _OPENER.open(req, timeout=timeout_s)
+        return (_LOCAL_OPENER if local else _OPENER).open(req, timeout=timeout_s)
     except urllib.error.HTTPError as e:
         return e
     except urllib.error.URLError as e:

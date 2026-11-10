@@ -2049,7 +2049,7 @@ def test_the_paste_time_runs_from_the_release_to_the_chord() -> None:
     import main as main_mod
 
     # The stamp: at the chord, before the restore wait, and per thread.
-    with _patched(injector, "_put_text", lambda text: None), \
+    with _patched(injector, "_put_text", lambda text, private=False: None), \
             _patched(injector, "send_chord", lambda chord: None):
         before = time.monotonic()
         injector.paste_text("x", "ctrl+v", 300)
@@ -2134,6 +2134,99 @@ def test_the_paste_time_runs_from_the_release_to_the_chord() -> None:
     to_paste, released, done, _chord_at, line = run(stale=True)
     assert to_paste >= 1.55, line
     assert to_paste <= (done - released) + 0.05, (line, done - released)
+
+
+def test_a_paste_stays_out_of_clipboard_history_and_a_kept_copy_does_not() -> None:
+    """A111 (2026-09-23) / security-local 7 (2026-11-09): the transcript,
+    the "..." marker and a translation go on the clipboard only to be
+    pasted and taken back off, and with Win+V's history or "Sync across
+    devices" on, every one of them stayed in the history and went to the
+    cloud clipboard. paste_text's write now carries Windows' three
+    registered formats — ExcludeClipboardContentFromMonitorProcessing,
+    and CanIncludeInClipboardHistory / CanUploadToCloudClipboard as a
+    DWORD 0 — in the SAME open session as the text (the listeners read
+    at CloseClipboard). What the person keeps — set_text, every Copy
+    button, a restore of his own clipboard — goes as it always did. And
+    a format that will not go on costs nothing but its own line: the
+    paste still goes. Driven on a stand-in clipboard: the real one is
+    shared with the owner's desktop, hidden or not."""
+    import inspect
+    import logging
+
+    events: list = []
+
+    class _Board:
+        @staticmethod
+        def EmptyClipboard():
+            events.append(("empty",))
+
+        @staticmethod
+        def SetClipboardText(text, fmt):
+            events.append(("text", text, fmt))
+
+        @staticmethod
+        def RegisterClipboardFormat(name):
+            events.append(("register", name))
+            return 0xC000 + len(name)
+
+    refuse: set = set()
+
+    def write(fmt, blob):
+        if fmt in refuse:
+            raise OSError("no")
+        events.append(("format", fmt, bytes(blob)))
+
+    private = {0xC000 + len(name): name for name, _ in injector.PRIVATE_FORMATS}
+    assert set(private.values()) == {"ExcludeClipboardContentFromMonitorProcessing",
+                                     "CanIncludeInClipboardHistory",
+                                     "CanUploadToCloudClipboard"}
+    assert all(v == b"\0\0\0\0" for _n, v in injector.PRIVATE_FORMATS)
+
+    def session(action):
+        events.clear()
+        with _patched(injector, "win32clipboard", _Board), \
+                _patched(injector, "_open_clipboard", lambda *a, **k: events.append(("open",))), \
+                _patched(injector, "_close_clipboard", lambda: events.append(("close",))), \
+                _patched(injector, "_write_format", write), \
+                _patched(injector, "send_chord", lambda chord: events.append(("chord", chord))):
+            action()
+        return list(events)
+
+    pasted = session(lambda: injector.paste_text("נשלח", "ctrl+v", 0))
+    kinds = [e[0] for e in pasted]
+    assert kinds[:3] == ["open", "empty", "text"] and pasted[2][1] == "נשלח", pasted
+    close = kinds.index("close")
+    written = {e[1]: e[2] for e in pasted[:close] if e[0] == "format"}
+    assert {private[f] for f in written} == set(private.values()), pasted
+    assert all(v == b"\0\0\0\0" for v in written.values()), written
+    assert kinds.index("chord") > close, "the chord goes after the clipboard is closed"
+
+    for kept in (lambda: injector.set_text("לשמור"),
+                 lambda: injector.restore(("text", "שלו"), since=None)):
+        got = session(kept)
+        assert [e[0] for e in got] == ["open", "empty", "text", "close"], got
+
+    # The marker is a paste too: show_placeholder -> inject -> paste_text.
+    assert "paste_text(" in inspect.getsource(injector.inject)
+    assert "_put_text(text, private=True)" in inspect.getsource(injector.paste_text)
+
+    # One format refused: logged, the other two still go on, the paste goes.
+    refuse.add(0xC000 + len("CanUploadToCloudClipboard"))
+    lines: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: lines.append(record.getMessage())
+    app_log = logging.getLogger("app")
+    level = app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(handler)
+    try:
+        partly = session(lambda: injector.paste_text("x", "ctrl+v", 0))
+    finally:
+        app_log.removeHandler(handler)
+        app_log.setLevel(level)
+    assert ("chord", "ctrl+v") in partly, partly
+    assert sum(1 for e in partly if e[0] == "format") == 2, partly
+    assert any("CanUploadToCloudClipboard did not go on" in line for line in lines), lines
 
 
 def test_a_marker_thread_that_will_not_start_does_not_lose_the_dictation() -> None:
@@ -11053,6 +11146,72 @@ def test_a_command_is_not_lost_to_the_status_poller() -> None:
     lost = [r for r in results if r is None]
     assert len(results) == 75, len(results)
     assert not lost, f"{len(lost)} of {len(results)} commands were dropped"
+
+
+def test_the_control_pipe_refuses_a_name_somebody_else_made_first() -> None:
+    """A58 (2026-09-23) / security-local 6 (2026-11-09): the pipe's name is
+    machine-global, so a program that creates it BEFORE the app gets every
+    command the desk sends — the recovery key typed on it among them —
+    and the app's own CreateNamedPipe failed into a DEBUG line in a loop
+    that spun. The first instance is made with
+    FILE_FLAG_FIRST_PIPE_INSTANCE: beside a pipe that exists the app
+    serves nothing, says so at WARNING, and starts no thread; a copy of
+    its own that is still leaving is waited out (FIRST_WAIT_S); alone it
+    comes up as before, and a stop and a start again on the same server
+    work. Remote clients are refused by flag."""
+    import logging
+
+    import control
+    import win32file
+    import win32pipe
+
+    restore = _private_pipe(control, "squat")
+    lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            if record.levelno >= logging.WARNING:
+                lines.append(record.getMessage())
+
+    catch = _Catch()
+    app_log = logging.getLogger("app")
+    app_log.addHandler(catch)
+    squatter = win32pipe.CreateNamedPipe(
+        control.PIPE_NAME, win32pipe.PIPE_ACCESS_DUPLEX,
+        win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+        win32pipe.PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, None)
+    server = control.ControlServer(lambda c, a: {"ok": True, "cmd": c})
+    try:
+        with _patched(control.ControlServer, "FIRST_WAIT_S", 0.3):
+            t0 = time.monotonic()
+            assert server.start() is False, "it served beside somebody else's pipe"
+            assert 0.25 <= time.monotonic() - t0 < 3.0
+        assert server._threads == [], "a thread started anyway"
+        assert any("control channel refused" in line and control.PIPE_NAME in line
+                   for line in lines), lines
+        # A copy of our own that is still leaving: the name frees inside
+        # the wait, and the start goes on.
+        leaving = threading.Timer(0.3, lambda: win32file.CloseHandle(squatter))
+        leaving.start()
+        assert server.start() is True
+        leaving.join()
+        squatter = None
+        assert control.send("status") == {"ok": True, "cmd": "status"}
+        server.stop()
+        assert control.send("status", timeout_ms=200) is None
+        assert server.start() is True, "a stop and a start again"
+        assert control.send("again") == {"ok": True, "cmd": "again"}
+    finally:
+        server.stop()
+        app_log.removeHandler(catch)
+        if squatter is not None:
+            try:
+                win32file.CloseHandle(squatter)
+            except Exception:             # noqa: BLE001 — the timer got there
+                pass
+        restore()
+    assert control.FILE_FLAG_FIRST_PIPE_INSTANCE == 0x00080000
+    assert control.PIPE_REJECT_REMOTE_CLIENTS == win32pipe.PIPE_REJECT_REMOTE_CLIENTS == 8
 
 
 def test_stop_works_during_the_model_loading_window() -> None:
@@ -30376,6 +30535,19 @@ def test_opening_a_notification_goes_to_its_session_before_its_window() -> None:
                 'claude://x"&calc', "claude:" + "/" * 3 + "a" * 200,
                 5, None, ["claude://x"], {"x": 1}):
         assert notify._link(bad) == "", bad
+    # Exactly the shapes the senders make (security-local 9): the resume
+    # link with a uuid, and the desk's own. Any other route the Claude app
+    # has, or grows, is not handed to the shell from a card.
+    assert notify._link("deskit://home") == "deskit://home"
+    assert notify._link(link.upper().replace("CLAUDE://RESUME?SESSION=",
+                                             "claude://resume?session=")) != ""
+    for bad in ("claude://code/cse_01Wn5A", "claude://settings",
+                "claude://resume?session=S1",
+                "claude://code/continue?session=local_6abc45c7-8df5-460d-a90f-cbadbbbd4cb2",
+                f"{link}&then=x", f"{link}/", link.replace("resume", "Resume"),
+                "claude://resume?session=6abc45c7-8df5-460d-a90f-cbadbbbd4cb",
+                "deskit://home/x", "deskit://settings"):
+        assert notify._link(bad) == "", bad
     assert notify.clean({"link": "javascript:alert(1)"})["link"] == ""
     assert notify.clean({"link": link})["link"] == link
 
@@ -31400,7 +31572,8 @@ def test_the_hook_script_maps_events_and_never_fails() -> None:
         seen.append((method, url, dict(headers)))
         return _FakeRaw(b"", status=204)
 
-    with _patched(net_mod, "_connect", fake_connect):
+    with _patched(net_mod, "_connect", fake_connect), \
+            _patched(hook, "app_is_here", lambda: True):
         assert hook.post({"title": "x"}, "http://127.0.0.1:8756/notify",
                          "tok-fixture") is True
     assert seen[0][0] == "POST" and seen[0][2]["Authorization"] == "Bearer tok-fixture"
@@ -31409,6 +31582,128 @@ def test_the_hook_script_maps_events_and_never_fails() -> None:
     assert "tok-fixture" not in paths.NETWORK_LOG.read_text(encoding="utf-8")
     assert hook.main(["--title", "x", "--url", "http://127.0.0.1:1/notify"]) == 0
     assert hook.main(["--no-such-flag"]) == 0, "argparse errors must not leak"
+
+
+def test_the_hook_hands_its_token_only_to_this_copys_running_app() -> None:
+    """security-local 5 (2026-11-09): the port in state.json is where the
+    app WAS, and with the app down whatever held that port — another
+    Windows user's listener, a loopback port being shared by every session
+    — was posted the bearer on every Claude turn. So nothing is sent
+    unless this copy's instance mutex exists in this session: no mutex,
+    no knock, from the hook, from the CLI form, from foreground's card
+    (all three are notify_hook.post). The name is the copy's own
+    (singleton.MUTEX_NAME, resolved at the call)."""
+    import inspect
+
+    import net as net_mod
+    import notify_hook as hook
+
+    seen: list = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        seen.append(dict(headers))
+        return _FakeRaw(b"", status=204)
+
+    name = rf"Local\DeskIT.selftest.{os.getpid()}.hook"
+    with tempfile.TemporaryDirectory() as d, \
+            _patched(singleton, "MUTEX_NAME", name), \
+            _patched(net_mod, "_connect", fake_connect):
+        token = Path(d) / "t.txt"
+        token.write_text("tok-fixture", "utf-8")
+        assert hook.app_is_here() is False
+        assert hook.post({"title": "x"}, "http://127.0.0.1:8756/notify", "tok") is False
+        assert hook.main(["--title", "x", "--token-file", str(token)]) == 0
+        assert seen == [], "the bearer left with no app to take it"
+        lock = singleton.InstanceLock()
+        try:
+            assert hook.app_is_here() is True
+            assert hook.post({"title": "x"}, "http://127.0.0.1:8756/notify", "tok") is True
+            assert hook.main(["--title", "x", "--token-file", str(token)]) == 0
+            assert [h["Authorization"] for h in seen] == ["Bearer tok", "Bearer tok-fixture"], seen
+        finally:
+            lock.release()
+        assert hook.app_is_here() is False
+        assert hook.post({"title": "x"}, "http://127.0.0.1:8756/notify", "tok") is False
+        assert len(seen) == 2
+    with _patched(singleton, "is_running", lambda *a, **k: 1 / 0):
+        assert hook.app_is_here() is False, "a failing check is no app"
+    src = inspect.getsource(hook.post)
+    assert src.index("app_is_here()") < src.index("net.request"), "asked first"
+
+
+def test_a_loopback_request_goes_past_every_proxy() -> None:
+    """security-local 4 (2026-11-09): urllib's default opener takes
+    HTTP_PROXY (or the registry's static ProxyServer), and Windows'
+    `<local>` bypass covers only names without a dot — so a request for
+    127.0.0.1 went to the proxy, the hook's bearer and Claude's message
+    with it, in clear text. Two listeners on this PC stand in: a door and
+    a proxy. With HTTP_PROXY pointed at the proxy, a stock opener sends
+    the knock there (the control: the leak is real); net.py — the road
+    every request takes — sends it to the door and the proxy sees
+    nothing. Remote hosts keep the system's proxy."""
+    import http.server
+    import inspect
+    import urllib.request
+
+    import net as net_mod
+
+    hits = {"door": [], "proxy": []}
+
+    def listener(role):
+        class _H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                size = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(size)
+                hits[role].append((self.path, self.headers.get("Authorization")))
+                self.send_response(204 if role == "door" else 502)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *_a):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    door, proxy = listener("door"), listener("proxy")
+    url = f"http://127.0.0.1:{door.server_address[1]}/notify"
+    names = ("HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy")
+    saved = {k: os.environ.get(k) for k in names}
+    try:
+        for k in names:
+            os.environ.pop(k, None)
+        os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{proxy.server_address[1]}"
+        stock = urllib.request.build_opener()
+        try:
+            stock.open(urllib.request.Request(url, data=b"{}", method="POST",
+                                              headers={"Authorization": "Bearer x"}),
+                       timeout=5)
+        except Exception:                 # noqa: BLE001 — the proxy says 502
+            pass
+        assert len(hits["proxy"]) == 1 and hits["door"] == [], hits
+        assert hits["proxy"][0][0] == url, "the stock opener asked the proxy for it"
+        status, _h, _b = net_mod.request(
+            "POST", url, "notify", headers={"Authorization": "Bearer tok"},
+            body=b"{}", timeout_s=5)
+        assert status == 204, status
+        assert hits["door"] == [("/notify", "Bearer tok")], hits
+        assert len(hits["proxy"]) == 1, "the bearer went to the proxy"
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        for server in (door, proxy):
+            server.shutdown()
+            server.server_close()
+    # An empty ProxyHandler has no <scheme>_open of its own, so the opener
+    # registers nothing for it — and it keeps build_opener from adding the
+    # default one, which is the point.
+    assert not any(isinstance(h, urllib.request.ProxyHandler)
+                   for h in net_mod._LOCAL_OPENER.handlers), net_mod._LOCAL_OPENER.handlers
+    assert "_LOCAL_OPENER if local else _OPENER" in inspect.getsource(net_mod._connect)
 
 
 def test_the_hook_names_the_window_the_notification_came_from() -> None:
@@ -31862,6 +32157,94 @@ def test_a_toast_the_watcher_cannot_read_is_not_a_card() -> None:
     hwnd, title = notify_watch.claude_window()
     assert isinstance(hwnd, int) and isinstance(title, str)
     assert (hwnd > 0) == bool(title), (hwnd, title)
+
+
+def _dacl_of(path) -> str:
+    """The SDDL of a file's DACL, read back through Windows."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        w.LPCWSTR, ctypes.c_int, w.DWORD, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(w.LPWSTR), ctypes.c_void_p]
+    k32.LocalFree.argtypes = [ctypes.c_void_p]
+    sd, dacl, text = ctypes.c_void_p(), ctypes.c_void_p(), w.LPWSTR()
+    assert advapi.GetNamedSecurityInfoW(str(path), 1, 4, None, None, ctypes.byref(dacl),
+                                        None, ctypes.byref(sd)) == 0
+    try:
+        assert advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd, 1, 4, ctypes.byref(text), None)
+        out = text.value
+        k32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+        return out
+    finally:
+        k32.LocalFree(sd)
+
+
+def test_the_watchers_copy_of_the_toast_database_never_outlives_a_read() -> None:
+    """A59 (2026-09-23) / security-local 8 (2026-11-09): the copy of
+    Windows' notification database — every app's toast text — sat in the
+    temp folder under one fixed name, refreshed on every toast and never
+    deleted. Now it lives in a folder of the Store's own whose DACL is
+    protected (owner, SYSTEM, administrators: the temp folder's inherited
+    one was not private on the owner's PC), it is gone after every read
+    and after every way a read can fail, the folder goes at close (and
+    with Watcher.stop), and the fixed-name copy an earlier version left
+    is taken away at the first copy. The temp folder is the test's own."""
+    import re
+    import sqlite3
+
+    import notify_watch
+
+    with tempfile.TemporaryDirectory() as d, _patched(tempfile, "tempdir", d):
+        root = Path(d)
+        legacy = [root / f"{notify_watch.WORK}{part}" for part in notify_watch.PARTS]
+        for path in legacy:
+            path.write_bytes(b"an old copy")
+        db = root / "wpn.db"
+        _wpn(db, [(1, CLAUDE_APP, "cowork-idle-cse_a", "Notifications", _toast("first"))])
+        store = notify_watch.Store(db)
+        assert store.latest() == 1
+        assert not any(p.exists() for p in legacy), "the old copy stayed behind"
+        folder = store.work.parent
+        assert folder.parent == root and folder.name.startswith(notify_watch.FOLDER)
+        assert list(folder.iterdir()) == [], "the copy outlived its read"
+        sddl = _dacl_of(folder)
+        assert sddl.startswith("D:P"), sddl
+        assert set(re.findall(r"\(A;[^;]*;[^;]*;;;([^)]+)\)", sddl)) == {"SY", "BA", "OW"}, sddl
+
+        _wpn_add(db, [(2, CLAUDE_APP, "cowork-idle-cse_b", "Notifications",
+                       _toast("second", "body"))])
+        rows, top = store.read(1)
+        assert top == 2 and [r[0] for r in rows] == [2], rows
+        assert list(folder.iterdir()) == []
+
+        # Every way a read can fail leaves the folder empty too.
+        def no(*_a, **_k):
+            raise sqlite3.Error("torn")
+
+        with _patched(notify_watch.sqlite3, "connect", no):
+            assert store.read(2) == ([], 2) and store.latest() == 0
+        assert list(folder.iterdir()) == []
+        (root / "junk.db").write_bytes(b"not a database at all")
+        torn = notify_watch.Store(root / "junk.db")
+        assert torn.read(0) == ([], 0) and list(torn.work.parent.iterdir()) == []
+        torn.close()
+        gone = notify_watch.Store(root / "missing.db")
+        assert gone.read(0) == ([], 0) and gone.latest() == 0
+        assert list(gone.work.parent.iterdir()) == []
+        gone.close()
+
+        w = notify_watch.Watcher(lambda _p: None, "all", store=store)
+        assert w.once() == 0
+        w.stop()
+        assert not folder.exists() and store.work is None, "close leaves no folder"
+        assert sorted(p.name for p in root.iterdir()) == ["junk.db", "wpn.db"], \
+            list(root.iterdir())
 
 
 def _transcript_line(kind: str = "text", *, stop: str = "end_turn",
@@ -41837,6 +42220,46 @@ def test_diagnose_leaves_out_log_lines_that_hold_hebrew():
         assert kept in tail.splitlines(), kept
 
 
+def test_diagnose_prints_no_windows_user_name_in_a_path():
+    """security-local 10 (2026-11-09): the block promised "never a path
+    with a user name in it", and 5 of the last 2,860 lines of the owner's
+    app.log held his profile path — an installed copy's Setup log holds
+    it on most lines. The profile comes out as %USERPROFILE% in every
+    spelling (backslash, a repr's doubled one, forward slash, any case),
+    any other X:\\Users\\<name> — an 8.3 short name in a Temp path — as
+    X:\\Users\\<user>, the folders every PC has as they are, and a path
+    that only starts like the profile is not cut in the middle."""
+    import problems as problems_mod
+
+    home = os.path.expanduser("~")
+    lines = [rf"opened {home}\AppData\Local\DeskIT\app.log",
+             "a repr " + repr(home + r"\cache\x"),
+             home.replace("\\", "/") + "/forward",
+             home.upper() + r"\SHOUTED",
+             r"temp C:\Users\ABCDEF~1\AppData\Local\Temp\is-1.tmp\x.exe",
+             r"shared C:\Users\Public\Documents\x",
+             rf"near {home}2\other"]
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-diag-user-"))
+    try:
+        (tmp / "app.log").write_text("\n".join(lines) + "\n", "utf-8")
+        (tmp / "setup-2026-11-10.log").write_text(
+            rf"Dest filename: {home}\AppData\Local\Programs\DeskIT\app\main.py" + "\n", "utf-8")
+        with _patched(paths, "APP_LOG", tmp / "app.log"), _patched(paths, "LOGS_DIR", tmp):
+            block = problems_mod.diagnose()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    for spelling in (home, home.replace("\\", "\\\\"), home.replace("\\", "/"), "ABCDEF~1"):
+        assert spelling.lower() not in block.lower(), spelling
+    for want in (r"opened %USERPROFILE%\AppData\Local\DeskIT\app.log",
+                 r"'%USERPROFILE%\\cache\\x'", "%USERPROFILE%/forward", r"%USERPROFILE%\SHOUTED",
+                 r"temp C:\Users\<user>\AppData\Local\Temp\is-1.tmp\x.exe",
+                 r"shared C:\Users\Public\Documents\x",
+                 r"Dest filename: %USERPROFILE%\AppData\Local\Programs\DeskIT\app\main.py"):
+        assert want in block, (want, block[-1200:])
+    assert "%USERPROFILE%2" not in block, "a longer folder name was cut in the middle"
+    assert problems_mod.no_profile("") == "" and problems_mod.no_profile("no path here") == "no path here"
+
+
 def test_diagnose_block_is_safe_to_paste():
     """--diagnose: the env whitelist, the backend, the model's and the
     packs' standing, the channel and the port, the tail of app.log — and
@@ -45023,9 +45446,25 @@ def test_latest_json_schema():
     rel = updates.Release.parse(good)
     assert rel.version == "9.9.9" and rel.size == 10 and rel.published.startswith("2026")
     assert rel.newer_than("1.1.0") and not rel.newer_than("9.9.9") and not rel.newer_than("10.0.0")
+    # The installer comes from THIS repository's release assets and from
+    # nowhere else on github.com (security-local 3): another repository's
+    # release, a page, a traversal, a query or an escape is refused.
+    base = "https://github.com/DeskIT-app/DeskIT/releases/download/"
+    assert updates.Release.parse({**good, "url": base + "v1.0.7-beta.1/DeskIT-Setup-1.0.7-beta.1.exe"})
+    elsewhere = ("https://github.com/someone/else/releases/download/v9.9.9/DeskIT-Setup-9.9.9.exe",
+                 "https://github.com/DeskIT-app/DeskIT-fork/releases/download/v9/x.exe",
+                 "https://github.com/DeskIT-app/DeskIT/blob/main/x.exe",
+                 base + "../../../someone/else/releases/download/v9/x.exe",
+                 base + "v9.9.9/../x.exe", base + "./x.exe", base + "v9.9.9/x.exe?raw=1",
+                 base + "v9.9.9/x.exe#y", base + "v9.9.9/%2e%2e.exe", base + "v9.9.9/.exe",
+                 base + "v9.9.9/a b.exe", "https://github.com:443/DeskIT-app/DeskIT/releases/download/v9/x.exe",
+                 "https://user@github.com/DeskIT-app/DeskIT/releases/download/v9/x.exe",
+                 "http://github.com/DeskIT-app/DeskIT/releases/download/v9/x.exe",
+                 base + "v9.9.9/x.exe\nhttps://elsewhere.example/x.exe")
     for bad in ({**good, "version": "v9.9.9"}, {**good, "url": "https://evil.example/x.exe"},
                 {**good, "url": good["url"][:-4]}, {**good, "sha256": "abc"},
-                {**good, "size": 0}, {**good, "notes_url": "http://github.com/x"}, [], {}):
+                {**good, "size": 0}, {**good, "notes_url": "http://github.com/x"}, [], {},
+                *({**good, "url": url} for url in elsewhere)):
         try:
             updates.Release.parse(bad)
         except (ValueError, TypeError):
