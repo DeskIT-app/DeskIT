@@ -724,7 +724,8 @@ class App:
             keys={"accept": rcfg.accept_key, "reject": rcfg.reject_key,
                   "later": rcfg.later_key,
                   "edit": getattr(rcfg, "edit_key", "e")},
-            on_edit=self._review_edit)
+            on_edit=self._review_edit, still_open=self._review_open,
+            held=lambda: self._word_prompt.open())
             if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
             else overlay_mod.ReviewCard.off())
         # The consent card (consent_card.py, privacy.py): asks ONCE per
@@ -1731,14 +1732,33 @@ class App:
                           "reading")
 
     def _review_show(self, suggestion: dict) -> None:
-        """A reading with something to say — the card goes up. From the
-        review thread; the card only enqueues."""
+        """A reading with something to say — the card goes up, or waits
+        its turn behind the one that is up (overlay.ReviewCard's line).
+        From the review thread; the card only enqueues."""
         self.review_card.show(suggestion)
 
+    def _review_open(self, sid: str) -> bool:
+        """Is this proposal still a question the card may ask? From the
+        card's own thread: before one that waited its turn comes up, and
+        once a second for the one on screen. No — and it leaves the card
+        and the line, shown never or no longer — when the desk or the
+        phone answered it, and when there is no engine to hear an answer
+        (the model is unloaded): a card whose buttons decide nothing is
+        worse than a row in the pile, where the desk answers without the
+        model."""
+        if getattr(self, "_review", None) is None:
+            return False
+        import review as review_mod
+        return review_mod.still_pending(paths.REVIEW_FILE, sid)
+
     def _review_verdict(self, sid: str, verdict: str) -> None:
-        """A button on the card, or one of its keys. From the painter's
-        thread or the hook's — so this only enqueues; the learning runs
-        on the review thread."""
+        """A button on the card, or one of its keys — or the shelf's row.
+        From the painter's thread or the hook's — so this only enqueues;
+        the learning runs on the review thread."""
+        # Out of the card's line at once, whichever door it came through:
+        # the engine may be minutes behind on a reading, and until it
+        # writes the verdict the file still says "pending".
+        self.review_card.drop(sid)
         engine = getattr(self, "_review", None)
         if engine is not None:
             engine.decide(sid, verdict, by="card")

@@ -3017,21 +3017,65 @@ class ReviewCard(HintCard):
     Verdicts go out through `on_verdict(id, verdict)` on whichever thread
     pressed the button — the painter's or the hook's — so that callback
     must only enqueue (main.py hands it to the review engine).
+
+    ONE AT A TIME, IN THE ORDER THEY CAME (2026-11-10). Until then a new
+    proposal REPLACED the card on screen: two dictations one after the
+    other, a proposal for each, and the second took the first one's
+    place before it had been read — the first was left in the desk's
+    pile and nowhere else (the owner's report). Now the card on screen
+    is never replaced. A proposal that arrives while one is up waits
+    behind it, and comes up when that one leaves — answered, closed,
+    answered somewhere else, or out of time — oldest first, with its own
+    whole clock, after a beat of `GAP_S` with nothing there. The card on
+    screen says how many are behind it ("+1"). At most `WAIT_MAX` wait;
+    one past that is not carded at all, and like every proposal it is in
+    the desk's pile. The line is `_up` and `_waiting`, and THE CARD'S
+    OWN THREAD IS THE ONLY ONE THAT TOUCHES THEM (`_q_take`, `_q_next`,
+    `_q_left`, `_q_answered`, called by both presenters' loops): every
+    other thread puts something on `_q` and returns.
     """
 
     CORNERS = ("right", "left", "top-right", "top-left",
                "bottom-right", "bottom-left")
 
+    # How many proposals may wait for the card. Three behind the one on
+    # screen is a minute and a half of cards at the shipped twenty seconds
+    # each; past that it stops being a notification and becomes a list,
+    # and the list is the desk's.
+    WAIT_MAX = 3
+    # The beat between one card leaving and the next coming up. Longer
+    # than Windows' double-click time (500 ms) on purpose: the next card
+    # lands exactly where the last one was, its buttons under the same
+    # pointer, and the second half of a double click on "נכון" must not
+    # be an answer to a proposal nobody has read.
+    GAP_S = 0.6
+    # How often the line asks `still_open` about the card on screen and
+    # the ones behind it: the desk and the phone answer straight into
+    # review.json, and nothing tells this process when they do.
+    ASK_S = 1.0
+
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_verdict=None, seconds: float = 20.0,
-                 keys: dict | None = None, on_edit=None) -> None:
+                 keys: dict | None = None, on_edit=None, still_open=None,
+                 held=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
         self._on_verdict = on_verdict
         # The pencil: on_edit(id, row, rect) — the owner wants to type the
         # word himself. The card is down by the time it is called.
         self._on_edit = on_edit
+        # still_open(id) -> bool: is this proposal still a question? False
+        # takes it off the screen or out of the line. held() -> bool: is
+        # something of ours standing where the card goes (the pencil's
+        # box)? True keeps the next one waiting. Both are called on the
+        # card's own thread and must be quick; None means yes and no.
+        self._still_open = still_open
+        self._held = held
+        self._up: dict | None = None      # the card the loop has up
+        self._waiting: list = []          # the ones behind it, oldest first
+        self._gap_until = 0.0             # no next card before this
+        self._asked = 0.0                 # when still_open was last asked
         self.seconds = float(seconds)
         self._keys = {"accept": "v", "reject": "x", "later": "l",
                       "edit": "e"}
@@ -3062,29 +3106,46 @@ class ReviewCard(HintCard):
                      for n in _REVIEW_BUTTONS + ("edit",))
 
     def show(self, suggestion: dict) -> None:
-        """Put a proposal up. Only enqueues, so safe from the engine
-        thread. A new proposal replaces the one on screen — that one is
-        still in the dashboard, undecided."""
+        """A proposal for the card. Only enqueues, so safe from the engine
+        thread. It goes up at once when nothing is up, and BEHIND the card
+        on screen when one is — never in its place. `visible()` and
+        `current()` speak of the card the loop has put up, so they follow
+        this call by a tick."""
         if self._thread is None or not self._enabled:
             return
         import review_card as rc
-        card = rc.card_for(suggestion, seconds=self.seconds,
-                           keys=self.key_labels())
-        with self._state_lock:
-            self._current = card["id"]
-        self._q.put(card)
+        self._q.put(rc.card_for(suggestion, seconds=self.seconds,
+                                keys=self.key_labels()))
 
     def hide(self) -> None:
+        """The card down, and the ones waiting behind it let go. Every
+        one of them is still in the desk's pile, undecided."""
         with self._state_lock:
             self._current = None
         if self._thread is not None:
             self._q.put(None)
+
+    def drop(self, sid) -> None:
+        """This proposal was answered somewhere else — the shelf, the
+        desk, the phone. It leaves: off the screen if it is the one up
+        (and the next gets its turn), out of the line if it is waiting,
+        so it is never shown after it was answered. Only enqueues."""
+        if self._thread is None or not self._enabled or sid is None:
+            return
+        with self._state_lock:
+            if self._current == sid:
+                self._current = None
+        self._q.put(("gone", sid))
 
     def visible(self) -> bool:
         return self._current is not None
 
     def current(self):
         return self._current
+
+    def waiting(self) -> int:
+        """How many proposals are behind the card on screen."""
+        return len(self._waiting)
 
     def hovering(self) -> bool:
         """Is the pointer on the card right now? Asked by the hook for a
@@ -3137,10 +3198,12 @@ class ReviewCard(HintCard):
         with self._state_lock:
             sid, self._current = self._current, None
         rect = self.rect
-        if self._thread is not None:
-            self._q.put(None)
         if sid is None:
+            # Nothing up to answer. And nothing to enqueue: a bare None is
+            # hide(), which lets go of everyone waiting.
             return
+        if self._thread is not None:
+            self._q.put(("gone", sid))
         if pencil:
             if self._on_edit is None:
                 return
@@ -3164,9 +3227,116 @@ class ReviewCard(HintCard):
                       exc_info=True)
 
     def timed_out(self) -> None:
-        """The clock ran out: no verdict. The painter takes it down."""
+        """The clock ran out: no verdict. The painter takes it down, and
+        the next in line gets its turn. The card's own thread."""
+        self._q_left(time.monotonic())
+
+    # -- the line: the card's own thread, and nothing else --
+
+    def _q_take(self, item, now: float) -> bool:
+        """One thing off `_q`: a proposal (a card dict), ("gone", id) for
+        one that was answered or closed, or None for hide(). True when
+        the card ON SCREEN has to come down — the loop owns the window,
+        this owns who is next."""
+        if item is None:
+            self._waiting.clear()
+            return self._q_left(now)
+        if isinstance(item, tuple):
+            sid = item[1]
+            self._waiting = [c for c in self._waiting if c.get("id") != sid]
+            if self._up is not None and self._up.get("id") == sid:
+                return self._q_left(now)
+            self._q_count()
+            return False
+        sid = item.get("id")
+        if self._up is not None and self._up.get("id") == sid:
+            return False                  # the one on screen, told twice
+        self._waiting = [c for c in self._waiting if c.get("id") != sid]
+        if len(self._waiting) < self.WAIT_MAX:
+            self._waiting.append(item)
+        else:
+            # Not lost: review.Store.add put it in the pile before the
+            # card ever heard of it. Counts only — app.log quotes no
+            # dictated text (D8).
+            _log.info("review card: %d already waiting — this proposal "
+                      "stays in the desk's pile", len(self._waiting))
+        self._q_count()
+        return False
+
+    def _q_left(self, now: float) -> bool:
+        """The card on screen is leaving, whatever the reason. True when
+        there was one. Starts the beat before the next."""
+        was = self._up is not None
+        self._up = None
         with self._state_lock:
             self._current = None
+        if was:
+            self._gap_until = now + self.GAP_S
+        return was
+
+    def _q_next(self, now: float, hold: bool = False):
+        """The proposal to put up NOW, or None: nothing is up, the beat
+        is over, nobody is holding the place — `hold` is the loop's own
+        reason (a screenshot selection on screen), `held` the app's (the
+        pencil's box) — and it is still a question. One that was answered
+        while it waited is passed over without ever being shown."""
+        if self._up is not None or not self._waiting:
+            return None
+        if hold or now < self._gap_until:
+            return None
+        if self._held is not None:
+            try:
+                busy = bool(self._held())
+            except Exception:
+                busy = False
+            if busy:
+                self._gap_until = now + self.GAP_S    # a beat after it, too
+                return None
+        while self._waiting:
+            item = self._waiting.pop(0)
+            if not self._open(item.get("id")):
+                continue
+            self._up = item
+            with self._state_lock:
+                self._current = item.get("id")
+            self._asked = now
+            self._q_count()
+            return item
+        return None
+
+    def _q_answered(self, now: float) -> bool:
+        """Once every ASK_S: was the card on screen, or one behind it,
+        answered where this process was not told — the desk, the phone?
+        True when the one ON SCREEN was, and the loop takes it down."""
+        if self._still_open is None or now - self._asked < self.ASK_S:
+            return False
+        if self._up is None and not self._waiting:
+            return False
+        self._asked = now
+        self._waiting = [c for c in self._waiting
+                         if self._open(c.get("id"))]
+        if self._up is not None and not self._open(self._up.get("id")):
+            return self._q_left(now)
+        self._q_count()
+        return False
+
+    def _open(self, sid) -> bool:
+        if self._still_open is None:
+            return True
+        try:
+            return bool(self._still_open(sid))
+        except Exception:
+            # Cannot tell is not "answered": a card too many is a click,
+            # a card taken away is a question he never saw.
+            _log.debug("review card: could not ask whether a proposal is "
+                       "still open", exc_info=True)
+            return True
+
+    def _q_count(self) -> None:
+        """How many wait, written on the card on screen where the painter
+        reads it (review_card.compose, `waiting`)."""
+        if self._up is not None:
+            self._up["waiting"] = len(self._waiting)
 
     # -- placement --
 
@@ -3232,6 +3402,9 @@ class ReviewCard(HintCard):
 
         def hide() -> None:
             st["card"], st["deadline"], st["hover"] = None, None, None
+            # A card can leave under a drag now (answered on the desk
+            # while he holds it); the next one must not inherit the grip.
+            st["drag"] = None
             self.rect = None
             cache.clear()
             if st["up"]:
@@ -3348,26 +3521,34 @@ class ReviewCard(HintCard):
         canvas.bind("<ButtonRelease-1>", on_release)
 
         def pump() -> None:
+            now = time.monotonic()
             try:
                 while True:
                     item = self._q.get_nowait()
                     if item is _DONE:
                         self._closing.set()
                         return
-                    if item is None:
+                    # The line decides (see the class): an arrival waits
+                    # its turn, and only the card on screen leaving —
+                    # answered, closed, hide() — brings the window down.
+                    if self._q_take(item, now):
                         hide()
-                    else:
-                        put_up(item)
             except queue.Empty:
                 pass
-            # Read once a tick, AFTER the queue, so a card that arrived in
-            # this same frame is already in `st` and gets held rather than
-            # mapped. Thirty milliseconds is well inside the time the
-            # desktop freeze takes, so the window is off the live screen
-            # before the selector maps over it.
+            # Read once a tick, AFTER the queue and BEFORE the next card is
+            # asked for, so a proposal that arrived in this same frame
+            # stays in the line rather than being mapped. Thirty
+            # milliseconds is well inside the time the desktop freeze
+            # takes, so the window is off the live screen before the
+            # selector maps over it.
             set_hushed(self._hushed.is_set())
-            now = time.monotonic()
             dt, st["tick"] = now - st["tick"], now
+            if self._q_answered(now):
+                hide()                    # answered on the desk or the phone
+            if st["card"] is None:
+                nxt = self._q_next(now, hold=st["hushed"])
+                if nxt is not None:
+                    put_up(nxt)
             if st["card"] is not None:
                 if st["deadline"] is not None and (self.hovering()
                                                    or st["hushed"]):

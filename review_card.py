@@ -67,6 +67,8 @@ BTN_GAP = 8
 SHADOW = 26               # room the glass window leaves around the card
 SCALE_MIN, SCALE_MAX = 0.6, 1.4
 MAX_ROWS = 3
+WAIT_W, WAIT_H = 34, 20   # the waiting mark: a pill at the head's left end
+WAIT_PT = 9.5             # its count, "+1"
 
 ACCEPT, REJECT, LATER, DRAG = "accept", "reject", "later", "drag"
 EDIT = "edit"             # a row's pencil is named "edit0", "edit1", ...
@@ -192,6 +194,28 @@ def regions(card: dict, scale: float = 1.0) -> dict:
         y += ROW_H * s
     out[DRAG] = (x0, y0, x0 + width, y0 + height)
     return out
+
+
+def waiting_of(card: dict) -> int:
+    """How many proposals are waiting behind this card, as the card
+    says it (overlay.ReviewCard writes `waiting`). Never negative."""
+    try:
+        return max(0, int(card.get("waiting") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def waiting_box(card: dict, scale: float = 1.0, text_w: float = 0.0):
+    """Where the waiting mark sits, in the CONTENT image's coordinates
+    (no SHADOW): a pill at the left end of the head, centred on the
+    mark's line. Wide enough for its count and never narrower than
+    WAIT_W, so "+1" and "+3" are the same pill. Not a region: nothing
+    here takes the mouse."""
+    s = clamp_scale(scale)
+    pad = PAD * s
+    w = max(WAIT_W * s, float(text_w) + 16 * s)
+    cy = pad + 15 * s                     # the head mark's centre line
+    return pad, cy - WAIT_H * s / 2, pad + w, cy + WAIT_H * s / 2
 
 
 def _in(box, x, y) -> bool:
@@ -381,6 +405,21 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     img.alpha_composite(title, (int(head_right - title.width), int(y)))
     sub = _text(cache, card.get("sub", ""), 9.0 * s, colour=INK_MUTED)
     img.alpha_composite(sub, (int(head_right - sub.width), int(y + 21 * s)))
+    # -- others are waiting behind this card (overlay.ReviewCard's line,
+    # 2026-11-10): the count on one small pill of frost at the head's far
+    # end, level with the mark — away from the title, the sentence and
+    # the buttons. Quiet on purpose: it is not a control (regions() never
+    # names it, so it drags like the rest of the face) and it is not the
+    # lit thing on this card. `waiting` is written by the card's own
+    # loop; a card that was never queued has none and draws none.
+    behind = waiting_of(card)
+    if behind:
+        count = look.text(cache, f"+{behind}", WAIT_PT * s, "muted",
+                          look.W_STRONG)
+        x0, y0, x1, y1 = waiting_box(card, s, count.width)
+        look.quiet(img, (x0, y0, x1, y1))
+        img.alpha_composite(count, (int(round((x0 + x1 - count.width) / 2)),
+                                    int(round((y0 + y1 - count.height) / 2))))
     y += HEAD_H * s
 
     # -- the clock: a bar that empties towards the left. Iris, beside the
@@ -524,4 +563,5 @@ def flat(card: dict, scale: float = 1.0, progress: float = 1.0,
 
 __all__ = ["card_for", "note_for", "measure", "regions", "hit_test",
            "compose", "flat", "clamp_scale", "SHADOW", "ACCEPT", "REJECT",
-           "LATER", "EDIT", "DRAG", "VERDICT_OF", "BUTTONS"]
+           "LATER", "EDIT", "DRAG", "VERDICT_OF", "BUTTONS", "waiting_of",
+           "waiting_box"]
