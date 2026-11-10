@@ -787,7 +787,20 @@ def run(card) -> None:
                              and now - last_paint >= REPAINT_S):
                     paint(progress)
                 glass.pump()
-            time.sleep(TICK_S)
+            # THE QUIET LOOP (2026-11-10). With no column up, a column held
+            # for a hush, or a clockless column nobody is pointing at — the
+            # default: no clock since 2026-09-04, and the pinned "Screens
+            # off" card — nothing here changes by itself, so the loop RESTS
+            # on the queue (overlay._Queue.rest) instead of ticking: a new
+            # column, a hush and its end wake it through the queue, and a
+            # hover, a click or a drag is a message to the window, which
+            # ends the wait as well. A clock, a hover still to repaint
+            # (`dirty`, set inside pump) and the click latch keep TICK_S.
+            if (shown is not None and glass is not None
+                    and (deadline is not None or dirty)) or dismissing:
+                time.sleep(TICK_S)
+            else:
+                overlay.rest(card._q, overlay.IDLE_S, TICK_S)
     except Exception:
         _log.info("skin notify card stopped early", exc_info=True)
     finally:

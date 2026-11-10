@@ -98,21 +98,196 @@ TICK_S = 0.015
 # failure is how a missing window looks exactly like a working one.
 _log = logging.getLogger("app")
 
+# THE IDLE FOOTPRINT (2026-11-10, the whole-app audit's F1). Every
+# painter's loop used to turn over on a fixed tick whether it had anything
+# to show or not — the dot at 45 Hz, the notify and review cards at 33,
+# the hint card and the shelf at 50, its outside-press watch at 40, the
+# consent and tour cards' Tk loops at 66 plus a 30 ms poll — so an app
+# doing nothing woke to find nothing to do: measured on the hidden desktop
+# over 15 s, the eight painters' threads (and the shelf's two helpers) took
+# 909 context switches a second, 586 of them the two Tk cards, and 1.7 %
+# of a core; after this, 35 a second and under 0.1 %. An idle loop now RESTS
+# instead: `_Queue.rest`, one MsgWaitForMultipleObjectsEx on an event the
+# queue owns, which returns the moment something is put on the queue, a
+# change that does not travel on it rings (`ring`), or a message arrives
+# for one of the thread's windows — a hover, a click, the start of a drag,
+# Windows' own messages — and otherwise after IDLE_S. A loop with
+# something to animate keeps exactly the tick it had. The measurements are
+# in reports\2026-11-09\fix-quiet-idle.md and beside each loop.
+IDLE_S = 1.0
+QS_ALLINPUT = 0x04FF
+WAIT_TIMEOUT = 0x00000102
+# Private handles: argtypes declared on ctypes.windll's shared objects
+# change them for every module (AGENTS.md).
+try:
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32.CreateEventW.restype = ctypes.c_void_p
+    _k32.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.wintypes.BOOL,
+                                  ctypes.wintypes.BOOL, ctypes.c_wchar_p]
+    _k32.SetEvent.argtypes = [ctypes.c_void_p]
+    _k32.SetEvent.restype = ctypes.wintypes.BOOL
+    _k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    _k32.CloseHandle.restype = ctypes.wintypes.BOOL
+    _wait32 = ctypes.WinDLL("user32", use_last_error=True)
+    _wait32.MsgWaitForMultipleObjectsEx.argtypes = [
+        ctypes.wintypes.DWORD, ctypes.c_void_p, ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+    _wait32.MsgWaitForMultipleObjectsEx.restype = ctypes.wintypes.DWORD
+    _wait32.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                     ctypes.c_uint, ctypes.c_uint,
+                                     ctypes.c_uint]
+    _wait32.PeekMessageW.restype = ctypes.wintypes.BOOL
+except (OSError, AttributeError):        # not Windows: the old tick
+    _k32 = _wait32 = None
 
-def _pump_until(root, closing: threading.Event) -> None:
+
+class _Queue(queue.Queue):
+    """A painter's queue that can also WAKE the painter (see IDLE_S).
+
+    `put` (and so `put_nowait`) rings after it puts; `ring()` is for a
+    change that does not travel on the queue — a move deadline, the alarm,
+    a hush, a new position. `rest(seconds)` is the painter's sleep, on the
+    painter's thread only: it returns early for a ring or for any message
+    to a window of that thread, so a loop that rests is never slower to
+    react than one that ticks, and costs nothing while nothing happens.
+
+    The event is auto-reset and made with the queue, BEFORE any thread can
+    put on it, so a ring can never land in a gap before the painter's first
+    rest; a ring nobody was waiting for leaves the event set, and the next
+    rest returns at once and finds the reason. MsgWaitForMultipleObjectsEx
+    is called WITHOUT MWMO_INPUTAVAILABLE, so it wakes for messages that
+    are NEW since the thread last looked at its queue — and returning does
+    NOT count as looking. Measured 2026-11-10: a posted message nobody
+    removes makes every following wait return in 0.0 ms, a spin, until any
+    PeekMessage runs (one filtered on another window is enough). So a wake
+    for a message ends with one PeekMessage(PM_NOREMOVE) on the whole
+    thread: it delivers any message SENT to the thread's windows, marks the
+    queue looked at, and leaves every posted message where it is for the
+    painter's own pump. A message for a window nobody pumps (a GL context's
+    hidden window, the notify column's blur windows) then wakes the loop
+    once, not forever. A test's plain queue.Queue has neither method; the
+    loops ask with getattr and keep their old tick.
+    """
+
+    def __init__(self, maxsize: int = 0) -> None:
+        super().__init__(maxsize)
+        self._event = None
+        if _k32 is not None:
+            try:
+                self._event = _k32.CreateEventW(None, False, False, None)
+            except Exception:
+                self._event = None
+
+    def put(self, item, block: bool = True, timeout=None) -> None:
+        super().put(item, block, timeout)
+        self.ring()
+
+    def ring(self) -> None:
+        """Wake the painter if it is resting. Safe from any thread — the
+        keyboard hook and the PortAudio callback included: one SetEvent."""
+        event = self._event
+        if event:
+            try:
+                _k32.SetEvent(event)
+            except Exception:
+                pass
+
+    def rest(self, seconds: float) -> bool:
+        """Sleep up to `seconds`, or until a ring or a window message.
+        True when something woke it before the time was up."""
+        event = self._event
+        if not event or _wait32 is None:
+            time.sleep(max(0.0, min(float(seconds), TICK_S)))
+            return False
+        ms = max(1, int(float(seconds) * 1000.0 + 0.5))
+        handles = (ctypes.c_void_p * 1)(event)
+        try:
+            got = _wait32.MsgWaitForMultipleObjectsEx(1, handles, ms,
+                                                      QS_ALLINPUT, 0)
+            if got == 1:                       # WAIT_OBJECT_0 + 1: input
+                _wait32.PeekMessageW(ctypes.byref(ctypes.wintypes.MSG()),
+                                     None, 0, 0, 0)     # PM_NOREMOVE
+        except Exception:
+            time.sleep(TICK_S)
+            return False
+        return got != WAIT_TIMEOUT
+
+    def __del__(self) -> None:
+        # Only here: while anything can still reach this queue to ring
+        # it, the queue — and so the handle — is alive.
+        event, self._event = self._event, None
+        if event and _k32 is not None:
+            try:
+                _k32.CloseHandle(event)
+            except Exception:
+                pass
+
+
+class _Signal(threading.Event):
+    """A threading.Event that rings `queue` when it is set or cleared, so
+    a painter resting on that queue sees the flag at once. For the flags
+    other threads write straight into — `_hushed` from the screenshot
+    flow, `_replace` from main.App._dot_power — without a method of ours
+    in between."""
+
+    def __init__(self, ring_queue) -> None:
+        super().__init__()
+        self._ring_queue = ring_queue
+
+    def set(self) -> None:
+        super().set()
+        ring = getattr(self._ring_queue, "ring", None)
+        if ring is not None:
+            ring()
+
+    def clear(self) -> None:
+        super().clear()
+        ring = getattr(self._ring_queue, "ring", None)
+        if ring is not None:
+            ring()
+
+
+def rest(q, seconds: float, tick: float) -> None:
+    """The idle sleep of a painter's loop: `q.rest(seconds)` when the
+    queue can wake it, and the loop's own old `tick` when it cannot (a
+    test's stand-in queue)."""
+    resting = getattr(q, "rest", None)
+    if resting is None:
+        time.sleep(tick)
+    else:
+        resting(seconds)
+
+
+def _pump_until(root, closing: threading.Event, tick=None,
+                rest_on=None) -> None:
     """Run one interpreter's event loop until asked to stop.
 
     Deliberately update() in a loop rather than mainloop(): see the module
     docstring. update() drains this interpreter's queue — timers, redraws,
     window messages — and touches no state shared with any other Tk in the
     process, so one overlay closing can no longer close the other.
+
+    `tick` and `rest_on` are the quiet loop (see IDLE_S), for a card with
+    nothing that moves by itself: `tick()` reads its queue BEFORE each
+    update(), so whatever it puts up is laid out and painted by that same
+    update() — Tk's idle callbacks are not window messages, and a redraw
+    queued after the update would wait out the rest — and the loop then
+    rests on `rest_on` (a _Queue) instead of sleeping a tick. Without them
+    it is the loop it always was.
     """
     while not closing.is_set():
+        if tick is not None:
+            tick()
+            if closing.is_set():
+                return
         try:
             root.update()
         except Exception:
             return          # window destroyed underneath us: nothing to do
-        time.sleep(TICK_S)
+        if rest_on is not None:
+            rest(rest_on, IDLE_S, TICK_S)
+        else:
+            time.sleep(TICK_S)
 
 
 class Splash:
@@ -1016,7 +1191,10 @@ class StatusDot:
                  margin_y: int = 6, corner: str = "bottom-right",
                  x: int = HINT_UNSET, y: int = HINT_UNSET,
                  on_change=None) -> None:
-        self._q: queue.Queue = queue.Queue()
+        # A _Queue: the glass painter rests on it while the dot is still
+        # (IDLE_S), and every change below that is not a queue item —
+        # move(), rest(), end_move(), alarm(), _replace — rings it.
+        self._q: queue.Queue = _Queue()
         self._size = size
         self._margin = (margin_x, margin_y)
         self.corner = corner if corner in DOT_CORNERS else "bottom-right"
@@ -1058,7 +1236,8 @@ class StatusDot:
         self._alarm_back: tuple[float, float, float] | None = None
         # "the position changed under you — go there". Set by placed()
         # and to_corner(); the painter clears it and moves the window.
-        self._replace = threading.Event()
+        # A _Signal, because main.App._dot_power sets it from outside too.
+        self._replace = _Signal(self._q)
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
         self._closing = threading.Event()
@@ -1099,6 +1278,7 @@ class StatusDot:
             return False
         self._move_until = time.monotonic() + max(1.0, float(seconds))
         self._move_hold = bool(hold)
+        self._ring()
         return True
 
     def rest(self) -> None:
@@ -1109,12 +1289,21 @@ class StatusDot:
         if self._move_hold:
             return
         self._move_until = 0.0
+        self._ring()
 
     def end_move(self) -> None:
         """The framed move is over — Done, Enter, Esc, or the deadline
         found by the frame. Clears the hold and the deadline together."""
         self._move_hold = False
         self._move_until = 0.0
+        self._ring()
+
+    def _ring(self) -> None:
+        """Wake a painter resting on the queue: something it reads off
+        this object, not off the queue, has changed."""
+        ring = getattr(self._q, "ring", None)
+        if ring is not None:
+            ring()
 
     def held(self) -> bool:
         """Is a framed move standing? The painter does not read this —
@@ -1137,6 +1326,7 @@ class StatusDot:
             if not self._alarm_since:
                 self._alarm_back = None
                 self._alarm_since = time.monotonic()
+                self._ring()
         else:
             since = self._alarm_since
             if since:
@@ -1145,6 +1335,8 @@ class StatusDot:
                     now, min(1.0, (now - since) / DOT_ALARM_TRAVEL_S),
                     dot_alarm_scale(now - since))
             self._alarm_since = 0.0
+            if since:
+                self._ring()
 
     def alarming(self) -> float | None:
         """None when there is no alarm; otherwise how far along the travel
@@ -1584,7 +1776,9 @@ class HintCard:
                  scale: float = 1.0, on_change=None,
                  dot_corner: str = "bottom-right", dot_at=None,
                  compact: bool = False) -> None:
-        self._q: queue.Queue = queue.Queue()
+        # A _Queue: the painter rests on it while there is nothing to show
+        # (IDLE_S); every card built on this class inherits it.
+        self._q: queue.Queue = _Queue()
         self._after = max(0, int(after_ms)) / 1000.0
         self._corner = corner
         self._dot_corner = dot_corner
@@ -1614,8 +1808,9 @@ class HintCard:
         # SET WHILE A SELECTION IS ON SCREEN, by whoever is taking the
         # screen. An Event and not a flag because it is written from the
         # keyboard hook and read from the card's own loop, and because
-        # setting one touches no Tk at all — see hush().
-        self._hushed = threading.Event()
+        # setting one touches no Tk at all — see hush(). A _Signal, so a
+        # painter resting on the queue hears the hush and its end at once.
+        self._hushed = _Signal(self._q)
         # The X and the box (2026-09-24). `_shut` is "closed by hand until
         # the next dictation": set by the X on the card's thread, cleared
         # by recording_began() from the keyboard hook — an Event for the
@@ -3847,11 +4042,14 @@ class ConsentCard(HintCard):
             except queue.Empty:
                 pass
             set_hushed(self._hushed.is_set())
-            root.after(30, pump)
 
-        pump()
+        # No root.after(30, pump) chain since 2026-11-10: nothing on this
+        # card moves by itself, so the loop reads the queue before each
+        # update() and RESTS on it in between (_pump_until, IDLE_S). A
+        # card that is not up costs nothing; one that is put on the queue,
+        # a hush and its end, a hover and a drag all wake it at once.
         try:
-            _pump_until(root, self._closing)
+            _pump_until(root, self._closing, tick=pump, rest_on=self._q)
         finally:
             import gc                       # see Splash: same Tcl teardown
             try:
@@ -4163,11 +4361,14 @@ class TourCard(HintCard):
             except queue.Empty:
                 pass
             set_hushed(self._hushed.is_set())
-            root.after(30, pump)
 
-        pump()
+        # No root.after(30, pump) chain since 2026-11-10: nothing on this
+        # card moves by itself, so the loop reads the queue before each
+        # update() and RESTS on it in between (_pump_until, IDLE_S). A
+        # card that is not up costs nothing; one that is put on the queue,
+        # a hush and its end, a hover and a drag all wake it at once.
         try:
-            _pump_until(root, self._closing)
+            _pump_until(root, self._closing, tick=pump, rest_on=self._q)
         finally:
             import gc                       # see Splash: same Tcl teardown
             try:

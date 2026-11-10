@@ -1014,7 +1014,24 @@ def run(hint_card) -> None:
             # loop only has to be quick enough that the delay lands on time,
             # a click feels immediate, a release takes it down without a
             # visible lag — and a drag's preview keeps up with the pointer.
-            time.sleep(0.012 if drag is not None else 0.02)
+            #
+            # And between those it RESTS (2026-11-10): no card, or a card
+            # standing still, is nothing to do, so the loop sleeps on the
+            # queue (overlay._Queue.rest) — a card, its replacement and the
+            # release arrive through it, a click or the grip is a message
+            # to the window — and a card waiting out its delay sleeps until
+            # it is due. Only a drag, or a redraw a click just asked for
+            # (set inside pump), keeps the tick.
+            if drag is not None:
+                time.sleep(0.012)
+            elif redraw and pending is not None:
+                time.sleep(0.02)
+            elif pending is not None and shown is None and due is not None:
+                overlay.rest(hint_card._q,
+                             max(0.001, min(overlay.IDLE_S,
+                                            due - time.monotonic())), 0.02)
+            else:
+                overlay.rest(hint_card._q, overlay.IDLE_S, 0.02)
     except Exception:
         _log.info("skin hint card stopped early", exc_info=True)
     finally:
