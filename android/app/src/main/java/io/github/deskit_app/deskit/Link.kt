@@ -260,6 +260,31 @@ object Link {
         return out
     }
 
+    /**
+     * The phone is on no Wi-Fi, and has no pasted line, which goes over any network:
+     * then, when nobody answers, the phone is the thing to fix, and the keyboard says
+     * so (the owner, 2026-11-10). Wi-Fi or Ethernet, the networks [nets] binds a door
+     * to, and never a VPN's network, which can report the transport under it. Quick,
+     * on any thread, and nothing about a PC: the doors are still tried on the default
+     * road, for a PC with an address that road reaches.
+     */
+    fun noWifi(c: Context): Boolean {
+        if (pasted(c) != null) return false
+        return try {
+            val cm = c.getSystemService(ConnectivityManager::class.java) ?: return false
+            @Suppress("DEPRECATION")
+            NoAnswer.offLocal(cm.allNetworks.mapNotNull { n ->
+                cm.getNetworkCapabilities(n)?.let {
+                    NoAnswer.Net(wifi = it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),
+                                 ethernet = it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
+                                 vpn = it.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
+                }
+            })
+        } catch (e: RuntimeException) {
+            false                   // a phone that cannot tell is not said to be off its Wi-Fi
+        }
+    }
+
     // ---- what answered last ----
 
     private var routes: JSONObject? = null
@@ -523,5 +548,34 @@ object Link {
             return null
         }
         return got
+    }
+}
+
+/**
+ * What the keyboard's line says of a try nobody answered, decided when the line is
+ * drawn, so that it is never a fact of a network the phone has since left. Apart
+ * from [Link], so the JVM can hold it with nothing of Android's in it.
+ */
+object NoAnswer {
+    /** One network as Android describes it: what carries it, and whether it is a VPN's. */
+    class Net(val wifi: Boolean, val ethernet: Boolean, val vpn: Boolean)
+
+    /** None of [nets] is one a door at home could be reached on. */
+    fun offLocal(nets: List<Net>): Boolean = nets.none { !it.vpn && (it.wifi || it.ethernet) }
+
+    enum class Say {
+        /** The phone is on no Wi-Fi now: whatever the try met, that is the phone's to fix. */
+        NO_WIFI,
+        /** On a Wi-Fi when it was tried and now, and nobody answered. */
+        NO_ANSWER,
+        /** Tried off any Wi-Fi and on one now: the try says nothing about the PC. */
+        NOT_SENT,
+    }
+
+    /** [offThen]: the try was made with the phone on no Wi-Fi. [offNow]: it is on none now. */
+    fun say(offThen: Boolean, offNow: Boolean): Say = when {
+        offNow -> Say.NO_WIFI
+        offThen -> Say.NOT_SENT
+        else -> Say.NO_ANSWER
     }
 }

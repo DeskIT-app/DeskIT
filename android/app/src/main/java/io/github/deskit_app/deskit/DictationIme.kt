@@ -7,6 +7,10 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -147,8 +151,20 @@ class DictationIme : InputMethodService() {
     /**
      * Why the last try came to nothing, in its few words, or null when no try has
      * said: a PC that answers a knock since clears it, a guess never stands in.
+     * Nobody answering has no words here: [unheard] holds it, and the line gives it
+     * its words when it is drawn ([reasonNow]).
      */
     private var why: String? = null
+
+    /**
+     * The last try met nobody: true when it was made with the phone on no Wi-Fi
+     * ([Link.noWifi]), false when on one, null when somebody answered or [why] says
+     * what did.
+     */
+    private var unheard: Boolean? = null
+
+    /** The line is a knock's "nobody answered", which a change of network makes stale. */
+    private var lineUnheard = false
 
     /** A press of Send again under way: how many it set out with, and which is on its way. */
     private var sendingOf = 0
@@ -210,11 +226,52 @@ class DictationIme : InputMethodService() {
         get() = resources.configuration.orientation ==
                 Configuration.ORIENTATION_LANDSCAPE
 
+    /**
+     * A Wi-Fi or an Ethernet coming or going while this keyboard lives. What the line
+     * says of nobody answering is a fact of the networks, and the person turning the
+     * Wi-Fi on from the shade, the keyboard still up, is the moment it must not go
+     * stale. The rule is [Link.noWifi]'s, asked when the line is drawn: this only says
+     * when to draw it, a moment after Android has the network in or out of its list.
+     */
+    private val netWatch = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = moved()
+        override fun onLost(network: Network) = moved()
+
+        private fun moved() {
+            ui.removeCallbacks(netSettled)
+            ui.postDelayed(netSettled, NET_SETTLE_MS)
+        }
+    }
+    private val netSettled = Runnable { netMoved() }
+    private var watching = false
+
     /** The keyboard's process starts, after a boot as at any time: an hour that is up goes. */
     override fun onCreate() {
         super.onCreate()
         val app = applicationContext
         thread { Spool.prune(app) }
+        try {
+            // Wi-Fi or Ethernet, and not a VPN's: a request asks NOT_VPN unless told otherwise.
+            getSystemService(ConnectivityManager::class.java)?.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    .build(), netWatch)
+            watching = true
+        } catch (e: RuntimeException) {
+            // Without it the line is still true when drawn, and it is drawn at every open.
+        }
+    }
+
+    override fun onDestroy() {
+        ui.removeCallbacks(netSettled)
+        if (watching) try {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(netWatch)
+        } catch (e: RuntimeException) {
+            // already gone with the process's binder
+        }
+        watching = false
+        super.onDestroy()
     }
 
     // ---- the view ----
@@ -699,6 +756,7 @@ class DictationIme : InputMethodService() {
         pending = null
         unsaved.clear()
         why = null
+        unheard = null
         sendingOf = 0
         lastInsert = null
         sticky = false
@@ -866,6 +924,7 @@ class DictationIme : InputMethodService() {
             // ready line names the one that answered last.
             var word = getString(R.string.unreachable)
             var lockedWhy: String? = null
+            val off = Link.noWifi(app)
             val reached = try {
                 Link.reach(app)
             } catch (e: Sealed.NotNow) {
@@ -873,17 +932,23 @@ class DictationIme : InputMethodService() {
                 lockedWhy = getString(if (e.locked) R.string.why_locked else R.string.why_keystore)
                 null
             }
+            val unheardNow = reached == null && lockedWhy == null
+            // Nobody answered and the phone is on no Wi-Fi: that is the line's words.
+            if (unheardNow && Link.noWifi(app)) word = getString(R.string.why_no_wifi)
             // Nothing is sent from here, a PC or no PC: what waits is the person's to send.
             // A phone used only through this keyboard opens no screen that would look.
             if (Sealed.weak(app)) Lock.look(app)
             ui.post {
                 reachable = reached != null
-                // What waits is told what is true now: a PC answers, or nobody did.
-                why = if (reached != null) null else lockedWhy ?: getString(R.string.why_no_answer)
+                // What waits is told what is true now: a PC answers, the phone cannot
+                // look, or nobody did, which the line words when it is drawn.
+                why = if (reached == null) lockedWhy else null
+                unheard = if (unheardNow) off else null
                 if (busy || holding || locked) return@post
                 tint(idleColor)
                 if (reached == null) {
                     sayError(word) { openSetup() }
+                    lineUnheard = unheardNow
                 } else if (!sticky) {
                     sayReady()
                 }
@@ -1034,12 +1099,16 @@ class DictationIme : InputMethodService() {
         val wipes = Traces.wipes
         thread {
             val recording = item()
+            // Where it was tried from: a try made off any Wi-Fi says nothing of the PC.
+            val off = Link.noWifi(app)
             val result = Link.dictate(app, recording)
-            ui.post { deliver(result, recording, mine, wipes) }
+            ui.post { deliver(result, recording, mine, wipes, off) }
         }
     }
 
-    private fun deliver(result: Transcriber.Result, item: SpoolFiles.Item, mine: Int, wipes: Int) {
+    /** [off]: it was tried with the phone on no Wi-Fi ([Link.noWifi]). */
+    private fun deliver(result: Transcriber.Result, item: SpoolFiles.Item, mine: Int, wipes: Int,
+                        off: Boolean) {
         busy = false
         tint(idleColor)
         // Out of the account while this was on its way: it lands nowhere. What
@@ -1057,6 +1126,7 @@ class DictationIme : InputMethodService() {
                 val text = result.text.trim()
                 // A PC took it: what one said before is not why any more.
                 why = null
+                unheard = null
                 if (text.isEmpty()) {
                     Spool.done(this, item)
                     say(getString(R.string.no_speech))
@@ -1101,9 +1171,15 @@ class DictationIme : InputMethodService() {
                 }
                 if (item.file == null && item.wav != null && item !in unsaved) unsaved.add(item)
                 Spool.free(this, item)
-                if (result.why == Transcriber.Why.UNREACHED) reachable = false
+                if (result.why == Transcriber.Why.UNREACHED) {
+                    reachable = false
+                    why = null
+                    unheard = off
+                } else {
+                    why = reasonFor(result)
+                    unheard = null
+                }
                 tint(idleColor)
-                why = reasonFor(result)
                 // A press must be seen to have been made, however fast the no.
                 val left = if (pressed) SENDING_SEEN_MS - (SystemClock.elapsedRealtime() - sendStarted)
                            else 0L
@@ -1114,14 +1190,45 @@ class DictationIme : InputMethodService() {
     }
 
     /**
-     * Why a try came to nothing, in a few words: one kind each, and only what the
-     * phone knows. A PC's own sentence of no kind it knows is the PC's to say,
-     * word for word, its first letter raised.
+     * Why the line says nothing came of what waits, as it is now. Nobody answering
+     * is worded by where the phone is: on no Wi-Fi now, that is the words, whatever
+     * the try met; tried off any Wi-Fi and on one now, it says nothing of the PC. What
+     * a PC said, and the phone's own reasons, stand as they were.
+     */
+    private fun reasonNow(): String? {
+        val off = unheard ?: return why
+        return when (NoAnswer.say(offThen = off, offNow = Link.noWifi(this))) {
+            NoAnswer.Say.NO_WIFI -> getString(R.string.why_no_wifi)
+            NoAnswer.Say.NO_ANSWER -> getString(R.string.why_no_answer)
+            NoAnswer.Say.NOT_SENT -> null
+        }
+    }
+
+    /**
+     * A Wi-Fi or an Ethernet came or went ([netWatch]). The row is drawn again, as
+     * it is now; and a knock's "nobody answered" was a fact of the network it was
+     * made on, so the line goes back to ready and, the keyboard up, knocks again.
+     */
+    private fun netMoved() {
+        if (waitingNow().isNotEmpty()) {
+            showWaiting()
+            return
+        }
+        if (!lineUnheard || busy || holding || locked || arranging) return
+        lastHealth = 0L
+        sayReady()
+        if (isInputViewShown && !privateField) checkHealth()
+    }
+
+    /**
+     * Why a try that met an answer came to nothing, in a few words: one kind each,
+     * and only what the phone knows. A PC's own sentence of no kind it knows is the
+     * PC's to say, word for word, its first letter raised. Nobody answering is
+     * [reasonNow]'s.
      */
     private fun reasonFor(r: Transcriber.Result.Err): String {
         val m = r.message.trim()
         return when {
-            r.why == Transcriber.Why.UNREACHED -> getString(R.string.why_no_answer)
             m == getString(R.string.phone_locked) -> getString(R.string.why_locked)
             m == getString(R.string.keystore_busy) -> getString(R.string.why_keystore)
             m == Transcriber.BAD_TOKEN -> getString(R.string.why_token)
@@ -1189,7 +1296,10 @@ class DictationIme : InputMethodService() {
         // dictation stays out, and where the row from the field before must not stay
         // standing, Send again and all.
         if (n == 0 || privateField) {
-            if (n == 0) why = null
+            if (n == 0) {
+                why = null
+                unheard = null
+            }
             // The last one on its way under a press is still the line's: the mic
             // holds still until the press has its answer.
             room(n == 0 && sendingOf > 0)
@@ -1211,7 +1321,7 @@ class DictationIme : InputMethodService() {
             rowKeys(on = true, send = false)
             return
         }
-        val reason = why
+        val reason = reasonNow()
         status.text = when {
             n == 1 -> reason ?: getString(R.string.not_sent)
             reason == null -> getString(R.string.not_sent_many, n)
@@ -1221,6 +1331,7 @@ class DictationIme : InputMethodService() {
         sticky = true
         stickySetup = false
         statusAction = null
+        lineUnheard = false
         rowKeys(true)
     }
 
@@ -1268,6 +1379,7 @@ class DictationIme : InputMethodService() {
         for (item in Spool.waiting(app)) Spool.done(app, item)
         unsaved.clear()
         why = null
+        unheard = null
         showWaiting()
     }
 
@@ -1578,6 +1690,7 @@ class DictationIme : InputMethodService() {
         sticky = false
         stickySetup = false
         statusAction = null
+        lineUnheard = false
         lineTaken()
     }
 
@@ -1603,6 +1716,7 @@ class DictationIme : InputMethodService() {
         sticky = true
         stickySetup = false
         statusAction = action
+        lineUnheard = false
         if (!::status.isInitialized) return
         status.text = msg
         status.setTextColor(errorText)
@@ -1671,5 +1785,7 @@ class DictationIme : InputMethodService() {
 
         /** A passing word on the line, before the line goes back to what waits. */
         const val ROW_BACK_MS = 3000L
+        /** A network's callback can come before Android's list has it in or out. */
+        const val NET_SETTLE_MS = 600L
     }
 }

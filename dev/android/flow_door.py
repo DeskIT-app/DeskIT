@@ -199,6 +199,8 @@ def tap_status() -> None:
 
 #: The line's few words for a dictation nobody answered.
 NO_ANSWER = "Your PC didn't answer"
+#: ...and for one nobody answered with the phone on no Wi-Fi.
+NO_WIFI = "Your phone isn't on Wi-Fi"
 
 
 def row() -> dict:
@@ -1493,12 +1495,158 @@ def flow_small_phone():
         acct.stop()
 
 
+def carried() -> list[str]:
+    """What carries each network the phone has, read from Android and not from Link."""
+    m = re.search(r"nets=(\S*)", ask("nets"))
+    return m.group(1).split(",") if m and m.group(1) else []
+
+
+def wifi(on: bool) -> None:
+    """The Wi-Fi on or off, as a person turns it from the shade, mobile data left as
+    it is, until Android has a Wi-Fi network or none."""
+    drive.shell("svc", "wifi", "enable" if on else "disable")
+    assert until(lambda: ("wifi" in carried()) == on, 90, 2), \
+        f"the Wi-Fi never went {'on' if on else 'off'}: {carried()}"
+
+
+def flow_no_wifi():
+    """The phone on no Wi-Fi, mobile data on, as on 5G away from home: when nobody
+    answers, the line says the phone is what to fix, and says it only while it is true.
+    The PC is off as well: an emulator's mobile data reaches the host, where a phone's
+    5G never reaches a PC at home."""
+    acct = fa.fresh()
+    try:
+        real_join(acct)
+        pc = acct._door_pc
+        field()
+        pc.down()
+        wifi(False)
+        nets = carried()
+        check("off the Wi-Fi: mobile data, and nothing else", nets == ["cell"], str(nets))
+        hold_and_say()
+        check("off the Wi-Fi, nobody answers: the phone's to fix, with Send again and the X",
+              until(lambda: row_is(NO_WIFI), 25), status())
+        drive.shot("reason_no_wifi")
+        check("and the recording stays", until(lambda: "waiting=1" in spooled(), 5), spooled())
+        send_again()
+        check("a press off the Wi-Fi is seen going",
+              until(lambda: row()["status"].startswith("Sending"), 5, 0.1), status())
+        check("and comes back with the same words", until(lambda: row_is(NO_WIFI), 25), status())
+
+        # The Wi-Fi back with the keyboard still up: what the try said is not true now.
+        wifi(True)
+        check("the Wi-Fi back, the keyboard up: Not sent, with Send again and the X",
+              until(lambda: row_is("Not sent"), 15), status())
+        drive.shot("wifi_back")
+        send_again()
+        check("pressed on the Wi-Fi, nobody answers: the PC didn't", until(lambda: row_is(NO_ANSWER), 25),
+              status())
+        # And the other way round: the Wi-Fi goes under a row that blames the PC.
+        wifi(False)
+        check("the Wi-Fi gone under 'the PC didn't answer': the Wi-Fi's words",
+              until(lambda: row_is(NO_WIFI), 15), status())
+        fa.back()
+        fa.back()
+        field()
+        check("opened later off the Wi-Fi: the Wi-Fi's words", until(lambda: row_is(NO_WIFI), 20), status())
+        wifi(True)
+        check("on the Wi-Fi again: never the Wi-Fi's words",
+              until(lambda: row_is("Not sent") or row_is(NO_ANSWER), 15), status())
+        back_up(pc)
+        send_again()
+        check("and a press puts it where the person is", until(lambda: SENTENCE in in_field(), 20),
+              in_field()[:300])
+        check("and nothing waits", until(lambda: spool_empty() and not row()["drop"], 10), spooled())
+
+        # Nothing waits and the keyboard opens off the Wi-Fi: its open line says the same.
+        pc.down()
+        wifi(False)
+        fa.back()
+        fa.back()
+        drive.die()                              # a new process: the knock is not a minute old
+        field()
+        check("nothing waits, opened off the Wi-Fi: the open line says so too",
+              says(re.escape(NO_WIFI)) and not row()["drop"], status())
+        drive.shot("open_no_wifi")
+        wifi(True)
+        check("the Wi-Fi back: the line asks again, and says what is true on it",
+              says(re.escape(UNREACHED)), status())
+
+        # A pasted line goes over any network: then nobody answering is the PC's, as before.
+        wifi(False)
+        fa.told("--es", "url", "http://10.0.2.2:18799", "--es", "token", "nobody-listens-here")
+        hold_and_say()
+        check("a pasted line, off the Wi-Fi: Your PC didn't answer, as it always was",
+              until(lambda: row_is(NO_ANSWER), 40), status())
+        drop_waiting()
+    finally:
+        drive.shell("svc", "wifi", "enable", check=False)
+        if fa.sdk() >= WIFI_ONLY:
+            settled()
+        else:
+            until(lambda: "1 received" in drive.shell("ping", "-c", "1", "-W", "2", ADDRESS, check=False), 60)
+        acct._door_pc.down()
+        acct.stop()
+
+
+#: The build these flows install, and the one an upgrade goes from: DESKIT_OLD_APK, built for the fake as well.
+APK = Path(os.environ.get("DESKIT_APK")
+           or ROOT / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk")
+
+
+def field_after_install() -> None:
+    """The keyboard on a field right after an install over it. Android's first start of
+    input then can wait on the binding that died with the old process, and only the next
+    start binds again (measured on Android 14, 2026-11-10: mHaveConnection=true with no
+    service running, until the field was started a second time). A person taps again."""
+    try:
+        field()
+    except AssertionError:
+        print("      the first field after the install found no keyboard: the field again", flush=True)
+        fa.back()
+        time.sleep(4)
+        field()
+
+
+def flow_upgrade_waiting():
+    """This build installed over the last one with a recording waiting, as a person
+    installs it over the one on the phone: the recording is still there, offered on
+    the keyboard, and lands on a press. Skipped without DESKIT_OLD_APK."""
+    old = os.environ.get("DESKIT_OLD_APK")
+    if not old:
+        print("      no DESKIT_OLD_APK: skipped", flush=True)
+        return
+    assert fa.built_for_the_fake(Path(old)), "the last build speaks to the real project"
+    acct = fa.fresh()
+    try:
+        drive.adb("install", "-r", "-g", old, timeout=300)
+        real_join(acct)
+        pc = acct._door_pc
+        field_after_install()
+        pc.down()
+        hold_and_say()
+        check("the last build keeps what did not arrive", until(lambda: "waiting=1" in spooled(), 25), spooled())
+        fa.back()
+        fa.back()
+        drive.adb("install", "-r", "-g", APK, timeout=300)
+        field_after_install()
+        check("this build, installed over it: the recording is offered",
+              until(lambda: row()["send"] and row()["drop"], 25), status())
+        back_up(pc)
+        send_again()
+        check("and a press puts it at the cursor", until(lambda: SENTENCE in in_field(), 20), in_field()[:300])
+        check("and nothing waits", until(spool_empty, 10), spooled())
+    finally:
+        drive.adb("install", "-r", "-g", APK, timeout=300)
+        acct._door_pc.down()
+        acct.stop()
+
+
 FLOWS = {name[5:]: fn for name, fn in list(globals().items()) if name.startswith("flow_")}
 
 
 def main() -> None:
-    apk = Path(os.environ.get("DESKIT_APK")
-               or ROOT / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk")
+    apk = APK
     if not fa.built_for_the_fake(apk):
         sys.exit("this APK speaks to the real project, and no flow may: "
                  "gradle assembleDebug -PdeskitAccount=http://10.0.2.2:18791")

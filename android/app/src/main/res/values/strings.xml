@@ -48,6 +48,11 @@
     <string name="not_sent_why">%1$d not sent · %2$s</string>
     <!-- Why, one kind each. Nobody answered on any road this phone has: -->
     <string name="why_no_answer">Your PC didn\'t answer</string>
+    <!-- Nobody answered, and the phone is on no Wi-Fi (or Ethernet) a PC at home
+         could be reached on: Wi-Fi off and Wi-Fi not connected alike, a VPN's
+         network not counted (the owner, 2026-11-10). Said whenever it is true when
+         the line is drawn, and the keyboard's open line says it too. -->
+    <string name="why_no_wifi">Your phone isn\'t on Wi-Fi</string>
     <!-- The PC answered that its model is unloaded (Stop in the desk, or room for a game): -->
     <string name="why_model_off">The model is off on your PC</string>
     <!-- The PC answered that it has no account signed in: -->

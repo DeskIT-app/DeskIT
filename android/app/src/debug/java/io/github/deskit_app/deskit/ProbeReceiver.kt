@@ -27,7 +27,7 @@ import kotlin.concurrent.thread
  * road (`--es dictate 1`), which takes the pasted line and no session.
  *
  * And the road to the PC, which a flow cannot reach by what is on screen, every
- * one the real path: `--es link reach|dictate|keep|prune|sweep|job|count|pcs|soft|plant`.
+ * one the real path: `--es link reach|dictate|keep|prune|sweep|job|count|nets|pcs|soft|plant`.
  * The recording is a second of silence, a real WAV, which the PC's real to_wav reads.
  * `try:<port>` is one raw connect on each network, with nothing of ours in the way.
  * `job` is the sweep JobScheduler holds, as JobScheduler holds it.
@@ -218,6 +218,19 @@ class ProbeReceiver : BroadcastReceiver() {
             "planted"
         }
         "count" -> "waiting=${Spool.files(c).items().size} all=${Spool.files(c).count()}"
+        "nets" -> {
+            // What carries each network, and Link's verdict on them: never an address.
+            val cm = c.getSystemService(android.net.ConnectivityManager::class.java)
+            val words = listOf(android.net.NetworkCapabilities.TRANSPORT_WIFI to "wifi",
+                               android.net.NetworkCapabilities.TRANSPORT_CELLULAR to "cell",
+                               android.net.NetworkCapabilities.TRANSPORT_ETHERNET to "eth",
+                               android.net.NetworkCapabilities.TRANSPORT_VPN to "vpn")
+            @Suppress("DEPRECATION")
+            val nets = cm.allNetworks.mapNotNull { cm.getNetworkCapabilities(it) }.map { caps ->
+                words.filter { caps.hasTransport(it.first) }.joinToString("+") { it.second }
+            }.sorted()
+            "nets=${nets.joinToString(",")} nowifi=${Link.noWifi(c)}"
+        }
         "pcs" -> "pcs=" + Link.pcs(c).joinToString(";") { "${it.addrs.size}:${it.wordsSync}" }
         "soft" -> {
             val s = Account.session(c)
@@ -332,10 +345,10 @@ class ProbeReceiver : BroadcastReceiver() {
         val mine = held("session").getInt(k)
         DictationIme::class.java.getDeclaredMethod("deliver", Transcriber.Result::class.java,
                                                    SpoolFiles.Item::class.java,
-                                                   Int::class.java, Int::class.java)
+                                                   Int::class.java, Int::class.java, Boolean::class.java)
             .apply { isAccessible = true }
             .invoke(k, Transcriber.Result.Ok(text), SpoolFiles.Item(null, ByteArray(8)), mine,
-                    if (late) Traces.wipes - 1 else Traces.wipes)
+                    if (late) Traces.wipes - 1 else Traces.wipes, false)
     }
 
     /** Where a view is on screen, for a real finger: uiautomator cannot see a keyboard. */
@@ -383,9 +396,10 @@ class ProbeReceiver : BroadcastReceiver() {
             val item = Spool.keep(c, silence())
             DictationIme::class.java.getDeclaredMethod("deliver", Transcriber.Result::class.java,
                                                        SpoolFiles.Item::class.java,
-                                                       Int::class.java, Int::class.java)
+                                                       Int::class.java, Int::class.java, Boolean::class.java)
                 .apply { isAccessible = true }
-                .invoke(k, Transcriber.Result.Err(words), item, held("session").getInt(k), Traces.wipes)
+                .invoke(k, Transcriber.Result.Err(words), item, held("session").getInt(k), Traces.wipes,
+                        Link.noWifi(c))
             Log.i("DeskIT", "probe: failed")
             return
         }

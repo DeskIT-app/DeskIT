@@ -215,10 +215,33 @@ private fun reasonChecks() {
           PcWords.About.OTHER && PcWords.errorCode("Groq's free quota is spent for today") == null)
 }
 
+/** Nobody answered: what the line says, by the phone's networks then and now. */
+private fun noAnswerChecks() {
+    val wifi = NoAnswer.Net(wifi = true, ethernet = false, vpn = false)
+    val ethernet = NoAnswer.Net(wifi = false, ethernet = true, vpn = false)
+    val cell = NoAnswer.Net(wifi = false, ethernet = false, vpn = false)
+    val vpnOnCell = NoAnswer.Net(wifi = false, ethernet = false, vpn = true)
+    val vpnSaysWifi = NoAnswer.Net(wifi = true, ethernet = false, vpn = true)
+    check("5G alone is no Wi-Fi", NoAnswer.offLocal(listOf(cell)))
+    check("no network at all is no Wi-Fi", NoAnswer.offLocal(emptyList()))
+    check("5G with a VPN over it is no Wi-Fi", NoAnswer.offLocal(listOf(cell, vpnOnCell)))
+    check("a VPN's network saying Wi-Fi is not a Wi-Fi", NoAnswer.offLocal(listOf(cell, vpnSaysWifi)))
+    check("a Wi-Fi is a Wi-Fi", !NoAnswer.offLocal(listOf(wifi)))
+    check("a Wi-Fi beside 5G, a VPN over it, is a Wi-Fi", !NoAnswer.offLocal(listOf(cell, vpnSaysWifi, wifi)))
+    check("an Ethernet counts as one", !NoAnswer.offLocal(listOf(ethernet)))
+    val say = NoAnswer::say
+    check("off any Wi-Fi then and now: the phone's to fix", say(true, true) == NoAnswer.Say.NO_WIFI)
+    check("on a Wi-Fi then and off it now: the Wi-Fi's words", say(false, true) == NoAnswer.Say.NO_WIFI)
+    check("off any Wi-Fi then and on one now: nothing said of the PC",
+          say(true, false) == NoAnswer.Say.NOT_SENT)
+    check("on a Wi-Fi then and now: the PC didn't answer", say(false, false) == NoAnswer.Say.NO_ANSWER)
+}
+
 fun main() {
     pinChecks()
     spoolChecks()
     reasonChecks()
+    noAnswerChecks()
     val aad = Crypt.aadPairing(Vectors.UID, Vectors.PAIRING)
     val account = ByteArray(32) { it.toByte() }
     val rowAad = Crypt.aadVault(Vectors.UID, "groq")
