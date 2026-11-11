@@ -6794,7 +6794,7 @@ class Dashboard:
                               "voice"),
         settings_mod.MESSAGES: ("MESSAGES FROM OTHER PROGRAMS", "claude",
                                 "sounds"),
-        settings_mod.PHONE: ("THE PHONE", "devices", "keyboard", "trouble"),
+        settings_mod.PHONE: ("THE PHONE", "devices", "backup", "keyboard", "trouble"),
         settings_mod.ACCOUNT: ("account", "WHAT THE ACCOUNT MAY DO", "lock"),
         settings_mod.PRIVACY: ("keys", "WHAT MAY LEAVE THIS PC",
                                "connections", "said_file", "KEPT ON THIS PC"),
@@ -7545,6 +7545,27 @@ class Dashboard:
         self._phone_asking = ""
         self._ask("phone", then=lambda r: self._announce(r, "forgetting"), do="forget", id=ident)
         self._fill_settings()
+
+    def _backup_block(self, scroller) -> None:
+        """The phone's cloud backup, read from its row (desk_settings.backup_card,
+        the web desk's words): read-only, with Add a key when there is none."""
+        import desk_settings
+
+        said = desk_settings.backup_card(self.status)
+        if said is None:
+            return
+        buttons = said.get("buttons") or []
+        card = ui.Card(scroller.inner, CW, 96 + (44 if buttons else 0), bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), wraplength=CW - 80,
+                 justify="left", text=said["line"]).place(x=0, y=0)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 80,
+                 justify="left", text=said.get("small") or "").place(x=0, y=26)
+        if buttons:
+            ui.Button(body, "Add a key", lambda: self._settings_go(settings_mod.PRIVACY), h=32,
+                      w=widgets.button_width("Add a key")).place(x=0, y=84)
+        scroller.bind_wheel(card)
 
     def _keyboard_block(self, scroller) -> None:
         """The QR of the keyboard's download, or, on an anonymous account,

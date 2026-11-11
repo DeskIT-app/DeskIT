@@ -1694,6 +1694,10 @@ def _open_history(key: bytes, uid: str, row: dict) -> dict | None:
     out = dict(row)
     out["text"] = str((inside or {}).get("text") or "")
     out["raw"] = (inside or {}).get("raw")
+    # where it was made, sealed with the words: a phone's dictation the cloud
+    # carried says sync.CLOUD_SOURCE (PHONE_LINK_PLAN.md 2b); a PC's row says
+    # nothing, and an older PC reading this one ignores it
+    out["source"] = str((inside or {}).get("source") or "")
     return out
 
 

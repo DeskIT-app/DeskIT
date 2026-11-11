@@ -81,7 +81,7 @@ LAYOUT: dict[str, tuple[str, ...]] = {
                           "voice"),
     settings_mod.MESSAGES: ("MESSAGES FROM OTHER PROGRAMS", "claude",
                             "sounds"),
-    settings_mod.PHONE: ("THE PHONE", "devices", "keyboard", "trouble"),
+    settings_mod.PHONE: ("THE PHONE", "devices", "backup", "keyboard", "trouble"),
     settings_mod.ACCOUNT: ("account", "WHAT THE ACCOUNT MAY DO", "lock"),
     settings_mod.PRIVACY: ("keys", "WHAT MAY LEAVE THIS PC",
                            "connections", "said_file", "KEPT ON THIS PC"),
@@ -108,6 +108,7 @@ BLOCK_TITLES: dict[str, tuple[str, str]] = {
     "voice": ("No Hebrew voice", "warning"), "claude": ("Claude Code", "message"),
     "sounds": ("Every sound it makes", "volume"),
     "devices": ("Your devices", "laptop"), "keyboard": ("The keyboard", "download"),
+    "backup": ("When the phone can't reach this PC", "globe"),
     "trouble": ("If it doesn't work", "help"),
     "account": ("Account", "contact"), "lock": ("The lock", "lock"),
     "keys": ("Your cloud keys", "key"), "connections": ("Every connection", "globe"),
@@ -320,6 +321,68 @@ def keyboard_card(status) -> dict:
                      else "Another phone? Point its camera here"),
             "said": ("Install it, sign in with Google, then press Approve on this PC. "
                      "For Android phones." + ("" if code else f" It is at {url}"))}
+
+
+def _cloud_key() -> str:
+    """The provider whose key this PC holds, Groq first as the phone tries
+    them, or "": asked of secretstore by name, the value dropped at once."""
+    import secretstore
+
+    for name in ("groq", "gemini"):
+        try:
+            key, _source = secretstore.find_key(name)
+        except Exception:                                    # noqa: BLE001
+            key = None
+        there = bool(key)
+        del key
+        if there:
+            return name
+    return ""
+
+
+#: The provider's name as a sentence says it.
+CLOUD_NAMES = {"groq": "Groq", "gemini": "Gemini"}
+
+
+def backup_card(status, provider: str | None = None) -> dict | None:
+    """The phone's cloud backup, read from its own row (PHONE_LINK_PLAN.md
+    2b, the picture he approved on 2026-11-11): read-only here, because the
+    switch and its yes are the phone's, as every gate is the device's. One
+    line for a phone, one per phone when there are more; nothing for a
+    keyboard older than the backup, whose row names no switch. With no key,
+    the way to add one. ``provider`` is for a test; None asks this PC."""
+    phones = [d for d in phone_info(status).get("phones") or []
+              if isinstance(d.get("backup"), bool)]
+    if not phones:
+        return None
+    if provider is None:
+        provider = _cloud_key()
+    where = CLOUD_NAMES.get(provider, "")
+    turn = "You turn it on and off on the phone, in Settings."
+    if len(phones) > 1:
+        states = "  ·  ".join(f"{d.get('name') or 'A phone'}: {'on' if d['backup'] else 'off'}"
+                              for d in phones)
+        on = any(d["backup"] for d in phones)
+        small = (f"If one can't reach this PC, it sends the recording to {where} with your key. "
+                 if on and where else "") + turn
+        card = {"kind": "line", "line": f"Cloud backup  ·  {states}", "small": small, "buttons": []}
+        if on and not where:
+            card.update(tone="warn", small="Your account has no cloud key yet, so the phones wait "
+                                           "for this PC. " + turn,
+                        buttons=[{"label": "Add a key", "go": "privacy", "primary": True}])
+        return card
+    d = phones[0]
+    name = str(d.get("name") or "your phone")
+    if not d["backup"]:
+        return {"kind": "line", "line": f"Cloud backup on {name}: off",
+                "small": "Its recordings wait for this PC. " + turn, "buttons": []}
+    if where:
+        return {"kind": "line", "ready": True, "line": f"Cloud backup on {name}: on",
+                "small": f"If it can't reach this PC, it sends the recording to {where} with "
+                         f"your key. " + turn, "buttons": []}
+    return {"kind": "line", "tone": "warn", "line": f"Cloud backup on {name}: on, but no key",
+            "small": "Your account has no cloud key yet, so the phone waits for this PC.",
+            "buttons": [{"label": "Add a key", "go": "privacy", "primary": True}]}
 
 
 def trouble_card(status) -> dict | None:
@@ -981,6 +1044,9 @@ class Place:
 
     def _card_keyboard(self, sections) -> dict:
         return keyboard_card(self.status)
+
+    def _card_backup(self, sections) -> dict | None:
+        return backup_card(self.status)
 
     def _card_trouble(self, sections) -> dict | None:
         return trouble_card(self.status)

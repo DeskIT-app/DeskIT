@@ -6189,14 +6189,19 @@ def _phone_account(key: bytes | None = None):
         phone_mod._view_kept = None
 
 
-def _phone_row(box: dict, phone: dict, ident: str, *, key: bytes | None = None) -> dict:
-    """A phone's `link` row the way a phone seals it."""
+def _phone_row(box: dict, phone: dict, ident: str, *, key: bytes | None = None,
+               cloud: bool | None = None) -> dict:
+    """A phone's `link` row the way a phone seals it. ``cloud``: the cloud
+    backup's switch as a keyboard of stage 2b writes it; None is an older
+    keyboard's row, whose "backup": True meant nothing."""
     import base64
 
     import vault
 
     link = {"v": 1, "kind": "phone", "cert": base64.b64encode(phone["der"]).decode("ascii"),
             "proto": 1, "backup": True, "a field from a later version": 1}
+    if cloud is not None:
+        link["cloud_backup"] = cloud
     sealed = vault.seal_json(key or box["key"], link,
                              vault.AAD_DEVICE.format(uid=box["uid"], device_id=ident))
     return {"id": ident, "name": phone["name"], "platform": "android-34", "link": sealed}
@@ -6349,7 +6354,7 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
         aad = vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC)
         row = vault.open_json(box["key"], box["written"][-1], aad)
         assert row == {"v": 1, "kind": "pc", "cert": phone_mod.identity(), "addrs": ["10.1.2.3"],
-                       "port": 8766, "proto": 1, "words_sync": True}, row
+                       "port": 8766, "proto": 1, "words_sync": True, "history_sync": False}, row
 
         box["rows"] = [{"id": _THIS_PC, "name": "me", "link": box["written"][-1]}]
         phone_mod.refresh()
@@ -6361,10 +6366,120 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
         assert phone_mod.publish(**dict(args, listening=False)) is True
         assert vault.open_json(box["key"], box["written"][-1], aad)["addrs"] == []
 
+        # whether this PC's account keeps what was said: where a phone writes the
+        # text of a dictation the cloud carried (stage 2b)
+        assert phone_mod.publish(**dict(args, listening=False, history_sync=True)) is True
+        assert vault.open_json(box["key"], box["written"][-1], aad)["history_sync"] is True
+
         count = len(box["written"])
         box["gone"] = {_THIS_PC}
         assert phone_mod.publish(**dict(args, port=9000)) is False
         assert len(box["written"]) == count
+
+
+def test_the_phones_cloud_switch_reaches_settings_phone_from_its_own_row() -> None:
+    """Stage 2b, picture f, approved 2026-11-11: the desk reads the phone's
+    cloud backup from the phone's own sealed row, read-only, because the
+    switch and its yes are the phone's. A keyboard older than the backup
+    names no switch and shows nothing, even the one before it, whose row
+    said "backup": True and meant nothing by it. On, with a key, it says
+    where the recording goes; on with none, Add a key, on Privacy; off,
+    that it waits for this PC. The card stands between the devices and the
+    keyboard, in both desks."""
+    import dashboard as dash
+    import desk_settings
+    import phone as phone_mod
+    import settings as settings_mod
+
+    one, two = "bbbbbbbb-0000-0000-0000-000000000002", "bbbbbbbb-0000-0000-0000-000000000003"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        old, new = _a_phone(Path(tmp), "Old phone"), _a_phone(Path(tmp), "Dana's phone")
+
+        def view(*rows) -> dict:
+            box["rows"] = list(rows)
+            phone_mod.refresh()
+            phone_mod._view_kept = None
+            return {"phone": phone_mod.view()}
+
+        status = view(_phone_row(box, old, one), _phone_row(box, new, two, cloud=True))
+        seen = {p["name"]: p["backup"] for p in status["phone"]["phones"]}
+        assert seen == {"Old phone": None, "Dana's phone": True}, seen
+
+        card = desk_settings.backup_card(status, provider="groq")
+        assert card == {"kind": "line", "ready": True, "line": "Cloud backup on Dana's phone: on",
+                        "small": "If it can't reach this PC, it sends the recording to Groq with "
+                                 "your key. You turn it on and off on the phone, in Settings.",
+                        "buttons": []}, card
+        assert "Gemini" in desk_settings.backup_card(status, provider="gemini")["small"]
+        card = desk_settings.backup_card(status, provider="")
+        assert card["tone"] == "warn" and card["line"].endswith("on, but no key"), card
+        assert card["buttons"] == [{"label": "Add a key", "go": "privacy", "primary": True}]
+        assert "privacy" in desk_settings.SLUGS.values()
+
+        off = desk_settings.backup_card(view(_phone_row(box, new, two, cloud=False)), provider="groq")
+        assert off["line"] == "Cloud backup on Dana's phone: off" and off["buttons"] == [], off
+        assert desk_settings.backup_card(view(_phone_row(box, old, one)), provider="groq") is None
+
+        both = desk_settings.backup_card(view(_phone_row(box, old, one, cloud=False),
+                                              _phone_row(box, new, two, cloud=True)), provider="groq")
+        assert "Old phone: off" in both["line"] and "Dana's phone: on" in both["line"], both
+        assert json.dumps(both).count("buttons") == 1
+
+    assert desk_settings.LAYOUT[settings_mod.PHONE] == (
+        "THE PHONE", "devices", "backup", "keyboard", "trouble")
+    assert dash.Dashboard.LAYOUT[settings_mod.PHONE] == desk_settings.LAYOUT[settings_mod.PHONE]
+    assert desk_settings.BLOCK_TITLES["backup"][0] == "When the phone can't reach this PC"
+    assert hasattr(dash.Dashboard, "_backup_block")
+
+
+def test_a_phones_cloud_dictation_reaches_said_marked_from_the_phone_and_the_cloud() -> None:
+    """Stage 2b: once the cloud's text has landed on the phone, the phone
+    deletes the recording and sends the TEXT on, sealed, as a row of the
+    account's history store with ``source: phone-cloud`` sealed beside the
+    words. A PC opens it under the stamp as Postgres hands it back (without
+    its trailing zeros), writes it into sync\history.log as a REMOTE line
+    with the engine marked, and the Said page shows it from the phone's
+    name and from the cloud. A PC's own rows carry no mark."""
+    import dataclasses
+
+    import desk_said
+    import history as history_mod
+    import sb
+    import sync
+    import vault
+
+    key, uid = os.urandom(32), _ACCOUNT_UID
+    phone = "cccccccc-0000-0000-0000-000000000004"
+    said = "אני בדרך הביתה, אגיע בעוד עשר דקות"
+    # the phone seals under its own spelling of the stamp (HistoryRow.stamp)
+    sealed = vault.seal_json(key, {"text": said, "raw": None, "source": "phone-cloud"},
+                             vault.AAD_HISTORY.format(uid=uid, device_id=phone,
+                                                      ts="2026-11-11T16:40:12.300+00:00",
+                                                      kind="dictation"))
+    pulled = {"device_id": phone, "ts": "2026-11-11T16:40:12.3+00:00", "kind": "dictation",
+              "cipher": sealed, "engine": "groq", "seconds": 3.0,
+              "updated_at": "2026-11-11T16:40:13+00:00"}
+    opened = sb._open_history(key, uid, pulled)
+    assert opened is not None and opened["text"] == said and opened["source"] == sync.CLOUD_SOURCE
+    line = sync.remote_line(opened, "Dana's phone")
+    assert "| REMOTE | dictation | Dana's phone | cloud:groq | 3.0s | " + said in line, line
+
+    pc_row = dict(pulled, cipher=vault.seal_json(key, {"text": "x", "raw": None},
+                                                 sb._history_aad(uid, pulled)))
+    assert sb._open_history(key, uid, pc_row)["source"] == ""
+    assert "| cloud:" not in sync.remote_line(sb._open_history(key, uid, pc_row), "HOME-PC")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "history.log"
+        log.write_text(line + "\n", "utf-8")
+        event = history_mod._events_in(log)[0]
+    assert event.cloud and event.engine == "groq" and event.text == said, event
+    assert "from Dana's phone" in event.note and "from the cloud" in event.meta()
+    tags = desk_said._row(event, "1")["tags"]
+    # one tag, so the row's narrow column does not cut two of them to "From …"
+    assert tags == [{"t": "Dana's phone · cloud", "g": "globe"}], tags
+    assert desk_said._row(dataclasses.replace(event, note=""), "1")["tags"] == [
+        {"t": "From the cloud", "g": "globe"}]
 
 
 def test_the_addresses_come_from_the_machine_on_any_network() -> None:
@@ -57847,7 +57962,8 @@ def _web_desk(status):
 _WEB_STATUS = {"ok": True, "stage": "running", "activity": "ready", "model": "on",
                "uptime_s": 3700, "paused": False,
                "phone": {"on": True, "port": 8801, "addrs": [], "error": "", "pcs": [],
-                         "phones": [{"id": "p", "name": "A phone", "cert": "c"}]},
+                         # a keyboard of stage 2b: its row says where its cloud switch stands
+                         "phones": [{"id": "p", "name": "A phone", "cert": "c", "backup": True}]},
                "awake": {"held": True},
                "keys": {"dismiss_hotkey": "ctrl+alt+m", "hotkey": "right ctrl"}}
 

@@ -342,8 +342,13 @@ def rotate() -> str:
 # Every device writes its own row and no other, sealed under the account key
 # (vault.AAD_DEVICE), so the server cannot add a device: a row that does not
 # open is ignored. A phone: {"v", "kind": "phone", "cert": <the DER, base64>,
-# "proto", "backup"}. A PC: {"v", "kind": "pc", "cert": <SHA-256, hex>,
-# "addrs", "port", "proto", "words_sync"}. An unknown field is ignored.
+# "proto", "cloud_backup"}, the last its switch for the cloud backup (stage 2b:
+# on and said yes to, a bool; a keyboard older than the backup names none, and
+# the one before it wrote a "backup": true that meant nothing and is not read).
+# A PC: {"v", "kind": "pc", "cert": <SHA-256, hex>, "addrs", "port", "proto",
+# "words_sync", "history_sync"}, the last whether this PC's account keeps what
+# was said, which is where a phone writes the text of a dictation the cloud
+# carried. An unknown field is ignored.
 
 #: What this PC's door speaks, in a `link` row.
 PROTO = 1
@@ -542,9 +547,13 @@ def view() -> dict:
                     cert = fingerprint(der)
                     if cert not in gone:
                         one = seen.get(cert) or {}
+                        cloud = link.get("cloud_backup")
                         out["phones"].append({"id": ident, "name": name, "cert": cert,
                                               "reached": int(one.get("reached") or 0),
-                                              "dictated": int(one.get("dictated") or 0)})
+                                              "dictated": int(one.get("dictated") or 0),
+                                              # the phone's own switch, or None from a
+                                              # keyboard older than the backup
+                                              "backup": cloud if isinstance(cloud, bool) else None})
                 elif link.get("kind") == "pc" and mine is not None and ident != mine:
                     cert = str(link.get("cert") or "")
                     if cert not in gone:
@@ -594,7 +603,7 @@ def drop_rows() -> None:
             pass
 
 
-def publish(*, port: int, listening: bool, words_sync: bool) -> bool:
+def publish(*, port: int, listening: bool, words_sync: bool, history_sync: bool = False) -> bool:
     """This PC's ``link`` row, when anything in it changed; True when one
     went out. ``listening`` is whether a phone should try here at all: a
     PC that said no, or has the switch off, names no address.
@@ -609,7 +618,11 @@ def publish(*, port: int, listening: bool, words_sync: bool) -> bool:
 
     The row is sealed under the id as it stands now: the id is per account,
     a leaving changes it, and one kept from before would seal a row that
-    opens for nobody. The write is outside the lock, like refresh()'s read."""
+    opens for nobody. The write is outside the lock, like refresh()'s read.
+
+    ``history_sync`` is whether this PC's account keeps what was said: a phone
+    writes the text of a dictation the cloud carried into the history store
+    only where a PC of the account will read it (PHONE_LINK_PLAN.md 2b)."""
     import sb
     import vault
 
@@ -627,7 +640,8 @@ def publish(*, port: int, listening: bool, words_sync: bool) -> bool:
             if mine in gone or cert in gone:
                 return False
             row = {"v": 1, "kind": "pc", "cert": cert, "addrs": addrs, "port": int(port),
-                   "proto": PROTO, "words_sync": bool(words_sync)}
+                   "proto": PROTO, "words_sync": bool(words_sync),
+                   "history_sync": bool(history_sync)}
             here = [r for r in kept.get("rows") or [] if str(r.get("id") or "") == mine]
             opened = _open_rows(key, uid, here, set())
             if opened and opened[0]["link"] == row:

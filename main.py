@@ -3699,7 +3699,8 @@ class App:
         try:
             phone_mod.publish(port=self.phone_door.port or self.cfg.server.phone_port,
                               listening=self._phone_listening(),
-                              words_sync=privacy.allowed("settings_sync"))
+                              words_sync=privacy.allowed("settings_sync"),
+                              history_sync=privacy.allowed("history_sync"))
         except Exception as e:                               # noqa: BLE001
             log.debug("this PC's row did not go out (%s)", type(e).__name__)
 

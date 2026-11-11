@@ -427,6 +427,9 @@ def _row(event, ident: str) -> dict:
         tags.append({"t": event.label})
     if event.phone:
         tags.append({"t": "From the phone", "g": "phone"})
+    if event.cloud and not any(b.strip().startswith("from ") for b in (event.note or "").split("   ·   ")):
+        # a phone's dictation the cloud carried (PHONE_LINK_PLAN.md 2b), its phone unnamed
+        tags.append({"t": "From the cloud", "g": "globe"})
     if event.polished:
         tags.append({"t": "Polished", "g": "pip"})
     # a discarded row's note is its text (it has no other), not a tag
@@ -435,7 +438,12 @@ def _row(event, ident: str) -> dict:
         bit = bit.strip()
         if not bit:
             continue
-        if bit.startswith("from "):
+        if bit.startswith("from ") and event.cloud:
+            # One tag for a phone's dictation the cloud carried: "Dana's phone · cloud".
+            # Two ("From Dana's phone", "From the cloud") cut each other to "From …" in
+            # the row's narrow column (photographed 2026-11-11).
+            tags.append({"t": f"{bit[5:]} · cloud", "g": "globe"})
+        elif bit.startswith("from "):
             tags.append({"t": _cap(bit), "g": "laptop"})
         else:
             tags.append({"t": _cap(bit)})

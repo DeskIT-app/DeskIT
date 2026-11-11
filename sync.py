@@ -280,6 +280,13 @@ HISTORY_KINDS: tuple[str, ...] = ("dictation", "translate", "punctuate",
                                   "lookup", "learned")
 HISTORY_BATCH = 500
 TEXT_MAX = 4000
+#: The ``source`` a phone seals into a history row when the cloud backup
+#: carried the dictation (PHONE_LINK_PLAN.md stage 2b): what was said, its
+#: recording deleted on the phone, the text alone sent on to the PCs.
+CLOUD_SOURCE = "phone-cloud"
+#: How such a row's engine reads in a REMOTE line, ahead of the engine:
+#: ``cloud:groq``. history.py takes it off again and marks the row.
+CLOUD_ENGINE = "cloud:"
 
 
 def _stamped(events):
@@ -357,13 +364,17 @@ def remote_line(row: dict, device_name: str) -> str:
     the text's newlines kept (a continuation line is the format's own).
     A learned row's text is written ``<raw> || <text>`` — what was shown
     and what it was fixed to, the CORRECTED line's shape — so the pair
-    reaches the Corrections page's Lately list on this PC too."""
+    reaches the Corrections page's Lately list on this PC too. A phone's
+    dictation the cloud carried (``source`` CLOUD_SOURCE) has its engine
+    written ``cloud:<engine>``, so the Said page can say so."""
     when = _parse_iso(row.get("ts")) or datetime.now(timezone.utc)
     local = when.astimezone()
     stamp = local.strftime("%Y-%m-%d %H:%M:%S") + f",{local.microsecond // 1000:03d}"
     kind = str(row.get("kind") or "dictation")
     device = re.sub(r"\s*\|\s*", " ", str(device_name or "another PC")).strip()[:40]
     engine = re.sub(r"\s*\|\s*", " ", str(row.get("engine") or "")).strip()
+    if row.get("source") == CLOUD_SOURCE:
+        engine = CLOUD_ENGINE + engine
     seconds = row.get("seconds")
     secs = f"{float(seconds):.1f}s" if seconds is not None else ""
     text = str(row.get("text") or "")
