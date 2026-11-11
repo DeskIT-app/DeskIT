@@ -48385,8 +48385,10 @@ def test_the_relay_takes_a_sealed_recording_from_a_phone_of_the_account_once():
     for p in b.recording(wav, "d" * 32, frm=stranger):              # not a phone of the account
         b.relay.heard(p)
     b.relay.heard(b.piece({"k": "ping"}, rid="d" * 32, to="*", frm=b.FORGOTTEN))   # forgotten
+    counted = dict(b.relay.counts)
     for p in b.recording(wav, "e" * 32, to=b.OTHER_PC):             # another PC's
         b.relay.heard(p)
+    assert b.relay.counts == counted, f"another PC's pieces were opened here: {b.relay.counts}"
     for p in b.recording(wav, "f" * 32, key=os.urandom(32)):        # not the account's key
         b.relay.heard(p)
     time.sleep(0.3)

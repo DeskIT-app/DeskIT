@@ -234,6 +234,37 @@ def flow_lands():
         cloud.stop()
 
 
+def flow_timing():
+    """Release to text through the account by length, the PC's model answering at once:
+    what the relay itself costs, on the emulator's loopback network. A real phone's
+    uplink adds the pieces' upload (about 128 KB for every 3 s spoken)."""
+    acct = fa.fresh(backup="off")
+    pc = None
+    try:
+        fd.real_join(acct)
+        fb.away(acct._door_pc)
+        pc = RelayPc(acct).up()
+        fd.field()
+        until(keyboard_sees_pc, 20)
+        # a swipe longer than drive.shell's 60 s would be cut by its timeout
+        for seconds in (2.6, 10.0, 25.0, 45.0):
+            before = len(released_ms("relay"))
+            fd.hold_and_say(seconds)
+            check(f"{seconds:.0f} s: the PC's text through the account",
+                  until(lambda: len(released_ms("relay")) > before, 60), fd.status())
+            took = released_ms("relay")[before:]
+            TIMES[f"relay, {seconds:.0f} s spoken"] = took
+            print(f"      {seconds:.0f} s spoken: release to text {took} ms, "
+                  f"{len(pc.heard[-1]) if pc.heard else 0} bytes", flush=True)
+        print(f"      the account counted {acct.realtime}", flush=True)
+    finally:
+        if pc is not None:
+            pc.down()
+        fb.home_again()
+        acct._door_pc.down()
+        acct.stop()
+
+
 def flow_pc_off():
     """Away from home, the PC off: nobody answers through the account, the cloud takes
     it about a second later, as stage 2b did."""

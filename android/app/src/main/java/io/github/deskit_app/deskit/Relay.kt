@@ -138,7 +138,8 @@ object Relay {
         val url = Account.base(app).replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") +
             "/realtime/v1/websocket?vsn=1.0.0"
         val ws = try {
-            Ws.open(url, mapOf("apikey" to Account.PUBLISHABLE_KEY, "User-Agent" to "deskit-android"),
+            // named, as Cloud's requests are: Cloudflare stands in front of the account too
+            Ws.open(url, mapOf("apikey" to Account.PUBLISHABLE_KEY, "User-Agent" to Cloud.userAgent(app)),
                     JOIN_MS.toInt())
         } catch (e: IOException) {
             Log.i("DeskIT", "relay: the account's channel did not open (${e.javaClass.simpleName})")
@@ -275,13 +276,19 @@ object Relay {
      */
     fun view(c: Context, since: Long, now: Long = SystemClock.elapsedRealtime()): View {
         if (!usable(c)) return View(Road.Relay.OFF)
+        // the asking began at the press, or later if this dictation was asked about later
+        // (the door from a moment ago failed after a long dictation): its own second
+        val begun = if (lastTry >= since) lastTry else since
         val l = line
         if (l == null || !l.alive) {
             // no socket: one on its way, one that did not come, or nobody asked
-            if (opening?.isAlive == true) return View(if (now - since < JOIN_MS) Road.Relay.ASKING else Road.Relay.NOBODY)
+            if (opening?.isAlive == true) return View(if (now - begun < JOIN_MS) Road.Relay.ASKING else Road.Relay.NOBODY)
             return View(if (lastTry > 0 && lastTry >= since - JOIN_MS) Road.Relay.NOBODY else Road.Relay.OFF)
         }
-        val fresh = l.pongs.values.filter { now - it.at < PONG_FRESH_MS }
+        // Once this dictation's own ping went, only an answer to it counts: a PC that said
+        // "here" a minute ago and went away since would cost a stalled send and 8 s.
+        val current = l.pingAt >= begun - 50
+        val fresh = l.pongs.values.filter { now - it.at < PONG_FRESH_MS && (!current || it.at >= l.pingAt) }
         fresh.filter { it.ready }.maxByOrNull { it.at }?.let { return View(Road.Relay.READY, it.pc) }
         fresh.maxByOrNull { it.at }?.let { return View(Road.Relay.BUSY, it.pc, it.why) }
         if (l.joinedAt == 0L) return View(if (now - l.askedAt < JOIN_MS) Road.Relay.ASKING else Road.Relay.NOBODY)
@@ -289,7 +296,7 @@ object Relay {
         val asked = maxOf(l.pingAt, l.joinedAt)
         if (now - asked < Road.ASK_MS) return View(Road.Relay.ASKING)
         // a ping for this dictation still to go (the ask's thread is on its way)
-        if (l.pingAt < since && opening?.isAlive == true && now - since < JOIN_MS) return View(Road.Relay.ASKING)
+        if (!current && opening?.isAlive == true && now - begun < JOIN_MS) return View(Road.Relay.ASKING)
         return View(Road.Relay.NOBODY)
     }
 
