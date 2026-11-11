@@ -302,9 +302,10 @@ is stage 2b's, a few minutes each. M4, M11 and M13 are checked while stage 1 is 
 | M13 | He, 2 min | The second router's uplink unplugged, mobile data on: does the keyboard still reach the PC over Wi-Fi | Whether "no internet needed" is true on his phone (stage 1, the bound Wi-Fi network) |
 | M14 | Done 2026-11-06 | A phone (Kotlin, no library) and a page (WebCrypto only) joining the lock against the real `vault.py`: same code on both sides, the key out of the hand-over, a vault row opened, an edit the PC could read. Not run: a removal, and the code as stage 1 changes it; test vectors hold both | The whole account road of stages 1, 2b and 4 (§1) |
 | M15 | He and I, with his yes | One real Hebrew clip from the phone through his Groq key, the free tier's real limits read off his console, `language` set and unset, and a real POST from a browser origin (the preflight already passes) | Stage 2b's words and the web page's backup |
-| M17 | Done 2026-11-07 | The whole join on the real project, his S26 and his Dev copy: the request reached Home through the account's channel, Approve on the PC and Same code on the phone, the PC's row went out, and the door opened for one phone. What it found: the phone listed 16 dead rows beside the live PC (installs and resets of September and October, no `link`, no `session_id`), a Hebrew device name turned the join card's title around, and the code was not on the phone's Home. The first went to `phone-keyboard-door`, the second is fixed, the third waits for a picture | Stage 1's account road works on a real phone. The keyboard on that road is the next lane |
+| M17 | Done 2026-11-07 | The whole join on the real project, his S26 and his Dev copy: the request reached Home through the account's channel, Approve on the PC and Same code on the phone, the PC's row went out, and the door opened for one phone. What it found: the phone listed 16 dead rows beside the live PC (installs and resets of September and October, no `link`, no `session_id`), a Hebrew device name turned the join card's title around, and the code was not on the phone's Home. The first and the third were built on `phone-keyboard-door` (the dead rows, `7cb05cc`; the code on Home, `425f8f0`), and the second is fixed | Stage 1's account road works on a real phone. The keyboard on that road is the next lane |
 | M16 | Done 2026-11-06 | The Google sign-in on his S26 (Android 17, SDK 37), debug build: the browser, the return through `deskit://auth`, a session sealed on the phone. The join's code in 146 ms. The client key made in 9 ms, signing in 4 ms, in secure hardware, unlocked only | Stage 1's first step stands. `deskit://auth` is on the project's allowed list |
-| M18 | Done 2026-11-09 | The keyboard on the home road, his S26 and his Dev copy. `phone-keyboard-door`'s APK installed over the M17 build. On its first open the phone's client certificate changed once (§12: a phone's `cert` can change under one id); the row went out with `changed: devices`, and the PC took the new certificate at once: its door saw the old one, then two minutes later the new. A dictation in a chat app came through the door, and the PC's `seen` marks the new certificate `dictated`. In his words, faster than before. On the way: the old package's keyboard is called DeskIT too and still names Tailscale, so the switcher showed one DeskIT until Home's `Turn the keyboard on` step was done | Stage 1's keyboard road works on a real phone at home. Left: M13, and a dictation with the PC off |
+| M18 | Done 2026-11-09 | The keyboard on the home road, his S26 and his Dev copy. `phone-keyboard-door`'s APK installed over the M17 build. On its first open the phone's client certificate changed once (§12: a phone's `cert` can change under one id); the row went out with `changed: devices`, and the PC took the new certificate at once: its door saw the old one, then two minutes later the new. A dictation in a chat app came through the door, and the PC's `seen` marks the new certificate `dictated`. In his words, faster than before. On the way: the old package's keyboard is called DeskIT too and still names Tailscale, so the switcher showed one DeskIT until Home's `Turn the keyboard on` step was done | Stage 1's keyboard road works on a real phone at home. Left: M13; the PC-off road is M19 |
+| M19 | Done 2026-11-11 | The waiting row by hand, his S26 (the APK of `a7bc6b3`) and his Dev copy, one step at a time, each also read off the PC's `seen` and `app.log`. Wi-Fi off, a dictation: nothing pasted, "Your phone isn't on Wi-Fi" with Send again and the X, and a press shows "Sending…" and comes back. The Wi-Fi turned on under the open keyboard: the row turns to "Not sent" by itself. Send again: the text at the cursor, `dictated` moves. Dictated off the Wi-Fi, the keyboard put away, the Wi-Fi back for a minute: nothing reached the PC; a field in another app then offered it, and Send again landed it there. The X: gone, never at the PC. Stop in the desk: "The model is off on your PC", the PC's log has the refusal; Start, Send again, landed. Not by hand: the hour | The dictation that did not reach the PC is his to send, on a real phone. His word: works |
 
 M1, M2 and M10 take him five minutes and decide stage 3. They do not hold up stages 1, 2 and 2b.
 
@@ -535,9 +536,14 @@ every new network Public unless told otherwise, so most strangers will be there 
   Wi-Fi is in the foreground and `EPERM` on bind once Android has put it in the background; with both, the door either
   way. No request for the network is needed. Whether his phone puts such a Wi-Fi in the background is M13.
 - **The spool.** Today the audio is one in-memory slot: the next dictation overwrites it and a killed process loses it.
-  Every recording goes to app-private storage until a PC has it: capped (50 MB, oldest first, with a notice), kept 7
-  days, sent on the next link, and a text that returns to a field that is gone lands in Said with a notification. A
-  dictation the cloud key answered stays too, for the PC (stage 2b). This is what "the recording stays safe" means
+  Every recording goes to app-private storage until a PC has it, so a process killed mid-send loses nothing. One that
+  does not reach a PC waits on the keyboard, an hour at most, with why in a few words, **Send again** and an X. It goes
+  only on that press, into the field the person is in then, and nothing is ever sent in the background (his answers,
+  2026-11-10). When nobody answered and the phone is on no Wi-Fi or Ethernet (a VPN's network not counted, no pasted
+  line), the words are "Your phone isn't on Wi-Fi" (his ask, the same day): decided when the row is drawn, and drawn
+  again when a Wi-Fi or Ethernet comes or goes, so they are never a fact of a network the phone has left. A sweep that
+  only deletes keeps the hour, and 50 MB is a net that says nothing. A dictation the cloud key answered stays too, for
+  the PC (stage 2b, whose road back is open: see there). This is what "the recording stays safe" means
   everywhere in this plan.
 - `SettingsActivity.kt`: the account, the devices it sees with **Forget**, a device asking to join, **Sign out**, and the
   URL and token fields behind "Other ways" until stage 6.
@@ -701,7 +707,9 @@ days to investigate abuse or reliability. That is why it is a backup and never t
 
 **What it does not do at that moment.** No repair pass, no learned words, no second reading. The recording stays in
 the spool (stage 1) and goes to the PC when it is back, as `source: "phone-cloud"`, so `transcripts.log`, the second
-reading and the learning still see it.
+reading and the learning still see it. **Open, his to decide before this is built:** since 2026-11-10 nothing leaves
+the phone in the background and a recording waits an hour at most, on his press. So whether a dictation the cloud
+already answered goes to the PC later by itself, and how long it waits for one, is his word, not this paragraph's.
 
 **"Everything", his word.** Dictation first. Punctuate, translate and lookup from the same key are text, and a second
 small step: they need Groq's reasoning-model handling (AGENTS.md, the trap) and punctuation's letter-for-letter check
@@ -1057,7 +1065,7 @@ Every way this can fail that we could think of, with what happens. "Stage" says 
 
 | Hole | What happens | Answer |
 |---|---|---|
-| The PC is off or asleep | Nothing can answer; Tailscale could not either | Stage 2b's key about a second later, unless turned off; otherwise the spool holds the recording until the PC is back, and the keyboard says so before he speaks (`checkHealth` already does) |
+| The PC is off or asleep | Nothing can answer; Tailscale could not either | Stage 2b's key about a second later, unless turned off; otherwise the recording waits on the keyboard, an hour at most, with why and Send again, and the keyboard says so before he speaks (`checkHealth` already does) |
 | Hibernate or sleep at home | `awake.py` already holds the machine awake while the app runs | Wake-on-LAN from the phone is possible at home only, and only where the machine supports it: later, if he asks |
 | DeskIT is not running | Same as off | Start with Windows covers it; nothing more |
 | Model off / loading / unloading | `MODEL_OFF_WORDS` comes back as a typed error | The keyboard shows it; a **Start the model** button on the phone is small work over the existing `load` verb, on request |
@@ -1136,9 +1144,9 @@ Every way this can fail that we could think of, with what happens. "Stage" says 
 
 | Hole | Answer |
 |---|---|
-| The person has no key | The setup line offers one; otherwise the plain message, and the recording waits in the spool |
-| The free quota runs out, or the key is revoked | Groq's error in plain words; the recording waits |
-| No internet at all | Nothing can run; the recording waits (only stage 5 would help) |
+| The person has no key | The setup line offers one; otherwise the plain message, and the recording waits on the keyboard, an hour at most |
+| The free quota runs out, or the key is revoked | Groq's error in plain words; the recording waits on the keyboard, an hour at most |
+| No internet at all | Nothing can run; the recording waits on the keyboard, an hour at most (only stage 5 would help) |
 | The PC is only slow, not gone | The link is up, so the keyboard waits for the PC; only silence on the link moves it to the key |
 | Both answer | The first wins; the second is dropped, and the text never lands twice |
 | The person never meant audio to leave | It is shown once at setup and on every such dictation, and one switch stops it |
