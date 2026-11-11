@@ -316,6 +316,51 @@ def flow_no_key_pc_off():
         acct.stop()
 
 
+def flow_pc_goes_midway():
+    """The PC answered the ping and then went, right after the release: the pieces go up
+    to nobody. With a key the cloud takes the same recording once the relay is quiet;
+    without one it waits on the phone. Nothing is lost and nothing lands twice."""
+    for keyed in (True, False):
+        acct = fa.fresh(backup="on")
+        cloud = fb.cloud_up()
+        pc = None
+        try:
+            if keyed:
+                acct.put_key("groq", fb.KEY)
+            fd.real_join(acct)
+            fb.away(acct._door_pc)
+            pc = RelayPc(acct).up()
+            fd.field()
+            until(keyboard_sees_pc, 20)
+            gone = threading.Event()
+
+            def go_when_released():
+                # the moment the first piece of the recording reaches the PC's lane
+                until(lambda: pc.relay.counts.get("ping", 0) >= 1, 30, 0.05)
+                pc.on = False
+                gone.set()
+            threading.Thread(target=go_when_released, daemon=True).start()
+            fd.hold_and_say(10.0)
+            check(f"{'a key' if keyed else 'no key'}: the PC went before it took anything", gone.wait(5) and pc.heard == [],
+                  str(pc.relay.counts))
+            if keyed:
+                check("the cloud's text lands", until(lambda: fb.HEARD in fd.in_field(), 40), fd.in_field()[:200])
+                check("once", fd.in_field().count(fb.HEARD) == 1 and len(cloud.asked("transcriptions")) == 1,
+                      str(len(cloud.asked("transcriptions"))))
+                check("and nothing waits", until(fd.spool_empty, 10), fd.spooled())
+            else:
+                check("no key: the recording waits, nothing lost",
+                      until(lambda: "waiting=1" in fd.spooled(), 40), fd.spooled())
+                check("and nothing went to the cloud", cloud.asked() == [], str(cloud.asked()))
+        finally:
+            if pc is not None:
+                pc.down()
+            fb.home_again()
+            acct._door_pc.down()
+            acct.stop()
+            cloud.stop()
+
+
 def flow_no_account_channel():
     """Off the Wi-Fi, and the account's channel cannot be reached either: then the Wi-Fi
     is what to fix, and the line keeps his words of 2026-11-10."""

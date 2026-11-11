@@ -220,7 +220,7 @@ FORGOTTEN_HOOKS: list = []
 #: Called with the payload (a dict) of every ``link`` broadcast from another
 #: device: the sealed relay a phone away from home talks to this PC through
 #: (relay.py, PHONE_LINK_PLAN.md stage 3). Never on the socket's read loop:
-#: a thread of their own takes them in order (``_link_loop``), so a ping is
+#: a lane of their own takes them in order (``_links``), so a ping is
 #: answered while a pull is still running, and a hook may take a moment.
 LINK_HOOKS: list = []
 #: The event the relay rides on the account's topic.
