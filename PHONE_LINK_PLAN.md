@@ -802,7 +802,11 @@ one of its own in Kotlin (RFC 6455 by hand, as `net.py`'s), and the WebView wait
 piece (3 s), 128,385 bytes on the wire, the cap 256 KB. A ping while the person speaks, answered with no model; at the
 release the pieces go three at a time, each acknowledged by the server; the PC says it took them, then sends the text.
 Emulator, Android 14, against a fake account that speaks Realtime and the real `sb.py`, `relay.py`, `server.py`,
-`phone.py` on this PC: release to text 846, 464 and 429 ms for three 2.6 s dictations (the fake's model answers at once).
+`phone.py` on this PC, the PC's model faked to answer at once, so this is the relay's own cost: release to text 786 ms
+for 2.6 s spoken, 557 ms for 10 s, 580 ms for 25 s, 728 ms for 45 s (a PC's "here" from the press re-checked at the
+release) and 1,015 ms for 75 s (a new socket at the release: the old one's idle minute had passed). The emulator's
+uplink is the host's loopback; a phone's real one adds the upload, about 128 KB for every 3 s spoken, and the PC adds
+its decode, as at home. Streaming while the person speaks (stage 2) is what takes the upload out of a long dictation.
 
 **The relay's real budget, read 2026-11-11** (Supabase's limits, pricing and usage pages): Free has 256 KB a broadcast,
 100 messages a second for the project, 200 concurrent connections, **2 million messages** a month, each broadcast
