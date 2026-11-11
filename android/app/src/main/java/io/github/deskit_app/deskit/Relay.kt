@@ -258,7 +258,11 @@ object Relay {
 
     private fun close(l: Line, why: String) {
         l.failed = true
-        l.ws.close()
+        // Never on the caller's thread: the keyboard hiding and every road out of the
+        // account come here on the main thread, where Android refuses a socket's write
+        // (NetworkOnMainThreadException), and the keyboard died with it (flow_door's
+        // small_phone, 2026-11-12: a change of screen density hides and shows it).
+        thread(name = "relay-close") { l.ws.close() }
         if (line === l) line = null
         Log.i("DeskIT", "relay: the socket closed ($why)")
         lastClosed = l

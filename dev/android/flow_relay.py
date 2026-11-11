@@ -225,6 +225,18 @@ def flow_lands():
         fb.is_clean(fb.KEY)
         log = fa.log_so_far()
         check("the keyboard's log names no device and no key", acct.pc_id not in log and acct.uid not in log)
+        # The keyboard hidden and shown again with the socket open, as a change of the
+        # screen's density does it: the socket closes off the main thread (a close on it
+        # was a NetworkOnMainThreadException, and the keyboard died, 2026-11-12).
+        alive = drive.pid()
+        drive.adb("logcat", "-b", "crash", "-c", check=False)
+        drive.shell("wm", "density", "540")
+        time.sleep(3)
+        drive.shell("wm", "density", "reset")
+        time.sleep(3)
+        check("the keyboard hid and came back with the socket open: nothing died",
+              drive.pid() == alive and PKG not in drive.crashes() and until(lambda: "status=null" not in fd.status(), 15),
+              (drive.crashes() or fd.status())[-300:])
         fa.back()                                # the keyboard down
         fa.back()                                # and the field gone
         fb.home_afresh()

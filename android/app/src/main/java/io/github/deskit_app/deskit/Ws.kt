@@ -211,15 +211,18 @@ class Ws private constructor(private val socket: Socket, private val input: Inpu
     /** The next message, or null after [timeoutMs]; [GONE] once the socket went. */
     fun next(timeoutMs: Long): String? = messages.poll(timeoutMs, TimeUnit.MILLISECONDS)
 
+    /** The close frame and the socket shut. Network: never on Android's main thread. */
     fun close() {
         if (closed) return
         try {
             write(0x8, byteArrayOf(0x03, 0xe8.toByte()))
         } catch (e: IOException) {
             // gone already
+        } catch (e: RuntimeException) {
+            // a platform that refuses the write here (the main thread): the socket still goes
         }
         closed = true
-        try { socket.close() } catch (e: IOException) {}
+        try { socket.close() } catch (e: IOException) {} catch (e: RuntimeException) {}
     }
 }
 
