@@ -146,14 +146,20 @@ internal fun relayChecks(check: (String, Boolean) -> Unit) {
     // ---- the pieces, against the real relay.py ----
     val key = ByteArray(32) { it.toByte() }
     val V = RelayVectors
-    val text = RelayWire.open(key, V.UID, mapOf("device" to V.PC, "to" to V.PHONE, "rid" to V.RID,
-                                                "n" to 2L, "s" to V.TEXT_S))
+    val text = try {
+        RelayWire.open(key, V.UID, mapOf("device" to V.PC, "to" to V.PHONE, "rid" to V.RID,
+                                         "n" to 2L, "s" to V.TEXT_S))
+    } catch (e: RelayWire.Refused) {
+        null
+    }
     @Suppress("UNCHECKED_CAST")
-    val body = text.head["body"] as Map<String, Any?>
-    check("the PC's text opens here, Hebrew and quotes whole",
-          text.kind == "text" && text.head["status"] == 200L && body["text"] == "שלום \"מהדרך\"" &&
-              body["seconds"] == 4.5 && body["backend"] == "local")
-    check("and reads as /transcribe's answer", RelayWire.answer(text).first == 200)
+    val body = text?.head?.get("body") as? Map<String, Any?> ?: emptyMap()
+    check("the PC's text, sealed by the real relay.py, opens here, Hebrew and quotes whole",
+          text != null && text.kind == "text" && text.head["status"] == 200L &&
+              body["text"] == "שלום \"מהדרך\"" && body["seconds"] == 4.5 && body["backend"] == "local")
+    check("and reads as /transcribe's answer", text != null && RelayWire.answer(text).first == 200)
+    check("a piece over the broadcast cap is refused, never sent to be refused there",
+          refused { RelayWire.seal(key, V.UID, V.PHONE, V.PC, V.RID, 0, RelayWire.audioHead(), ByteArray(200_000)) })
     val ping = RelayWire.seal(key, V.UID, V.PHONE, RelayWire.EVERY_PC, V.RID, 0, RelayWire.pingHead(),
                               nonce = ByteArray(12) { (30 + it).toByte() })
     check("the phone's ping is relay.py's, byte for byte", parsed(ping)["s"] == V.PING_S)
