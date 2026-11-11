@@ -217,6 +217,14 @@ ACCOUNT_HOOKS: list = []
 #: certificate: the list never lets the old one back). A forgotten PC
 #: may still hold a session, so SIGNED_OUT_HOOKS do not cover this.
 FORGOTTEN_HOOKS: list = []
+#: Called with the payload (a dict) of every ``link`` broadcast from another
+#: device: the sealed relay a phone away from home talks to this PC through
+#: (relay.py, PHONE_LINK_PLAN.md stage 3). Never on the socket's read loop:
+#: a thread of their own takes them in order (``_link_loop``), so a ping is
+#: answered while a pull is still running, and a hook may take a moment.
+LINK_HOOKS: list = []
+#: The event the relay rides on the account's topic.
+LINK_EVENT = "link"
 
 
 def configure(ref: str | None = None, key: str | None = None) -> None:
@@ -1951,6 +1959,28 @@ def _broadcast(stores: list[str] | None = None, *, event: str = "changed",
         log.debug("live: no broadcast (%s)", e)
 
 
+def send_link(payload: dict) -> bool:
+    """One piece of the sealed relay on the account's topic, under the
+    purpose ``link``, so net.py asks the account's gate for every one
+    (relay.py). ``payload`` is already sealed: who it is from (this
+    device), who it is for, the request and the piece, and the sealed
+    bytes; nothing here can read it. True when the server took it."""
+    try:
+        uid = _fresh()["user"]["id"]
+        status, _h, body = net.post_json(
+            f"{base_url()}/realtime/v1/api/broadcast", "link",
+            {"messages": [{"topic": LIVE_TOPIC.format(uid=uid), "event": LINK_EVENT,
+                           "private": True, "payload": payload}]},
+            secret=SESSION_NAME, timeout_s=TIMEOUT_S)
+    except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
+        log.info("link: not sent (%s)", type(e).__name__)
+        return False
+    if status not in (200, 202):
+        log.info("link: the server answered %s (%s)", status, _server_said(status, body))
+        return False
+    return True
+
+
 def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
              after_pass: bool = False) -> dict:
     """One pass over everything the gates allow — or, with ``only``, over
@@ -2336,6 +2366,86 @@ _live_stop = threading.Event()
 _live_state: dict = {"on": False, "error": "", "asked": False}
 
 
+class _Lane:
+    """Work the socket's read loop hands on, done in order on a thread of
+    its own, so the loop goes straight back to reading. Until stage 3 the
+    loop ran every pull inline, and a ping landing during one waited for
+    the whole pass: the phone had gone to its cloud key by then
+    (PHONE_LINK_PLAN.md stage 3). Never raises; a job that trips is a
+    debug line and the next one runs."""
+
+    def __init__(self, name: str) -> None:
+        import queue
+        self.name = name
+        self._jobs: "queue.Queue" = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._start = threading.Lock()
+
+    def put(self, job) -> None:
+        self._jobs.put(job)
+        with self._start:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, daemon=True, name=self.name)
+                self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            job = self._jobs.get()
+            try:
+                job()
+            except Exception:                                # noqa: BLE001
+                log.debug("%s: a job tripped", self.name, exc_info=True)
+
+    def idle(self, timeout_s: float = 5.0) -> bool:
+        """Tests: True once every job handed on so far has run."""
+        done = threading.Event()
+        self.put(done.set)
+        return done.wait(timeout_s)
+
+
+#: The account's work the live socket heard of: pulls, account passes, the
+#: requests to join. One lane, so they keep the order they came in.
+_pulls = _Lane("account-pull")
+#: The relay's pieces, to LINK_HOOKS: a lane apart from the pulls, so a ping
+#: never waits behind a sync.
+_links = _Lane("account-link")
+#: The stores a broadcast named, not yet pulled: a burst of broadcasts is
+#: one pull of their union.
+_pull_named: set[str] = set()
+_pull_lock = threading.Lock()
+
+
+def _pull_soon(vocab, stores: list[str]) -> None:
+    """Pull ``stores`` on the pull lane; stores already waiting for a pull
+    ride along with it."""
+    with _pull_lock:
+        fresh = not _pull_named
+        _pull_named.update(stores)
+    if not fresh:
+        return
+
+    def pull() -> None:
+        with _pull_lock:
+            named = sorted(_pull_named)
+            _pull_named.clear()
+        if named:
+            sync_now(vocab, reason="live", only=named, push=False)
+    _pulls.put(pull)
+
+
+def _hand_link(what: dict) -> None:
+    """A ``link`` broadcast: to every LINK_HOOKS hook, on the link lane."""
+    payload = dict(what)
+
+    def run() -> None:
+        for hook in list(LINK_HOOKS):
+            try:
+                hook(payload)
+            except Exception:                                # noqa: BLE001
+                log.debug("a link hook tripped", exc_info=True)
+    _links.put(run)
+
+
 def _ask_about_this_session(why: str) -> None:
     """Ask the server about this copy's session NOW, not at the worker's
     next pass: a refused refresh is ``_account_gone`` and the lock. Two
@@ -2437,10 +2547,12 @@ def _live_once(vocab) -> bool:
         _live_state.update(on=True, error="", asked=False, joined=time.monotonic())
         log.info("live: listening on the account's channel")
         if _lock_state.get("state") == "have":
-            try:
-                pending_pairings()
-            except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
-                log.debug("live: the pending requests were not read (%s)", e)
+            def requests() -> None:
+                try:
+                    pending_pairings()
+                except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
+                    log.debug("live: the pending requests were not read (%s)", e)
+            _pulls.put(requests)
         beat = time.monotonic()
         while not _live_stop.is_set():
             if net.offline or _live_purpose() is None or not signed_in():
@@ -2469,22 +2581,34 @@ def _live_once(vocab) -> bool:
             what = inner.get("payload") or {}
             if str(what.get("device") or "") == device_id():
                 continue
+            # Nothing below waits on the network here: the loop goes straight
+            # back to reading, and the work is the lanes' (_Lane).
+            if inner.get("event") == LINK_EVENT:
+                # the sealed relay: a phone away from home (relay.py)
+                _hand_link(what)
+                continue
             if inner.get("event") == "pairing":
                 # another PC of this account asks to join: its request
                 # (and the card) come from the table, not from the event
                 if _lock_state.get("state") == "have":
                     log.info("live: %s asks to join the account", what.get("name") or "another PC")
-                    try:
-                        pending_pairings()
-                    except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
-                        log.info("live: the request could not be read (%s)", e)
+
+                    def requests() -> None:
+                        try:
+                            pending_pairings()
+                        except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
+                            log.info("live: the request could not be read (%s)", e)
+                    _pulls.put(requests)
                 continue
             if inner.get("event") == "paired":
                 req = _lock_state.get("pairing")
                 if req and str(what.get("id") or "") == req["id"]:
                     log.info("live: this PC was approved — taking the key")
-                    account_pass(reason="paired")
-                    sync_now(vocab, reason="paired", after_pass=True)
+
+                    def approved() -> None:
+                        account_pass(reason="paired")
+                        sync_now(vocab, reason="paired", after_pass=True)
+                    _pulls.put(approved)
                 continue
             if inner.get("event") == "signed_out":
                 # another PC signed every PC out (_end_the_others): ask
@@ -2503,14 +2627,21 @@ def _live_once(vocab) -> bool:
                 # phone to exist may ask to join now
                 log.info("live: the account's devices changed")
                 _device_names["at"] = 0.0
-                account_pass(reason="live")
-                if _lock_state.get("state") == "waiting":
-                    _wake.set()
+
+                def devices_changed() -> None:
+                    account_pass(reason="live")
+                    if _lock_state.get("state") == "waiting":
+                        _wake.set()
+                _pulls.put(devices_changed)
             stores = [s for s in named if s in STORES]
             if stores:
-                log.info("live: %s changed on %s — pulling", ", ".join(stores),
-                         _names().get(str(what.get("device") or ""), "another PC") or "another PC")
-                sync_now(vocab, reason="live", only=stores, push=False)
+                sender = str(what.get("device") or "")
+
+                def say_and_pull(stores=stores, sender=sender) -> None:
+                    log.info("live: %s changed on %s — pulling", ", ".join(stores),
+                             _names().get(sender, "another PC") or "another PC")
+                _pulls.put(say_and_pull)
+                _pull_soon(vocab, stores)
         ws.close()
     except Exception:
         ws.close("dropped")

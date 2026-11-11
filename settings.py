@@ -607,6 +607,11 @@ TABS: tuple[Tab, ...] = (
             Friendly("server.enabled", "Dictate from the phone",
                      "Your phone sends what you say to this PC, and the "
                      "words come back to it."),
+            Friendly("server.away", "Also from outside home",
+                     "Away from home, your phone reaches this PC through "
+                     "your account, locked with your account's own key: "
+                     "the server carries only sealed bytes. Off, your "
+                     "phone uses its cloud key or waits."),
         )),
     )),
     Tab(ACCOUNT, (

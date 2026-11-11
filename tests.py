@@ -48245,6 +48245,317 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
         shutil.rmtree(d, ignore_errors=True)
 
 
+class _RelayBench:
+    """relay.Relay with every callable faked and the real seal: one account,
+    one PC (``me``), one phone of it (``phone``), a forgotten one, and what
+    went out (``sent``, each piece opened back as the phone would)."""
+
+    UID = "11111111-2222-3333-4444-555555555555"
+    ME = "aaaaaaaa-0000-4000-8000-000000000001"
+    PHONE = "bbbbbbbb-0000-4000-8000-000000000002"
+    OTHER_PC = "cccccccc-0000-4000-8000-000000000003"
+    FORGOTTEN = "dddddddd-0000-4000-8000-000000000004"
+
+    def __init__(self, **over):
+        import net as net_mod
+        import relay
+        self.relay_mod = relay
+        self.key = os.urandom(32)
+        self.sent: list[dict] = []
+        self.heard: list[tuple[bytes, object]] = []
+        self.why: str | None = None
+        self.on = True
+        self.now = time.time()
+        self.peer = net_mod.Peer("f" * 64, "Pixel")
+        self.answer = (200, {"text": "שלום מהדרך", "seconds": 4.5, "backend": "local"})
+        self.done = threading.Event()
+
+        def transcribe(wav, peer):
+            self.heard.append((wav, peer))
+            self.done.set()
+            return self.answer
+        args = dict(who=lambda: (self.UID, self.ME), key=lambda uid: self.key if uid == self.UID else None,
+                    phones=lambda: {self.PHONE: self.peer}, can_take=lambda: self.why,
+                    allowed=lambda: self.on, send=self._send, transcribe=transcribe,
+                    clock=lambda: self.now)
+        args.update(over)
+        self.relay = relay.Relay(**args)
+
+    def _send(self, payload):
+        self.sent.append(payload)
+        return True
+
+    def piece(self, head, body=b"", *, n=0, rid="0" * 32, frm=None, to=None, key=None):
+        return self.relay_mod.seal(key or self.key, self.UID, frm or self.PHONE, to or self.ME,
+                                   rid, n, head, body)
+
+    def recording(self, wav, rid, *, frm=None, to=None, key=None, at=None):
+        """Every piece of one recording, as the phone sends them."""
+        import hashlib
+        step = self.relay_mod.FRAME_BYTES
+        chunks = [wav[i:i + step] for i in range(0, len(wav), step)]
+        out = [self.piece({"k": "audio"}, c, n=i, rid=rid, frm=frm, to=to, key=key)
+               for i, c in enumerate(chunks)]
+        out.append(self.piece({"k": "end", "frames": len(chunks), "bytes": len(wav),
+                               "sha256": hashlib.sha256(wav).hexdigest(),
+                               "at": int((self.now if at is None else at) * 1000)},
+                              n=len(chunks), rid=rid, frm=frm, to=to, key=key))
+        return out
+
+    def opened(self, payload):
+        """A piece this PC sent, opened the way the phone opens it."""
+        return self.relay_mod.open_(self.key, self.UID, payload)
+
+
+def _relay_wav(seconds: float) -> bytes:
+    """A real 16 kHz mono 16-bit WAV of a tone, what the keyboard records."""
+    import numpy as np
+    from recorder import frames_to_wav
+    t = np.arange(int(16000 * seconds)) / 16000.0
+    return frames_to_wav([(np.sin(2 * np.pi * 220 * t) * 8000).astype(np.int16)], 16000)
+
+
+def test_the_relay_takes_a_sealed_recording_from_a_phone_of_the_account_once():
+    """relay.py (PHONE_LINK_PLAN.md stage 3, Q1): a phone away from home pings
+    every PC and this one answers it is there with no model involved; the
+    recording comes in sealed pieces, in any order, is checked whole, handed to
+    the phone door's own route and answered once, sealed, to that phone. Each
+    rule is broken once on purpose: a device that is not a phone of the
+    account, a forgotten one, a piece moved to another place in the request,
+    another sender's or another PC's, a key that is not the account's, a
+    replay, a recording outside the time window, a missing piece, pieces that
+    do not add up, a PC that cannot take it now, and the switch off."""
+    import relay
+    b = _RelayBench()
+    # the piece fits the broadcast cap with room, at the size the phone cuts
+    full = b.piece({"k": "audio"}, os.urandom(relay.FRAME_BYTES), n=0, rid="1" * 32)
+    assert relay.size(full) < relay.PAYLOAD_MAX * 0.6, relay.size(full)
+    try:
+        relay.seal(b.key, b.UID, b.PHONE, b.ME, "1" * 32, 0, {"k": "audio"}, os.urandom(200_000))
+    except relay.Refused:
+        pass
+    else:
+        raise AssertionError("a piece over the broadcast cap was sealed")
+
+    # 1. the ping: answered with no model, to that phone, sealed under its AAD
+    b.relay.heard(b.piece({"k": "ping"}, rid="a" * 32, to="*"))
+    assert len(b.sent) == 1, b.sent
+    pong = b.sent[0]
+    assert pong["device"] == b.ME and pong["to"] == b.PHONE and pong["rid"] == "a" * 32 and pong["n"] == 0
+    head, _ = b.opened(pong)
+    assert head == {"v": 1, "k": "pong", "ready": True}, head
+    assert "שלום" not in json.dumps(pong, ensure_ascii=False)
+    b.relay.heard(b.piece({"k": "ping"}, rid="a" * 32, to="*"))
+    assert len(b.sent) == 1, "the same ping answered twice"
+    # a PC that cannot now says its own words, and the phone knows before the release
+    b.why = "The model is off on your PC."
+    b.relay.heard(b.piece({"k": "ping"}, rid="b" * 32, to="*"))
+    head, _ = b.opened(b.sent[-1])
+    assert head == {"v": 1, "k": "pong", "ready": False, "why": "The model is off on your PC."}, head
+    b.why = None
+
+    # 2. a recording of 10 s: four pieces, sent out of order, taken whole
+    wav = _relay_wav(10.0)
+    pieces = b.recording(wav, "c" * 32)
+    assert len(pieces) == 5
+    sent = len(b.sent)
+    for p in (pieces[2], pieces[0], pieces[3], pieces[1], pieces[4]):
+        b.relay.heard(p)
+    assert b.done.wait(5), "the recording never reached the route"
+    deadline = time.monotonic() + 5
+    while len(b.sent) < sent + 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b.heard[0][0] == wav and b.heard[0][1] is b.peer, "not the recording, or not the phone"
+    took, text = b.sent[sent], b.sent[sent + 1]
+    assert (took["n"], text["n"]) == (relay.N_TOOK, relay.N_TEXT)
+    assert b.opened(took)[0] == {"v": 1, "k": "took"}
+    head, _ = b.opened(text)
+    assert head == {"v": 1, "k": "text", "status": 200, "body": b.answer[1]}, head
+    assert all(p["to"] == b.PHONE and p["device"] == b.ME for p in b.sent)
+
+    # 3. the same request again: a replay is dropped whole
+    for p in pieces:
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.heard) == 1 and b.relay.counts.get("replay"), b.relay.counts
+
+    # 4. nobody else's pieces are opened, and nothing goes back
+    before = (len(b.sent), len(b.heard))
+    stranger = "eeeeeeee-0000-4000-8000-000000000005"
+    for p in b.recording(wav, "d" * 32, frm=stranger):              # not a phone of the account
+        b.relay.heard(p)
+    b.relay.heard(b.piece({"k": "ping"}, rid="d" * 32, to="*", frm=b.FORGOTTEN))   # forgotten
+    for p in b.recording(wav, "e" * 32, to=b.OTHER_PC):             # another PC's
+        b.relay.heard(p)
+    for p in b.recording(wav, "f" * 32, key=os.urandom(32)):        # not the account's key
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert (len(b.sent), len(b.heard)) == before, "a piece that is not this PC's was answered"
+    assert b.relay.counts.get("stranger", 0) >= 2 and b.relay.counts.get("refused", 0) >= 1, b.relay.counts
+
+    # 5. a piece moved: to another place, another request or another sender
+    moved = dict(b.recording(wav, "1" * 32)[0], n=1)
+    other_req = dict(b.recording(wav, "2" * 32)[0], rid="3" * 32)
+    for bad in (moved, other_req):
+        try:
+            relay.open_(b.key, b.UID, bad)
+        except relay.Refused:
+            pass
+        else:
+            raise AssertionError(f"a moved piece opened: {bad['rid']}/{bad['n']}")
+
+    # 6. outside the time window: the phone's own clock, sealed in the end
+    before = len(b.heard)
+    for p in b.recording(wav, "4" * 32, at=b.now - relay.SKEW_S - 60):
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.heard) == before and b.relay.counts.get("stale"), b.relay.counts
+
+    # 7. a missing piece: let go after the straggle, nothing transcribed
+    with _patched(relay, "STRAGGLE_S", 0.2):
+        short = b.recording(wav, "5" * 32)
+        for p in short[:1] + short[2:]:
+            b.relay.heard(p)
+        time.sleep(0.6)
+    assert len(b.heard) == before and b.relay.counts.get("incomplete"), b.relay.counts
+    # pieces that do not add up to what the end says
+    lie = b.recording(wav, "6" * 32)
+    lie[-1] = b.piece({"k": "end", "frames": 4, "bytes": len(wav), "sha256": "0" * 64,
+                       "at": int(b.now * 1000)}, n=4, rid="6" * 32)
+    for p in lie:
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.heard) == before and b.relay.counts.get("corrupt"), b.relay.counts
+
+    # 8. the switch off: nothing is opened or answered
+    b.on = False
+    sent = len(b.sent)
+    b.relay.heard(b.piece({"k": "ping"}, rid="7" * 32, to="*"))
+    for p in b.recording(wav, "8" * 32):
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.sent) == sent and len(b.heard) == before
+
+
+def test_the_live_loop_hands_the_relay_on_and_never_waits_on_a_pull():
+    """sb._live_once (PHONE_LINK_PLAN.md stage 3): a ``link`` broadcast goes to
+    LINK_HOOKS on a thread that is not the socket's, and a pull runs on a lane
+    of its own, so a ping that lands in the middle of a slow pull is answered
+    within it, not after it. A piece of this device's own is never handed on.
+    sb.send_link goes out under the purpose ``link`` on the private topic, and
+    not at all with the account's gate shut."""
+    import net as net_mod
+    import privacy
+    import sb
+    import secretstore
+
+    got: list[tuple[dict, str, float]] = []
+    pulled = threading.Event()
+
+    def slow_pull(*a, **k):
+        pulled.set()
+        time.sleep(3.0)
+        return {}
+
+    def hook(payload):
+        got.append((payload, threading.current_thread().name, time.monotonic()))
+
+    with _fixture_project() as fake, _consented("account", "settings_sync"), \
+            _patched(sb, "LIVE_HEARTBEAT_S", 30.0), _patched(sb, "LIVE_ENABLED", True), \
+            _patched(sb, "sync_now", slow_pull), _patched(sb, "LINK_HOOKS", [hook]):
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        sb._live_stop.clear()
+        mine = sb.device_id()
+        other = "99999999-8888-7777-6666-555555555555"
+        server = _FakeRealtime()
+        try:
+            with _patched(net_mod, "_ws_connect", server.connect):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True,
+                                          name="the-socket")
+                thread.start()
+                assert server.joined.wait(5), "no join"
+                topic = f"realtime:user:{fake.UID}"
+                server.push({"event": "broadcast", "topic": topic, "payload": {
+                    "type": "broadcast", "event": "changed",
+                    "payload": {"stores": ["history"], "device": other}}})
+                assert pulled.wait(5), "the pull never started"
+                t0 = time.monotonic()
+                piece = {"device": other, "to": "*", "rid": "a" * 32, "n": 0, "s": "v1.AAAA"}
+                server.push({"event": "broadcast", "topic": topic, "payload": {
+                    "type": "broadcast", "event": "link", "payload": piece}})
+                server.push({"event": "broadcast", "topic": topic, "payload": {
+                    "type": "broadcast", "event": "link", "payload": dict(piece, device=mine)}})
+                deadline = time.monotonic() + 5
+                while not got and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                assert got, "the link piece never reached its hook"
+                payload, name, at = got[0]
+                assert payload == piece, payload
+                assert at - t0 < 1.0, f"the piece waited {at - t0:.2f} s behind the pull"
+                assert name != "the-socket" and name == "account-link", name
+                time.sleep(0.3)
+                assert len(got) == 1, "this device's own piece was handed on"
+                sb._live_stop.set()
+                thread.join(6)
+        finally:
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+        # sending: the purpose `link`, the private topic, the event, the piece
+        before = len(fake.broadcasts)
+        assert sb.send_link(dict(piece, device=mine)) is True
+        msg = fake.broadcasts[before]["messages"][0]
+        assert msg == {"topic": f"user:{fake.UID}", "event": "link", "private": True,
+                       "payload": dict(piece, device=mine)}, msg
+        assert net_mod.rows()[-1].purpose == "link"
+        privacy.withdraw("account")
+        assert sb.send_link(piece) is False and len(fake.broadcasts) == before + 1
+        assert net_mod.rows()[-1].status == "refused"
+
+
+def test_the_relay_answers_through_the_running_app():
+    """main.App's relay: the phone door's own route, the switch on Settings >
+    Phone (``server.away``) and Dictate from the phone both in front of it, and
+    a ping answered with the app's own words when the model is off or the app
+    is locked."""
+    import main as main_mod
+    import relay
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = config_mod.load_layered()
+    app._stopping = threading.Event()
+    app.LOCK_WORDS = main_mod.App.LOCK_WORDS
+    app.MODEL_OFF_WORDS = main_mod.App.MODEL_OFF_WORDS
+    app.locked = lambda: False
+    app._model_state = "on"
+    with _consented("account"):
+        assert app.cfg.server.away is True, "Also from outside home ships on"
+        assert main_mod.App._relay_allowed(app) is True
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, away=False))
+        assert main_mod.App._relay_allowed(app) is False
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, away=True,
+                                                                          enabled=False))
+        assert main_mod.App._relay_allowed(app) is False, "Dictate from the phone is off"
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, enabled=True))
+    assert main_mod.App._relay_allowed(app) is False, "the account's gate is shut"
+    assert main_mod.App._relay_can_take(app) is None
+    app._model_state = "off"
+    assert main_mod.App._relay_can_take(app) == main_mod.App.MODEL_OFF_WORDS
+    app.locked = lambda: True
+    assert main_mod.App._relay_can_take(app) == main_mod.App.LOCK_WORDS
+    # the setting is drawn on the Phone tab, under its plain words
+    import settings as settings_mod
+    rows = {f.path: (tab.name, f) for tab in settings_mod.TABS for g in tab.groups for f in g.rows
+            if hasattr(f, "path")}
+    assert rows["server.away"][0] == settings_mod.PHONE
+    assert rows["server.away"][1].label == "Also from outside home"
+    # relay.py imports no transport and logs no sealed value
+    src = (REPO / "relay.py").read_text("utf-8")
+    assert not re.search(r"^\s*(import|from)\s+(socket|ssl|urllib|http)", src, re.M)
+    carried = re.findall(r"log\.\w+\(.*?,\s*(sealed|key|wav|text|body|payload|plain)\s*[,)]", src)
+    assert not carried, f"relay.py logs what it carries: {carried}"
+    assert relay.FRAME_BYTES * 4 // 3 + 200 < relay.PAYLOAD_MAX // 2 + 1000
+
+
 def test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second():
     """The hour after Sign out of every PC (measured on the live project
     2026-10-03: the other copy worked 58 minutes on its access token and

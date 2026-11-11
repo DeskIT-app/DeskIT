@@ -919,6 +919,12 @@ class App:
             review_decide=self._review_decide_for_phone,
             lookup=self._lookup_for_phone)
         self.phone_door = server_mod.PhoneDoor(cfg, self.phone.routes)
+        # The phone away from home: the same routes, through the account's
+        # own channel, every piece sealed (relay.py, PHONE_LINK_PLAN.md 3)
+        import relay as relay_mod
+        self.relay = relay_mod.for_app(
+            can_take=self._relay_can_take, allowed=self._relay_allowed,
+            transcribe=lambda wav, peer: self.phone.routes.handle("/transcribe", wav, peer))
         self._doors_lock = threading.RLock()
         # [Not now] on Home's row: until the next start, like a consent's.
         self._phone_no = False
@@ -3520,6 +3526,9 @@ class App:
                 sb.ACCOUNT_HOOKS.append(self._phone_hook)
             if self._phone_forgotten not in sb.FORGOTTEN_HOOKS:
                 sb.FORGOTTEN_HOOKS.append(self._phone_forgotten)
+            # a phone away from home, through the account's channel (relay.py)
+            if self.relay.heard not in sb.LINK_HOOKS:
+                sb.LINK_HOOKS.append(self.relay.heard)
             # the door hears a Forget through the account, so a person who
             # withdraws that consent closes it (_doors)
             privacy.on_change("account", self._doors_soon)
@@ -3668,6 +3677,25 @@ class App:
             if now != seen:
                 seen = now
                 self._doors()
+
+    def _relay_allowed(self) -> bool:
+        """May a phone away from home reach this PC through the account?
+        Dictate from the phone, Also from outside home, and the account's
+        yes; Offline stops it, because nothing goes out then."""
+        server = self.cfg.server
+        return bool(server.enabled and server.away and not self._stopping.is_set()
+                    and privacy.allowed("account"))
+
+    def _relay_can_take(self) -> str | None:
+        """What a ping is answered with, with no model involved: None when a
+        dictation would be taken now, else this PC's own sentence, the one
+        the phone door would answer it with."""
+        locked = getattr(self, "locked", None)
+        if locked is not None and locked():
+            return self.LOCK_WORDS
+        if getattr(self, "_model_state", "on") != "on":
+            return getattr(self, "_model_off_words", self.MODEL_OFF_WORDS)
+        return None
 
     def _phone_listening(self) -> bool:
         """Should a phone try this PC at all? This PC's row names its
