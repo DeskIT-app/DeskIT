@@ -1,7 +1,6 @@
 """The pictures of what the door lane puts on a screen, taken off the real app on the
-emulator with the real door behind it: Home, the keyboard's status line, the
-notification. One of them, the spool's notice, is words that are NOT in the app:
-they are painted onto the real keyboard by the debug probe, for his look first.
+emulator with the real door behind it: Home, the keyboard's status line and what
+waits on it, the notification.
 
     <venv python> dev\\android\\door_shots.py <folder>
 
@@ -22,8 +21,6 @@ import flow_door as fd                           # noqa: E402
 fa, drive = fd.fa, fd.drive
 #: What a PC heard, in the language he speaks.
 HEBREW = "אני בדרך הביתה, אגיע בעוד עשר דקות"
-#: The spool's notice, proposed: not in strings.xml until he has seen it.
-NOTICE = "No room — oldest recording deleted"
 
 
 def shade(name: str) -> None:
@@ -63,15 +60,56 @@ def main() -> None:
         time.sleep(0.5)
         drive.shot("keyboard_landed")
 
+        # A dictation nobody answered: why, Send again, the X.
         pc.down()
         fd.hold_and_say()
-        fd.says(fd.UNREACHED)
+        fa.until(lambda: fd.row_is(fd.NO_ANSWER), 25)
         time.sleep(0.5)
         drive.shot("keyboard_unreached")
 
-        fa.told("--es", "ime", "say:" + NOTICE.replace(" ", "_"))
+        # A press on its way, held at the PC, and the second no it comes back with,
+        # which is the PC's reason as it is now, not the first one's.
+        fd.back_up(pc)
+        pc.hold.clear()
+        pc.arrived.clear()
+        fd.send_again()
+        pc.arrived.wait(20)
         time.sleep(0.5)
-        drive.shot("PROPOSED_keyboard_notice")
+        drive.shot("keyboard_sending")
+        pc.fail = fd.pc_words()["MODEL_OFF_WORDS"]
+        pc.hold.set()
+        fa.until(lambda: fd.row_is("The model is off on your PC"), 25)
+        time.sleep(0.5)
+        drive.shot("keyboard_second_no")
+        pc.fail = None
+
+        # Two, and the keyboard opened later on a new field.
+        pc.down()
+        fd.hold_and_say()
+        fa.until(lambda: fd.row_is("2 not sent · " + fd.NO_ANSWER), 25)
+        time.sleep(0.5)
+        drive.shot("keyboard_two_waiting")
+        fa.back()
+        fa.back()
+        time.sleep(1)
+        fd.field()
+        fa.until(lambda: fd.row()["send"], 15)
+        time.sleep(1)
+        drive.shot("keyboard_opened_later")
+
+        # A 320dp phone, and text one size up.
+        try:
+            for name, density, scale in (("320dp", "540", "1.0"), ("larger_text", "reset", "1.3"),
+                                         ("320dp_larger_text", "540", "1.3")):
+                drive.shell("wm", "density", density)
+                drive.shell("settings", "put", "system", "font_scale", scale)
+                time.sleep(3)
+                fa.until(lambda: fd.row()["send"], 20)
+                time.sleep(1)
+                drive.shot(f"keyboard_{name}")
+        finally:
+            drive.shell("wm", "density", "reset", check=False)
+            drive.shell("settings", "put", "system", "font_scale", "1.0", check=False)
 
         fa.back()
         fa.back()
@@ -81,8 +119,19 @@ def main() -> None:
         time.sleep(0.5)
         drive.shot("home_unreached")
 
-        pc.up()
-        fd.job()
+        # An answer in time, with the keyboard put away: the notification.
+        fa.back()
+        fd.field()
+        fd.drop_waiting()
+        fd.back_up(pc)
+        pc.hold.clear()
+        pc.arrived.clear()
+        fd.hold_and_say()
+        pc.arrived.wait(15)
+        drive.shell("input", "keyevent", "4")
+        drive.shell("input", "keyevent", "4")
+        time.sleep(1.5)
+        pc.hold.set()
         fa.until(lambda: HEBREW in drive.notifications(), 25)
         shade("said_notification")
         print("pictures in", OUT)

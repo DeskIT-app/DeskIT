@@ -166,7 +166,16 @@ class AccountScreens(private val c: Context) {
                 onSame: () -> Unit, onOther: () -> Unit): View = LinearLayout(c).apply {
         orientation = LinearLayout.VERTICAL
         layoutParams = match()
-        addView(Skin.card(c).apply {
+        addView(waitingCard(code, word, pressed, onSame))
+        addView(whose(email, onOther))
+    }
+
+    /**
+     * The code and its press, one card for two screens: this page, and Home's first
+     * row while the join waits. Both presses are [Lock.sameCode] on the code shown.
+     */
+    fun waitingCard(code: String, word: String, pressed: Boolean, onSame: () -> Unit): View =
+        Skin.card(c).apply {
             if (word.isNotEmpty()) addView(LinearLayout(c).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(alert(word))
@@ -178,9 +187,7 @@ class AccountScreens(private val c: Context) {
             if (!pressed) addView(below(Skin.button(c, s(R.string.same_code), primary = true) {
                 onSame()
             }, 14))
-        })
-        addView(whose(email, onOther))
-    }
+        }
 
     fun noLock(email: String, onOther: () -> Unit): View = LinearLayout(c).apply {
         orientation = LinearLayout.VERTICAL

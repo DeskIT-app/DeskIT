@@ -113,6 +113,44 @@ def boot():
     adb("shell", "sh", "-c",
         "'echo _ --disable-fre --no-default-browser-check --no-first-run "
         "> /data/local/tmp/chrome-command-line'", check=False)
+    # Two ways a fresh boot comes up wrong, both met on 2026-11-10. Its lock screen
+    # can still stand (the key above came too early), and a flow that sets a PIN
+    # then leaves the PIN pad over every flow after it. And it can have no route to
+    # the host, "Network is unreachable" from ping and Chrome alike, still five
+    # minutes in: the Wi-Fi off and on cures that, as flow_door's NoInternet knows.
+    if not unlocked():
+        print("the lock screen stayed")
+    if not routed():
+        adb("shell", "svc", "wifi", "disable", check=False)
+        time.sleep(3)
+        adb("shell", "svc", "wifi", "enable", check=False)
+        if not routed():
+            raise SystemExit("booted with no route to the host: boot again")
+
+
+def unlocked(seconds: int = 40) -> bool:
+    """The lock screen dismissed, as far as the image can say: Android 8 has no
+    isKeyguardShowing line, and there the keys above are all there is."""
+    end = time.time() + seconds
+    while time.time() < end:
+        adb("shell", "wm", "dismiss-keyguard", check=False)
+        adb("shell", "input", "keyevent", "82", check=False)
+        time.sleep(2)
+        out = adb("shell", "dumpsys", "window", check=False).stdout or ""
+        if "isKeyguardShowing=true" not in out:
+            return True
+    return False
+
+
+def routed(seconds: int = 60) -> bool:
+    """The host answers a ping from the phone."""
+    end = time.time() + seconds
+    while time.time() < end:
+        out = adb("shell", "ping", "-c", "1", "-W", "2", "10.0.2.2", check=False, timeout=30).stdout or ""
+        if "1 received" in out:
+            return True
+        time.sleep(3)
+    return False
 
 
 def install():

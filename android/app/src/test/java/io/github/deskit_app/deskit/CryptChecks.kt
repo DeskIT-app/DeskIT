@@ -168,9 +168,17 @@ private fun spoolChecks() {
         check("a recording bigger than the cap is never its own victim",
               e.file!!.exists() && small.items() == listOf(e.file))
         check("and took everything older", e.dropped == 3)
-        val gone = SpoolFiles(dir, maxBytes = 1 shl 30, keepMs = 7 * day)
-        check("a day short of the week it stays", gone.prune(t + 7 * day - 1) == 0)
-        check("past the week it goes", gone.prune(t + 8 * day) == 1 && gone.items().isEmpty())
+        val hour = Spool.KEEP_MS
+        check("a recording waits an hour", hour == 3_600_000L)
+        val gone = SpoolFiles(dir, maxBytes = 1 shl 30)
+        val made = t + 4
+        check("the sweep is due when the oldest's hour is up", gone.dueAt() == made + hour)
+        check("one on its way is not what the sweep waits for", gone.dueAt(setOf(e.file!!.name)) == null)
+        check("a minute short of the hour it stays", gone.prune(made + hour - 60_000) == 0)
+        check("one on its way outlives its hour", gone.prune(made + hour + 1, setOf(e.file!!.name)) == 0
+              && e.file!!.exists())
+        check("past the hour it goes", gone.prune(made + hour + 1) == 1 && gone.items().isEmpty())
+        check("and nothing is left for the sweep", gone.dueAt() == null)
         check("a name that is not ours outlives it", File(dir, "a.wav").exists())
         val was = Locale.getDefault()
         try {
@@ -186,9 +194,54 @@ private fun spoolChecks() {
     }
 }
 
+/** What the keyboard says of a PC's sentence: read by how the PC opens it. */
+private fun reasonChecks() {
+    val about = PcWords::about
+    check("the model off is the model off",
+          about("the model is off — press Start in the desk to load it (about 25 seconds); " +
+                "every other key works") == PcWords.About.MODEL_OFF)
+    check("so is a model that stepped aside for a game",
+          about("the speech model stepped aside for Fortnite — it comes back by itself after " +
+                "Fortnite closes; every other key works") == PcWords.About.MODEL_OFF)
+    check("a PC with no account is signed out",
+          about("sign in to use DeskIT — open the desk and press Sign in with Google") ==
+              PcWords.About.SIGNED_OUT)
+    check("a model not on the PC's disk is not ready",
+          about("the Hebrew model is not downloaded yet (1.6 GB from huggingface.co)") ==
+              PcWords.About.NO_MODEL)
+    check("an error with no words of its own is its number",
+          about("server error 503") == PcWords.About.ERROR && PcWords.errorCode("server error 503") == 503)
+    check("anything else is the PC's to say", about("Groq's free quota is spent for today") ==
+          PcWords.About.OTHER && PcWords.errorCode("Groq's free quota is spent for today") == null)
+}
+
+/** Nobody answered: what the line says, by the phone's networks then and now. */
+private fun noAnswerChecks() {
+    val wifi = NoAnswer.Net(wifi = true, ethernet = false, vpn = false)
+    val ethernet = NoAnswer.Net(wifi = false, ethernet = true, vpn = false)
+    val cell = NoAnswer.Net(wifi = false, ethernet = false, vpn = false)
+    val vpnOnCell = NoAnswer.Net(wifi = false, ethernet = false, vpn = true)
+    val vpnSaysWifi = NoAnswer.Net(wifi = true, ethernet = false, vpn = true)
+    check("5G alone is no Wi-Fi", NoAnswer.offLocal(listOf(cell)))
+    check("no network at all is no Wi-Fi", NoAnswer.offLocal(emptyList()))
+    check("5G with a VPN over it is no Wi-Fi", NoAnswer.offLocal(listOf(cell, vpnOnCell)))
+    check("a VPN's network saying Wi-Fi is not a Wi-Fi", NoAnswer.offLocal(listOf(cell, vpnSaysWifi)))
+    check("a Wi-Fi is a Wi-Fi", !NoAnswer.offLocal(listOf(wifi)))
+    check("a Wi-Fi beside 5G, a VPN over it, is a Wi-Fi", !NoAnswer.offLocal(listOf(cell, vpnSaysWifi, wifi)))
+    check("an Ethernet counts as one", !NoAnswer.offLocal(listOf(ethernet)))
+    val say = NoAnswer::say
+    check("off any Wi-Fi then and now: the phone's to fix", say(true, true) == NoAnswer.Say.NO_WIFI)
+    check("on a Wi-Fi then and off it now: the Wi-Fi's words", say(false, true) == NoAnswer.Say.NO_WIFI)
+    check("off any Wi-Fi then and on one now: nothing said of the PC",
+          say(true, false) == NoAnswer.Say.NOT_SENT)
+    check("on a Wi-Fi then and now: the PC didn't answer", say(false, false) == NoAnswer.Say.NO_ANSWER)
+}
+
 fun main() {
     pinChecks()
     spoolChecks()
+    reasonChecks()
+    noAnswerChecks()
     val aad = Crypt.aadPairing(Vectors.UID, Vectors.PAIRING)
     val account = ByteArray(32) { it.toByte() }
     val rowAad = Crypt.aadVault(Vectors.UID, "groq")

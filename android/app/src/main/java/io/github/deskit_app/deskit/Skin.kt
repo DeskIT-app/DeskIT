@@ -3,10 +3,13 @@ package io.github.deskit_app.deskit
 import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Build
 import android.transition.ChangeBounds
@@ -145,6 +148,46 @@ object Skin {
 
     fun secondaryFace(c: Context, radius: Int = 20): Drawable =
         pressable(c, CARD, CARD_HI, LINE, radius, 1)
+
+    /**
+     * A key's quiet face [height] dp tall, as wide as its view and centred in it:
+     * the view, and so the touch, can be taller than what is drawn.
+     */
+    fun smallKey(c: Context, height: Int): Drawable =
+        LayerDrawable(arrayOf(secondaryFace(c, 14))).apply {
+            setLayerGravity(0, Gravity.CENTER_VERTICAL or Gravity.FILL_HORIZONTAL)
+            setLayerHeight(0, dp(c, height))
+        }
+
+    /**
+     * The same face on a circle [size] dp across, with an X drawn in Disc's ink,
+     * centred in its view. Drawn, not typed: a "×" in a font sits where the font's
+     * metrics put it, as Disc's arrow once did.
+     */
+    fun crossKey(c: Context, size: Int): Drawable =
+        LayerDrawable(arrayOf(secondaryFace(c, size / 2), Cross(c))).apply {
+            for (i in 0..1) {
+                setLayerGravity(i, Gravity.CENTER)
+                setLayerSize(i, dp(c, size), dp(c, size))
+            }
+        }
+
+    private class Cross(c: Context) : Face() {
+        private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dpF(c, 1.8f)
+            strokeCap = Paint.Cap.ROUND
+            color = FG
+        }
+
+        override fun draw(canvas: Canvas) {
+            val cx = bounds.exactCenterX()
+            val cy = bounds.exactCenterY()
+            val h = bounds.width() * .17f
+            canvas.drawLine(cx - h, cy - h, cx + h, cy + h, ink)
+            canvas.drawLine(cx - h, cy + h, cx + h, cy - h, ink)
+        }
+    }
 
     // ---- words ----
 
