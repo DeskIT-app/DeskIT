@@ -176,6 +176,19 @@ object Relay {
      */
     fun askedSince(since: Long): Boolean = lastTry > 0 && lastTry >= since - 50
 
+    /** When the last "here" of any PC came, on any socket. */
+    @Volatile private var lastPongAt = 0L
+
+    /**
+     * A PC said "here" during this dictation (since [since], the press), and that answer
+     * has gone stale since or its socket closed (a minute idle, the network): a long
+     * dictation asks once more at the release, so it neither loses its PC to the clock
+     * nor sends to one that went while the person spoke. A dictation nobody answered is
+     * not asked again here: the cloud would wait a second more for nothing.
+     */
+    fun recheck(since: Long, now: Long = SystemClock.elapsedRealtime()): Boolean =
+        lastPongAt >= since && (line?.alive != true || now - lastPongAt >= PONG_FRESH_MS)
+
     private fun ping(app: Context, l: Line) {
         val rid = RelayWire.newRid()
         l.pings.add(rid)
@@ -251,6 +264,7 @@ object Relay {
         when (p.kind) {
             "pong" -> if (p.rid in l.pings) {
                 l.pongs[from] = Pong(from, p.head["ready"] == true, p.head["why"] as? String ?: "", now)
+                lastPongAt = now
             }
             "took", "text" -> l.replies[p.rid]?.put(p)
         }
@@ -289,10 +303,13 @@ object Relay {
             if (opening?.isAlive == true) return View(if (now - begun < JOIN_MS) Road.Relay.ASKING else Road.Relay.NOBODY)
             return View(if (lastTry > 0 && lastTry >= since - JOIN_MS) Road.Relay.NOBODY else Road.Relay.OFF)
         }
-        // Once this dictation's own ping went, only an answer to it counts: a PC that said
-        // "here" a minute ago and went away since would cost a stalled send and 8 s.
+        // Once this dictation's own ping went, only an answer to it counts, and for as long
+        // as the dictation lasts: a PC that said "here" a minute ago and went away since
+        // would cost a stalled send and 8 s, and a 45 s dictation must not lose its PC to
+        // the clock (flow_relay's timing, 2026-11-12: it did, at a 30 s limit). A long one
+        // asks again at the release ([recheck]).
         val current = l.pingAt >= begun - 50
-        val fresh = l.pongs.values.filter { now - it.at < PONG_FRESH_MS && (!current || it.at >= l.pingAt) }
+        val fresh = l.pongs.values.filter { if (current) it.at >= l.pingAt else now - it.at < PONG_FRESH_MS }
         fresh.filter { it.ready }.maxByOrNull { it.at }?.let { return View(Road.Relay.READY, it.pc) }
         fresh.maxByOrNull { it.at }?.let { return View(Road.Relay.BUSY, it.pc, it.why) }
         if (l.joinedAt == 0L) return View(if (now - l.askedAt < JOIN_MS) Road.Relay.ASKING else Road.Relay.NOBODY)

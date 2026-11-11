@@ -166,6 +166,19 @@ def released_ms(road: str) -> list[int]:
     return [int(x) for x in logged(rf"dictation: a text (\d+) ms after the release \({road}\)")]
 
 
+def hold_long(seconds: float) -> None:
+    """fd.hold_and_say for a press longer than drive.shell's own 60 s timeout, which
+    would cut the finger short: the same real press and the probe's voice."""
+    x, y = fd.spot("pill")
+    finger = threading.Thread(target=lambda: drive.adb(
+        "shell", "input", "swipe", x, y, x, y, int(seconds * 1000), check=False, timeout=seconds + 60))
+    finger.start()
+    time.sleep(0.6)
+    drive.shell("am", "broadcast", "--receiver-foreground", "-n", f"{PKG}/.ProbeReceiver",
+                "--es", "ime", "loud", timeout=60)
+    finger.join()
+
+
 def keyboard_sees_pc() -> bool:
     return "reachable=true" in fd.status()
 
@@ -265,10 +278,10 @@ def flow_timing():
         pc = RelayPc(acct).up()
         fd.field()
         until(keyboard_sees_pc, 20)
-        # a swipe longer than drive.shell's 60 s would be cut by its timeout
-        for seconds in (2.6, 10.0, 25.0, 45.0):
+        # 45 s outlives a PC's "here" from the press (30 s), 75 s the socket's idle minute
+        for seconds in (2.6, 10.0, 25.0, 45.0, 75.0):
             before = len(released_ms("relay"))
-            fd.hold_and_say(seconds)
+            hold_long(seconds)
             check(f"{seconds:.0f} s: the PC's text through the account",
                   until(lambda: len(released_ms("relay")) > before, 60), fd.status())
             took = released_ms("relay")[before:]

@@ -212,6 +212,10 @@ object Backup {
         if (relayOn && !Link.answeredRecently() && !Relay.askedSince(askingSince)) {
             Relay.ask(c)
             relayAsked = true
+        } else if (relayOn && Relay.recheck(askingSince)) {
+            // a long dictation: the PC said "here" at the press; is it still there, on a socket
+            Relay.ask(c)
+            relayAsked = true
         }
         thread(name = "backup-pc") {
             val r = Link.ask(c) { road ->
