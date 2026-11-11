@@ -7872,7 +7872,10 @@ def test_the_account_key_stays_out_of_main() -> None:
     import main as main_mod
     import phone as phone_mod
 
-    assert list(inspect.signature(phone_mod.publish).parameters) == ["port", "listening", "words_sync"]
+    # Flags only, never a key: history_sync came with stage 2b (a phone's
+    # cloud text goes only where a PC's row says its account keeps it).
+    assert list(inspect.signature(phone_mod.publish).parameters) == [
+        "port", "listening", "words_sync", "history_sync"]
     assert not inspect.signature(phone_mod.anchors).parameters
     assert list(inspect.signature(main_mod.App._phone_account).parameters) == ["self"]
     assert list(inspect.signature(main_mod.App._phone_publish).parameters) == ["self"]
