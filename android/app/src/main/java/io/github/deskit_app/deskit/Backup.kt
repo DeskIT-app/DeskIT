@@ -209,8 +209,7 @@ object Backup {
         // so a PC is never handed a recording whose text has nowhere to land.
         var settled = false
         val setOut = SystemClock.elapsedRealtime()
-        if (relayOn && !Link.answeredRecently() &&
-            Relay.view(c, askingSince).state == Road.Relay.OFF) {
+        if (relayOn && !Link.answeredRecently() && !Relay.askedSince(askingSince)) {
             Relay.ask(c)
             relayAsked = true
         }
@@ -241,7 +240,7 @@ object Backup {
                     val now = SystemClock.elapsedRealtime()
                     val p = if (cloudOn) CloudKeys.provider(c) else null
                     var view = if (relayOn) Relay.view(c, askingSince, now) else Relay.View(Road.Relay.OFF)
-                    if (relayOn && !relayAsked && view.state == Road.Relay.OFF && pc == Road.Pc.UNREACHED) {
+                    if (relayOn && !relayAsked && !Relay.askedSince(askingSince) && pc == Road.Pc.UNREACHED) {
                         // the door from a moment ago did not answer after all: ask the account now
                         Relay.ask(c)
                         relayAsked = true

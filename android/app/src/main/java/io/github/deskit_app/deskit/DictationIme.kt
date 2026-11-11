@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
@@ -1127,6 +1128,7 @@ class DictationIme : InputMethodService() {
         val app = applicationContext
         val mine = session
         val wipes = Traces.wipes
+        val setOut = SystemClock.elapsedRealtime()
         thread {
             val recording = item()
             // Where it was tried from: a try made off any Wi-Fi says nothing of the PC.
@@ -1135,6 +1137,11 @@ class DictationIme : InputMethodService() {
             val result = Backup.dictate(app, recording, since) {
                 ui.post { if (busy && mine == session) say(getString(R.string.transcribing_cloud)) }
             }
+            // How long the person waited, whichever road: a measurement, never a word
+            Log.i("DeskIT", "dictation: ${if (result is Transcriber.Result.Ok) "a text" else "no text"} " +
+                "${SystemClock.elapsedRealtime() - setOut} ms after the release" +
+                if (result is Transcriber.Result.Ok && result.via.isNotEmpty()) " (relay)"
+                else if (result is Transcriber.Result.Ok && result.cloud.isNotEmpty()) " (cloud)" else "")
             ui.post { deliver(result, recording, mine, wipes, off) }
         }
     }

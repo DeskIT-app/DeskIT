@@ -162,6 +162,12 @@ class _Door(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
             self.connection.close()
             return
+        if method == "GET" and self.headers.get("Upgrade", "").lower() == "websocket" \
+                and self.path.startswith("/realtime/v1/websocket"):
+            # Realtime: the account's own topic, the relay's channel (stage 3)
+            self.close_connection = True
+            account.websocket(self)
+            return
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         try:
@@ -196,6 +202,85 @@ class _Door(http.server.BaseHTTPRequestHandler):
 class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = False
+
+
+class _Sock:
+    """The server's end of one websocket: frames in (masked, as RFC 6455 has every
+    client's), frames out (unmasked), and what Phoenix's join said."""
+
+    def __init__(self, conn, rfile):
+        self.conn, self.rfile = conn, rfile
+        self.lock = threading.Lock()
+        self.topic: str | None = None
+        self.session: dict | None = None
+        self.echo = False
+        self.ack = False
+        self.closed = False
+
+    def _exactly(self, n: int) -> bytes:
+        out = b""
+        while len(out) < n:
+            chunk = self.rfile.read(n - len(out))
+            if not chunk:
+                raise OSError("the client went")
+            out += chunk
+        return out
+
+    def read(self) -> tuple[int, bytes]:
+        parts, first = b"", None
+        while True:
+            h = self._exactly(2)
+            fin, op = h[0] & 0x80, h[0] & 0x0F
+            n = h[1] & 0x7F
+            if n == 126:
+                n = int.from_bytes(self._exactly(2), "big")
+            elif n == 127:
+                n = int.from_bytes(self._exactly(8), "big")
+            if not h[1] & 0x80:
+                raise ValueError("a client frame arrived unmasked")
+            mask = self._exactly(4)
+            raw = self._exactly(n)
+            # XOR as one big integer: a byte loop is 50 ms a piece, which is not the server's
+            data = (int.from_bytes(raw, "big") ^ int.from_bytes((mask * (n // 4 + 1))[:n], "big")
+                    ).to_bytes(n, "big") if n else b""
+            if op >= 0x8:
+                return op, data
+            first = op if first is None else first
+            parts += data
+            if fin:
+                return first, parts
+
+    def write(self, op: int, data: bytes) -> None:
+        n = len(data)
+        head = bytes([0x80 | op])
+        if n < 126:
+            head += bytes([n])
+        elif n < 65536:
+            head += bytes([126]) + n.to_bytes(2, "big")
+        else:
+            head += bytes([127]) + n.to_bytes(8, "big")
+        with self.lock:
+            if self.closed:
+                raise OSError("closed")
+            self.conn.sendall(head + data)
+
+    def reply(self, ref, topic, status: str, response: dict) -> None:
+        self.write(0x1, json.dumps({"event": "phx_reply", "topic": topic, "ref": ref,
+                                    "payload": {"status": status, "response": response}}).encode())
+
+    def close(self) -> None:
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+        try:
+            self.conn.sendall(bytes([0x88, 2, 0x03, 0xE8]))
+        except OSError:
+            pass
+        try:
+            self.conn.close()
+        except OSError:
+            pass
 
 
 _LISTENERS: dict[int, _Server] = {}
@@ -234,6 +319,11 @@ class FakeAccount:
         self.pc_id = str(uuid.uuid4())
         self.pc_name = "HOME-PC"
         self.key = os.urandom(32)
+        #: Realtime's sockets, each joined to the account's topic or not yet
+        self.sockets: list[_Sock] = []
+        #: what the relay cost: messages as Supabase counts them (sent, and once per
+        #: socket that received), the bytes pushed to clients, the largest message
+        self.realtime = {"sent": 0, "received": 0, "egress": 0, "largest": 0, "refused": 0}
         self.tables["profiles"].append({
             "user_id": self.uid, "lock_id": vault.fingerprint(self.key),
             "app_version_last_seen": "1.0.6", "is_anonymous": False, "created_at": now_iso()})
@@ -262,6 +352,109 @@ class FakeAccount:
         if self._server is not None:
             self._server.account = None
             self._server = None
+        with self.mutex:
+            socks, self.sockets = list(self.sockets), []
+        for s in socks:
+            s.close()
+
+    # ---- Realtime: the account's private topic, over a websocket ----
+
+    #: Supabase Free's broadcast cap (its limits page, 2026-11-11).
+    PAYLOAD_MAX = 256_000
+
+    def websocket(self, h):
+        """One Realtime socket, as Supabase's answers it: Phoenix's join with the
+        session's token on the private topic `realtime:user:<uid>`, heartbeats, and
+        broadcasts fanned out to every other socket joined to it (to the sender too
+        with `self: true`), acknowledged with `ack: true`, refused over the cap."""
+        if h.headers.get("apikey") != PUBLISHABLE_KEY:
+            h._send(401, {"message": "No API key found in request"})
+            return
+        key = h.headers.get("Sec-WebSocket-Key", "")
+        accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+                                               .encode()).digest()).decode()
+        h.wfile.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                       f"Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").encode())
+        h.wfile.flush()
+        h.connection.settimeout(None)
+        sock = _Sock(h.connection, h.rfile)
+        with self.mutex:
+            self.sockets.append(sock)
+        log.info("realtime: a socket opened")
+        try:
+            self._serve_ws(sock)
+        except (OSError, ValueError) as e:
+            log.info("realtime: a socket went (%s)", type(e).__name__)
+        finally:
+            with self.mutex:
+                if sock in self.sockets:
+                    self.sockets.remove(sock)
+            sock.close()
+
+    def _serve_ws(self, sock: "_Sock"):
+        topic_ok = f"realtime:user:{self.uid}"
+        while True:
+            op, data = sock.read()
+            if op == 0x8:
+                return
+            if op == 0x9:
+                sock.write(0xA, data)
+                continue
+            if op != 0x1:
+                continue
+            msg = json.loads(data.decode("utf-8"))
+            topic, event, ref = msg.get("topic"), msg.get("event"), msg.get("ref")
+            payload = msg.get("payload") or {}
+            if event == "heartbeat":
+                sock.reply(ref, "phoenix", "ok", {})
+            elif event == "phx_join":
+                config = payload.get("config") or {}
+                s = self.session_of(str(payload.get("access_token") or ""))
+                if topic != topic_ok or config.get("private") is not True or s is None or s["expired"]:
+                    with self.mutex:
+                        self.realtime["refused"] += 1
+                    sock.reply(ref, topic, "error", {"reason": "Unauthorized: You do not have permissions "
+                                                               "to read from this Channel topic"})
+                    continue
+                broadcast = config.get("broadcast") or {}
+                sock.topic, sock.session = topic, s
+                sock.echo, sock.ack = bool(broadcast.get("self")), bool(broadcast.get("ack"))
+                sock.reply(ref, topic, "ok", {"postgres_changes": []})
+                log.info("realtime: joined")
+            elif event == "access_token":
+                s = self.session_of(str(payload.get("access_token") or ""))
+                if s is not None:
+                    sock.session = s
+            elif event == "broadcast":
+                if sock.topic != topic or sock.session is None or sock.session["expired"]:
+                    sock.reply(ref, topic, "error", {"reason": "not joined"})
+                    continue
+                if len(data) > self.PAYLOAD_MAX:
+                    with self.mutex:
+                        self.realtime["refused"] += 1
+                    sock.reply(ref, topic, "error", {"reason": "Payload too large"})
+                    continue
+                inner = payload.get("payload") or {}
+                self._fanout(topic, str(payload.get("event") or ""), inner, sender=sock)
+                if sock.ack:
+                    sock.reply(ref, topic, "ok", {})
+
+    def _fanout(self, topic: str, event: str, inner: dict, sender=None):
+        """One broadcast to every socket joined to [topic], and what it cost."""
+        text = json.dumps({"event": "broadcast", "topic": topic, "ref": None,
+                           "payload": {"type": "broadcast", "event": event, "payload": inner}})
+        with self.mutex:
+            self.broadcasts.append({"event": event, **inner})
+            to = [s for s in self.sockets if s.topic == topic and (s is not sender or s.echo)]
+            self.realtime["sent"] += 1
+            self.realtime["received"] += len(to)
+            self.realtime["egress"] += len(text) * len(to)
+            self.realtime["largest"] = max(self.realtime["largest"], len(text))
+        for s in to:
+            try:
+                s.write(0x1, text.encode("utf-8"))
+            except OSError:
+                pass
 
     def stop_at(self, method: str, table: str, *, hold: bool = True, cut: bool = False,
                 land: bool = True, answer=None) -> Stop:
@@ -769,8 +962,9 @@ class FakeAccount:
             for m in (body or {}).get("messages") or []:
                 if m.get("topic") != f"user:{self.uid}" or m.get("private") is not True:
                     raise Refuse(403, "42501", "not this account's topic")
-                with self.mutex:
-                    self.broadcasts.append({"event": m.get("event"), **(m.get("payload") or {})})
+                # every socket joined to the topic hears it, as Realtime's own
+                self._fanout(f"realtime:{m.get('topic')}", str(m.get("event") or ""),
+                             m.get("payload") or {})
                 log.info("broadcast %s", m.get("event"))
             h._send(202, {})
             return

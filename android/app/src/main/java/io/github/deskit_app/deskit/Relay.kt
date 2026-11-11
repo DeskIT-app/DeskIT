@@ -167,6 +167,14 @@ object Relay {
     /** When the last [ask] set out: one that ended with no socket is nobody, this time. */
     @Volatile private var lastTry = 0L
 
+    /**
+     * Has this dictation been asked about through the account: an [ask] since [since]
+     * (the press, or Send again)? An open socket's "nobody" from an earlier ping is no
+     * answer about a PC that came back since (found on the emulator, 2026-11-12: Send
+     * again on a PC up again read the old nobody and never pinged).
+     */
+    fun askedSince(since: Long): Boolean = lastTry > 0 && lastTry >= since - 50
+
     private fun ping(app: Context, l: Line) {
         val rid = RelayWire.newRid()
         l.pings.add(rid)
