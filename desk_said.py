@@ -441,8 +441,11 @@ def _row(event, ident: str) -> dict:
         if bit.startswith("from ") and event.cloud:
             # One tag for a phone's dictation the cloud carried: "Dana's phone · cloud".
             # Two ("From Dana's phone", "From the cloud") cut each other to "From …" in
-            # the row's narrow column (photographed 2026-11-11).
-            tags.append({"t": f"{bit[5:]} · cloud", "g": "globe"})
+            # the row's narrow column (photographed 2026-11-11). The name and the word
+            # are apart ("s", drawn whole after it): a long name gives way first, and
+            # "cloud", which says where the words came from, is never the one cut (his
+            # "ה-Yoav של S26 Ultra · cl…", 2026-11-11).
+            tags.append({"t": bit[5:], "s": "· cloud", "g": "globe"})
         elif bit.startswith("from "):
             tags.append({"t": _cap(bit), "g": "laptop"})
         else:

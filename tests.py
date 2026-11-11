@@ -6377,6 +6377,44 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
         assert len(box["written"]) == count
 
 
+def test_a_long_phone_name_gives_way_and_cloud_stays_whole_on_said() -> None:
+    """His Said row at 22:48 on 2026-11-11: "ה-Yoav של S26 Ultra · cl…". The
+    word that says where the text came from is the one that got cut. The
+    phone's name and "· cloud" are two parts of the tag: the name, isolated
+    in its own direction (a name is whatever its owner typed, Hebrew and
+    Latin mixed), is the part that shrinks and ellipsizes, and "· cloud" is
+    drawn after it and never shrinks. The Tk desk draws no such tag: its
+    line says "from the cloud" before the phone's name."""
+    import dataclasses
+    import datetime
+
+    import desk_said
+    import history as history_mod
+
+    name = "ה-Yoav של S26 Ultra עם שם ארוך מאוד שלא נגמר"
+    event = history_mod.Event(datetime.datetime(2026, 11, 11, 22, 48), "dictation",
+                              text="שלום", engine="groq", seconds=2.2,
+                              note=f"from {name}", cloud=True)
+    tags = desk_said._row(event, "1")["tags"]
+    assert tags == [{"t": name, "s": "· cloud", "g": "globe"}], tags
+    assert "cloud" not in tags[0]["t"], "the word that can be cut holds cloud"
+    assert desk_said._row(dataclasses.replace(event, cloud=False), "1")["tags"] == [
+        {"t": f"From {name}", "g": "laptop"}]
+
+    page = (REPO / "web" / "src" / "places" / "said.tsx").read_text("utf-8")
+    css = (REPO / "web" / "src" / "places" / "said.css").read_text("utf-8")
+    # the name in the part that gives way, in its own direction; the suffix after it, apart
+    assert '<span className="tx" dir="auto">{t.t}</span>' in page, "the name is not isolated"
+    assert '<span className="sx">{t.s}</span>' in page, "the suffix is not drawn apart"
+    assert page.index('className="tx" dir="auto"') < page.index('className="sx"')
+    sx = re.search(r"\.place-said \.tag \.sx\{([^}]*)\}", css)
+    assert sx and "flex:none" in sx.group(1) and "white-space:nowrap" in sx.group(1), \
+        "the suffix can shrink"
+    tx = re.search(r"\.place-said \.tag \.tx\{([^}]*)\}", css)
+    assert tx and "min-width:0" in tx.group(1) and "text-overflow:ellipsis" in tx.group(1), \
+        "the name cannot give way"
+
+
 def test_the_phones_cloud_switch_reaches_settings_phone_from_its_own_row() -> None:
     """Stage 2b, picture f, approved 2026-11-11: the desk reads the phone's
     cloud backup from the phone's own sealed row, read-only, because the
@@ -6477,7 +6515,7 @@ def test_a_phones_cloud_dictation_reaches_said_marked_from_the_phone_and_the_clo
     assert "from Dana's phone" in event.note and "from the cloud" in event.meta()
     tags = desk_said._row(event, "1")["tags"]
     # one tag, so the row's narrow column does not cut two of them to "From …"
-    assert tags == [{"t": "Dana's phone · cloud", "g": "globe"}], tags
+    assert tags == [{"t": "Dana's phone", "s": "· cloud", "g": "globe"}], tags
     assert desk_said._row(dataclasses.replace(event, note=""), "1")["tags"] == [
         {"t": "From the cloud", "g": "globe"}]
 
