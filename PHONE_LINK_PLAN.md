@@ -289,14 +289,14 @@ is stage 2b's, a few minutes each. M4, M11 and M13 are checked while stage 1 is 
 | # | Who | What | What it decides |
 |---|---|---|---|
 | M1 | He, 1 min | Tailscale on the phone, on mobile data, away from the Wi-Fi. I run `tailscale ping` and read `tailscale status` on the PC: direct or relayed? | Whether a direct path exists from his carrier at all (Tailscale tries harder than WebRTC, so a direct here does not prove stage 3, while a relay here nearly disproves it) |
-| M2 | He, 1 min | On mobile data, the WebRTC project's Trickle ICE page with two STUN servers: do the two reflexive ports match? A screenshot is enough | Whether his carrier's NAT is the hard kind (§3.1) |
+| M2 | Done 2026-11-11 | His S26 on mobile data, VPN off, the Trickle ICE page with Google's and Cloudflare's STUN: over IPv4 the phone sits behind carrier NAT of the HARD kind (one local port, two different public ports for the two servers); over IPv6 it has a global address that both sides see the same (no NAT). The PC had no global IPv6 and no IPv6 route that evening. So for him a direct path does not exist today: IPv4 is hard on the phone's side, and IPv6 is missing on the home's. No addresses or carrier are written here | His carrier's NAT is the hard kind (§3.1). It settled Q1 |
 | M3 | Done 2026-11-06 | At home: the phone's Wi-Fi address. His phone is on the PC's network, not on the first router's | Stage 1 works as it stands in his own home. This is a check of one home; nothing in the product depends on it |
 | M4 | Half done 2026-11-07 | A throwaway TLS door on every interface under `pythonw.exe`, on his PC's Public Ethernet. The first listen adds Block rules for the program at once, TCP and UDP, on Public and Private, while Windows' dialog is up. One press of Allow turns both to Allow through an elevated COM object, no `netsh`, and they name the program on every port. His S26's Chrome on the same network then reached the door, which dropped it for having no client certificate, and the door opened again at once on the same port. Stage 1's real door opened after Approve with no second dialog. So a Cancel leaves the Block rules standing: read from the firewall's own events, not pressed. **Not run:** a real Cancel and "The phone can't connect?" behind it, which need a rule changed by a person, and the Store package's manifest rule | On the common road Allow is one press and no `netsh`. The button is still unproven on a real firewall |
 | M6 | Done 2026-11-06 | `RTCPeerConnection` in a WebView owned by the keyboard, to a hidden WebView2 on the PC: works on the emulator (§6.3) | Stage 3 can stay free of native libraries, pending M8 |
 | M7 | Done 2026-11-06 | A browser page meeting a hidden WebView2 through Realtime and STUN, the whole road in 1.06 s (§6.2). A public topic, for the probe; the real one is private | The hello's road |
 | M8 | Me and his phone | The first real direct connection: phone on mobile data, a throwaway page, hidden WebView2 at home. Nothing is published for it: the page loads over Tailscale one last time (`tailscale serve --set-path`), Tailscale goes off, the page connects. Also watched for: no firewall dialog on his screen from the engine | The proof of stage 3, or its end |
 | M9 | Me, at night | Opus 16/24/32 kbps against WAV on the six public sets, more than one run each | Stage 2's compression |
-| M10 | He, 2 min | The mesh router's IPv6 setting, in its app: is it off? With another router in front, its maker's FAQ says Pass-Through (Bridge) for its other routers and does not name this one, so the app's words may differ. I re-run `tailscale netcheck` | Whether his home has IPv6. If it does, most Israeli mobile networks reach it directly with no NAT at all (§3.1) |
+| M10 | Not run, 2026-11-11 | He has no router app, and a router setting is not a product: his word that day, "it has to fit everyone". M2 decided Q1 without it. Kept for the record: the mesh router's IPv6 setting, in its app: is it off? With another router in front, its maker's FAQ says Pass-Through (Bridge) for its other routers and does not name this one, so the app's words may differ. I re-run `tailscale netcheck` | Whether his home has IPv6. If it does, most Israeli mobile networks reach it directly with no NAT at all (§3.1) |
 | M11 | Done 2026-11-09 | Auto Blocker was on and stopped the APK with its own message, naming where to turn it off (Settings > Security and privacy > Auto Blocker). With it off the APK installed, and One UI asked nothing more. The mic: a dictation in a chat app through the keyboard, 2026-11-09 (M18) | The guide's first step on a Galaxy is Auto Blocker, as written |
 | M12 | A borrowed iPhone, 10 min | The throwaway page, tab and Home Screen, on plain Wi-Fi and on mobile data: does the channel open, does the mic ask every launch, does the text copy | Whether stage 4's iPhone promise is true |
 | M13 | He, 2 min | The second router's uplink unplugged, mobile data on: does the keyboard still reach the PC over Wi-Fi | Whether "no internet needed" is true on his phone (stage 1, the bound Wi-Fi network) |
@@ -730,8 +730,10 @@ the other through a fake account.
 *Acceptance, in the words of 2026-10-03: "I dictate from my phone on mobile data, away from home, with nothing
 installed but the keyboard", and the words came from the PC's model.*
 
-Starts only after M1, M2, M8 and M10 say a direct path exists from his network. Until then the backup carries him away
-from home, so nothing is lost by waiting.
+Since 2026-11-11 (M2, Q1) it no longer waits for a direct path from his network: he has none today, and the sealed
+relay carries whoever has none, him included, so his own carrier is where the relay is proven and a network with a path
+(IPv6 on both sides, or an easy NAT) is where the direct road is. The relay needs stage 2's Opus first. Until it lands,
+the backup carries him away from home, so nothing is lost by waiting.
 
 - **`link/link.js`** (new, one file, no framework): runs `RTCPeerConnection` and moves frames, with the channel and the
   sealing behind two small hooks, because sealing is three implementations (§6.1): CNG, Kotlin and WebCrypto, held
@@ -771,8 +773,8 @@ from home, so nothing is lost by waiting.
   anyone holding the public key could spend the project's quota on a topic of their own, which ends in a 402 on every
   API call, new sign-ins included.
 
-**When there is no direct path,** the backup catches it. The other answer, kept open in Q1, is a sealed relay, for people
-who want the PC's accuracy from a network with no direct path: `link.js` falls back to sending the same sealed frames on
+**When there is no direct path,** a sealed relay carries it (Q1, decided 2026-11-11: his "also through the account"),
+so the PC's accuracy reaches a network with no direct path, and the cloud key is the backup only after it: `link.js` falls back to sending the same sealed frames on
 the same channel. It is about 30 lines. The measured price is 83 ms p50 for a 60 KB frame. The budget is Supabase Free's,
 shared by every DeskIT user: 5 GB of egress a month, 2 M messages, each broadcast counting sender plus receiver. Opus at
 24 kbps in 3 s frames is about 185 KB and 40 counted messages per minute of speech, so egress binds first: ~27,000
@@ -1236,7 +1238,7 @@ stage 1 does. Immich and Moonlight tell the user to bring a VPN. Home Assistant 
 
 | # | The question | Recommendation |
 |---|---|---|
-| Q1 | PC on, no direct path: also offer a sealed relay through his account server, which keeps the PC's accuracy, ~30 lines, capped by the free tier, and needs Opus? | Decide after M1, M2, M10. If his own carrier needs it, yes as an opt-in: Tailscale's relays do the same thing today, and "nobody can read it" stays true though "it never leaves" would not |
+| Q1 | PC on, no direct path: also offer a sealed relay through his account server, which keeps the PC's accuracy, ~30 lines, capped by the free tier, and needs Opus? | **Decided 2026-11-11: yes, his answer** ("also through the account"), after M2: on his carrier and his home a direct path does not exist today, and he asked for what fits everyone, not his network. Direct first wherever it exists, the sealed relay when it does not, the cloud key last. How it is offered (on with one line and the way off, or a switch) is shown to him in pictures before it is built. "Nobody can read it" stays true; "it never leaves" would not |
 | Q2 | Build the phone's own model (stage 5)? +9 to 24 MB in the app, 72 MB of model, weak on English, and the only road with no PC and no network; better than the cloud key on Hebrew, and nothing leaves | After stage 3's numbers, and after a throwaway build shows the speed on the S26 |
 | Q3 | Google's registration before 2027: US$25 once and an adult's ID, against rule 1's "no card" | Not now. Decide when Google names a date or the first stranger asks |
 
