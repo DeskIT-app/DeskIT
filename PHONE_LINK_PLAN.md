@@ -636,6 +636,15 @@ works on the PC within a second or two, and the other way round.*
 
 Needs stage 1's account join and nothing of stage 3, so it comes first.
 
+**Built 2026-11-11, branch `claude/phone-cloud-key-1578e3`, as photographed and approved that day** (his d2: the
+button in Send again's place). What the pictures did not settle, decided in the build and his to overrule: a PC that
+answered that it cannot now (its model off, signed out) keeps today's waiting row and the cloud is not asked, because
+that PC was reached; a PC that answered the knock and then said nothing goes to the key after 10 s of silence
+(`Road.SILENT_MS`), the PC's text landing if it comes first; Groq is asked with `language=he`; the phone writes the
+text row only where a PC's own row says its account keeps what was said (`history_sync`, new in `phone.publish`), so
+a PC older than this build gets no row until it updates. The phone's row says its switch as `cloud_backup` (the
+`backup: true` of the build before meant nothing and is not read).
+
 **The keys screen, the same on the phone and the desk.** Settings on the phone gets **Your cloud keys**, the desk's
 card (`desk_settings_keys.py`, `keyrow.py`) in the phone's own widgets: a row per provider (`secretstore.CRED_NAMES`:
 Groq, Gemini), dots when one is saved, never the value, **Change**, **Remove**, **Save and test** with the same one
