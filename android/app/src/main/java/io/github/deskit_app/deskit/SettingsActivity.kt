@@ -38,6 +38,8 @@ class SettingsActivity : Activity() {
     private lateinit var result: TextView
     private lateinit var updateResult: TextView
     private lateinit var accountBox: LinearLayout
+    /** The cloud backup's switch and the keys (stage 2b), once this phone holds the key. */
+    private lateinit var cloud: CloudCards
     private var traces = Traces.wipes
 
     override fun onCreate(saved: Bundle?) {
@@ -47,6 +49,11 @@ class SettingsActivity : Activity() {
 
         accountBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(accountBox)
+
+        // ---- the cloud backup and the keys: the account's, so only on a joined phone ----
+        cloud = CloudCards(this)
+        cloud.root.visibility = if (Link.joined(this)) View.VISIBLE else View.GONE
+        col.addView(cloud.root)
 
         // ---- the keyboard ----
         val kb = Skin.card(this)
@@ -161,6 +168,24 @@ class SettingsActivity : Activity() {
     override fun onResume() {
         super.onResume()
         readAccount()
+        if (Link.joined(this)) {
+            cloud.root.visibility = View.VISIBLE
+            cloud.start()
+            // the keyboard's Add a key: straight to the keys
+            if (intent.getBooleanExtra(AT_KEYS, false)) {
+                intent.removeExtra(AT_KEYS)
+                cloud.root.post {
+                    val keys = cloud.keysCard ?: return@post
+                    (cloud.root.parent?.parent as? android.widget.ScrollView)
+                        ?.smoothScrollTo(0, cloud.root.top + keys.top)
+                }
+            }
+        }
+    }
+
+    companion object {
+        /** Open at the keys: the keyboard's Add a key, and the one-time screen's. */
+        const val AT_KEYS = "at_keys"
     }
 
     override fun onPause() {

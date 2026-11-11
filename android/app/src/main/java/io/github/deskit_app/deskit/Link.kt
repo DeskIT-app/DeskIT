@@ -356,6 +356,10 @@ object Link {
     /** The door that answered last, and when, in this process. */
     @Volatile private var answered: Pair<String, Long>? = null
 
+    /** A door answered in the last minute, in this process: the next find is immediate. */
+    fun answeredRecently(): Boolean =
+        answered?.let { SystemClock.elapsedRealtime() - it.second < FRESH_MS } ?: false
+
     private fun heard(door: Door) {
         answered = Pair(door.mark, SystemClock.elapsedRealtime())
     }

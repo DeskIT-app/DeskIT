@@ -96,30 +96,33 @@ object Prefs {
      * record in transcripts.log; this is the short one you read on the
      * sofa to copy a sentence again. A JSON array of [epoch-ms, text].
      */
-    fun said(c: Context): List<Pair<Long, String>> {
+    fun said(c: Context): List<Said> {
         val raw = sp(c).getString(KEY_SAID, null) ?: return emptyList()
         return try {
             val arr = org.json.JSONArray(raw)
             (0 until arr.length()).map {
                 val row = arr.getJSONArray(it)
-                Pair(row.getLong(0), row.getString(1))
+                Said(row.getLong(0), row.getString(1), row.optInt(2, 0) == 1)
             }
         } catch (e: Exception) {
             emptyList()
         }
     }
 
+    /** One sentence of the phone's Said: when, what, and whether the cloud carried it. */
+    data class Said(val at: Long, val text: String, val cloud: Boolean = false)
+
     /**
      * [since] is [Traces.wipes] as the dictation set out: one that comes back to
      * a phone that has left its account since then keeps nothing here.
      */
     @Synchronized
-    fun addSaid(c: Context, text: String, since: Int) {
+    fun addSaid(c: Context, text: String, since: Int, cloud: Boolean = false) {
         if (since != Traces.wipes) return
-        val rows = listOf(Pair(System.currentTimeMillis(), text)) +
+        val rows = listOf(Said(System.currentTimeMillis(), text, cloud)) +
                 said(c).take(SAID_KEEP - 1)
         val arr = org.json.JSONArray()
-        for ((t, s) in rows) arr.put(org.json.JSONArray().put(t).put(s))
+        for (r in rows) arr.put(org.json.JSONArray().put(r.at).put(r.text).apply { if (r.cloud) put(1) })
         sp(c).edit().putString(KEY_SAID, arr.toString()).apply()
     }
 

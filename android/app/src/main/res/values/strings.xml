@@ -69,6 +69,22 @@
     <!-- The PC answered with an error and no sentence of its own: -->
     <string name="why_error">Your PC answered with error %1$d</string>
 
+    <!-- The cloud backup (PHONE_LINK_PLAN.md stage 2b, the words he approved in
+         pictures on 2026-11-11). No PC answered, so the recording went to the
+         person's own provider with their own key: the line says so while it is
+         on its way, and on every dictation that went that way. %1$s is Groq or
+         Gemini. -->
+    <string name="transcribing_cloud">Transcribing in the cloud…</string>
+    <string name="from_the_cloud">from the cloud (%1$s)</string>
+    <!-- Away from home with no key and no PC: the button stands where Send
+         again stands, only while there is no road (the owner's d2). -->
+    <string name="add_a_key">Add a key</string>
+    <string name="cd_add_a_key">Add a cloud key, in Settings</string>
+    <!-- Why the cloud did not take it, on the waiting row: -->
+    <string name="why_key_refused">%1$s refused your key</string>
+    <string name="why_limit">%1$s\'s free limit is used up for now</string>
+    <string name="why_cloud">%1$s: %2$s</string>
+
     <!-- A password field is not a place to dictate: the audio and the text
          would both leave the phone, and the text would land in
          transcripts.log on the PC for good. -->
@@ -162,6 +178,44 @@
     <string name="up_to_date">Up to date</string>
     <string name="update_available">Keyboard %1$s is out. Opening the download…</string>
     <string name="update_check_failed">Can\'t check: the PC isn\'t reachable</string>
+
+    <!-- The cloud backup's switch and the keys, on Settings, and the one-time
+         screen. %1$s is the provider the backup uses (Groq first). The one-time
+         line and its price are the words the yes is given to (Backup.WORDS_VERSION):
+         change them and that version changes too. -->
+    <string name="backup_title">When your PC can\'t be reached</string>
+    <string name="backup_switch">Use the cloud</string>
+    <string name="backup_help">Your recording goes to %1$s with your own key. Off, it waits for your PC.</string>
+    <string name="backup_no_key">No key yet. Until you add one, it waits for your PC.</string>
+    <string name="backup_once_line">If your PC can\'t be reached, your recording goes to %1$s with your own key. You can turn this off here or in Settings.</string>
+    <string name="backup_price">%1$s hears the recording, and its words are less accurate than your PC\'s.</string>
+    <string name="backup_no_key_yet">Your account has no cloud key yet, so nothing is sent.</string>
+    <string name="keys_title">Your cloud keys</string>
+    <string name="keys_line">Kept in your account, locked. Your PCs use the same keys.</string>
+    <string name="groq_why">Carries your dictation when your PC can\'t be reached.</string>
+    <string name="gemini_why">Used only when there\'s no Groq key.</string>
+    <string name="key_change">Change</string>
+    <string name="key_remove">Remove</string>
+    <string name="key_save">Save</string>
+    <string name="key_cancel">Cancel</string>
+    <string name="key_saved">Saved in your account, locked.</string>
+    <string name="key_works">✓  Key works. Saved in your account, locked.</string>
+    <string name="key_changing">The saved key keeps working until a new one is saved. Cancel keeps it.</string>
+    <string name="key_remove_q">Remove your %1$s key?</string>
+    <string name="key_remove_line">It goes from your account, so your PCs stop using it too.</string>
+    <string name="key_paste">Paste your %1$s key</string>
+    <string name="key_free_groq">Get a free key at console.groq.com/keys</string>
+    <string name="key_free_gemini">Get a free key at aistudio.google.com/apikey</string>
+    <string name="key_checking">Checking the key with %1$s…</string>
+    <string name="key_refused">%1$s didn\'t accept this key. Check it and paste it again.</string>
+    <string name="key_offline">Couldn\'t reach %1$s right now. The key is saved, and it\'s checked the first time it\'s used.</string>
+    <string name="key_not_key">That doesn\'t look like a %1$s key. Paste it again.</string>
+    <string name="key_empty">Nothing to save. Paste the key first.</string>
+    <string name="key_removing">Removing…</string>
+    <string name="key_not_now">Your account didn\'t take it: %1$s</string>
+    <string name="home_cloud">You can still dictate. It goes to %1$s with your key.</string>
+    <string name="home_no_key">Add a cloud key, and you can dictate from anywhere.</string>
+    <string name="said_cloud">%1$s · from the cloud</string>
 
     <!-- The second reading. -->
     <string name="channel_review">Second reading</string>

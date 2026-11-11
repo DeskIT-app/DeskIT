@@ -236,6 +236,29 @@ object Lock {
         }
     }
 
+    /**
+     * The account's key for one [use], with the account's id, only while the lock says
+     * it may be used, and zeroed after. [Account.Failed] when this phone holds none.
+     */
+    fun <T> withKey(c: Context, use: (uid: String, key: ByteArray) -> T): T {
+        val s = Account.session(c) ?: throw Account.Failed("Not signed in.")
+        return keyed(c, s.uid) { use(s.uid, it) }
+    }
+
+    /**
+     * This phone's row, written again now: something in it moved that the PCs read
+     * (the cloud backup's switch). A look writes it; one that cannot, the next does.
+     */
+    fun republish(c: Context) {
+        sp(c).edit().remove(PREF_ROW_SIG).commit()
+        if (!holdsKey(c)) return
+        try {
+            look(c)
+        } catch (e: RuntimeException) {
+            Log.i("DeskIT", "lock: the row waits for the next look")
+        }
+    }
+
     // ---- who this device is ----
 
     /**
@@ -715,7 +738,9 @@ object Lock {
         val version = appVersion(c)
         val platform = "android-${Build.VERSION.SDK_INT}"
         val lock = Crypt.fingerprint(key)
-        val sig = certFingerprint("$lock\u0000$sid\u0000$name\u0000$version\u0000$platform\u0000"
+        // the cloud backup's switch, which the desk shows read from here (stage 2b)
+        val cloud = Backup.active(c)
+        val sig = certFingerprint("$lock\u0000$sid\u0000$name\u0000$version\u0000$platform\u0000$cloud\u0000"
             .toByteArray() + der)
         val p = sp(c)
         if (p.getString(PREF_ROW_SIG, "") == sig && nowS() - p.getLong(PREF_ROW_AT, 0) < ROW_EVERY_S) {
@@ -723,7 +748,7 @@ object Lock {
             return
         }
         val link = JSONObject().put("v", 1).put("kind", "phone").put("cert", Crypt.b64(der))
-            .put("proto", PROTO).put("backup", true)
+            .put("proto", PROTO).put("cloud_backup", cloud)
         val row = JSONObject().put("id", device).put("user_id", s.uid).put("name", name)
             .put("platform", platform).put("app_version", version).put("tier", "")
             .put("last_seen", Instant.now().toString())
