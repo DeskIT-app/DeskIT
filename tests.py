@@ -41897,8 +41897,11 @@ def test_network_md_matches_net_py():
     else:
         assert "`<ref>.supabase.co`" in page
     for purpose in ("model-download", "pack-install", "update-check", "update-download",
-                    "ollama", "notify", "account", "sync", "history", "report"):
+                    "ollama", "notify", "account", "sync", "history", "report", "link"):
         assert f"`{purpose}`" in page, purpose
+    # the relay rides the account's gate, never a card of its own
+    import privacy
+    assert privacy.PURPOSE_KINDS["link"] == "account" and "link" in net_mod.PURPOSES
     assert "us.aws.cdn.hf.co" in page and "Offline" in page
 
 
