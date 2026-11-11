@@ -359,6 +359,67 @@ class ProbeReceiver : BroadcastReceiver() {
         return "$name=${xy[0] + v.width / 2},${xy[1] + v.height / 2}"
     }
 
+    /**
+     * PROTOTYPE, stage 2b: the keyboard's line as the cloud backup would draw it, for
+     * the owner's yes. Nothing of it is the keyboard's yet: the words are set straight
+     * on the live views, the keyboard's own timers stopped first so they stay up for
+     * the picture. `--es ime proto:busy|cloud|nokey|nokey_key`.
+     */
+    private fun protoKeyboard(k: DictationIme, name: String) {
+        (held("ui").get(k) as android.os.Handler).removeCallbacksAndMessages(null)
+        val status = held("status").get(k) as android.widget.TextView
+        val send = held("sendKey").get(k) as android.widget.TextView
+        fun call(method: String, vararg args: Any) {
+            val types = args.map { if (it is Int) Int::class.java else Boolean::class.java }
+            DictationIme::class.java.getDeclaredMethod(method, *types.toTypedArray())
+                .apply { isAccessible = true }.invoke(k, *args)
+        }
+        fun line(words: CharSequence, colour: Int) {
+            status.text = words
+            status.setTextColor(colour)
+        }
+        when (name) {
+            "busy" -> {
+                call("room", false)
+                call("rowKeys", false, false)
+                call("tint", Skin.TRANSCRIBING)
+                line("Transcribing in the cloud…", Skin.DIM)
+            }
+            "cloud" -> {
+                // once: the flow sets the line twice, and the field must say it once
+                k.currentInputConnection?.let { ic ->
+                    if (ic.getTextBeforeCursor(1, 0).isNullOrEmpty()) {
+                        ic.commitText("אני בדרך הביתה, אגיע בעוד עשר דקות", 1)
+                    }
+                }
+                call("room", false)
+                call("rowKeys", false, false)
+                call("tint", Skin.PAUSED)
+                line("0.6 s · from the cloud (Groq)", Skin.DIM)
+            }
+            "nokey", "nokey_key" -> {
+                call("room", true)
+                call("rowKeys", true, true)
+                call("tint", Skin.PAUSED)
+                if (name == "nokey") {
+                    val why = "Your phone isn't on Wi-Fi"
+                    val offer = "Add a cloud key to send it from anywhere"
+                    val s = android.text.SpannableString("$why · $offer")
+                    s.setSpan(android.text.style.ForegroundColorSpan(Skin.ACCENT_TEXT),
+                              why.length + 3, why.length + 3 + offer.length,
+                              android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    line(s, Skin.RED)
+                    send.text = k.getString(R.string.send_again)
+                } else {
+                    line("Your phone isn't on Wi-Fi", Skin.RED)
+                    send.text = "Add a key"
+                }
+            }
+        }
+    }
+
+    private fun c(k: DictationIme): Context = k
+
     /** What a microphone with a voice in it reports: an emulator's hears nothing. */
     private fun loud(k: DictationIme) {
         val recorder = held("recorder").get(k)
@@ -388,6 +449,11 @@ class ProbeReceiver : BroadcastReceiver() {
                 setTextColor(Skin.RED)
             }
             Log.i("DeskIT", "probe: said")
+            return
+        }
+        if (what.startsWith("proto:")) {
+            protoKeyboard(k, what.substring(6))
+            Log.i("DeskIT", "probe: proto")
             return
         }
         if (what.startsWith("fail:")) {

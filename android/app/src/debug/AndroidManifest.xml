@@ -10,6 +10,11 @@
             android:name=".ProtoActivity"
             android:exported="true"
             android:label="Prototype" />
+        <!-- PROTOTYPE, stage 2b: the cloud backup's screens, for the owner's yes. -->
+        <activity
+            android:name=".ProtoBackupActivity"
+            android:exported="true"
+            android:label="Prototype" />
         <!-- What is on the clipboard: Android 10 and up tell a window, not a receiver. -->
         <activity
             android:name=".ClipProbe"
