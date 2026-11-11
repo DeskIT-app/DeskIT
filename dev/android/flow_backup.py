@@ -66,6 +66,15 @@ def button() -> str:
     return (m.group(1) if m else "").replace("_", " ")
 
 
+def key_row(acct, name: str):
+    """The account's row for ``name`` as a PC's import_keys opens it: None for no row,
+    and a word for one that does not open, which is a removal written wrong."""
+    try:
+        return acct.key_row(name)
+    except Exception as e:                                   # noqa: BLE001
+        return f"does not open: {type(e).__name__}"
+
+
 def link_backup(acct):
     """The phone's own row, opened as a PC opens it: its cloud switch."""
     rows = acct.phones()
@@ -129,6 +138,14 @@ def keys_on_top() -> None:
     assert n is not None, "no keys card"
     drive.shell("input", "swipe", 500, n["y"], 500, 330, 700)
     time.sleep(1)
+
+
+def home_afresh() -> None:
+    """Home brought up so that it looks again: a Home already in front keeps the line
+    it drew, and the PC may have gone since."""
+    drive.shell("input", "keyevent", "3")
+    time.sleep(1)
+    drive.home()
 
 
 def away(pc) -> None:
@@ -221,7 +238,7 @@ def flow_lands():
 
         fa.back()                                # the keyboard down
         fa.back()                                # and the field gone
-        drive.home()
+        home_afresh()
         check("Home, the PC away: what still works, and the cloud's line in What you said",
               until(lambda: "You can still dictate. It goes to Groq with your key." in fd.in_field()
                     and "from the cloud" in fd.in_field(), 25), fd.in_field()[:400])
@@ -307,7 +324,7 @@ def flow_switch_off():
         fa.back()
         pc = acct._door_pc
         away(pc)
-        drive.home()
+        home_afresh()
         check("Home, the switch off: today's words", until(
             lambda: "Tap to try again." in fd.in_field(), 25), fd.in_field()[:300])
         drive.shot("e0_home_no_wifi_switch_off")
@@ -341,7 +358,7 @@ def flow_no_key():
         done_once()
         pc = acct._door_pc
         away(pc)
-        drive.home()
+        home_afresh()
         check("Home, the PC away and no key: the way to one",
               until(lambda: "Add a cloud key, and you can dictate from anywhere." in fd.in_field()
                     and "Add a key" in fd.in_field(), 25), fd.in_field()[:300])
@@ -405,7 +422,7 @@ def flow_keys():
         drive.tap_scrolling("^Save and test$")
         check("a key the provider refuses: said so", until(
             lambda: drive.find("Groq didn't accept this key") is not None, 20))
-        check("and it never reaches the account", acct.key_row("groq") is None)
+        check("and it never reaches the account", key_row(acct, "groq") is None)
 
         field = drive.seek("^Paste your Groq key$")
         drive.shell("input", "tap", field["x"], field["y"])
@@ -413,7 +430,7 @@ def flow_keys():
         drive.tap_scrolling("^Save and test$")
         check("a key the provider takes: Key works", until(lambda: drive.find("Key works") is not None, 25))
         check("in the account, sealed as vault.py seals it: what import_keys opens",
-              acct.key_row("groq") == {"v": KEY})
+              key_row(acct, "groq") == {"v": KEY})
         check("and the PCs told: changed, vault",
               any("vault" in (e.get("stores") or []) for e in acct.events("changed")))
 
@@ -430,7 +447,7 @@ def flow_keys():
         drive.tap_scrolling("^Change$")
         check("Change: the field open, the old key kept meanwhile",
               until(lambda: drive.find("The saved key keeps working") is not None, 10)
-              and acct.key_row("groq") == {"v": KEY})
+              and key_row(acct, "groq") == {"v": KEY})
         keys_on_top()
         drive.shot("a3_settings_change_key")
         drive.tap_scrolling("^Cancel$")
@@ -442,9 +459,9 @@ def flow_keys():
         hits = [n for n in drive.nodes() if n["text"] == "Remove"]
         drive.shell("input", "tap", hits[0]["x"], hits[0]["y"])
         check("removed: the empty key a PC reads as a removal",
-              until(lambda: acct.key_row("groq") == {"v": ""}, 15), str(acct.key_row("groq") is not None))
+              until(lambda: key_row(acct, "groq") == {"v": ""}, 15), str(key_row(acct, "groq") is not None))
         check("and the field is back", until(lambda: drive.find("^Paste your Groq key$") is not None, 10))
-        check("Gemini stays", acct.key_row("gemini") == {"v": GEMINI})
+        check("Gemini stays", key_row(acct, "gemini") == {"v": GEMINI})
         is_clean(KEY, WRONG, GEMINI)
     finally:
         acct._door_pc.down()
@@ -536,6 +553,9 @@ def main() -> None:
                 FLOWS[name]()
             except (AssertionError, subprocess.TimeoutExpired) as e:
                 check(f"{name} ran to its end", False, str(e)[:500])
+                drive.shot(f"failed_backup_{name}")
+            except Exception as e:                           # noqa: BLE001
+                check(f"{name} ran to its end", False, f"{type(e).__name__}: {str(e)[:400]}")
                 drive.shot(f"failed_backup_{name}")
     finally:
         shutil.rmtree(fd.HOME, ignore_errors=True)
