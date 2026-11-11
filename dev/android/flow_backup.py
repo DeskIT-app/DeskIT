@@ -104,12 +104,13 @@ def is_clean(*keys: str) -> None:
 
 
 def tap_switch(label: str) -> None:
-    """The Switch beside [label]: the label and the switch both carry the words, the
-    switch second."""
+    """The Switch beside [label], at the row's far end: Android 8 names a switch by
+    its own text ("ON") and not by its description, so it is found by its label's row."""
     hits = [n for n in drive.nodes() if n["text"] == label]
     assert hits, f"{label!r} is not on screen"
-    n = hits[-1]
-    drive.shell("input", "tap", n["x"], n["y"])
+    m = re.search(r"(\d+)x(\d+)", drive.shell("wm", "size"))
+    width = int(m.group(1)) if m else 1080
+    drive.shell("input", "tap", int(width * 0.86), hits[0]["y"])
 
 
 def keyboard_down() -> None:
