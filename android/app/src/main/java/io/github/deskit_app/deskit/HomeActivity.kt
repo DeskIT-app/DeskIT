@@ -359,14 +359,18 @@ class HomeActivity : Activity() {
             } catch (e: Sealed.NotNow) {
                 false
             }
+            // Away from home, a PC there through the account is a PC there (stage 3)
+            val viaAccount = reached == null && !locked && !none && Relay.reach(this)
             // what the line says with the PC away is the keys' to decide: read them when due
-            if (reached == null && !locked) CloudKeys.refreshIfStale(this)
+            if (reached == null && !locked && !viaAccount) CloudKeys.refreshIfStale(this)
             val versions = if (reached != null) Link.versions(this) else null
             val pending = if (reached != null) Notify.poll(this) else null
             // A recording that did not reach the PC is the keyboard's to offer: Home sends nothing.
             runOnUiThread {
                 if (wipes != Traces.wipes) return@runOnUiThread
-                if (reached == null) {
+                if (viaAccount) {
+                    state(Skin.LISTENING, true, getString(R.string.connected_title), getString(R.string.home_via_account))
+                } else if (reached == null) {
                     if (none) state(Skin.PAUSED, false, getString(R.string.no_token_title), "")
                     else if (locked) state(Skin.PAUSED, false, getString(R.string.unreachable_title), word)
                     else away(word)

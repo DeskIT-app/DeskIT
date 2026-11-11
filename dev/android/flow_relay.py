@@ -225,6 +225,13 @@ def flow_lands():
         fb.is_clean(fb.KEY)
         log = fa.log_so_far()
         check("the keyboard's log names no device and no key", acct.pc_id not in log and acct.uid not in log)
+        fa.back()                                # the keyboard down
+        fa.back()                                # and the field gone
+        fb.home_afresh()
+        check("Home, away: connected, through the account, and no word of the cloud",
+              until(lambda: "Away from home, through your account." in fd.in_field(), 25)
+              and "Groq" not in fd.in_field(), fd.in_field()[:300])
+        drive.shot("r4_home_away_via_account")
     finally:
         if pc is not None:
             pc.down()
