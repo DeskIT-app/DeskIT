@@ -36,6 +36,10 @@ object Transcriber {
             val seconds: Double = 0.0,
             /** A lookup's answer reads right to left (its target is Hebrew). */
             val rtl: Boolean = false,
+            /** The cloud backup carried it: the provider's word ("groq"), "" for a PC. */
+            val cloud: String = "",
+            /** The recording's length in seconds, for the text the PCs are told. */
+            val audio: Double = 0.0,
         ) : Result()
 
         data class Err(val message: String, val why: Why = Why.BUSY) : Result()

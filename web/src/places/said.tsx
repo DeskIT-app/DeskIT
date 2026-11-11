@@ -13,7 +13,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Caps, Change, IC, Seg, placeCall, useDesk, usePlace } from "../kit";
 import "./said.css";
 
-type Tag = { t: string; g?: "pip" | "phone" | "laptop" };
+type Tag = { t: string; g?: "pip" | "phone" | "laptop" | "globe" };
 type Pair = { heard: string; meant: string; rtl: boolean };
 type Row = {
   id: string; kind: string; glyph: string; label: string; when: string; secs: string;

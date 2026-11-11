@@ -162,6 +162,25 @@ a pairing over a certificate the PC generates, optionally Tailscale —
 never through any server of the owner. The phone token is stored under
 DPAPI.
 
+**The cloud backup, on the phone only.** When no PC of your account
+answers within about a second, the DeskIT keyboard sends that recording
+to Groq (to Gemini, if that is the only key you have) with **your own
+key**, from the phone, and the text lands in the field. It is on unless
+you turn it off: the phone shows it once, with the switch already on,
+and you can turn it off there or in the phone's Settings. Every
+dictation that went this way says "from the cloud" on the keyboard. What
+this costs: the provider hears that recording (Groq says it keeps
+nothing by default and may log inputs for up to 30 days to investigate
+abuse or reliability), and its words are less accurate than your PC's,
+with none of the words DeskIT learned. Once the text is in the field the
+recording is deleted from the phone; only the text goes on to your PCs,
+locked with your account's own key, through the same history store your
+PCs already share, and only if your account keeps what you said. Your
+cloud keys reach the phone the same way they reach a PC: in your
+account, locked with your account's key. The phone opens one for a single
+request and keeps nothing readable. Your PC never sends audio to the
+cloud, with or without this.
+
 ## 6. Screenshots, clips, camera
 
 Local files only, in your Pictures and Videos folders. Nothing is

@@ -54,6 +54,29 @@ relay, no server of ours in between.
 - **Forget** on the phone removes the address and the token; turning the switch off on the PC
   stops it listening.
 
+## When your PC can't be reached
+
+The keyboard has a backup: when no PC of your account answers within about a second, it sends
+that recording to **Groq** (or **Gemini**, if that is the only key you have) with **your own
+key**, and the text lands in the field as usual. It is on unless you turn it off. The phone
+shows it once, with the switch already on; you can turn it off there, or later in the phone's
+Settings, under **When your PC can't be reached**.
+
+- **The key.** The same key your PC uses: it lives in your account, locked with your account's
+  key. Add, change or remove it in the phone's Settings, under **Your cloud keys**, or on the PC
+  — a change on one reaches the other by itself. The phone opens it for one request and keeps
+  nothing readable.
+- **You always know.** The keyboard's line says *Transcribing in the cloud…* while it works and
+  *from the cloud (Groq)* when the text is in. **What you said** on the phone marks it too.
+- **The price.** The provider hears that recording, and its words are less accurate than your
+  PC's, with none of the words DeskIT learned. That is why it is a backup and never the first
+  road.
+- **Afterwards.** The recording is deleted from the phone. Only the text goes on to your PCs,
+  locked, and appears on their **Said** page marked *From the cloud* — only if your account
+  keeps what you said.
+- **No key yet?** Away from home, a recording that could not be sent waits, and the button
+  beside it reads **Add a key** instead of **Send again** until there is a way to send it.
+
 ## Trouble
 
 - "Cannot connect": is Tailscale up on both, and is the PC's DeskIT running with the switch

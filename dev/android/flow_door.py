@@ -139,12 +139,12 @@ class Pc:
         return self
 
     def write(self, *, port: int | None = None, addrs=None, cert: str | None = None,
-              words_sync: bool = True):
+              words_sync: bool = True, history_sync: bool = True):
         self.acct.write_pc_row(device=self.device, name=self.name, link={
             "v": 1, "kind": "pc", "cert": cert or phone_mod.identity(),
             "addrs": [ADDRESS] if addrs is None else addrs,
             "port": port if port is not None else (self.door.port or 8766),
-            "proto": 1, "words_sync": words_sync})
+            "proto": 1, "words_sync": words_sync, "history_sync": history_sync})
 
     def down(self):
         self.door.stop()

@@ -61,6 +61,12 @@
             android:exported="false"
             android:label="@string/settings" />
 
+        <!-- The cloud backup, seen once: the switch already on, and Done is the yes. -->
+        <activity
+            android:name=".BackupActivity"
+            android:exported="false"
+            android:label="@string/backup_title" />
+
         <!-- One proposal of the second reading, opened from its
              notification or from the home's list. -->
         <activity

@@ -43,6 +43,19 @@ class ProbeReceiver : BroadcastReceiver() {
             keyboard(c, it)
             return
         }
+        intent.getStringExtra("backup")?.let {
+            // The cloud backup's one-time screen, answered ahead (`off`: today's keyboard,
+            // which the older flows test) or read back (`read`). Never a key.
+            when (it) {
+                "off" -> Backup.answer(c, false, "")
+                "on" -> Backup.answer(c, true, "the flow's yes")
+            }
+            Log.i("DeskIT", "probe: backup on=${Backup.switchOn(c)} yes=${Backup.consented(c)} " +
+                "asked=${Backup.asked(c)} active=${Backup.active(c)} " +
+                "provider=${CloudKeys.provider(c)?.word ?: "none"} keep=${Backup.pcsKeep(c)} " +
+                "keys=${CloudKeys.NAMES.filter { CloudKeys.have(c, it) }.joinToString(",")}")
+            return
+        }
         if (intent.hasExtra("wipe")) {
             Traces.wipe(c)
             Log.i("DeskIT", "probe: wiped")
@@ -434,7 +447,10 @@ class ProbeReceiver : BroadcastReceiver() {
                     " send=${shown("sendKey")} drop=${shown("dropKey")} cut=${wide("sendKey")}" +
                     " touch=${minOf(tall("sendKey"), tall("dropKey")).toInt()} board=${(board / d).toInt()}" +
                     " ellipsis=$ellipsis lines=${line?.lineCount ?: 0}" +
-                    " private=${held("privateField").getBoolean(k)} mic=${tall("pill").toInt()}")
+                    " private=${held("privateField").getBoolean(k)} mic=${tall("pill").toInt()}" +
+                    // the word on the button beside the line: Send again, or Add a key (stage 2b)
+                    " button=${(held("sendKey").get(k) as? android.widget.TextView)?.text
+                        ?.toString()?.replace(' ', '_')}")
                 return
             }
         }

@@ -70,9 +70,14 @@ android {
             // app speaks to the real project (Account.kt).
             resValue("string", "account_server",
                      (project.findProperty("deskitAccount") as String?) ?: "")
+            // The fake Groq and Gemini of dev/android/fake_cloud.py, the same way:
+            // `-PdeskitCloud=http://10.0.2.2:18793`. Without it, the real providers.
+            resValue("string", "cloud_server",
+                     (project.findProperty("deskitCloud") as String?) ?: "")
         }
         release {
             resValue("string", "account_server", "")
+            resValue("string", "cloud_server", "")
             // The build that goes on GitHub Releases and later Play:
             // release-signed when keystore.properties is there, never
             // debuggable, not minified (1.2 MB; nothing to gain and a

@@ -42,6 +42,7 @@ class HomeActivity : Activity() {
     private lateinit var lamp: LampView
     private lateinit var stateTitle: TextView
     private lateinit var stateLine: TextView
+    private lateinit var stateButton: View
     private lateinit var updateCard: LinearLayout
     private lateinit var updateLine: TextView
     private lateinit var stepsCard: LinearLayout
@@ -68,6 +69,8 @@ class HomeActivity : Activity() {
     /** The code a press is out on: a look that left before the press does not undo it. */
     private var pressing = ""
     private var resumed = false
+    /** The cloud backup's one-time screen, opened at most once in this process. */
+    private var backupShown = false
     /** While the join waits, Home looks again as the code screen does, and only while it is up. */
     private val lookAgain = Runnable { lookAtAccount() }
     /** [Traces.wipes] as of what this page last drew. */
@@ -176,10 +179,22 @@ class HomeActivity : Activity() {
         stateTitle = Skin.title(this, getString(R.string.checking), 19f)
         stateLine = Skin.text(this, "", 14f, Skin.DIM).apply {
             setPadding(0, Skin.dp(this@HomeActivity, 4), 0, 0)
+            setLineSpacing(0f, 1.2f)
+            visibility = View.GONE
+        }
+        // The cloud backup with no key, away from the PC: the way to one (stage 2b).
+        stateButton = Skin.smallButton(this, getString(R.string.add_a_key)) {
+            startActivity(Intent(this, SettingsActivity::class.java)
+                .putExtra(SettingsActivity.AT_KEYS, true))
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                                                     ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = Skin.dp(this@HomeActivity, 10) }
             visibility = View.GONE
         }
         lines.addView(stateTitle)
         lines.addView(stateLine)
+        lines.addView(stateButton)
         state.addView(lines)
         col.addView(state)
         stateCard = state
@@ -202,6 +217,11 @@ class HomeActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        // The cloud backup, seen once, on a phone that has joined (stage 2b): Done is the yes.
+        if (!backupShown && Link.joined(this) && !Backup.asked(this)) {
+            backupShown = true
+            startActivity(Intent(this, BackupActivity::class.java))
+        }
         Account.settle(this)
         // A recording's hour is up at whatever opens first.
         val app = applicationContext
@@ -239,6 +259,8 @@ class HomeActivity : Activity() {
         col.removeCallbacks(lookAgain)
         thread {
             val st = Lock.look(this)
+            // a text row of the cloud's that had no answer when it was made
+            if (st is Lock.State.Ready) Backup.flushQuietly(this)
             runOnUiThread { account(st) }
         }
     }
@@ -337,6 +359,8 @@ class HomeActivity : Activity() {
             } catch (e: Sealed.NotNow) {
                 false
             }
+            // what the line says with the PC away is the keys' to decide: read them when due
+            if (reached == null && !locked) CloudKeys.refreshIfStale(this)
             val versions = if (reached != null) Link.versions(this) else null
             val pending = if (reached != null) Notify.poll(this) else null
             // A recording that did not reach the PC is the keyboard's to offer: Home sends nothing.
@@ -344,7 +368,8 @@ class HomeActivity : Activity() {
                 if (wipes != Traces.wipes) return@runOnUiThread
                 if (reached == null) {
                     if (none) state(Skin.PAUSED, false, getString(R.string.no_token_title), "")
-                    else state(Skin.PAUSED, false, getString(R.string.unreachable_title), word)
+                    else if (locked) state(Skin.PAUSED, false, getString(R.string.unreachable_title), word)
+                    else away(word)
                     if (!isFinishing) col.postDelayed(again, AGAIN_MS)
                 } else {
                     state(Skin.LISTENING, true, getString(R.string.connected_title), "")
@@ -391,12 +416,30 @@ class HomeActivity : Activity() {
     private fun versionName(code: Int): String =
         "${code / 10000}.${code / 100 % 100}.${code % 100}"
 
-    private fun state(colour: Int, halo: Boolean, title: String, line: String) {
+    private fun state(colour: Int, halo: Boolean, title: String, line: String,
+                      addKey: Boolean = false) {
         lamp.colour = colour
         lamp.halo = halo
         stateTitle.text = title
         stateLine.text = line
         stateLine.visibility = if (line.isEmpty()) View.GONE else View.VISIBLE
+        stateButton.visibility = if (addKey) View.VISIBLE else View.GONE
+    }
+
+    /**
+     * No PC answered. With the cloud backup on, the line says what still works: the
+     * key carries the dictation, or, with no key, a key would (picture e, 2026-11-11).
+     * The lamp keeps meaning the PC, so it is grey either way.
+     */
+    private fun away(word: String) {
+        val title = getString(R.string.unreachable_title)
+        if (!Backup.active(this)) {
+            state(Skin.PAUSED, false, title, word)
+            return
+        }
+        val p = CloudKeys.provider(this)
+        if (p != null) state(Skin.PAUSED, false, title, getString(R.string.home_cloud, p.label))
+        else state(Skin.PAUSED, false, title, getString(R.string.home_no_key), addKey = true)
     }
 
     // ---- the steps ----
@@ -526,8 +569,9 @@ class HomeActivity : Activity() {
         val clock = SimpleDateFormat("HH:mm", Locale.US)
         val day = SimpleDateFormat("d MMM · HH:mm", Locale.US)
         val now = today.format(Date())
-        for ((t, s) in rows) {
-            val stamp = Date(t)
+        for (said in rows) {
+            val s = said.text
+            val stamp = Date(said.at)
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, Skin.dp(this@HomeActivity, 10), 0, Skin.dp(this@HomeActivity, 10))
@@ -539,9 +583,9 @@ class HomeActivity : Activity() {
                                    Toast.LENGTH_SHORT).show()
                 }
             }
+            val time = if (today.format(stamp) == now) clock.format(stamp) else day.format(stamp)
             row.addView(Skin.text(this,
-                if (today.format(stamp) == now) clock.format(stamp) else day.format(stamp),
-                12f, Skin.MUTED))
+                if (said.cloud) getString(R.string.said_cloud, time) else time, 12f, Skin.MUTED))
             row.addView(Skin.text(this, s, 16f, Skin.FG).apply {
                 maxLines = 4
                 ellipsize = android.text.TextUtils.TruncateAt.END

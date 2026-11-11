@@ -166,6 +166,19 @@ class DictationIme : InputMethodService() {
     /** The line is a knock's "nobody answered", which a change of network makes stale. */
     private var lineUnheard = false
 
+    /**
+     * When the asking began for the recording now being made: the press, when a knock
+     * went ahead while the person spoke ([Backup.knockAhead]); 0 when none did, and
+     * then the release is when it begins.
+     */
+    private var askedAt = 0L
+
+    /**
+     * The button beside the line is Add a key and not Send again: the backup is on and
+     * holds no key, and the phone is on no road to a PC (the owner's d2, 2026-11-11).
+     */
+    private var sendAddsKey = false
+
     /** A press of Send again under way: how many it set out with, and which is on its way. */
     private var sendingOf = 0
     private var sendingAt = 0
@@ -427,7 +440,7 @@ class DictationIme : InputMethodService() {
             visibility = View.GONE
             setOnClickListener {
                 it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                sendWaiting()
+                if (sendAddsKey) openKeys() else sendWaiting()
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT
@@ -938,6 +951,10 @@ class DictationIme : InputMethodService() {
             // Nothing is sent from here, a PC or no PC: what waits is the person's to send.
             // A phone used only through this keyboard opens no screen that would look.
             if (Sealed.weak(app)) Lock.look(app)
+            // The keys the backup would use, read when due, and a text row of the cloud's
+            // that had no answer the first time: the one thing that goes unpressed.
+            CloudKeys.refreshIfStale(app)
+            Backup.flushQuietly(app)
             ui.post {
                 reachable = reached != null
                 // What waits is told what is true now: a PC answers, the phone cannot
@@ -974,6 +991,7 @@ class DictationIme : InputMethodService() {
         }
         v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         holding = true
+        askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
         tint(recColor)
         say(getString(R.string.slide_to_lock))
         startTicking()
@@ -989,6 +1007,7 @@ class DictationIme : InputMethodService() {
         }
         holding = true
         locked = true
+        askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
         tint(lockColor)
         say("")
         startTicking()
@@ -1079,7 +1098,7 @@ class DictationIme : InputMethodService() {
             return
         }
         val app = applicationContext
-        go { Spool.keep(app, wav) }
+        go(since = if (askedAt > 0) askedAt else SystemClock.elapsedRealtime()) { Spool.keep(app, wav) }
         if (capped) {
             say(getString(R.string.capped, "${Recorder.MAX_SECONDS / 60} min"))
         }
@@ -1090,7 +1109,8 @@ class DictationIme : InputMethodService() {
      * the disk, which is not the main thread's to wait for, and from then on a
      * process killed anywhere loses nothing. [note] is the line meanwhile.
      */
-    private fun go(note: String = getString(R.string.transcribing), item: () -> SpoolFiles.Item) {
+    private fun go(note: String = getString(R.string.transcribing),
+                   since: Long = SystemClock.elapsedRealtime(), item: () -> SpoolFiles.Item) {
         busy = true
         tint(busyColor)
         say(note)
@@ -1101,7 +1121,10 @@ class DictationIme : InputMethodService() {
             val recording = item()
             // Where it was tried from: a try made off any Wi-Fi says nothing of the PC.
             val off = Link.noWifi(app)
-            val result = Link.dictate(app, recording)
+            // The PC road, and the cloud backup beside it when no PC answers (stage 2b).
+            val result = Backup.dictate(app, recording, since) {
+                ui.post { if (busy && mine == session) say(getString(R.string.transcribing_cloud)) }
+            }
             ui.post { deliver(result, recording, mine, wipes, off) }
         }
     }
@@ -1136,12 +1159,17 @@ class DictationIme : InputMethodService() {
                 // The PC answered, so the link is up whatever /health last
                 // said — and the sentence goes on the phone's own Said, before
                 // the file goes: a kill between the two says it twice, and
-                // never not at all.
-                reachable = true
-                if (result.backend.isNotEmpty()) backendName = result.backend
-                Prefs.addSaid(this, text, wipes)
+                // never not at all. The cloud's answer says nothing of the PC.
+                val cloud = result.cloud.isNotEmpty()
+                if (!cloud) {
+                    reachable = true
+                    if (result.backend.isNotEmpty()) backendName = result.backend
+                }
+                Prefs.addSaid(this, text, wipes, cloud)
+                // the recording goes from the phone: the cloud's text is the only copy now
                 Spool.done(this, item)
-                scheduleReviewPolls()
+                if (cloud) Backup.tellPcs(this, text, result.cloud, result.audio, wipes)
+                else scheduleReviewPolls()
                 if (!place(text, mine)) {
                     // The field went: the rest wait for the next press.
                     sendingOf = 0
@@ -1332,6 +1360,13 @@ class DictationIme : InputMethodService() {
         stickySetup = false
         statusAction = null
         lineUnheard = false
+        // No road: the backup is on and holds no key, and the phone is on no Wi-Fi (a
+        // pasted line goes over any network, so Link.noWifi says no with one). Then a
+        // key is what would send it, and Send again comes back with the Wi-Fi.
+        sendAddsKey = Backup.active(this) && CloudKeys.provider(this) == null && Link.noWifi(this)
+        sendKey.text = getString(if (sendAddsKey) R.string.add_a_key else R.string.send_again)
+        sendKey.contentDescription = getString(if (sendAddsKey) R.string.cd_add_a_key
+                                               else R.string.cd_send_again)
         rowKeys(true)
     }
 
@@ -1599,6 +1634,15 @@ class DictationIme : InputMethodService() {
     private fun openSetup() {
         startActivity(
             Intent(this, HomeActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+
+    /** Add a key: Settings, at the keys. */
+    private fun openKeys() {
+        startActivity(
+            Intent(this, SettingsActivity::class.java)
+                .putExtra(SettingsActivity.AT_KEYS, true)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }

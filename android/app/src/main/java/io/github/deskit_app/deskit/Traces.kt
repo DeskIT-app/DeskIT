@@ -25,7 +25,9 @@ import android.util.Log
  * on the notification shade; a sentence copied from here; and the pasted address
  * and token, which are a key to the PC and would put those proposals back on Home
  * at the next look; and where the PCs are: the addresses that answered and the
- * rows they came from ([Link.forget]). The keyboard holds a transcript waiting for
+ * rows they came from ([Link.forget]); the account's cloud keys as this phone kept
+ * them, sealed ([CloudKeys.forget]), and the text of a dictation the cloud carried
+ * that has not reached the account yet ([Backup.forget]). The keyboard holds a transcript waiting for
  * a field, the recordings the disk refused and why the last try failed, and a
  * dictation can be on its way, a fresh one or one sent again: all of them read
  * [wipes], in this one process, and let go when it has moved.
@@ -56,6 +58,8 @@ object Traces {
         wipes++
         Prefs.forget(c)
         Link.forget(c)
+        CloudKeys.forget(c)
+        Backup.forget(c)
         (c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancelAll()
         Prefs.clipOwed(c, true)
         val app = c.applicationContext

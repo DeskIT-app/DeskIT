@@ -75,6 +75,9 @@ class Event:
     pairs: list[tuple[str, str]] = field(default_factory=list)
     polished: bool = False
     phone: bool = False
+    #: A phone's dictation the cloud carried, its text sent on to the PCs
+    #: (PHONE_LINK_PLAN.md 2b): REMOTE with engine "cloud:<engine>".
+    cloud: bool = False
 
     @property
     def label(self) -> str:
@@ -99,6 +102,8 @@ class Event:
             bits.append(f"{self.latency:.1f} s latency")
         if self.phone:
             bits.append("from the phone")
+        if self.cloud:
+            bits.append("from the cloud")
         if self.polished:
             bits.append("polished")
         if self.note:
@@ -257,11 +262,14 @@ def _events_in(path: Path) -> list[Event]:
                 note = "1 word" if len(pairs) == 1 else f"{len(pairs)} words"
             where = (f"from {parts[2].strip()}" if len(parts) > 2 and parts[2].strip()
                      else "from another PC")
+            engine = parts[3].strip() if len(parts) > 3 else ""
+            # a phone's dictation the cloud carried: sync.CLOUD_ENGINE in front
+            cloud = engine.startswith("cloud:")
             events.append(Event(
                 when, kind, text=text, source=source, pairs=pairs,
-                engine=parts[3].strip() if len(parts) > 3 else "",
+                engine=engine[len("cloud:"):] if cloud else engine,
                 seconds=_seconds(parts[4]) if len(parts) > 4 else None,
-                note=f"{note}   ·   {where}" if note else where))
+                note=f"{note}   ·   {where}" if note else where, cloud=cloud))
 
         elif head.endswith("-IN"):
             waiting[head[:-3].lower()] = (when, _tail(parts, 2))

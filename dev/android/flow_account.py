@@ -56,9 +56,13 @@ def until(test, seconds: float = 20.0, every: float = 0.3) -> bool:
     return bool(test())
 
 
-def fresh() -> fake_pc.FakeAccount:
-    """A stranger's phone and a new account beside it."""
+def fresh(backup: str | None = "off") -> fake_pc.FakeAccount:
+    """A stranger's phone and a new account beside it. ``backup``: the cloud backup's
+    one-time screen answered ahead ("off" is the keyboard these flows were written
+    for, which never sends a recording anywhere but a PC); None leaves it to be seen."""
     drive.clear_app()
+    if backup is not None:
+        told("--es", "backup", backup)
     acct = fake_pc.FakeAccount()
     acct.start()
     return acct
@@ -353,7 +357,8 @@ def flow_join():
         row = acct.phones()[0]
         link = acct.open_link(row)
         check("the real vault opens the phone's link row", link.get("kind") == "phone"
-              and link.get("v") == 1 and link.get("proto") == 1 and link.get("backup") is True,
+              and link.get("v") == 1 and link.get("proto") == 1
+              and isinstance(link.get("cloud_backup"), bool),
               str(link))
         der = base64.b64decode(link["cert"])
         check("the certificate is DER", der[:1] == b"\x30" and len(der) > 200, str(len(der)))

@@ -60,6 +60,8 @@ COLUMNS = {
     "pairings": {"id", "user_id", "device_id", "device_name", "code", "applicant", "handed",
                  "created_at", "expires_at", "approved_at"},
     "vault": {"user_id", "name", "cipher", "updated_at"},
+    # stage 2b: the text of a dictation the cloud carried, as a PC's own rows are
+    "history": {"user_id", "device_id", "ts", "kind", "cipher", "engine", "seconds", "updated_at"},
 }
 
 
@@ -290,7 +292,31 @@ class FakeAccount:
 
     def pc_link(self) -> dict:
         return {"v": 1, "kind": "pc", "cert": hashlib.sha256(b"fake pc cert").hexdigest(),
-                "addrs": ["192.168.1.20"], "port": 8766, "proto": 1, "words_sync": True}
+                "addrs": ["192.168.1.20"], "port": 8766, "proto": 1, "words_sync": True,
+                "history_sync": True}
+
+    # ---- the cloud keys and what was said (stage 2b) ----
+
+    def put_key(self, name: str, value: str):
+        """A key as a PC puts one in the account: vault.export_keys' own seal."""
+        sealed = vault.seal_json(self.key, {"v": value}, vault.AAD_VAULT.format(uid=self.uid, name=name))
+        with self.mutex:
+            self.tables["vault"] = [r for r in self.tables["vault"] if r["name"] != name]
+            self.tables["vault"].append({"user_id": self.uid, "name": name, "cipher": sealed,
+                                         "updated_at": now_iso()})
+
+    def key_row(self, name: str):
+        """What the account's row for ``name`` opens to, as a PC's import_keys opens
+        it, or None for no row. A test reads this; nothing logs it."""
+        with self.mutex:
+            row = next((r for r in self.tables["vault"] if r["name"] == name), None)
+        if row is None:
+            return None
+        return vault.open_json(self.key, row["cipher"], vault.AAD_VAULT.format(uid=self.uid, name=name))
+
+    def history(self) -> list[dict]:
+        with self.mutex:
+            return [dict(r) for r in self.tables["history"]]
 
     def write_pc_row(self, *, device: str | None = None, name: str | None = None,
                      link: dict | None = None):
@@ -611,6 +637,22 @@ class FakeAccount:
                 refuse("name")
             if not vault.is_sealed(str(row.get("cipher"))):
                 refuse("cipher is not sealed")
+        if table == "history":
+            if not UUID_RE.match(str(row.get("device_id"))):
+                raise Refuse(400, "22P02", "the device id is not a uuid")
+            if str(row.get("kind")) not in ("dictation", "translate", "punctuate", "lookup", "learned"):
+                refuse("kind")
+            engine = str(row.get("engine") or "")
+            if len(engine) > 32 or looks_like_key(engine):
+                refuse("engine")
+            if row.get("seconds") is not None and not 0 <= float(row["seconds"]) <= 36000:
+                refuse("seconds")
+            if not vault.is_sealed(str(row.get("cipher"))):
+                refuse("cipher is not sealed")
+            try:
+                datetime.fromisoformat(str(row.get("ts")))
+            except ValueError:
+                raise Refuse(400, "22007", "ts is not a timestamp")
 
     def _table(self, h, method: str, table: str, pairs, body, session: dict):
         filters, select, order, limit, on_conflict = self._filters(table, pairs)
@@ -635,8 +677,8 @@ class FakeAccount:
                                    (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat())
                     row.setdefault("handed", None)
                     row.setdefault("approved_at", None)
-                if table == "vault":
-                    row.setdefault("updated_at", now_iso())
+                if table in ("vault", "history"):
+                    row["updated_at"] = now_iso()
                 self._check(table, row)
                 keys = on_conflict or (["id"] if "id" in COLUMNS[table] else [])
                 same = next((r for r in self.tables[table]
