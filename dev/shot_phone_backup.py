@@ -1,7 +1,7 @@
 """Settings > Phone with the phone's cloud backup (PHONE_LINK_PLAN.md stage 2b), photographed:
 the real card (desk_settings.backup_card), over a faked running app.
 
-    <venv python> dev\\shot_phone_backup.py OUT.png key|nokey|off
+    <venv python> dev\\shot_phone_backup.py OUT.png key|nokey|off|said [PHONE NAME]
 
 Run it through tests_quiet.run_hidden: the window is born on a hidden desktop. It runs as a
 stranger's copy under a scratch home of its own (DESKIT_HOME, DESKIT_STRANGER, DESKIT_SUITE),
@@ -17,6 +17,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 OUT, WHICH = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "key")
+#: the phone's name, as its owner typed it (his: "ה-Yoav של S26 Ultra"), for `said`
+NAME = sys.argv[3] if len(sys.argv) > 3 else "Dana's phone"
 os.environ["DESKIT_HOME"] = tempfile.mkdtemp(prefix="deskit-shot-backup-")
 os.environ["DESKIT_STRANGER"] = "1"
 os.environ["DESKIT_SUITE"] = "1"
@@ -69,7 +71,7 @@ if WHICH == "said":
     row = sb._open_history(key, uid, {"device_id": phone, "ts": ts, "kind": "dictation",
                                       "cipher": sealed, "engine": "groq", "seconds": 3.2})
     paths.SYNC_DIR.mkdir(parents=True, exist_ok=True)
-    sync.append_remote_history([sync.remote_line(row, "Dana's phone")])
+    sync.append_remote_history([sync.remote_line(row, NAME)])
     own = (when - timedelta(minutes=40)).astimezone()
     paths.TRANSCRIPTS_LOG.parent.mkdir(parents=True, exist_ok=True)
     paths.TRANSCRIPTS_LOG.write_text(
