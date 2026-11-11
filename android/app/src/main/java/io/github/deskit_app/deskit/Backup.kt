@@ -104,23 +104,28 @@ object Backup {
 
     /**
      * A knock while the person speaks, so the second is spent before the release
-     * and a door that answered is used at once ([Link.answeredRecently]), and the keys
-     * read beside it when they are due. Only with the backup on: without it the release
-     * asks as it always has. True when the asking began now, so the second counts from
+     * and a door that answered is used at once ([Link.answeredRecently]), a ping through
+     * the account beside it ([Relay.ask], stage 3), and the keys read when they are due
+     * and the backup is on. True when the asking began now, so the second counts from
      * the press; false, and it counts from the release, for a PC that must still get
      * its whole second (found on the emulator, 2026-11-11: with no key read yet the
      * knock never went, and the PC up at home lost to the cloud).
      */
     fun knockAhead(c: Context): Boolean {
-        if (!active(c) || !Link.joined(c)) return false
+        if (!Link.joined(c)) return false
         val app = c.applicationContext
-        if (CloudKeys.stale(app)) thread(name = "backup-keys") { CloudKeys.refreshIfStale(app) }
-        if (!Link.answeredRecently()) thread(name = "backup-knock") {
-            try {
-                Link.reach(app)
-            } catch (e: Sealed.NotNow) {
-                // the release says so
+        if (active(app) && CloudKeys.stale(app)) thread(name = "backup-keys") { CloudKeys.refreshIfStale(app) }
+        if (!Link.answeredRecently()) {
+            thread(name = "backup-knock") {
+                try {
+                    Link.reach(app)
+                } catch (e: Sealed.NotNow) {
+                    // the release says so
+                }
             }
+            // and through the account, for a phone away from home (stage 3): the ping's
+            // second is spent while the person speaks, as the knock's is
+            Relay.ask(app)
         }
         return true
     }
@@ -171,16 +176,21 @@ object Backup {
      */
     fun dictate(c: Context, item: SpoolFiles.Item, askingSince: Long,
                 toCloudNow: () -> Unit): Transcriber.Result {
-        if (!active(c)) return Link.dictate(c, item)
+        val cloudOn = active(c)
+        val relayOn = Relay.usable(c)
+        if (!cloudOn && !relayOn) return Link.dictate(c, item)
         val wav = try {
             item.bytes()
         } catch (e: IOException) {
             return Link.dictate(c, item)
         }
         // A key added on a PC since the last read: look, beside the PC road.
-        if (CloudKeys.provider(c) == null && CloudKeys.stale(c)) {
+        if (cloudOn && CloudKeys.provider(c) == null && CloudKeys.stale(c)) {
             thread(name = "backup-keys") { CloudKeys.refreshIfStale(c) }
         }
+        // The account's channel, if the press did not ask it (Send again, a door that
+        // answered a minute ago): it is asked when the door at home gives up, below.
+        val unreached = Transcriber.Result.Err(c.getString(R.string.unreachable), Transcriber.Why.UNREACHED)
         @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
         val gate = java.lang.Object()
         val first = FirstAnswer()
@@ -190,10 +200,25 @@ object Backup {
         var pcResult: Transcriber.Result? = null
         var cloud = Road.Cloud.IDLE
         var cloudResult: Transcriber.Result? = null
+        var run = Road.Run.IDLE
+        var relayMoved = 0L
+        var relayPc = Road.Pc.PENDING
+        var relayResult: Transcriber.Result? = null
+        var relayAsked = false
+        // Set once this returns: a road that has not sent the recording yet does not now,
+        // so a PC is never handed a recording whose text has nowhere to land.
+        var settled = false
         val setOut = SystemClock.elapsedRealtime()
+        if (relayOn && !Link.answeredRecently() &&
+            Relay.view(c, askingSince).state == Road.Relay.OFF) {
+            Relay.ask(c)
+            relayAsked = true
+        }
         thread(name = "backup-pc") {
             val r = Link.ask(c) { road ->
                 synchronized(gate) {
+                    // the relay has it, or something landed: this road sends nothing
+                    if (settled || run != Road.Run.IDLE) return@ask unreached
                     if (door == Road.Door.NOT_YET) {
                         door = Road.Door.ANSWERED
                         doorAt = SystemClock.elapsedRealtime()
@@ -210,43 +235,82 @@ object Backup {
                 gate.notifyAll()
             }
         }
-        while (true) {
-            synchronized(gate) {
-                val now = SystemClock.elapsedRealtime()
-                val p = CloudKeys.provider(c)
-                val step = Road.next(Road.Moment(active = true, keyed = p != null,
-                    askedMs = now - askingSince, roadMs = now - setOut, door = door,
-                    silentMs = if (door == Road.Door.ANSWERED) now - doorAt else 0L,
-                    pc = pc, cloud = cloud))
-                when (step) {
-                    Road.Step.WAIT -> gate.wait(50)
-                    Road.Step.LAND_PC -> return pcResult!!
-                    Road.Step.LAND_CLOUD -> return cloudResult!!
-                    Road.Step.PC_SAYS -> return pcResult ?: Transcriber.Result.Err(
-                        c.getString(R.string.unreachable), Transcriber.Why.UNREACHED)
-                    Road.Step.CLOUD_SAYS -> {
-                        val said = cloudResult as? Transcriber.Result.Err
-                        // the cloud not answering either says nothing the PC road did not
-                        return if (said == null || said.why == Transcriber.Why.UNREACHED)
-                            pcResult ?: said!! else said
+        try {
+            while (true) {
+                synchronized(gate) {
+                    val now = SystemClock.elapsedRealtime()
+                    val p = if (cloudOn) CloudKeys.provider(c) else null
+                    var view = if (relayOn) Relay.view(c, askingSince, now) else Relay.View(Road.Relay.OFF)
+                    if (relayOn && !relayAsked && view.state == Road.Relay.OFF && pc == Road.Pc.UNREACHED) {
+                        // the door from a moment ago did not answer after all: ask the account now
+                        Relay.ask(c)
+                        relayAsked = true
+                        view = Relay.View(Road.Relay.ASKING)
                     }
-                    Road.Step.CLOUD -> {
-                        cloud = Road.Cloud.PENDING
-                        Log.i("DeskIT", "backup: to the cloud (${p!!.word}), the PC road " +
-                            "${door.name.lowercase()}, ${now - askingSince} ms asked")
-                        thread(name = "backup-cloud") {
-                            val r = toCloud(c, p, wav)
-                            synchronized(gate) {
-                                cloudResult = r
-                                cloud = if (r is Transcriber.Result.Ok && first.offer("cloud"))
-                                    Road.Cloud.OK else Road.Cloud.FAILED
-                                gate.notifyAll()
+                    val step = Road.next(Road.Moment(active = cloudOn, keyed = p != null,
+                        askedMs = now - askingSince, roadMs = now - setOut, door = door,
+                        silentMs = if (door == Road.Door.ANSWERED) now - doorAt else 0L,
+                        pc = pc, cloud = cloud, relay = view.state, run = run,
+                        relayQuietMs = if (run == Road.Run.IDLE) 0L else now - relayMoved,
+                        relayPc = relayPc))
+                    when (step) {
+                        Road.Step.WAIT -> gate.wait(50)
+                        Road.Step.LAND_PC -> return pcResult!!
+                        Road.Step.LAND_RELAY -> return relayResult!!
+                        Road.Step.LAND_CLOUD -> return cloudResult!!
+                        Road.Step.PC_SAYS -> return pcResult ?: relayResult ?: unreached
+                        Road.Step.RELAY_SAYS -> return relayResult
+                            ?: Transcriber.Result.Err(view.why.ifEmpty { c.getString(R.string.unreachable) },
+                                                      Transcriber.Why.BUSY)
+                        Road.Step.CLOUD_SAYS -> {
+                            val said = cloudResult as? Transcriber.Result.Err
+                            // the cloud not answering either says nothing the PC road did not
+                            return if (said == null || said.why == Transcriber.Why.UNREACHED)
+                                pcResult ?: said!! else said
+                        }
+                        Road.Step.RELAY -> {
+                            val target = view.target!!
+                            run = Road.Run.SENDING
+                            relayMoved = now
+                            Log.i("DeskIT", "relay: to the PC through the account, the door at home " +
+                                "${door.name.lowercase()}, ${now - askingSince} ms asked")
+                            thread(name = "backup-relay") {
+                                val r = Relay.send(c, wav, target) { took ->
+                                    synchronized(gate) {
+                                        relayMoved = SystemClock.elapsedRealtime()
+                                        if (took) run = Road.Run.TOOK
+                                        gate.notifyAll()
+                                    }
+                                }
+                                synchronized(gate) {
+                                    relayResult = r
+                                    relayPc = if (r is Transcriber.Result.Ok && !first.offer("relay"))
+                                        Road.Pc.UNREACHED else classify(r)
+                                    gate.notifyAll()
+                                }
                             }
                         }
-                        toCloudNow()
+                        Road.Step.CLOUD -> {
+                            cloud = Road.Cloud.PENDING
+                            Log.i("DeskIT", "backup: to the cloud (${p!!.word}), the PC road " +
+                                "${door.name.lowercase()}, the relay ${view.state.name.lowercase()}, " +
+                                "${now - askingSince} ms asked")
+                            thread(name = "backup-cloud") {
+                                val r = toCloud(c, p, wav)
+                                synchronized(gate) {
+                                    cloudResult = r
+                                    cloud = if (r is Transcriber.Result.Ok && first.offer("cloud"))
+                                        Road.Cloud.OK else Road.Cloud.FAILED
+                                    gate.notifyAll()
+                                }
+                            }
+                            toCloudNow()
+                        }
                     }
                 }
             }
+        } finally {
+            synchronized(gate) { settled = true }
         }
     }
 

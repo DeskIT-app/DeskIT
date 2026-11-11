@@ -242,6 +242,7 @@ fun main() {
     spoolChecks()
     reasonChecks()
     backupChecks(::check)
+    relayChecks(::check)
     noAnswerChecks()
     val aad = Crypt.aadPairing(Vectors.UID, Vectors.PAIRING)
     val account = ByteArray(32) { it.toByte() }

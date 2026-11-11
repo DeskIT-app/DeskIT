@@ -937,17 +937,19 @@ class DictationIme : InputMethodService() {
             // ready line names the one that answered last.
             var word = getString(R.string.unreachable)
             var lockedWhy: String? = null
-            val off = Link.noWifi(app)
-            val reached = try {
+            var reached = try {
                 Link.reach(app)
             } catch (e: Sealed.NotNow) {
                 word = Sealed.words(app, e)     // the phone, and nothing about the PC
                 lockedWhy = getString(if (e.locked) R.string.why_locked else R.string.why_keystore)
                 null
             }
+            // Away from home: a PC there through the account is a PC there (stage 3).
+            if (reached == null && lockedWhy == null && Relay.reach(app)) reached = "relay"
+            val off = offWifi(app)
             val unheardNow = reached == null && lockedWhy == null
             // Nobody answered and the phone is on no Wi-Fi: that is the line's words.
-            if (unheardNow && Link.noWifi(app)) word = getString(R.string.why_no_wifi)
+            if (unheardNow && off) word = getString(R.string.why_no_wifi)
             // Nothing is sent from here, a PC or no PC: what waits is the person's to send.
             // A phone used only through this keyboard opens no screen that would look.
             if (Sealed.weak(app)) Lock.look(app)
@@ -973,6 +975,14 @@ class DictationIme : InputMethodService() {
             }
         }
     }
+
+    /**
+     * The phone is on no Wi-Fi, and that is why nobody answered: [Link.noWifi], unless the
+     * account's channel answered from this network a moment ago (stage 3). Then the phone
+     * reaches its PCs away from home, and a try nobody answered is the PC's: "Your PC
+     * didn't answer", never "isn't on Wi-Fi".
+     */
+    private fun offWifi(c: android.content.Context): Boolean = Link.noWifi(c) && !Relay.heardLately()
 
     private fun hasMic() =
         checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
@@ -1120,7 +1130,7 @@ class DictationIme : InputMethodService() {
         thread {
             val recording = item()
             // Where it was tried from: a try made off any Wi-Fi says nothing of the PC.
-            val off = Link.noWifi(app)
+            val off = offWifi(app)
             // The PC road, and the cloud backup beside it when no PC answers (stage 2b).
             val result = Backup.dictate(app, recording, since) {
                 ui.post { if (busy && mine == session) say(getString(R.string.transcribing_cloud)) }
@@ -1225,7 +1235,7 @@ class DictationIme : InputMethodService() {
      */
     private fun reasonNow(): String? {
         val off = unheard ?: return why
-        return when (NoAnswer.say(offThen = off, offNow = Link.noWifi(this))) {
+        return when (NoAnswer.say(offThen = off, offNow = offWifi(this))) {
             NoAnswer.Say.NO_WIFI -> getString(R.string.why_no_wifi)
             NoAnswer.Say.NO_ANSWER -> getString(R.string.why_no_answer)
             NoAnswer.Say.NOT_SENT -> null
@@ -1776,6 +1786,8 @@ class DictationIme : InputMethodService() {
      */
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        // the account's channel goes with the keyboard, unless a recording is on it
+        Relay.hidden()
         stopTicking()
         for (r in repeats) ui.removeCallbacks(r)
         if (holding || locked) {

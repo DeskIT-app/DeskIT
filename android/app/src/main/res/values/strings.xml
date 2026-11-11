@@ -76,6 +76,9 @@
          Gemini. -->
     <string name="transcribing_cloud">Transcribing in the cloud…</string>
     <string name="from_the_cloud">from the cloud (%1$s)</string>
+    <!-- The keyboard's line after a PC's text came through the account, away from home:
+         "3.7 s · local via your account". -->
+    <string name="via_account">via your account</string>
     <!-- Away from home with no key and no PC: the button stands where Send
          again stands, only while there is no road (the owner's d2). -->
     <string name="add_a_key">Add a key</string>

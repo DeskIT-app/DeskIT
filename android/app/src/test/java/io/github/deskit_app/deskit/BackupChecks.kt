@@ -62,7 +62,9 @@ internal fun backupChecks(check: (String, Boolean) -> Unit) {
           m(door = Road.Door.ANSWERED, pc = Road.Pc.OK, cloud = Road.Cloud.FAILED) == Road.Step.LAND_PC)
     check("the cloud is asked once: never a second time while it works",
           m(door = Road.Door.NOBODY, pc = Road.Pc.UNREACHED, cloud = Road.Cloud.PENDING) != Road.Step.CLOUD)
-    check("every step is reachable from the table", s.all { step ->
+    // the relay's steps are reachable only with the relay asked: RelayChecks holds those
+    val relaySteps = setOf(Road.Step.RELAY, Road.Step.LAND_RELAY, Road.Step.RELAY_SAYS)
+    check("every step of the backup's is reachable from its table", s.filter { it !in relaySteps }.all { step ->
         val all = ArrayList<Road.Step>()
         for (a in listOf(true, false)) for (k in listOf(true, false)) for (d in Road.Door.values())
             for (p in Road.Pc.values()) for (cl in Road.Cloud.values()) for (t in listOf(0L, 99_999L))
