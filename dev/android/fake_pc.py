@@ -324,6 +324,8 @@ class FakeAccount:
         #: what the relay cost: messages as Supabase counts them (sent, and once per
         #: socket that received), the bytes pushed to clients, the largest message
         self.realtime = {"sent": 0, "received": 0, "egress": 0, "largest": 0, "refused": 0}
+        #: True: the websocket is refused, as if the channel could not be reached
+        self.realtime_off = False
         self.tables["profiles"].append({
             "user_id": self.uid, "lock_id": vault.fingerprint(self.key),
             "app_version_last_seen": "1.0.6", "is_anonymous": False, "created_at": now_iso()})
@@ -369,6 +371,10 @@ class FakeAccount:
         with `self: true`), acknowledged with `ack: true`, refused over the cap."""
         if h.headers.get("apikey") != PUBLISHABLE_KEY:
             h._send(401, {"message": "No API key found in request"})
+            return
+        if self.realtime_off:
+            # the channel unreachable from here, as on a network that lets nothing through
+            h._send(503, {"message": "Realtime is not answering"})
             return
         key = h.headers.get("Sec-WebSocket-Key", "")
         accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")

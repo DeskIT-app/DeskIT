@@ -793,6 +793,33 @@ stage 2's Opus. A Cloudflare Worker with a hibernating Durable Object has no egr
 frames counted 20:1, and it stops at the limit rather than charging), and it is the same 30 lines against another
 endpoint: that is the road if strangers ever fill Supabase.
 
+**The relay, built 2026-11-12 (branch `claude/phone-relay-b1897a`), WAV first.** Stage 2's Opus is a measurement on the
+public sets that has not run, so the relay carries WAV until it has, and the budget below is WAV's. What was built:
+`relay.py` on the PC and `Relay.kt` / `RelayWire.kt` / `Ws.kt` on the phone; the ladder home door, relay, cloud key,
+waiting row (`Road.next`). Not the hidden WebView and `link.js`: the relay needs only a socket, so the keyboard holds
+one of its own in Kotlin (RFC 6455 by hand, as `net.py`'s), and the WebView waits for the direct road. A piece is
+`{device, to, rid, n, s}` with `s` sealed under the AAD `link/{uid}/{from}/{to}/{rid}/{n}`; 96,000 bytes of audio a
+piece (3 s), 128,385 bytes on the wire, the cap 256 KB. A ping while the person speaks, answered with no model; at the
+release the pieces go three at a time, each acknowledged by the server; the PC says it took them, then sends the text.
+Emulator, Android 14, against a fake account that speaks Realtime and the real `sb.py`, `relay.py`, `server.py`,
+`phone.py` on this PC: release to text 846, 464 and 429 ms for three 2.6 s dictations (the fake's model answers at once).
+
+**The relay's real budget, read 2026-11-11** (Supabase's limits, pricing and usage pages): Free has 256 KB a broadcast,
+100 messages a second for the project, 200 concurrent connections, **2 million messages** a month, each broadcast
+counted once sent and once for every socket that receives it, and **5 GB of egress** a month, which Realtime's pushes
+to clients count against. Over a quota on Free there is a notice and a grace period (their Fair Use Policy); the pages
+do not say it cuts off. Measured on the fake with the same counting rules: a minute of speech is 20 pieces of 128 KB,
+so **2.6 MB of egress per minute per PC that is online** (2,158,485 bytes for 50 s), and about 53 counted messages a
+minute (each piece sent and received once, the PC's three answers each received by the phone and by the PC's own
+socket). Egress binds first: 5 GB / 2.6 MB is **about 1,900 minutes a month for every DeskIT user together**, about
+**6 people** at 10 away-minutes a day, where Opus's estimate above was about 90: WAV divides it by 14, as the plan
+said. Messages are not near their cap (2 M / 53 is about 37,000 minutes). Two more costs the arithmetic must carry:
+every PC of the account that is online receives every piece, though only the one it is for opens it, so a second PC
+online doubles the egress (a topic per PC would cure that, and needs a migration's policy); and one person's 60 s
+dictation is 21 pieces in two to four seconds, about 10-20 counted messages a second, so tens of people pressing at
+the same moment meet the 100 a second. **For him alone, today, it is nothing; for strangers, Opus (÷14) comes first,
+and the Cloudflare road above after it.**
+
 ### Stage 4 — The web page: no install
 
 *Acceptance: a phone with nothing installed: open the address, sign in, Approve on the PC, allow the microphone,

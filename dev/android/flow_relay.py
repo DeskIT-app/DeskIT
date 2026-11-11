@@ -278,6 +278,24 @@ def flow_no_key_pc_off():
         acct.stop()
 
 
+def flow_no_account_channel():
+    """Off the Wi-Fi, and the account's channel cannot be reached either: then the Wi-Fi
+    is what to fix, and the line keeps his words of 2026-11-10."""
+    acct = fa.fresh(backup="off")
+    try:
+        fd.real_join(acct)
+        acct.realtime_off = True
+        fb.away(acct._door_pc)
+        fd.field()
+        fd.hold_and_say()
+        check("nothing reached: the Wi-Fi's words, and the recording waits",
+              until(lambda: fd.row_is(fd.NO_WIFI), 30), fd.row()["raw"][:300])
+    finally:
+        fb.home_again()
+        acct._door_pc.down()
+        acct.stop()
+
+
 def flow_send_again():
     """A recording that waited (the PC off) goes through the account on Send again once
     the PC is back."""
