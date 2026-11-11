@@ -149,6 +149,17 @@ def home_afresh() -> None:
     drive.home()
 
 
+def line_seconds() -> float | None:
+    """The number on the keyboard's line after a text landed ("3.7 s · ...")."""
+    m = re.search(r"status=(\d+\.\d) s ·", fd.status())
+    return float(m.group(1)) if m else None
+
+
+def wav_seconds(nbytes: int) -> float:
+    """A recording's length as the PC's to_wav counts it: whole samples over 16 kHz."""
+    return ((nbytes - 44) // 2) / 16000.0
+
+
 def away(pc) -> None:
     """Away from home: the PC's door down and the phone off the Wi-Fi."""
     pc.down()
@@ -200,7 +211,7 @@ def flow_lands():
         pc = acct._door_pc
         away(pc)
         fd.field()
-        cloud.delay = 2.5
+        cloud.delay = 1.0                        # its wait, unlike the recording's ~2.6 s
         fd.hold_and_say()
         check("on its way, the line says the cloud",
               fd.says(r"Transcribing in the cloud", 15), fd.status())
@@ -213,6 +224,10 @@ def flow_lands():
         asked = cloud.asked("transcriptions")
         check("the provider was asked once, with the key from the account",
               len(asked) == 1 and asked[0]["key_ok"], str(len(asked)))
+        spoke = wav_seconds(asked[0]["wav_bytes"]) if asked else -1
+        check("the line's number is how long he spoke, as on the PC's road, never the wait",
+              line_seconds() is not None and abs(line_seconds() - spoke) <= 0.051
+              and abs(line_seconds() - 1.0) > 0.3, f"{fd.status()[:80]} / spoke {spoke:.2f} s")
         check("as deskit-android, with the model, Hebrew, and a WAV",
               asked and asked[0]["agent"].startswith("deskit-android/") and asked[0]["wav"]
               and asked[0]["fields"].get("model") == "whisper-large-v3-turbo"
@@ -268,6 +283,10 @@ def flow_pc_first():
         check("and the cloud was never asked", cloud.asked() == [], str(cloud.asked()))
         check("the line names the PC's engine, not the cloud", "from the cloud" not in fd.status(),
               fd.status())
+        spoke = wav_seconds(len(acct._door_pc.heard[-1])) if acct._door_pc.heard else -1
+        check("and its number is how long he spoke, as the cloud's is",
+              line_seconds() is not None and abs(line_seconds() - spoke) <= 0.051,
+              f"{fd.status()[:80]} / spoke {spoke:.2f} s")
         check("no text row: the PC has it already", acct.history() == [])
     finally:
         acct._door_pc.down()

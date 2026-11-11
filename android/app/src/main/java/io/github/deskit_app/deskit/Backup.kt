@@ -125,14 +125,15 @@ object Backup {
         return true
     }
 
-    private fun seconds(wav: ByteArray) = (wav.size - 44).coerceAtLeast(0) / (Recorder.SAMPLE_RATE * 2.0)
-
     /** The cloud's answer as the keyboard reads one. */
     private fun asResult(c: Context, a: Cloud.Answer, p: Cloud.Provider, wav: ByteArray): Transcriber.Result =
         when (a) {
-            is Cloud.Answer.Text -> Transcriber.Result.Ok(a.text, null,
-                c.getString(R.string.from_the_cloud, p.label), a.seconds,
-                cloud = p.word, audio = seconds(wav))
+            is Cloud.Answer.Text -> {
+                // the provider's wait, for the log: the line's number is the recording's length
+                Log.i("DeskIT", String.format(java.util.Locale.US, "backup: %s answered in %.1f s",
+                                              p.word, a.seconds))
+                CloudLine.ok(a.text, c.getString(R.string.from_the_cloud, p.label), p.word, wav, a.seconds)
+            }
             is Cloud.Answer.Failed -> when (a.why) {
                 Cloud.Why.NO_ANSWER -> Transcriber.Result.Err(c.getString(R.string.unreachable),
                                                               Transcriber.Why.UNREACHED)

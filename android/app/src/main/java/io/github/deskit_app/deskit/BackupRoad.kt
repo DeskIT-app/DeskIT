@@ -126,6 +126,34 @@ class FirstAnswer {
     fun winner(): String? = winner
 }
 
+/**
+ * The keyboard's line after a text landed, and its number. The number is the
+ * RECORDING'S LENGTH on both roads: the PC sends it (server.py's `seconds`, to_wav's
+ * `len(samples) / 16000`), and the cloud's is counted here the same way off the WAV.
+ * The provider's wait is a log line and never the line: on his S26, 2026-11-11, "0.5 s ·
+ * from the cloud (Groq)" beside "3.7 s · local" read as a PC seven times slower, when
+ * 3.7 s was how long he spoke.
+ */
+object CloudLine {
+    /** A 16 kHz mono 16-bit WAV's length, as to_wav counts it: whole samples over the rate. */
+    fun seconds(wav: ByteArray): Double = ((wav.size - 44).coerceAtLeast(0) / 2) / 16000.0
+
+    /**
+     * The cloud's text as the keyboard reads one: [backend] the line's words for the
+     * road ("from the cloud (Groq)"), [wait] the provider's answer time, which is kept
+     * for the log and nowhere else.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun ok(text: String, backend: String, provider: String, wav: ByteArray, wait: Double): Transcriber.Result.Ok {
+        val length = Math.round(seconds(wav) * 100) / 100.0           // server.py rounds to 2
+        return Transcriber.Result.Ok(text, null, backend, length, cloud = provider, audio = seconds(wav))
+    }
+
+    /** The line itself, the same words on both roads: "3.7 s · local", "3.7 s · from the cloud (Groq)". */
+    fun note(ok: Transcriber.Result.Ok): String =
+        if (ok.backend.isEmpty()) "" else String.format(java.util.Locale.US, "%.1f s · %s", ok.seconds, ok.backend)
+}
+
 /** A multipart/form-data body, by hand: the provider's one request, no library. */
 object Multipart {
     fun body(boundary: String, fields: List<Pair<String, String>>, fileField: String,

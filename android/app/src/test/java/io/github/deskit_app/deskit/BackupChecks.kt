@@ -85,6 +85,20 @@ internal fun backupChecks(check: (String, Boolean) -> Unit) {
         if (it == 4) check("sixteen threads at once: exactly one text lands", wins.get() == 1)
     }
 
+    // ---- the line's number: the recording's length on both roads ----
+    // 3.7 s of 16 kHz mono 16-bit, as Recorder writes it: 44 bytes of header, 2 a sample
+    val spoke = ByteArray(44 + 3_700 * 16 * 2)
+    val viaCloud = CloudLine.ok("שלום", "from the cloud (Groq)", "groq", spoke, wait = 0.5)
+    check("the cloud's number is how long he spoke, as to_wav counts it", viaCloud.seconds == 3.7)
+    check("never the provider's wait", viaCloud.seconds != 0.5)
+    check("the cloud's line", CloudLine.note(viaCloud) == "3.7 s · from the cloud (Groq)")
+    // the PC's own answer for the same recording: server.py's seconds, len(samples) / 16000
+    val viaPc = Transcriber.Result.Ok("שלום", null, "local", 3.7)
+    check("one recording, one number on both roads: \"3.7 s · local\" and \"3.7 s · from the cloud\"",
+          CloudLine.note(viaPc) == "3.7 s · local" &&
+              CloudLine.note(viaPc).substringBefore(" ·") == CloudLine.note(viaCloud).substringBefore(" ·"))
+    check("the length is whole samples, as the PC's", CloudLine.seconds(ByteArray(44 + 3)) == 1 / 16000.0)
+
     // ---- the provider's body ----
     val wav = ByteArray(300) { (it % 7).toByte() }
     val body = Multipart.body("BND", listOf("model" to "whisper-large-v3-turbo", "language" to "he"),

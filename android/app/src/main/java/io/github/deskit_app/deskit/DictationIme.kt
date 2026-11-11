@@ -1435,9 +1435,8 @@ class DictationIme : InputMethodService() {
         }
     }
 
-    private fun engineNote(ok: Transcriber.Result.Ok): String =
-        if (ok.backend.isEmpty()) ""
-        else String.format(Locale.US, "%.1f s · %s", ok.seconds, ok.backend)
+    /** The line after a text landed: the recording's length on both roads ([CloudLine]). */
+    private fun engineNote(ok: Transcriber.Result.Ok): String = CloudLine.note(ok)
 
     /**
      * Put the transcript where it was spoken, or keep it and say so.
