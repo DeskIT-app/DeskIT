@@ -542,8 +542,8 @@ every new network Public unless told otherwise, so most strangers will be there 
   2026-11-10). When nobody answered and the phone is on no Wi-Fi or Ethernet (a VPN's network not counted, no pasted
   line), the words are "Your phone isn't on Wi-Fi" (his ask, the same day): decided when the row is drawn, and drawn
   again when a Wi-Fi or Ethernet comes or goes, so they are never a fact of a network the phone has left. A sweep that
-  only deletes keeps the hour, and 50 MB is a net that says nothing. A dictation the cloud key answered stays too, for
-  the PC (stage 2b, whose road back is open: see there). This is what "the recording stays safe" means
+  only deletes keeps the hour, and 50 MB is a net that says nothing. A dictation the cloud key answered does not stay:
+  its text goes to the PC through the account and the recording is deleted (stage 2b, his answer of 2026-11-11). This is what "the recording stays safe" means
   everywhere in this plan.
 - `SettingsActivity.kt`: the account, the devices it sees with **Forget**, a device asking to join, **Sign out**, and the
   URL and token fields behind "Other ways" until stage 6.
@@ -705,11 +705,13 @@ WhatsApp set and 8.4% against 5.3% on d1 (light plan, §2), nearly twice the err
 learned. The audio is heard by the provider: Groq says it retains nothing by default, and may log inputs for up to 30
 days to investigate abuse or reliability. That is why it is a backup and never the first road.
 
-**What it does not do at that moment.** No repair pass, no learned words, no second reading. The recording stays in
-the spool (stage 1) and goes to the PC when it is back, as `source: "phone-cloud"`, so `transcripts.log`, the second
-reading and the learning still see it. **Open, his to decide before this is built:** since 2026-11-10 nothing leaves
-the phone in the background and a recording waits an hour at most, on his press. So whether a dictation the cloud
-already answered goes to the PC later by itself, and how long it waits for one, is his word, not this paragraph's.
+**What it does not do at that moment.** No repair pass, no learned words, no second reading. **And after it, his
+answer of 2026-11-11:** once the cloud's text is in the field, the recording is deleted from the phone, and only the
+TEXT goes on to the PC: sealed, through the account's history store as the PCs already share theirs, so the PC's Said
+page shows it marked as from the phone and from the cloud (`source: "phone-cloud"`). The audio never reaches the PC, so
+the second reading and the learning do not see these dictations. That is the price he chose over a recording sent
+later without his press (since 2026-11-10 nothing leaves the phone in the background). The row is written only where
+the account keeps what was said (the history sync is on); otherwise it would sit in the account for nobody.
 
 **"Everything", his word.** Dictation first. Punctuate, translate and lookup from the same key are text, and a second
 small step: they need Groq's reasoning-model handling (AGENTS.md, the trap) and punctuation's letter-for-letter check
