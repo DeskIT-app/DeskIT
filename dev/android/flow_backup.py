@@ -211,7 +211,7 @@ def flow_lands():
         pc = acct._door_pc
         away(pc)
         fd.field()
-        cloud.delay = 1.0                        # its wait, unlike the recording's ~2.6 s
+        cloud.delay = 12.0                       # long, for a slow phone to see it go; and unlike the ~2.6 s spoken
         fd.hold_and_say()
         check("on its way, the line says the cloud",
               fd.says(r"Transcribing in the cloud", 15), fd.status())
@@ -227,7 +227,7 @@ def flow_lands():
         spoke = wav_seconds(asked[0]["wav_bytes"]) if asked else -1
         check("the line's number is how long he spoke, as on the PC's road, never the wait",
               line_seconds() is not None and abs(line_seconds() - spoke) <= 0.051
-              and abs(line_seconds() - 1.0) > 0.3, f"{fd.status()[:80]} / spoke {spoke:.2f} s")
+              and abs(line_seconds() - cloud.delay) > 0.3, f"{fd.status()[:80]} / spoke {spoke:.2f} s")
         check("as deskit-android, with the model, Hebrew, and a WAV",
               asked and asked[0]["agent"].startswith("deskit-android/") and asked[0]["wav"]
               and asked[0]["fields"].get("model") == "whisper-large-v3-turbo"
