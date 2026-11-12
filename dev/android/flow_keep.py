@@ -544,7 +544,15 @@ def flow_small_and_large():
             check("the mic's words whole, not cut", not s["mic_cut"] and s["mic_text"].startswith("Continue"),
                   s["raw"])
             check("Send and the X a thumb's size", s["touch"] >= 48, s["raw"])
+            where = fa.told("--es", "ime", "where")
             tap("pill")
+            if not until(lambda: st()["locked"], 5):
+                drive.shot("failed_keep_small_first_tap")
+                print(f"      the first tap did not continue: {where} | now {fa.told('--es', 'ime', 'where')} "
+                      f"| {st()['raw'][:160]}", flush=True)
+                tap("pill")
+                check("the first tap on Continue continues", False, "a second tap: " +
+                      str(until(lambda: st()["locked"], 5)))
             assert until(lambda: st()["locked"], 5), st()["raw"]
             time.sleep(1.2)
             s = st()
