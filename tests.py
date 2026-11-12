@@ -7872,7 +7872,10 @@ def test_the_account_key_stays_out_of_main() -> None:
     import main as main_mod
     import phone as phone_mod
 
-    assert list(inspect.signature(phone_mod.publish).parameters) == ["port", "listening", "words_sync"]
+    # Flags only, never a key: history_sync came with stage 2b (a phone's
+    # cloud text goes only where a PC's row says its account keeps it).
+    assert list(inspect.signature(phone_mod.publish).parameters) == [
+        "port", "listening", "words_sync", "history_sync"]
     assert not inspect.signature(phone_mod.anchors).parameters
     assert list(inspect.signature(main_mod.App._phone_account).parameters) == ["self"]
     assert list(inspect.signature(main_mod.App._phone_publish).parameters) == ["self"]
@@ -30894,7 +30897,12 @@ def test_notify_interrupt_decides_who_may_ring_and_who_is_reminded() -> None:
         assert cue == ["notify"], cue
         _awake_until(lambda: len(cue) == 3)
         assert len(cue) == 3, cue
-        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        # The reminder cues, presents the card, THEN logs (notify.py's
+        # reminder loop), so the third cue can land before its log line:
+        # CI read the log in between on 2026-11-11 and saw only 1/2.
+        log_path = Path(d) / "notify.log"
+        _awake_until(lambda: "REMINDED 2/2" in log_path.read_text("utf-8"))
+        log_text = log_path.read_text("utf-8")
         assert "REMINDED 2/2" in log_text, log_text
         eng.stop()
     with tempfile.TemporaryDirectory() as d:

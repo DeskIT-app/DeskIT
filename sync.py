@@ -285,8 +285,7 @@ TEXT_MAX = 4000
 #: recording deleted on the phone, the text alone sent on to the PCs.
 CLOUD_SOURCE = "phone-cloud"
 #: How such a row's engine reads in a REMOTE line, ahead of the engine:
-#: ``cloud:<the provider's word>``. history.py takes it off again and marks
-#: the row. (No provider by name here: test_sb_imports_are_narrow.)
+#: ``cloud:<engine>``. history.py takes it off again and marks the row.
 CLOUD_ENGINE = "cloud:"
 
 
