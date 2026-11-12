@@ -34,6 +34,12 @@ class Recorder {
          * whole recording is wasted rather than trimmed.
          */
         const val MAX_SECONDS = 300
+
+        /** The PCM inside a WAV this class wrote: its header is always 44 bytes. */
+        fun pcm(wav: ByteArray): ByteArray =
+            if (wav.size > HEADER) wav.copyOfRange(HEADER, wav.size) else ByteArray(0)
+
+        private const val HEADER = 44
     }
 
     private var record: AudioRecord? = null
@@ -73,8 +79,13 @@ class Recorder {
     val recording: Boolean
         get() = active
 
-    /** Throws SecurityException when RECORD_AUDIO was never granted. */
-    fun start() {
+    /**
+     * Throws SecurityException when RECORD_AUDIO was never granted. [kept] is the PCM of a
+     * paused recording ([pcm]): this one goes on from it, so its clock and [MAX_SECONDS]
+     * count the whole, and it counts as heard, because a recording with no sound in it is
+     * never kept.
+     */
+    fun start(kept: ByteArray? = null) {
         if (active) return
         val minBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
@@ -95,8 +106,9 @@ class Recorder {
             throw IllegalStateException("microphone unavailable")
         }
         buffer.reset()
+        if (kept != null) buffer.write(kept)
         peak = 0f
-        loudest = 0f
+        loudest = if (kept != null && kept.isNotEmpty()) 1f else 0f
         capped = false
         record = r
         running = true

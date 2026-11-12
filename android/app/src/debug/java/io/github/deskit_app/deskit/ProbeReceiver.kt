@@ -230,7 +230,8 @@ class ProbeReceiver : BroadcastReceiver() {
             Sealed.putText(c, "device_rows", "[]")
             "planted"
         }
-        "count" -> "waiting=${Spool.files(c).items().size} all=${Spool.files(c).count()}"
+        "count" -> "waiting=${Spool.files(c).items().size} all=${Spool.files(c).count()} " +
+            "paused=${Spool.paused(c)?.seconds ?: -1}"
         "nets" -> {
             // What carries each network, and Link's verdict on them: never an address.
             val cm = c.getSystemService(android.net.ConnectivityManager::class.java)
@@ -425,9 +426,19 @@ class ProbeReceiver : BroadcastReceiver() {
             "now" -> comeBack(k, "landed-words", false)
             "late" -> comeBack(k, "late-words", true)
             "loud" -> loud(k)
+            // The system taking a held touch, as a call or a window over the keyboard takes it:
+            // a real ACTION_CANCEL through the mic's own listener.
+            "cancel" -> {
+                val pill = held("pill").get(k) as android.view.View
+                val now = android.os.SystemClock.uptimeMillis()
+                val e = android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_CANCEL,
+                                                         pill.width / 2f, pill.height / 2f, 0)
+                pill.dispatchTouchEvent(e)
+                e.recycle()
+            }
             "where" -> {
                 Log.i("DeskIT", "probe: ${at(k, "pill")} ${at(k, "status")} ${at(k, "sendKey")} " +
-                    at(k, "dropKey"))
+                    "${at(k, "dropKey")} ${at(k, "backspace")}")
                 return
             }
             "status" -> {
@@ -450,7 +461,14 @@ class ProbeReceiver : BroadcastReceiver() {
                     " private=${held("privateField").getBoolean(k)} mic=${tall("pill").toInt()}" +
                     // the word on the button beside the line: Send again, or Add a key (stage 2b)
                     " button=${(held("sendKey").get(k) as? android.widget.TextView)?.text
-                        ?.toString()?.replace(' ', '_')}")
+                        ?.toString()?.replace(' ', '_')}" +
+                    // a recording the keyboard closed on: what the mic says and what it holds
+                    " kept=${held("pausedShown").getBoolean(k)} locked=${held("locked").getBoolean(k)}" +
+                    " screen_on=${(held("pill").get(k) as? android.view.View)?.keepScreenOn}" +
+                    " mic_text=${(held("button").get(k) as? android.widget.TextView)?.text
+                        ?.toString()?.replace(' ', '_')}" +
+                    " mic_cut=${(held("button").get(k) as? android.widget.TextView)?.layout
+                        ?.let { it.getEllipsisCount(0) > 0 }}")
                 return
             }
         }

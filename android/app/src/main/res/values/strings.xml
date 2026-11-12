@@ -12,13 +12,29 @@
          away from has to read as still running. -->
     <string name="recording_time">Recording  %1$s</string>
     <string name="locked_time">Locked  %1$s · tap to finish</string>
+    <!-- What the mic says when the words above do not fit even shrunk (a 320 dp phone
+         with the largest text): the clock is what must stay. -->
+    <string name="recording_short">%1$s</string>
+    <string name="locked_short">Locked  %1$s</string>
+    <!-- A recording the keyboard closed on is kept (the owner, 2026-11-12: "like a
+         WhatsApp voice recording, where there is an option to continue it after it
+         closes"). The mic itself is Continue, with the kept length; the line under it
+         is the waiting row's shape: the words, Send, the round X. -->
+    <string name="continue_time">Continue  %1$s</string>
+    <string name="continue_short">Continue</string>
+    <string name="paused_line">Recording paused</string>
+    <!-- %1$d older recordings wait behind the paused one, and come back after it. -->
+    <string name="paused_line_older">Recording paused · %1$d older not sent</string>
+    <string name="send_kept">Send</string>
+    <string name="cd_continue">Continue the paused recording</string>
+    <string name="cd_send_kept">Send the paused recording</string>
+    <string name="cd_drop_kept">Delete the paused recording</string>
     <string name="transcribing">Transcribing…</string>
     <string name="translating">Translating…</string>
     <string name="punctuating">Punctuating…</string>
     <string name="too_short">Too short</string>
     <string name="no_speech">No speech</string>
     <string name="discarded">Discarded</string>
-    <string name="recording_cancelled">Keyboard closed — recording discarded</string>
     <string name="nothing_to_translate">Nothing in the field</string>
     <!-- A whole recording of silence is a held microphone, not a quiet room.
          Say so instead of uploading it and returning "No speech". -->
