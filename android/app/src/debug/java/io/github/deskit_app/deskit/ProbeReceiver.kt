@@ -385,6 +385,11 @@ class ProbeReceiver : BroadcastReceiver() {
             Log.i("DeskIT", "probe: no keyboard is running")
             return
         }
+        if (what.startsWith("proto:")) {
+            // PROTOTYPE: the kept recording's row, for the owner's yes (ProtoKeep.kt).
+            ProtoKeep.draw(c, k, what.substring(6))
+            return
+        }
         if (what.startsWith("key:")) {
             // A press on one of the small keys, the real listener.
             @Suppress("UNCHECKED_CAST")
