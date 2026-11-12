@@ -426,6 +426,16 @@ class ProbeReceiver : BroadcastReceiver() {
             "now" -> comeBack(k, "landed-words", false)
             "late" -> comeBack(k, "late-words", true)
             "loud" -> loud(k)
+            // The system taking a held touch, as a call or a window over the keyboard takes it:
+            // a real ACTION_CANCEL through the mic's own listener.
+            "cancel" -> {
+                val pill = held("pill").get(k) as android.view.View
+                val now = android.os.SystemClock.uptimeMillis()
+                val e = android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_CANCEL,
+                                                         pill.width / 2f, pill.height / 2f, 0)
+                pill.dispatchTouchEvent(e)
+                e.recycle()
+            }
             "where" -> {
                 Log.i("DeskIT", "probe: ${at(k, "pill")} ${at(k, "status")} ${at(k, "sendKey")} " +
                     "${at(k, "dropKey")} ${at(k, "backspace")}")

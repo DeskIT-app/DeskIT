@@ -198,6 +198,34 @@ def flow_hide_mid_hold():
         acct.stop()
 
 
+def flow_cancel_mid_hold():
+    """The system takes a held touch (a call, a window over the keyboard): a real ACTION_CANCEL
+    on the mic keeps the recording as a hide does. It used to throw it away, silently."""
+    acct = joined()
+    try:
+        pc = acct._door_pc
+        fd.field()
+        x, y = fd.spot("pill")
+        finger = threading.Thread(target=lambda: drive.shell(
+            "input", "swipe", x, y, x, y, 6000, check=False))
+        finger.start()
+        time.sleep(0.8)
+        loud()
+        time.sleep(2.5)
+        fa.told("--es", "ime", "cancel")
+        check("the system taking the touch keeps it", until(lambda: spool()["paused"] >= 2, 10), str(spool()))
+        check("and the mic is Continue at once, the keyboard still up", until(lambda: offered(2), 10),
+              st()["raw"])
+        finger.join()
+        check("the finger's own lift afterwards sends nothing", not pc.heard and offered(2), st()["raw"])
+        tap("sendKey")
+        check("Send lands it", until(lambda: SENTENCE in fd.in_field(), 30), fd.in_field()[:200])
+        check("whole", len(pc.heard) == 1 and wav_seconds(pc.heard[0]) >= 2, str(len(pc.heard)))
+    finally:
+        acct._door_pc.down()
+        acct.stop()
+
+
 def flow_screen_off():
     """The screen off in the middle of a locked recording (his one-minute loss, it seems):
     kept, and offered once the phone is unlocked."""
