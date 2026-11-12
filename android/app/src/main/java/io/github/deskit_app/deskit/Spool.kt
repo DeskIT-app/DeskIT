@@ -12,6 +12,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -70,12 +71,68 @@ class SpoolFiles(private val dir: File, private val maxBytes: Long = Spool.MAX_B
     }
 
     /**
+     * The recording the keyboard closed on (a hide, the field going, the screen off), kept
+     * for Continue, Send or the X: one at a time, and never a waiting row, because nothing
+     * has tried to send it. Null when there is none, or its [keepMs] is up. The newest,
+     * should a kill have left two.
+     */
+    fun paused(now: Long): File? =
+        all().filter { PAUSED.matches(it.name) }.maxByOrNull { it.name }
+            ?.takeIf { f -> pausedAt(f)?.let { now - it <= keepMs } ?: false }
+
+    /**
+     * Kept whole or not at all, as [keep] keeps, and the one before it goes: one at a time.
+     * [IOException] for a phone with no room.
+     */
+    fun keepPaused(wav: ByteArray, now: Long): File {
+        dir.mkdirs()
+        val name = "paused-%013d".format(Locale.ROOT, now) + WAV
+        val tmp = File(dir, name + TMP)
+        try {
+            FileOutputStream(tmp).use {
+                it.write(wav)
+                it.fd.sync()
+            }
+            val whole = File(dir, name)
+            // A rename over an existing name: Android's replaces it, the JVM's on Windows refuses.
+            if (!tmp.renameTo(whole) && !(whole.delete() && tmp.renameTo(whole))) {
+                throw IOException("the paused recording could not be kept")
+            }
+            for (f in all()) if (PAUSED.matches(f.name) && f.name != name) f.delete()
+            return whole
+        } finally {
+            tmp.delete()
+        }
+    }
+
+    /**
+     * Send: the paused file becomes an ordinary recording on its way, named for [now] as a
+     * release names one, so a Send that reaches nobody is a waiting row with its own hour.
+     * Null when it has gone.
+     */
+    fun adopt(paused: File, now: Long, spare: Set<String> = emptySet()): Item? {
+        val name = "%013d-%s".format(Locale.ROOT, now, UUID.randomUUID().toString().take(8)) + WAV
+        val whole = File(dir, name)
+        if (!paused.renameTo(whole)) return null
+        return Item(whole, null, prune(now, spare + name))
+    }
+
+    /** The X, a finish, a discard: the paused recording goes. How many files went. */
+    fun dropPaused(): Int = all().count { PAUSED.matches(it.name) && it.delete() }
+
+    /**
      * Past [keepMs] goes, and past [maxBytes] the oldest go first, never one named in
      * [spare]. How many went. A `.tmp` left by a kill goes too and counts for nothing.
+     * A paused recording has the same hour, from its pause, and the cap never takes it.
      */
     fun prune(now: Long, spare: Set<String> = emptySet()): Int {
         for (f in all()) if (f.name.endsWith(TMP)) f.delete()
         var gone = 0
+        for (f in all()) {
+            if (!PAUSED.matches(f.name)) continue
+            val at = pausedAt(f) ?: continue
+            if (now - at > keepMs && f.delete()) gone++
+        }
         for (f in items()) {
             if (f.name in spare) continue
             val made = made(f) ?: continue
@@ -95,19 +152,30 @@ class SpoolFiles(private val dir: File, private val maxBytes: Long = Spool.MAX_B
     }
 
     /**
-     * When the oldest recording not named in [spare] has had its time, or null when
-     * there is none: when the sweep is due.
+     * When the oldest recording not named in [spare], or the paused one, has had its time,
+     * or null when there is none: when the sweep is due.
      */
-    fun dueAt(spare: Set<String> = emptySet()): Long? =
-        items().firstOrNull { it.name !in spare }?.let { made(it) }?.plus(keepMs)
+    fun dueAt(spare: Set<String> = emptySet()): Long? {
+        val waiting = items().firstOrNull { it.name !in spare }?.let { made(it) }?.plus(keepMs)
+        val paused = all().filter { PAUSED.matches(it.name) }.mapNotNull { pausedAt(it) }.minOrNull()
+            ?.plus(keepMs)
+        return listOfNotNull(waiting, paused).minOrNull()
+    }
 
-    private companion object {
-        const val STAMP = 13
-        const val WAV = ".wav"
-        const val TMP = ".tmp"
-        val NAME = Regex("\\d{13}-[0-9a-f]{8}\\.wav")
+    companion object {
+        private const val STAMP = 13
+        private const val WAV = ".wav"
+        private const val TMP = ".tmp"
+        private val NAME = Regex("\\d{13}-[0-9a-f]{8}\\.wav")
+        private val PAUSED = Regex("paused-\\d{13}\\.wav")
+        /** 16 kHz mono 16-bit, as [Recorder] writes, behind a 44-byte header. */
+        private const val BYTES_A_SECOND = 32_000L
 
-        fun made(f: File): Long? = f.name.take(STAMP).toLongOrNull()
+        private fun made(f: File): Long? = f.name.take(STAMP).toLongOrNull()
+        private fun pausedAt(f: File): Long? = f.name.substring(7, 7 + STAMP).toLongOrNull()
+
+        /** A WAV's whole seconds: the paused recording's clock. */
+        fun seconds(bytes: Long): Int = ((bytes - 44).coerceAtLeast(0) / BYTES_A_SECOND).toInt()
     }
 }
 
@@ -132,6 +200,13 @@ class SpoolFiles(private val dir: File, private val maxBytes: Long = Spool.MAX_B
  *
  * It is the only copy of those words, so [Traces] leaves it: [Lock.dropRecordings]
  * has that rule, and a send stops the moment [Traces.wipes] moves.
+ *
+ * A RECORDING THE KEYBOARD CLOSED ON is kept here too (2026-11-12, his words: "do it like
+ * a WhatsApp voice recording, where there is an option to continue it after it closes"):
+ * `paused-<when>.wav`, one at a time, never a waiting row because nothing tried to send
+ * it, offered as Continue, Send and the X when the keyboard is next up. It has the same
+ * hour from its pause, the same sweep, Sign out's count and [Lock.dropRecordings]. Send
+ * makes it an ordinary recording ([sendPaused]); nothing sends it by itself.
  */
 object Spool {
     const val DIR = "spool"
@@ -203,6 +278,78 @@ object Spool {
     @Synchronized
     fun waiting(c: Context): List<SpoolFiles.Item> =
         files(c).items().filter { it.name !in inHand }.map { SpoolFiles.Item(it, null) }
+
+    // ---- the recording the keyboard closed on ----
+
+    /** Every Send and X of a paused recording moves this: a write that set out before is void. */
+    private var pausedGen = 0
+
+    /** One writer, in order: a later pause is never written over by an earlier one still on its way. */
+    private val pauseWriter = Executors.newSingleThreadExecutor()
+
+    class Paused(val file: File, val seconds: Int)
+
+    @Synchronized
+    fun pausedGen(): Int = pausedGen
+
+    /**
+     * Onto the disk, off the caller's thread, stamped [at] (the pause), unless a Send or an
+     * X came after [gen]: a keyboard killed while hidden still has it. A phone with no room
+     * keeps it in the keyboard alone, for as long as the process lives.
+     */
+    fun keepPaused(c: Context, wav: ByteArray, at: Long, gen: Int) {
+        val app = c.applicationContext
+        pauseWriter.execute {
+            try {
+                val kept = synchronized(this) {
+                    gen == pausedGen && files(app).keepPaused(wav, at).exists()
+                }
+                if (kept) sweepLater(app)
+            } catch (e: IOException) {
+                Log.w("DeskIT", "spool: a paused recording could not be kept: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** The paused recording on the disk, or null: none, or its hour is up. */
+    @Synchronized
+    fun paused(c: Context): Paused? =
+        files(c).paused(System.currentTimeMillis())?.let { Paused(it, SpoolFiles.seconds(it.length())) }
+
+    /** Its bytes, for Continue: null when its hour took it. */
+    fun pausedBytes(c: Context): ByteArray? = try {
+        paused(c)?.file?.readBytes()
+    } catch (e: IOException) {
+        null
+    }
+
+    /**
+     * Send: what the keyboard holds of it ([held], the newest) or the file, as an ordinary
+     * recording on its way, in hand. Null when there is nothing left to send.
+     */
+    fun sendPaused(c: Context, held: ByteArray?): SpoolFiles.Item? {
+        if (held != null) {
+            // kept anew first and the paused file after: never a moment with no copy
+            return keep(c, held).also { dropPaused(c) }
+        }
+        val now = System.currentTimeMillis()
+        val item = synchronized(this) {
+            pausedGen++
+            val f = files(c)
+            f.paused(now)?.let { f.adopt(it, now, HashSet(inHand)) }?.also { claim(it) }
+        }
+        sweepLater(c)
+        return item
+    }
+
+    /** The X, a finish, a discard: the paused recording goes, and a write still on its way with it. */
+    fun dropPaused(c: Context) {
+        synchronized(this) {
+            pausedGen++
+            files(c).dropPaused()
+        }
+        sweepLater(c)
+    }
 
     /**
      * Every recording past its hour goes now, whatever is open, and the sweep moves on
