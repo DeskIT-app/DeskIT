@@ -1181,6 +1181,9 @@ class DictationIme : InputMethodService() {
                 if (!cloud) {
                     reachable = true
                     if (result.backend.isNotEmpty()) backendName = result.backend
+                    // The lamp was tinted above, by what the last knock said: a PC that just
+                    // answered is a PC there, and the lamp says so now, not at the next knock.
+                    tint(idleColor)
                 }
                 Prefs.addSaid(this, text, wipes, cloud)
                 // the recording goes from the phone: the cloud's text is the only copy now
