@@ -350,8 +350,11 @@ def flow_switch_off():
         drive.shot("e0_home_no_wifi_switch_off")
         fd.field()
         fd.hold_and_say()
-        check("the recording waits, as today: the Wi-Fi's words and Send again",
-              until(lambda: fd.row_is(fd.NO_WIFI) and button() == "Send again", 25), fd.status())
+        # Off the Wi-Fi, the account's channel answered from mobile data (stage 3): the
+        # Wi-Fi is not why, the PC is. Where nothing of the account answers either, the
+        # Wi-Fi's words stand (flow_relay.no_account_channel).
+        check("the recording waits, as today, with Send again: the PC didn't answer through the account",
+              until(lambda: fd.row_is(fd.NO_ANSWER) and button() == "Send again", 25), fd.status())
         time.sleep(2)
         check("the cloud was never asked", cloud.asked() == [], str(cloud.asked()))
         fd.drop_waiting()
@@ -385,8 +388,9 @@ def flow_no_key():
         drive.shot("e2_home_no_wifi_no_key")
         fd.field()
         fd.hold_and_say()
-        check("off the Wi-Fi, no key: the Wi-Fi's words, and Add a key where Send again stands",
-              until(lambda: fd.row_is(fd.NO_WIFI) and button() == "Add a key", 25), fd.status())
+        check("off the Wi-Fi, no key: the PC didn't answer through the account, and Add a key "
+              "where Send again stands",
+              until(lambda: fd.row_is(fd.NO_ANSWER) and button() == "Add a key", 25), fd.status())
         drive.shot("d2_keyboard_no_key_button")
         check("the recording waits", "waiting=1" in fd.spooled(), fd.spooled())
         fd.wifi(True)

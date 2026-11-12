@@ -29,17 +29,33 @@ object Road {
 
     enum class Cloud { IDLE, PENDING, OK, FAILED }
 
+    /**
+     * What the account's channel says of a PC (stage 3, the relay): not asked, a ping on
+     * its way and its second not up, a PC that is there and can take it, a PC that is
+     * there and cannot now, or nobody.
+     */
+    enum class Relay { OFF, ASKING, READY, BUSY, NOBODY }
+
+    /** The relay's own run with this recording: not set out, pieces going up, the PC took it. */
+    enum class Run { IDLE, SENDING, TOOK }
+
     enum class Step {
         /** Nothing to do yet: ask again in a moment. */
         WAIT,
         /** Send the same recording to the key, beside whatever the PC road is still doing. */
         CLOUD,
+        /** Send the recording to the PC that answered through the account (the relay). */
+        RELAY,
         /** The PC's text lands. */
         LAND_PC,
+        /** The PC's text, through the account, lands. */
+        LAND_RELAY,
         /** The cloud's text lands; a PC that answers after it is dropped. */
         LAND_CLOUD,
         /** Nothing landed: the PC road's answer stands, and the recording waits as it always has. */
         PC_SAYS,
+        /** Nothing landed, and the PC that answered through the account says why. */
+        RELAY_SAYS,
         /** Nothing landed, and the cloud has the last word about why. */
         CLOUD_SAYS,
     }
@@ -68,6 +84,13 @@ object Road {
      */
     const val SILENT_MS = 10_000L
 
+    /**
+     * The relay's pieces going up with no acknowledgement for this long: a link that
+     * died under them, and the cloud may go beside it. Each piece is acknowledged by the
+     * server, so this is a stopped link and not a slow one.
+     */
+    const val RELAY_QUIET_MS = 8_000L
+
     /** Everything the decision reads, at one moment. */
     data class Moment(
         /** The switch is on and the person said yes to it. */
@@ -83,27 +106,63 @@ object Road {
         val silentMs: Long,
         val pc: Pc,
         val cloud: Cloud,
+        /** What the account's channel says (stage 3). OFF: today's two rungs, unchanged. */
+        val relay: Relay = Relay.OFF,
+        val run: Run = Run.IDLE,
+        /** Since the relay's run last moved: a piece acknowledged, the PC took it. */
+        val relayQuietMs: Long = 0,
+        /** The relay's own answer, once it set out. */
+        val relayPc: Pc = Pc.PENDING,
     )
 
-    /** What to do now. The first rule that holds wins; the table is the plan's. */
-    fun next(m: Moment): Step = when {
-        m.pc == Pc.OK -> Step.LAND_PC
-        m.cloud == Cloud.OK -> Step.LAND_CLOUD
-        // a PC answered "never": the cloud would be asked the same and the answer
-        // is a property of the recording, not of the road
-        m.pc == Pc.REFUSED -> if (m.cloud == Cloud.PENDING) Step.WAIT else Step.PC_SAYS
-        // the switch off, no yes, or no key: today's road and nothing else
-        !m.active || !m.keyed -> if (m.pc == Pc.PENDING) Step.WAIT else Step.PC_SAYS
-        // a PC answered that it cannot now: its own words, the recording waits
-        m.pc == Pc.BUSY -> if (m.cloud == Cloud.PENDING) Step.WAIT else Step.PC_SAYS
-        m.cloud == Cloud.PENDING -> Step.WAIT
-        m.cloud == Cloud.FAILED -> if (m.pc == Pc.PENDING) Step.WAIT else Step.CLOUD_SAYS
-        // the cloud is IDLE from here on. Nobody answered: the PC road comes back
-        // unreached, and the door is NOBODY in the same moment, so this rule is that one
-        m.pc == Pc.UNREACHED -> Step.CLOUD
-        m.door == Door.NOT_YET && m.askedMs >= ASK_MS && m.roadMs >= ROAD_MS -> Step.CLOUD
-        m.door == Door.ANSWERED && m.silentMs >= SILENT_MS -> Step.CLOUD
-        else -> Step.WAIT
+    /**
+     * What to do now. The first rule that holds wins. The ladder is the plan's (stage 3):
+     * the home door, then the relay through the account, then the cloud key, then the
+     * waiting row. Each rung gets the second it is owed and no more, and nothing is
+     * sent to two PC roads at once: the relay sets out only when the door at home had
+     * its second and did not answer, and never beside a cloud already asked.
+     */
+    fun next(m: Moment): Step {
+        val lanOut = m.pc == Pc.PENDING
+        val relayOut = m.run != Run.IDLE && m.relayPc == Pc.PENDING
+        val relayStalled = relayOut &&
+            m.relayQuietMs >= (if (m.run == Run.SENDING) RELAY_QUIET_MS else SILENT_MS)
+        val relayMayGo = m.relay == Relay.READY && m.run == Run.IDLE && m.door != Door.ANSWERED
+        val second = m.askedMs >= ASK_MS && m.roadMs >= ROAD_MS
+        val lanGaveUp = m.pc == Pc.UNREACHED || (m.door == Door.NOT_YET && second)
+        val relayBusy = m.relayPc == Pc.BUSY || (m.relay == Relay.BUSY && m.run == Run.IDLE)
+        return when {
+            m.pc == Pc.OK -> Step.LAND_PC
+            m.relayPc == Pc.OK -> Step.LAND_RELAY
+            m.cloud == Cloud.OK -> Step.LAND_CLOUD
+            // a PC answered "never": the cloud would be asked the same and the answer
+            // is a property of the recording, not of the road
+            m.pc == Pc.REFUSED -> if (m.cloud == Cloud.PENDING || relayOut) Step.WAIT else Step.PC_SAYS
+            m.relayPc == Pc.REFUSED -> if (m.cloud == Cloud.PENDING || lanOut) Step.WAIT else Step.RELAY_SAYS
+            // the door at home had its second: the PC that answered through the account.
+            // (A PC at home that answered it cannot now is a door that ANSWERED: never this.)
+            m.cloud != Cloud.PENDING && relayMayGo && lanGaveUp -> Step.RELAY
+            // the PC answered through the account that it cannot now: its own words
+            relayBusy && m.door != Door.ANSWERED && lanGaveUp ->
+                if (m.cloud == Cloud.PENDING) Step.WAIT else Step.RELAY_SAYS
+            // the switch off, no yes, or no key: the PC's roads and nothing else
+            !m.active || !m.keyed ->
+                if (lanOut || relayOut || relayMayGo || m.relay == Relay.ASKING) Step.WAIT else Step.PC_SAYS
+            // a PC answered that it cannot now: its own words, the recording waits
+            m.pc == Pc.BUSY -> if (m.cloud == Cloud.PENDING || relayOut) Step.WAIT else Step.PC_SAYS
+            m.cloud == Cloud.PENDING -> Step.WAIT
+            m.cloud == Cloud.FAILED -> if (lanOut || (relayOut && !relayStalled)) Step.WAIT else Step.CLOUD_SAYS
+            // the cloud is IDLE from here on: the relay carries it, or is about to know
+            relayOut && !relayStalled -> Step.WAIT
+            relayMayGo || m.relay == Relay.ASKING -> Step.WAIT
+            relayStalled -> Step.CLOUD
+            // Nobody answered: the PC road comes back unreached, and the door is NOBODY in
+            // the same moment, so this rule is that one
+            m.pc == Pc.UNREACHED -> Step.CLOUD
+            m.door == Door.NOT_YET && second -> Step.CLOUD
+            m.door == Door.ANSWERED && m.silentMs >= SILENT_MS -> Step.CLOUD
+            else -> Step.WAIT
+        }
     }
 }
 
@@ -149,9 +208,15 @@ object CloudLine {
         return Transcriber.Result.Ok(text, null, backend, length, cloud = provider, audio = seconds(wav))
     }
 
-    /** The line itself, the same words on both roads: "3.7 s · local", "3.7 s · from the cloud (Groq)". */
-    fun note(ok: Transcriber.Result.Ok): String =
-        if (ok.backend.isEmpty()) "" else String.format(java.util.Locale.US, "%.1f s · %s", ok.seconds, ok.backend)
+    /**
+     * The line itself, the same shape on every road: "3.7 s · local", "3.7 s · local via
+     * your account" (the relay, stage 3), "3.7 s · from the cloud (Groq)".
+     */
+    fun note(ok: Transcriber.Result.Ok): String = when {
+        ok.backend.isEmpty() -> ""
+        ok.via.isEmpty() -> String.format(java.util.Locale.US, "%.1f s · %s", ok.seconds, ok.backend)
+        else -> String.format(java.util.Locale.US, "%.1f s · %s %s", ok.seconds, ok.backend, ok.via)
+    }
 }
 
 /** A multipart/form-data body, by hand: the provider's one request, no library. */

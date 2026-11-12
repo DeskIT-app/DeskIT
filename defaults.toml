@@ -1551,6 +1551,13 @@ phone_port = 8766              # the phone door asks for this one first; a
 review_scope = "phone"         # phone | all. What GET /review answers: all
                                # keeps desk proposals answerable from the sofa.
 phone_allowed = false          # this PC's one yes to its phone door; state.
+away = true                    # also from outside home: a phone of your
+                               # account away from home reaches this PC's
+                               # model through your account's own channel,
+                               # every piece locked with your account's key
+                               # so the server carries only sealed bytes.
+                               # Off: this PC does not answer it, and the
+                               # phone goes on to its cloud key or waits.
 
 [history]
 # transcripts.log is every sentence you dictated, corrected, translated,

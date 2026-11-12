@@ -133,6 +133,10 @@ PURPOSE_KINDS: dict[str, str] = {
     "ask-screen": "cloud_screenshots",
     "account": "account", "report": "report_upload", "sync": "settings_sync",
     "history": "history_sync",
+    # the sealed relay (relay.py): what crosses is sealed under the account
+    # key on the account's own topic, so it is the account's yes and no
+    # card of its own (PHONE_LINK_PLAN.md stage 3)
+    "link": "account",
     "update-check": "update_check",
 }
 

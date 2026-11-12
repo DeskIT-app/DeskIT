@@ -1467,6 +1467,9 @@ def flow_small_phone():
     """A 320dp phone and larger text: the words may wrap, Send again and the X are
     never cut, and the keyboard still sends."""
     acct = fa.fresh()
+    # The account's channel out of reach too: the words here are for a phone that reaches
+    # nothing of its own off the Wi-Fi. Through the account they are flow_relay's (stage 3).
+    acct.realtime_off = True
     try:
         real_join(acct)
         pc = acct._door_pc
@@ -1528,6 +1531,9 @@ def flow_no_wifi():
     The PC is off as well: an emulator's mobile data reaches the host, where a phone's
     5G never reaches a PC at home."""
     acct = fa.fresh()
+    # The account's channel out of reach too: the words here are for a phone that reaches
+    # nothing of its own off the Wi-Fi. Through the account they are flow_relay's (stage 3).
+    acct.realtime_off = True
     try:
         real_join(acct)
         pc = acct._door_pc

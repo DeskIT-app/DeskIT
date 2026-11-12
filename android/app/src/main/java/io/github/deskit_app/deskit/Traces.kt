@@ -60,6 +60,8 @@ object Traces {
         Link.forget(c)
         CloudKeys.forget(c)
         Backup.forget(c)
+        // the account's channel, open on this session: it goes with the session
+        Relay.forget()
         (c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancelAll()
         Prefs.clipOwed(c, true)
         val app = c.applicationContext

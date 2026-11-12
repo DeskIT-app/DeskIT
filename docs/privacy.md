@@ -157,13 +157,25 @@ account's own key.
 
 ## 5. The phone companion
 
-Audio travels between your phone and your PC over your own network —
-a pairing over a certificate the PC generates, optionally Tailscale —
-never through any server of the owner. The phone token is stored under
-DPAPI.
+At home, audio travels between your phone and your PC over your own
+network — a pairing over a certificate the PC generates, optionally
+Tailscale — never through any server of the owner. The phone token is
+stored under DPAPI.
+
+**Away from home, through your account.** When the phone cannot reach your
+PC on the network it is on, it sends the recording through your account
+instead: in pieces, on your account's own private channel, each piece locked
+with your account's own key, and your PC's text comes back the same way. The
+account's server (Supabase, Frankfurt) carries those pieces and learns that
+they passed, how large they were and when, and nothing of what is in them:
+it holds no key that opens them. Nothing is stored there; the pieces pass
+through. Your PC answers only a phone of your account that you have not
+removed, and only while **Also from outside home** is on in its Settings >
+Phone (on unless you turn it off). It is the same recording your PC would
+have heard at home, transcribed by your PC: no provider hears it.
 
 **The cloud backup, on the phone only.** When no PC of your account
-answers within about a second, the DeskIT keyboard sends that recording
+answers within about a second, at home or through your account, the DeskIT keyboard sends that recording
 to Groq (to Gemini, if that is the only key you have) with **your own
 key**, from the phone, and the text lands in the field. It is on unless
 you turn it off: the phone shows it once, with the switch already on,

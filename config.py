@@ -1270,6 +1270,12 @@ class ServerConfig:
     review_scope: str = "phone"
     # This PC's one yes to its phone door: a state key.
     phone_allowed: bool = False
+    # Also from outside home (relay.py, PHONE_LINK_PLAN.md stage 3): a phone
+    # of the account away from home reaches this PC's model through the
+    # account's own channel, every piece sealed under the account key. On
+    # by default, the plan's words; off, this PC does not answer, and the
+    # phone goes on to its cloud key or waits.
+    away: bool = True
 
 
 @dataclass(frozen=True)
@@ -2073,6 +2079,7 @@ def build(data: dict) -> Config:
             review_scope=str(server.get("review_scope",
                                         ServerConfig.review_scope)).strip().lower(),
             phone_allowed=bool(server.get("phone_allowed", ServerConfig.phone_allowed)),
+            away=bool(server.get("away", ServerConfig.away)),
         ),
         vocab=VocabConfig(
             enabled=bool(vocab.get("enabled", VocabConfig.enabled)),

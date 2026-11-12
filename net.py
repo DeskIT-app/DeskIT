@@ -136,14 +136,17 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 #: (the read-aloud writer, reading.py), ``notify`` (the Claude Code
 #: hook's knock on our own listener), ``summary`` (the one sentence a
 #: "Claude finished" card carries instead of the message's first lines,
-#: notify.Summary, 2026-09-21) and ``phone`` (a connection that came IN,
-#: to the door at home, ``serve_tls``), which the plan's list predates.
+#: notify.Summary, 2026-09-21), ``phone`` (a connection that came IN,
+#: to the door at home, ``serve_tls``) and ``link`` (the sealed relay
+#: through the account, relay.py: a PC's answer to a phone away from home,
+#: sealed under the account key, as a broadcast on the account's own
+#: topic), which the plan's list predates.
 PURPOSES: frozenset[str] = frozenset({
     "polish", "punctuate", "translate", "lookup", "review", "study",
     "reading", "ask-screen", "transcribe", "key-test", "catalog", "ollama",
     "notify", "summary", "model-download", "pack-install", "update-check",
     "update-download", "account", "report", "sync", "history", "room",
-    "phone",
+    "phone", "link",
 })
 
 #: secret name -> (the one host it may go to, header, how it is written).

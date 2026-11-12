@@ -40,6 +40,8 @@ object Transcriber {
             val cloud: String = "",
             /** The recording's length in seconds, for the text the PCs are told. */
             val audio: Double = 0.0,
+            /** How a PC's text came, when not straight: "via your account" (the relay). */
+            val via: String = "",
         ) : Result()
 
         data class Err(val message: String, val why: Why = Why.BUSY) : Result()

@@ -115,6 +115,7 @@ beside the app keeps the defaults and the help for every key.
 | key | what it does | default | choices |
 |---|---|---|---|
 | `server.enabled` — Dictate from the phone | Your phone sends what you say to this PC, and the words come back to it. | on | on / off |
+| `server.away` — Also from outside home | Away from home, your phone reaches this PC through your account, locked with your account's own key: the server carries only sealed bytes. Off, your phone uses its cloud key or waits. | on | on / off |
 
 ## Account
 
