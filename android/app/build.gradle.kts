@@ -62,7 +62,22 @@ android {
     }
 
     buildTypes {
+        debug {
+            // The fake account of dev/android/fake_pc.py, for the emulator:
+            // `gradle assembleDebug -PdeskitAccount=http://10.0.2.2:18791`.
+            // A build-time fact and never a setting, so nothing on a phone
+            // can point the app at another server. Without the property the
+            // app speaks to the real project (Account.kt).
+            resValue("string", "account_server",
+                     (project.findProperty("deskitAccount") as String?) ?: "")
+            // The fake Groq and Gemini of dev/android/fake_cloud.py, the same way:
+            // `-PdeskitCloud=http://10.0.2.2:18793`. Without it, the real providers.
+            resValue("string", "cloud_server",
+                     (project.findProperty("deskitCloud") as String?) ?: "")
+        }
         release {
+            resValue("string", "account_server", "")
+            resValue("string", "cloud_server", "")
             // The build that goes on GitHub Releases and later Play:
             // release-signed when keystore.properties is there, never
             // debuggable, not minified (1.2 MB; nothing to gain and a
@@ -82,3 +97,15 @@ android {
 }
 
 dependencies { }
+
+// The formats against what the real vault.py wrote (src/test, a plain main):
+// `gradle jvmChecks --offline`. JUnit is not in this build's offline cache and
+// the app has no dependencies, so the checks do not bring one in for this.
+tasks.register<JavaExec>("jvmChecks") {
+    dependsOn("compileDebugUnitTestKotlin", "compileDebugKotlin")
+    mainClass.set("io.github.deskit_app.deskit.CryptChecksKt")
+    classpath = files(
+        layout.buildDirectory.dir("tmp/kotlin-classes/debug"),
+        layout.buildDirectory.dir("tmp/kotlin-classes/debugUnitTest"),
+    ) + configurations.getByName("debugUnitTestRuntimeClasspath")
+}

@@ -99,6 +99,22 @@ missing key, a shut cloud-text gate, a late answer and an error all
 mean the old card, and `text` itself is never stored. Claude's own
 turn is not slowed by a millisecond — the hook runs after it.
 
+THE SAME FINISH TOLD TWICE (2026-10-24). A Claude Code finish now
+reaches this door by two roads: notify_tail.py reads it off the
+session's transcript the moment it is written, and the Stop hook still
+knocks with it — on most turns about three seconds later (the
+measurements are in notify_tail.py). The first to arrive is the card;
+the second is recognised as the same finish and folded in, never shown
+twice and never summarised twice. "The same" is exact: same source,
+`done`, same session, and the hook's 300-character body equal to the
+one that session's NEWEST finish arrived with (`raw` once the sentence
+has replaced it) inside TWIN_S. The transcript's copy says so with
+`via = "transcript"` (kept on the item); the hook's half that it
+lacks — the window the hook walked up to and the session link — is
+written onto the card when the hook comes, and notify.log says by how
+much the transcript was ahead. A hook whose finish was never read off
+a transcript lands exactly as it always did.
+
 Two records are kept beside the app: notify.log (one line per arrival,
 reminder and dismissal, awake.log's shape) and notify.json (the last
 100 items, review.json's shape, read-only for the dashboard).
@@ -185,6 +201,9 @@ EXCERPT_GAP = "\n[...]\n"
 SUMMARY_MAX = 200              # the sentence, as drawn: one body line or two
 _FENCE = re.compile(r"^`{3,}\w*$")   # a code fence a model wraps its answer in
 SUMMARY_WAIT_S = 1.0           # the ceiling when the config says nothing
+VIA = "transcript"             # notify_tail.VIA: a finish read off its file
+TWIN_S = 120                   # how far back the same finish told twice is
+                               # looked for; the hook trails by seconds
 SUMMARY_MODEL = "qwen/qwen3.8-27b"
 SUMMARY_LANGUAGES = {"he": "Hebrew", "en": "English"}
 SUMMARY_PROMPT = (
@@ -312,6 +331,14 @@ def text_of(payload) -> str:
     text = _text(payload.get("text"))
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return _CONTROLS.sub("", text).strip()[:TEXT_MAX]
+
+
+def via_of(payload) -> str:
+    """VIA for a finish notify_tail.py read off a transcript, "" for
+    everything else — the one value this field may hold."""
+    if isinstance(payload, dict) and payload.get("via") == VIA:
+        return VIA
+    return ""
 
 
 def excerpt(text: str, head: int = EXCERPT_HEAD,
@@ -463,6 +490,8 @@ class Store:
             item["hwnd"] = _window(fields.get("hwnd"))
             item["link"] = _link(fields.get("link"))
             item["seen"] = False
+            if fields.get("via") == VIA:
+                item["via"] = VIA
             items.append(item)
             if len(items) > self.keep:
                 del items[:len(items) - self.keep]
@@ -486,6 +515,28 @@ class Store:
             if changed:
                 self._save(data)
             return changed
+
+    def fold(self, ident: int, fields: dict) -> dict | None:
+        """The hook's half of a finish the transcript told first: its
+        window (and that window's title) and its session link, each only
+        where the hook has one, and the item marked `folded` so a second
+        hook is not folded into it again. None when the item is gone."""
+        with self._lock:
+            data = self._load()
+            for item in data["items"]:
+                if int(item.get("id", 0)) != int(ident):
+                    continue
+                hwnd = _window(fields.get("hwnd"))
+                if hwnd:
+                    item["hwnd"] = hwnd
+                    item["app"] = str(fields.get("app") or item.get("app", ""))
+                link = _link(fields.get("link"))
+                if link:
+                    item["link"] = link
+                item["folded"] = True
+                self._save(data)
+                return dict(item)
+            return None
 
     def summarize(self, ident: int, sentence: str) -> dict | None:
         """The one sentence becomes the body, the body it replaces is
@@ -576,6 +627,13 @@ class Store:
 # are candidates, whichever exist are read, and a watcher that finds
 # neither says so in notify.log rather than nothing for ever.
 #
+# AND THEN IT MOVED AGAIN (2026-10-21), to a real folder both sides see:
+# %LOCALAPPDATA%\Claude-Data\claude_<hash>\claude-code-sessions. That
+# log line said "found NO session store" 154 times before anybody read
+# it. The list of places now lives in ONE function,
+# notify_hook.session_roots(), which the hook's link and this watcher
+# both read — notify_hook.py, "THE STORE MOVED", has the measurements.
+#
 # TWO WAYS HE CAN BE "IN" THE SESSION, and the card comes down on either:
 #   A · ENTERED — the session's focus stamp is LATER than the card's own
 #       `at`. He clicked into it after it spoke. A tap inside the session
@@ -603,8 +661,6 @@ class Store:
 # which live in the cloud and have no local file — Cowork cards can never
 # dismiss themselves this way, the same limit that stops them being opened.
 
-SESSIONS_UNDER = Path("Claude") / "claude-code-sessions"
-PACKAGES = Path(os.environ.get("LOCALAPPDATA", "")) / "Packages"
 CLAUDE_EXE = "claude.exe"      # the desktop app's process, for a card that
                                # names no window; matched on the basename
 ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
@@ -612,35 +668,26 @@ ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
 ARRIVAL_SCAN_MAX = 60          # session files read per root per pass; the
                                # store grows for ever and the newest are the
                                # ones a live card can belong to
+# What each of those files said, kept against its (mtime, size): a file
+# that has not changed since the last pass is not parsed again. Measured
+# 2026-10-24 on the moved store: the 60 newest are 30 MB — one is up to
+# 1 MB, nearly all of it `remoteMcpServersConfig` — and parsing them
+# every ARRIVAL_POLL_S was 0.29 s warm and 1.5 s cold, a pass that
+# would have cost 15% of a core for as long as a card was up. Between
+# two passes only the sessions at work write their files.
+_FOCUS_SEEN: dict[str, tuple] = {}
 
 
 def session_roots() -> list[Path]:
-    """Every folder the app's session store might be in, that exists.
-
-    `%APPDATA%\\Claude\\…` for a process inside the app's container (a
-    hook, a Claude Code session), and every
-    `%LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude\\…`
-    for one outside it — this app. The package folder is globbed because
-    its suffix is the publisher hash, and a reinstall under another
-    identity would move it. Never raises; [] when nothing is there.
-    """
-    found: list[Path] = []
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        found.append(Path(appdata) / SESSIONS_UNDER)
+    """Every folder the app's session store might be in, that exists —
+    notify_hook.session_roots(), the one list (see the block above).
+    Never raises; [] when nothing is there."""
     try:
-        for pkg in sorted(PACKAGES.glob("Claude_*")):
-            found.append(pkg / "LocalCache" / "Roaming" / SESSIONS_UNDER)
-    except OSError:
-        pass
-    out: list[Path] = []
-    for root in found:
-        try:
-            if root.is_dir():
-                out.append(root)
-        except OSError:
-            continue
-    return out
+        import notify_hook
+
+        return notify_hook.session_roots()
+    except Exception:                     # noqa: BLE001 — a cut-down copy
+        return []
 
 
 def focus_times(roots=None) -> dict[str, float]:
@@ -666,34 +713,53 @@ def focus_times(roots=None) -> dict[str, float]:
     elif isinstance(roots, (str, Path)):
         roots = [Path(roots)]
     out: dict[str, float] = {}
+    seen: dict[str, tuple] = {}
     for base in roots:
         try:
-            files = sorted(Path(base).glob("*/*/local_*.json"),
-                           key=lambda p: p.stat().st_mtime, reverse=True)
+            stats = [(p, p.stat()) for p in Path(base).glob("*/*/local_*.json")]
         except OSError:
             continue
-        for path in files[:ARRIVAL_SCAN_MAX]:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue                  # mid-write, or not ours to read
-            if not isinstance(data, dict):
-                continue
-            try:
-                when = float(data.get("lastFocusedAt") or 0)
-            except (TypeError, ValueError):
-                continue
-            if when <= 0:
-                continue
-            names = [data.get("cliSessionId"), data.get("sessionId")]
-            prior = data.get("priorCliSessionIds")
-            if isinstance(prior, list):
-                names.extend(prior)
+        stats.sort(key=lambda ps: ps[1].st_mtime, reverse=True)
+        for path, st in stats[:ARRIVAL_SCAN_MAX]:
+            mark = (st.st_mtime_ns, st.st_size)
+            hit = _FOCUS_SEEN.get(str(path))
+            if hit is not None and hit[0] == mark:
+                when, names = hit[1], hit[2]
+            else:
+                when, names = _focus_of(path)
+                if when is None:
+                    continue              # mid-write: asked again next pass
+            seen[str(path)] = (mark, when, names)
             for name in names:
                 key = str(name or "")
                 if key and when > out.get(key, 0.0):
                     out[key] = when
+    _FOCUS_SEEN.clear()
+    _FOCUS_SEEN.update(seen)
     return out
+
+
+def _focus_of(path: Path) -> tuple:
+    """(lastFocusedAt, the session's names) out of one store file —
+    (0.0, []) for a file that answers nothing, (None, []) for one that
+    could not be read whole, which is not remembered."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, []                   # mid-write, or not ours to read
+    if not isinstance(data, dict):
+        return 0.0, []
+    try:
+        when = float(data.get("lastFocusedAt") or 0)
+    except (TypeError, ValueError):
+        return 0.0, []
+    if when <= 0:
+        return 0.0, []
+    names = [data.get("cliSessionId"), data.get("sessionId")]
+    prior = data.get("priorCliSessionIds")
+    if isinstance(prior, list):
+        names.extend(prior)
+    return when, names
 
 
 _RESUME = re.compile(r"^claude://resume\?session=([0-9a-fA-F-]{36})$")
@@ -1059,6 +1125,9 @@ class Engine:
         self.arrive_on = bool(getattr(cfg, "dismiss_on_arrival", True))
         self._watch_stop: threading.Event | None = None
         self._watch_thread: threading.Thread | None = None
+        # id -> clock() of a finish read off its transcript, until the
+        # hook folds into it: how far ahead the transcript was, for the log.
+        self._early_at: dict[int, float] = {}
 
     # -- in --
 
@@ -1072,6 +1141,7 @@ class Engine:
         quiet_s say about a finish that arrives on its own."""
         fields = clean(payload)
         text = text_of(payload)
+        via = via_of(payload)
         source, kind = fields["source"], fields["kind"]
         if not self.enabled:
             self._log(f"RECEIVED from {source} ({kind}) | title "
@@ -1079,13 +1149,23 @@ class Engine:
             return {"ok": False, "error": "notifications are off "
                                           "([notify] enabled = false)"}
         with self._lock:
-            item = self.store.add(fields)
+            if not urgent:
+                twin = self._same_finish(fields)
+                if twin is not None and (via or (
+                        twin.get("via") == VIA and not twin.get("folded"))):
+                    return self._told_twice(twin, fields, via)
+            item = self.store.add(dict(fields, via=via))
+            if via:
+                self._early_at[int(item["id"])] = self._clock()
+                while len(self._early_at) > KEEP:
+                    self._early_at.pop(next(iter(self._early_at)))
             unread = self.store.unread()
             self._log(f"RECEIVED #{item['id']} from {source} ({kind}) | "
                       f"project {item['project']} | title {item['title']!r}"
                       f" | {len(item['body'])} chars"
                       + (f" | text {len(text)} chars" if text else "")
-                      + f" | unread {unread}")
+                      + f" | unread {unread}"
+                      + (f" | via {via}" if via else ""))
             log.info("notify: received #%d from %s (%s): %r [%s] | unread %d",
                      item["id"], source, kind, item["title"],
                      item["project"], unread)
@@ -1157,6 +1237,53 @@ class Engine:
         cards. A sender that names no session falls back to its source,
         marked so it can never collide with a real session id."""
         return str(item.get("session", "")) or f"~{item.get('source', '')}"
+
+    def _same_finish(self, fields) -> dict | None:
+        """The stored finish this arrival repeats, or None — see "THE
+        SAME FINISH TOLD TWICE" above. Only the session's NEWEST finish
+        is compared: an older one is a turn that has passed, and a body
+        that differs from the newest is a new turn. The lock is held by
+        the caller."""
+        if fields.get("source") != "claude-code" \
+                or fields.get("kind") != "done" or not fields.get("session"):
+            return None
+        for item in reversed(self.store.items()):
+            if item.get("source") != "claude-code" \
+                    or item.get("kind") != "done" \
+                    or item.get("session") != fields["session"]:
+                continue
+            said = item["raw"] if "raw" in item else item.get("body", "")
+            if said != fields.get("body"):
+                return None
+            try:
+                age = (datetime.now() - datetime.fromisoformat(
+                    str(item.get("at")))).total_seconds()
+            except ValueError:
+                return None
+            return item if -5 <= age <= TWIN_S else None
+        return None
+
+    def _told_twice(self, twin: dict, fields: dict, via: str) -> dict:
+        """The answer for an arrival that repeats `twin`: nothing shown,
+        nothing summarised, nothing superseded. The transcript's copy of
+        a finish the hook already brought is simply dropped; the hook's
+        copy of one the transcript brought first gives the card its
+        window and link. The lock is held by the caller."""
+        ident = int(twin["id"])
+        if via:
+            self._log(f"TOLD TWICE #{ident} | the hook was first, the "
+                      f"transcript's copy is dropped")
+        else:
+            self.store.fold(ident, fields)
+            early = self._early_at.pop(ident, None)
+            ahead = (f"{self._clock() - early:.2f} s"
+                     if early is not None else "an unknown time")
+            self._log(f"FOLDED the hook into #{ident} | the transcript "
+                      f"was {ahead} ahead")
+            log.info("notify: the hook's finish folded into #%d — the "
+                     "transcript was %s ahead", ident, ahead)
+        return {"ok": True, "id": ident, "unread": self.store.unread(),
+                "coalesced": False, "held": False, "folded": True}
 
     def _supersede(self, item) -> None:
         """This session's older finish is no longer news.
@@ -1635,7 +1762,9 @@ class Engine:
                               + " ; ".join(str(r) for r in roots))
                 else:
                     self._log("WATCHING for his arrival but found NO "
-                              "session store — looked under %APPDATA% and "
+                              "session store — looked under "
+                              "%LOCALAPPDATA%\\Claude-Data\\claude_*, "
+                              "%APPDATA%\\Claude and "
                               "%LOCALAPPDATA%\\Packages\\Claude_*")
                     log.warning("notify: no Claude session store found — "
                                 "cards will not dismiss on arrival")

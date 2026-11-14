@@ -8,9 +8,12 @@ time the dashboard changed a hotkey.
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import re
 import threading
+import time
 import tomllib
 import dataclasses
 from dataclasses import dataclass, field
@@ -294,6 +297,10 @@ class LocalConfig:
     # always was); the probe writes int8_float16 for a small card (6.3)
     compute_type: str = "auto"
     cpu_threads: int = 0     # 0 = the library's own choice
+    # off | cpu | always: the Hebrew model encoded at the clip's own length
+    # instead of Whisper's 30 s (local_whisper, "the real length") — only
+    # for a model trained for it, night14b; an untrained one loses words
+    real_length: str = "off"
     # the model with the app (true), or Start on the desk loads it
     load_at_start: bool = True
     # Whisper transcribes only; Gemini also cleans. Without this, the local
@@ -885,6 +892,12 @@ class NotifyConfig:
     # sessions to the Stop hook, which has already carded them; "all"
     # takes those too.
     watch: str = "cowork"
+    # A Claude Code finish read off the session's own transcript the
+    # moment it is written (notify_tail.py), instead of waiting for the
+    # Stop hook — which on most turns starts 2-5 s after the answer is on
+    # disk (measured 2026-10-24) and is then folded into the same card.
+    # Only while this copy holds Claude Code's door. False: the hook alone.
+    early: bool = True
     # A card comes down by itself when he reaches the session it came
     # from: he clicks into it after it spoke, or already has it on screen
     # with the Claude window in front. Only that card — entering Claude on
@@ -1235,19 +1248,34 @@ PROBLEMS_KEEP_RESOLVED_MAX = 2000
 
 @dataclass(frozen=True)
 class ServerConfig:
-    """The phone endpoint: dictate from the phone, transcribe on this GPU.
+    """The two doors, server.py: dictate from the phone, transcribe on
+    this GPU.
 
-    Off by default — it opens a socket, and that should be a decision.
+    On by default since the phone plan (2026-11-06): the phone door waits
+    for a phone by itself, so this switch no longer has to be what keeps
+    it shut. Each PC keeps its own no (sync.LOCAL_SECTIONS).
     """
-    enabled: bool = False
-    # "" = 127.0.0.1. Loopback is not a limitation, it is the design:
-    # `tailscale serve` proxies to localhost and terminates TLS, so nothing
-    # listens where a stranger — or the home LAN — could reach it, and the
-    # phone still gets the certificate its browser demands for microphone
-    # access. Binding the Tailscale address instead would make the server
-    # invisible to `tailscale serve`.
+    enabled: bool = True
+    # "" = 127.0.0.1, and the loopback door refuses anything else: it is
+    # plain HTTP with a bearer, for this PC's own programs. The door a phone
+    # reaches from the house's network is the other one, behind a client
+    # certificate, and no setting points this one at the LAN.
     host: str = ""
     port: int = 8756
+    # The phone door (server.PhoneDoor): the port it asks for first. Where
+    # it landed goes to state.json and out in this PC's `link` row.
+    phone_port: int = 8766
+    # What GET /review answers: "phone", the phone's own proposals, or
+    # "all", which keeps desk proposals answerable from the sofa.
+    review_scope: str = "phone"
+    # This PC's one yes to its phone door: a state key.
+    phone_allowed: bool = False
+    # Also from outside home (relay.py, PHONE_LINK_PLAN.md stage 3): a phone
+    # of the account away from home reaches this PC's model through the
+    # account's own channel, every piece sealed under the account key. On
+    # by default, the plan's words; off, this PC does not answer, and the
+    # phone goes on to its cloud key or waits.
+    away: bool = True
 
 
 @dataclass(frozen=True)
@@ -1887,6 +1915,8 @@ def build(data: dict) -> Config:
             compute_type=str(local.get("compute_type",
                                        LocalConfig.compute_type)).strip().lower() or "auto",
             cpu_threads=max(0, int(local.get("cpu_threads", LocalConfig.cpu_threads))),
+            real_length=str(local.get("real_length",
+                                      LocalConfig.real_length)).strip().lower() or "off",
             drop_trailing_boilerplate=bool(local.get(
                 "drop_trailing_boilerplate",
                 LocalConfig.drop_trailing_boilerplate)),
@@ -2045,6 +2075,11 @@ def build(data: dict) -> Config:
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
             host=str(server.get("host", ServerConfig.host)).strip(),
             port=int(server.get("port", ServerConfig.port)),
+            phone_port=int(server.get("phone_port", ServerConfig.phone_port)),
+            review_scope=str(server.get("review_scope",
+                                        ServerConfig.review_scope)).strip().lower(),
+            phone_allowed=bool(server.get("phone_allowed", ServerConfig.phone_allowed)),
+            away=bool(server.get("away", ServerConfig.away)),
         ),
         vocab=VocabConfig(
             enabled=bool(vocab.get("enabled", VocabConfig.enabled)),
@@ -2213,6 +2248,7 @@ def build(data: dict) -> Config:
                                      NotifyConfig.interrupt)).strip().lower(),
             quiet_s=int(notify.get("quiet_s", NotifyConfig.quiet_s)),
             watch=str(notify.get("watch", NotifyConfig.watch)).strip().lower(),
+            early=bool(notify.get("early", NotifyConfig.early)),
             dismiss_on_arrival=bool(notify.get(
                 "dismiss_on_arrival", NotifyConfig.dismiss_on_arrival)),
             summarize=bool(notify.get("summarize", NotifyConfig.summarize)),
@@ -2529,6 +2565,11 @@ def build(data: dict) -> Config:
         raise ConfigError("restore_delay_ms must be >= 0")
     if cfg.server.enabled and not (0 < cfg.server.port < 65536):
         raise ConfigError(f"server.port is out of range: {cfg.server.port}")
+    if not 0 < cfg.server.phone_port < 65536:
+        raise ConfigError(f"server.phone_port is out of range: {cfg.server.phone_port}")
+    if cfg.server.review_scope not in ("phone", "all"):
+        raise ConfigError(f"server.review_scope must be phone or all, "
+                          f"not {cfg.server.review_scope!r}")
     if cfg.audio.sample_rate <= 0:
         raise ConfigError("audio.sample_rate must be positive")
     if not cfg.gemini.models:
@@ -2662,6 +2703,9 @@ def build(data: dict) -> Config:
     if cfg.local.device not in ("auto", "cuda", "cpu"):
         raise ConfigError('local.device must be "auto", "cuda" or "cpu", '
                           f"got {cfg.local.device!r}")
+    if cfg.local.real_length not in ("off", "cpu", "always"):
+        raise ConfigError('local.real_length must be "off", "cpu" or '
+                          f'"always", got {cfg.local.real_length!r}')
     if not cfg.local.language:
         raise ConfigError("local.language must be pinned (the ivrit-ai "
                           "fine-tune's language autodetect is unreliable)")
@@ -2849,7 +2893,8 @@ STATE_KEYS: frozenset[str] = frozenset({
     "shelf.x", "shelf.y", "shelf.scale",
     "review.x", "review.y", "review.scale",
     "audio.device", "camera.device", "visual_qa.voice",
-    "server.port", "setup.done", "setup.tour", "setup.autostart",
+    "server.port", "server.phone_port", "server.phone_allowed",
+    "setup.done", "setup.tour", "setup.autostart",
     "config_version",
     "updates.last_check", "updates.latest_seen", "updates.installed_version",
 })
@@ -2962,9 +3007,90 @@ def write_settings(path: Path, flat: dict[str, object]) -> None:
     os.replace(tmp, path)
 
 
+#: Whose the stores on this PC are (sb._take_over), and what that says once
+#: nobody can tell: a state file that had to be replaced, a deleted account.
+#: Not ``account.``: Delete my account takes those.
+LAST_ACCOUNT = "sync.last_account"
+SOMEBODY = "somebody"
+
+
+class StateUnreadable(ConfigError):
+    """state.json is there and gave no answer. ``damaged``: it read and is
+    not a state file. Otherwise it could not be read, and may be fine."""
+
+    def __init__(self, message: str, damaged: bool):
+        super().__init__(message)
+        self.damaged = damaged
+
+
+def read_state_strict(path: Path) -> dict[str, object]:
+    """state.json for a caller who goes by what is NOT in it. read_state
+    answers {} for a file that is missing, one that is damaged and one it
+    could not read this once, and only the first means nothing was ever
+    written: {} from either of the others is a device id minted over the
+    real one, or a second account counted as a PC's first. {} here is the
+    file not being there. A file that will not open is tried again for a
+    moment (another process's replace holds it for that long), and then
+    this raises, as it does at once for a file that is damaged."""
+    import json
+    path = Path(path)
+    for wait_s in (0.02, 0.05, 0.1, None):
+        try:
+            text = path.read_text("utf-8")
+            break
+        except FileNotFoundError:
+            return {}
+        except UnicodeDecodeError as e:
+            raise StateUnreadable(f"{path.name} is damaged: {e}", damaged=True) from e
+        except OSError as e:
+            if wait_s is None:
+                raise StateUnreadable(f"{path.name} would not open: {e}", damaged=False) from e
+            time.sleep(wait_s)
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise StateUnreadable(f"{path.name} is damaged: {e}", damaged=True) from e
+    if not isinstance(data, dict):
+        raise StateUnreadable(f"{path.name} is not a state file", damaged=True)
+    return data
+
+
+def state_to_write(path: Path) -> dict[str, object]:
+    """state.json for a caller about to write the whole of it back. {} from a
+    read that failed, written back, is every key in the file gone: the
+    device id, the floors, the record of whose the stores are. So a file
+    that would not open raises and stays as it is. A damaged one is copied
+    aside, never deleted, and what replaces it goes down here, in one
+    replace, and not with the caller's write: that may touch only
+    settings.toml, or be refused, and a state file that had gone would read
+    as a PC that never had an account. It says that somebody was here,
+    because its record is gone and a live session must not read that as a
+    PC's first account (sb._take_over), and it carries this build's version,
+    because a file with none reads as 1 and no upgrade step runs on a guess
+    (migrations.current)."""
+    import shutil
+
+    import version
+    path = Path(path)
+    try:
+        return read_state_strict(path)
+    except StateUnreadable as e:
+        if not e.damaged:
+            raise
+        why = e
+    aside = path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copyfile(path, aside)
+    fresh: dict[str, object] = {LAST_ACCOUNT: SOMEBODY, "config_version": version.CONFIG_VERSION}
+    write_state(path, fresh)
+    logging.getLogger("app").warning("%s was set aside as %s (%s)", path.name, aside.name, why)
+    return fresh
+
+
 def read_state(path: Path) -> dict[str, object]:
     """state.json as a flat dotted dict; {} when missing or unreadable —
-    a corrupt state file is a log line and defaults, never a failed start."""
+    a corrupt state file is a log line and defaults, never a failed start.
+    For the settings a person sees. Anything that decides from a key's
+    absence reads read_state_strict, and a writer state_to_write."""
     import json
     path = Path(path)
     if not path.exists():
@@ -3037,6 +3163,51 @@ def with_followers(updates: dict[str, object]) -> dict[str, object]:
 #: each place's press on a thread of its own — would each write back a copy
 #: without the other's change (the web desk's review, 2026-10-24).
 _SAVE_LOCK = threading.RLock()
+#: How long a save waits for another process's. Ten of them take a tenth of this.
+SAVE_WAIT_S = 1.0
+
+
+@contextlib.contextmanager
+def _one_process(path: Path):
+    """One writer at a time between processes, the app and the desk: one
+    byte held in a file beside state.json, because _SAVE_LOCK is one
+    process's and each save writes back the whole file it read. Bounded on
+    purpose: past SAVE_WAIT_S the save goes on without it, as every save
+    did before, so the worst this does is what always happened, and it
+    can never hang either program. Windows drops the byte with a dead process."""
+    try:
+        import msvcrt
+    except ImportError:                                      # not Windows
+        yield
+        return
+    handle, held = None, False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.with_name(path.name + ".lock").open("a+b")
+        deadline = time.monotonic() + SAVE_WAIT_S
+        while not held:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                held = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    logging.getLogger("app").info("config: another process held the save")
+                    break
+                time.sleep(0.01)
+    except OSError as e:
+        logging.getLogger("app").info("config: no lock for the save (%s)", e)
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                if held:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            handle.close()
 
 
 def save(updates: dict[str, object], *, defaults=None, settings=None,
@@ -3058,13 +3229,13 @@ def save(updates: dict[str, object], *, defaults=None, settings=None,
     is taken out of state.json in the same breath, so the layer on top
     never hides the layer they edit.
     """
-    with _SAVE_LOCK:
+    with _SAVE_LOCK, _one_process(_layer_paths(defaults, settings, state)[2]):
         _refuse_consent_keys(updates, allow_consent)
         updates = with_followers(updates)
         d, s, t = _layer_paths(defaults, settings, state)
         flat_defaults = flatten(_read_toml(d))
         overrides = read_settings(s)
-        machine = read_state(t)
+        machine = state_to_write(t)
         touched_settings = touched_state = False
         for name, value in updates.items():
             if derived or is_state_key(name):

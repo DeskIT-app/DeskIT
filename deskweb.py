@@ -128,6 +128,9 @@ CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".mp4")
 #: the app's worker to carry the copy up before it says "on its way".
 REPORT_WHERE = "Home"
 REPORT_SEND_WAIT_S = 12.0
+#: Home's row on a further PC (dashboard._waiting_phone says the same).
+PHONE_ASK = ("It joined your account on your other PC. Allow it, and at home it dictates "
+             "straight to this PC. Windows will ask you once.")
 #: What the screenshot is shown as on the preview (problems.THUMB_MAX).
 REPORT_THUMB_PX = 220
 #: The plain words for each piece of the copy that travels — the Tk
@@ -142,7 +145,7 @@ LANDING_STORED = ("What is stored: an account id and the e-mail of the Google ac
                   "you choose; this PC's name, the app's version and Windows'. The server "
                   "is DeskIT's own (Supabase, Frankfurt). Only your voice never leaves this "
                   "PC: your learned words and settings are kept in your account, and so are "
-                  "what you said and your cloud keys, locked with a key only your own PCs "
+                  "what you said and your cloud keys, locked with a key only your own devices "
                   "hold. Settings > Privacy > Withdraw turns this off.")
 LANDING_WAITING = "Waiting for Google's sign-in page in your browser…"
 #: A recovery key as a person types it: Crockford letters and digits in
@@ -305,13 +308,10 @@ def change_segments(text: str, changes: list) -> tuple[list[dict], int]:
     return segs, len(kept)
 
 
-def _without_phone(reply):
-    """status() carries the phone link and its token; the page never
-    needs them and a page is not where a secret goes (webdesk.py)."""
-    if isinstance(reply, dict):
-        reply = dict(reply)
-        reply.pop("phone", None)
-    return reply
+def _phone_on(reply) -> bool:
+    """The footer's "phone live": the phone's door is open."""
+    info = (reply or {}).get("phone")
+    return bool(isinstance(info, dict) and info.get("on"))
 
 
 def copy_text(text: str, secret: bool = False) -> bool:
@@ -450,8 +450,8 @@ class Model:
             # Within a second of a press the app may not have caught up,
             # and a status from before the press would flip the button
             # back for one frame (dashboard._refresh).
-            self.phone_live = bool((reply or {}).get("phone"))
-            self.status = _without_phone(reply or {})
+            self.phone_live = _phone_on(reply)
+            self.status = reply or {}
             self.running = bool(reply) and self.status.get("stage") == "running"
         stamp = history.stamp()
         if stamp != self._log_stamp:
@@ -614,24 +614,17 @@ class Model:
         except Exception:                 # noqa: BLE001
             return []
         rows, now = [], self._stamp()
-        for kind in stale:
-            words = cc.TEXTS.get(kind) or {}
-            blocks = dict(words.get("blocks") or ())
-            what = str(blocks.get(cc.WHAT, "")).rstrip(".")
-            whom = str(blocks.get(cc.WHOM, "")).split(" — ")[0].rstrip(".")
-            off = str(blocks.get(cc.OFF, "")).rstrip(".")
-            changed = str(words.get("changed") or "")
+        for asked in cc.asked_again(stale):
+            arg = ",".join(asked["kinds"])
             rows.append({
-                "id": f"consent:{kind}", "kind": "consent", "at": now + 3,
+                "id": f"consent:{asked['kinds'][0]}", "kind": "consent", "at": now + 3,
                 "tone": "warn", "glyph": "globe",
-                "title": str(words.get("title", kind)), "meta": "the words changed",
-                "text": f"Say yes again? {changed}" if changed
-                        else f"Say yes again? What leaves: {what}.",
-                "rtl": False, "note": f"To {whom}, on your own key. Off again: {off}.",
+                "title": asked["title"], "meta": "the words changed",
+                "text": asked["text"], "rtl": False, "note": asked["note"],
                 "buttons": [{"label": "Turn on", "tone": "primary",
-                             "act": "consent.on", "arg": kind},
+                             "act": "consent.on", "arg": arg},
                             {"label": "Not now", "tone": "quiet",
-                             "act": "consent.later", "arg": kind}],
+                             "act": "consent.later", "arg": arg}],
             })
         return rows
 
@@ -820,11 +813,13 @@ class Model:
     def _lock_rows(self) -> list[dict]:
         """dashboard._waiting_lock and _lock_changed_rows, with their
         answers on the rows (the owner, 2026-09-21: "not outside DeskIT —
-        inside, on Home"): another PC asking to join, with its code and
-        Approve / Not now; this PC waiting for its other PC, with the
-        code — and the recovery key typed into the row; a fresh recovery
-        key, shown once, until Done; the changed lock's It wasn't me / It
-        was me; and while the account has none, Make a recovery key."""
+        inside, on Home"): another device asking to join, with its code
+        and Approve / Not now; this PC waiting for another device of the
+        account, with the code — and the recovery key typed into the row;
+        a fresh recovery key, shown once, until Done; the changed lock's
+        It wasn't me / It was me; and while the account has none, Make a
+        recovery key, once a sync is on or the account has a phone (a lock
+        held with both syncs off asks nothing: ``quiet``)."""
         lock = self._lock_info()
         if not lock:
             self._lock_typing = self._lock_asking = False
@@ -841,7 +836,7 @@ class Model:
         if self._lock_fresh:
             rows.append(row(
                 "lock:fresh", now + 2, "warn", "keep it somewhere safe, it is shown once",
-                "With it, a PC with no other PC of yours at hand can open your account. "
+                "With it, a PC with no other device of yours at hand can open your account. "
                 "Making a new one replaces it.",
                 [{"label": "Copy", "tone": "primary", "act": "lock.copy"},
                  {"label": "Done", "tone": "quiet", "act": "lock.done"}],
@@ -849,14 +844,14 @@ class Model:
         rows += self._lock_changed_rows(lock, now, row)
         for ask in lock.get("pending") or []:
             ident = str(ask.get("id") or "")
-            name = str(ask.get("name") or "Another PC")
+            name = str(ask.get("name") or "Another device")
             if ask.get("twins"):
                 # two open requests from one PC: one of them is somebody
                 # else's copy (the audit's A74) — nothing to approve
                 rows.append(row(
                     f"lock:ask:{ident}", now + 1, "bad",
                     f"Two requests say they are {name} — neither can be approved",
-                    f"One of them is not your PC. On {name}, sign out and sign in again to "
+                    f"One of them is not yours. On {name}, sign out and sign in again to "
                     "ask afresh. Nobody of yours asking right now? Settings > Account > "
                     "Sign out of every PC — it ends every session of your account, "
                     "anyone else's too.",
@@ -873,40 +868,62 @@ class Model:
                 [{"label": "Approve", "tone": "primary", "act": "lock.approve", "arg": ident},
                  {"label": "Not now", "tone": "quiet", "act": "lock.decline", "arg": ident}]))
         if lock.get("state") == "waiting":
-            note = ("Open the desk on your other PC and press Approve. Until then this PC has "
-                    "your words and settings; what you said and your cloud keys stay locked. "
-                    "No other PC at hand? Type the recovery key DeskIT made for you.")
+            code = lock.get("code") or "…"
+            note = ("Open the desk on your other PC, or open DeskIT on your phone. If it shows "
+                    "this code, press Approve there and Same code here, in either order.")
+            if lock.get("same"):
+                note = ("Now press Approve there: the desk on your other PC, or DeskIT on your "
+                        "phone. Until then what you said and your cloud keys stay locked.")
             if lock.get("error"):
                 note = f"{lock['error']}  ·  {note}"
             if self._lock_typing:
                 rows.append(row(
                     "lock:waiting", now, "warn",
-                    f"Waiting for your other PC to approve this one — Home there must show "
-                    f"{lock.get('code') or '…'}",
+                    f"Waiting for another device of yours to approve this PC — its screen must show "
+                    f"{code}",
                     "Your recovery key — 24 letters and digits in six groups:",
                     [{"label": "Open", "tone": "primary", "act": "lock.recover"},
                      {"label": "Cancel", "tone": "quiet", "act": "lock.cancel"}],
                     field="recovery"))
             else:
+                buttons = [{"label": "Type the recovery key", "tone": "quiet", "act": "lock.type"}]
+                if not lock.get("same"):
+                    buttons.insert(0, {"label": "Same code", "tone": "primary", "act": "lock.same",
+                                       "arg": lock.get("code")})
                 rows.append(row(
                     "lock:waiting", now, "warn",
-                    f"Waiting for your other PC to approve this one — Home there must show "
-                    f"{lock.get('code') or '…'}", note,
-                    [{"label": "Type the recovery key", "tone": "quiet", "act": "lock.type"}]))
+                    (f"You pressed Same code for {code} — waiting for your other device to "
+                     "approve this PC" if lock.get("same") else
+                     f"Waiting for another device of yours to approve this PC — its screen must "
+                     f"show {code}"), note, buttons))
         else:
             self._lock_typing = False
             if lock.get("state") == "have" and lock.get("recovery") is False \
-                    and not self._lock_fresh:
+                    and not self._lock_fresh and not lock.get("quiet"):
                 rows.append(row(
                     "lock:recovery", 0.0, "q",
                     "Make a recovery key — so a new PC of yours can open your account when "
                     "this one is gone",
                     "DeskIT makes it (24 characters) and shows it once; you keep it. What you "
-                    "said and your cloud keys are locked with a key only your PCs hold — "
-                    "without another PC or the recovery key, a new PC cannot open them.",
+                    "said and your cloud keys are locked with a key only your devices hold — "
+                    "without another device or the recovery key, a new PC cannot open them.",
                     [{"label": "Make a recovery key", "tone": "primary",
                       "act": "lock.recovery_new"}]))
         return rows
+
+    def _phone_rows(self) -> list[dict]:
+        """A further PC of the account: one row, and the door binds on Allow,
+        so Windows' dialog follows a press (dashboard._waiting_phone)."""
+        info = (self.status or {}).get("phone")
+        if not isinstance(info, dict) or not info.get("ask"):
+            return []
+        name = str((info.get("phones") or [{}])[0].get("name") or "Your phone")
+        return [{"id": "phone:allow", "kind": "phone", "at": self._stamp() + 1, "tone": "q",
+                 "glyph": "phone", "title": name, "meta": "",
+                 "text": "Your phone can use this PC too", "rtl": False,
+                 "note": PHONE_ASK,
+                 "buttons": [{"label": "Allow", "tone": "primary", "act": "phone.allow"},
+                             {"label": "Not now", "tone": "quiet", "act": "phone.notnow"}]}]
 
     def _lock_changed_rows(self, lock: dict, now: float, row) -> list[dict]:
         """dashboard._lock_changed_rows: the account's lock changed
@@ -925,8 +942,8 @@ class Model:
                 "The lock of your account changed — not on this PC. Was it you?",
                 "Until you answer, what you said and your cloud keys stop syncing, both ways; "
                 "this PC keeps its key. It was you: this PC asks to join the new lock — "
-                "approve it from your other PC or type the recovery key. It wasn't: nothing "
-                "here changes.",
+                "approve it from another device of yours or type the recovery key. It wasn't: "
+                "nothing here changes.",
                 [{"label": "It wasn't me", "tone": "primary", "act": "lock.answer", "arg": "no"},
                  {"label": "It was me", "tone": "quiet", "act": "lock.answer", "arg": "yes"}])]
         if self._lock_asking:
@@ -953,7 +970,7 @@ class Model:
     def _banner(self) -> dict | None:
         """dashboard._lock_banner: one line over every place but Home
         while the lock needs the person (the owner, 2026-09-21: "something
-        on every screen, up top") — another PC asking, with Approve / Not
+        on every screen, up top") — another device asking, with Approve / Not
         now; two requests from one name, or a lock changed elsewhere,
         with the way to Home; this PC waiting, with its code. Home
         carries the same as a row, so the frame does not draw it there."""
@@ -966,21 +983,22 @@ class Model:
             return {"text": "The lock of your account changed — not on this PC. "
                             "Answer on Home.", "buttons": [home]}
         if pending and pending[0].get("twins"):
-            name = pending[0].get("name") or "another PC"
+            name = pending[0].get("name") or "another device"
             return {"text": f"Two requests say they are {name} — neither can be approved. "
                             f"See Home.", "buttons": [home]}
         if pending:
             ask = pending[0]
             ident = str(ask.get("id") or "")
-            return {"text": f"{ask.get('name') or 'Another PC'} asks to join your account — "
+            return {"text": f"{ask.get('name') or 'Another device'} asks to join your account — "
                             f"its screen must show {ask.get('code') or '?'}",
                     "buttons": [{"label": "Approve", "tone": "primary", "act": "lock.approve",
                                  "arg": ident},
                                 {"label": "Not now", "tone": "quiet", "act": "lock.decline",
                                  "arg": ident}]}
         if lock.get("state") == "waiting":
-            return {"text": f"Waiting for your other PC to approve this one — Home there "
-                            f"must show {lock.get('code') or '…'}", "buttons": []}
+            return {"text": f"Waiting for another device of yours to approve this PC — its "
+                            f"screen must show {lock.get('code') or '…'}",
+                    "buttons": [] if lock.get("same") else [home]}
         return None
 
     def _stamp(self) -> float:
@@ -997,7 +1015,7 @@ class Model:
     def pile(self) -> list[dict]:
         self._now = time.time()
         items: list[dict] = []
-        for part in (self._consent_rows, self._lock_rows, self._update_rows,
+        for part in (self._consent_rows, self._lock_rows, self._phone_rows, self._update_rows,
                      self._needs_key_rows, self._hardware_rows, self._notify_rows,
                      self._review_rows):
             try:
@@ -1513,6 +1531,12 @@ class Model:
             verb = do.split(".", 1)[1]
             return self._said(self._ask("account", do=verb, kind=ident),
                               "approving" if verb == "approve" else "declined")
+        if do == "lock.same":
+            # the code this row showed, or nothing: a request made afresh
+            # meanwhile has another
+            if lock.get("state") != "waiting" or not arg or arg != lock.get("code"):
+                return "the code changed — look at it again"
+            return self._said(self._ask("account", do="same_code", kind=arg), "noted")
         if do == "lock.recover":
             # the typed key goes to the app over the pipe and nowhere
             # else: never a note, never a log line, never kept here
@@ -1579,7 +1603,7 @@ class Model:
                 said = str(info["last_error"])
                 try:
                     import sb
-                    gone = (sb.GONE_ELSEWHERE, sb.GONE_WORDS)
+                    gone = (sb.GONE_ELSEWHERE, sb.GONE_WORDS, sb.SESSION_WENT)
                 except Exception:         # noqa: BLE001
                     gone = ()
                 line = said[:200] if said in gone else f"Not signed in: {said}"[:200]
@@ -1739,8 +1763,8 @@ class Model:
         if isinstance(reply, dict) and reply.get("ok"):
             fresh = self._send("status", timeout_ms=1200)
             if isinstance(fresh, dict):
-                self.phone_live = bool(fresh.get("phone"))
-                self.status = _without_phone(fresh)
+                self.phone_live = _phone_on(fresh)
+                self.status = fresh
                 self.running = self.status.get("stage") == "running"
         return reply
 
@@ -1768,6 +1792,10 @@ class Model:
         return None
 
     def _do(self, do: str, arg) -> str:
+        if do in ("phone.allow", "phone.notnow"):
+            if do not in self._offered(self._phone_rows):
+                return "that question is not waiting"
+            return self._said(self._ask("phone", do=do.split(".", 1)[1]), "")
         if do in ("notify.dismiss", "notify.open"):
             ident = self._notify_id(arg)
             if ident is None:
@@ -1851,20 +1879,22 @@ class Model:
             except Exception as e:        # noqa: BLE001
                 log.warning("could not read the consents: %s", type(e).__name__)
                 return "could not record that"
-            kind = arg if isinstance(arg, str) else ""
-            if kind not in waiting:
+            kinds = arg.split(",") if isinstance(arg, str) else [""]
+            if not all(kind in waiting for kind in kinds):
                 return "that consent is not waiting for an answer"
             try:
-                privacy.grant(kind)
+                for kind in kinds:
+                    privacy.grant(kind)
             except Exception as e:        # noqa: BLE001
-                log.warning("could not record the consent for %s: %s", kind,
+                log.warning("could not record the consent for %s: %s", kinds,
                             type(e).__name__)
                 return "could not record that"
             return "turned on"
         if do == "consent.later":
             # only a gate that is asking: the page cannot grow this set
-            if isinstance(arg, str) and arg in self._consents_asking():
-                self._consent_later.add(arg)
+            kinds = arg.split(",") if isinstance(arg, str) else [""]
+            if all(kind in self._consents_asking() for kind in kinds):
+                self._consent_later.update(kinds)
             return ""
         if do == "keys.later":
             try:
@@ -1908,7 +1938,7 @@ class Model:
                   "report.send", "report.consent", "report.keep"):
             return self._report_do(do, arg)
         if do in ("lock.copy", "lock.done", "lock.type", "lock.cancel", "lock.approve",
-                  "lock.decline", "lock.recover", "lock.answer", "lock.restore",
+                  "lock.decline", "lock.same", "lock.recover", "lock.answer", "lock.restore",
                   "lock.signout_ask", "lock.signout_keep", "lock.signout_all",
                   "lock.recovery_new"):
             return self._lock_do(do, arg)

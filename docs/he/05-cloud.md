@@ -44,7 +44,7 @@ title: 5. תכונות ענן
 משאיר את המפתח השמור, ומפתח חדש שהספק דוחה מחזיר את השמור. **Remove** מוחק אותו. המשפט
 מתחת לכל שדה:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own devices hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 
 [פרק 4](04-privacy) מראה איך לבדוק את המשפט הזה בעצמך בשתי דקות.
 

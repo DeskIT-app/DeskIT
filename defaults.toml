@@ -1305,7 +1305,16 @@ watch = "cowork"               # off | cowork | all. Which of the Claude
                                # hook installed); "off" never looks. Claude
                                # Chat is in none of them - a finished chat
                                # reply is announced to nothing on this machine
-summarize = true               # a "Claude finished" card says the message
+early = true                   # a "Claude finished" card the moment the
+                               # answer is written: the app reads it off
+                               # Claude Code's own transcript instead of
+                               # waiting for the Stop hook, which on most
+                               # turns knocks 2-5 s later (measured
+                               # 2026-10-24) and is then folded into the
+                               # same card. Same card, same sentence; only
+                               # while this copy is connected to Claude
+                               # Code. false = wait for the hook
+summarize = true              # a "Claude finished" card says the message
                                # in ONE SENTENCE instead of its first four
                                # lines: the hook sends the whole message,
                                # Groq writes the sentence, the card waits
@@ -1520,12 +1529,35 @@ offline = false                # true refuses EVERY connection except this
 # posts the audio here, so you keep the Hebrew fine-tune instead of falling
 # back to whatever the phone's keyboard offers. Runs inside this app and
 # borrows the model that is already loaded.
-# Reachability is Tailscale's job — see the README. host = "" binds to the
-# Tailscale address when it is up (and 127.0.0.1 when it is not), so this
-# never answers the home LAN.
-enabled = false
-host = ""
-port = 8756
+# Two doors. One stays on this PC (port, plain HTTP, a bearer) for the Claude
+# hook and anything else running here, and it stays open while the Claude
+# hook is connected even with this switch off, answering then only the hook.
+# The other (phone_port) is the one a phone reaches straight over the network
+# you are both on. It takes only a certificate listed, sealed, in your own
+# account, drops anybody else in the handshake, and opens only once a phone
+# joined your account and this PC said yes. It closes when the account's
+# consent is withdrawn, because it hears a Forget through the account; no
+# internet does not close it. No phone in the account, nothing listens beyond
+# this PC.
+enabled = true
+host = ""                      # "" = 127.0.0.1. Nothing else is honoured:
+                               # the door a phone uses is the other one.
+port = 8756                    # tried first; a busy port falls through
+                               # (20 tries) and state.json says where it
+                               # landed, which is where the hook looks.
+phone_port = 8766              # the phone door asks for this one first; a
+                               # busy port falls through the same way, and
+                               # this PC's row in the account carries it.
+review_scope = "phone"         # phone | all. What GET /review answers: all
+                               # keeps desk proposals answerable from the sofa.
+phone_allowed = false          # this PC's one yes to its phone door; state.
+away = true                    # also from outside home: a phone of your
+                               # account away from home reaches this PC's
+                               # model through your account's own channel,
+                               # every piece locked with your account's key
+                               # so the server carries only sealed bytes.
+                               # Off: this PC does not answer it, and the
+                               # phone goes on to its cloud key or waits.
 
 [history]
 # transcripts.log is every sentence you dictated, corrected, translated,
@@ -1881,6 +1913,18 @@ compute_type = "auto"        # auto | float16 | int8_float16 | int8
 # library decides; the probe writes the core count on a machine without
 # a card.
 cpu_threads = 0
+# Encode the Hebrew model at the recording's own length instead of Whisper's
+# 30 s window. On a processor that window IS the wait: night10 int8 on 4
+# threads took 7.2 s for a 0-5 s clip whatever its length. ONLY FOR A MODEL
+# TRAINED FOR IT — untrained, night10 lost words (+23% / +37% words wrong on
+# fleurs_dev / reversim_dev); night14b, trained for it, scored 1,137 / 818
+# against night10's full-window 1,133 / 808 and decoded 0-5 s in 1.2 s, 5-10 s
+# in 1.75 s, 10-20 s in 3.1 s on the same 4 threads (2026-10-25,
+# notes\DeskIT-light-plan-2026-10-22.md §8). cpu = only when the model runs on
+# the processor; always = on a card too (35% less decode there, not decided
+# yet). The shipped model is not trained for it, hence off. The English
+# detector is never shortened.
+real_length = "off"           # off | cpu | always
 # The speech model comes up with the app (the owner, 2026-09-20: "no
 # problem with the model loading by itself — make that the default, and
 # a way to turn it off in Settings"). Off, the app starts without it —

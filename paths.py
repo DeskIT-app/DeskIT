@@ -177,6 +177,11 @@ REVIEW_FILE = _rel("REVIEW_FILE")
 PROBLEMS_FILE = _rel("PROBLEMS_FILE")
 PROBLEMS_DIR = _rel("PROBLEMS_DIR")
 OUTBOX_DIR = _rel("OUTBOX_DIR")
+#: Inside the outbox: the reports of an account that has left this PC, one
+#: folder per account (sb._reports_wait). A name and not a store: the two
+#: modules that read the outbox both have to know it, because a report gone
+#: from the top of it otherwise reads as sent (problems.sync_outbox).
+OUTBOX_WAITING = "waiting"
 QUESTIONS_FILE = _rel("QUESTIONS_FILE")
 NOTIFY_FILE = _rel("NOTIFY_FILE")
 LOOKUP_CACHE = _rel("LOOKUP_CACHE")
@@ -251,11 +256,6 @@ DEV_SUFFIX: str = ".dev" if DEVELOPER else ".test" if STRANGER else ""
 #: What the window titles, the dot tooltip and the dashboard bar append.
 #: Nothing for the stranger's copy: the stranger sees no tag.
 DEV_TAG: str = "Dev" if DEVELOPER else ""
-
-#: The port the phone endpoint tries first; the release keeps the number
-#: the phone app has always known, the checkout sits one above it, the
-#: stranger's copy one above that — the three may all be listening.
-DEFAULT_PORT: int = 8757 if DEVELOPER else 8758 if STRANGER else 8756
 
 def _package_family() -> str:
     """The MSIX package family this process runs inside — the Store copy

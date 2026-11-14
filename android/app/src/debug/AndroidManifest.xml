@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only. ProtoActivity shows the account's screens with made-up
+     data, for the pictures. No button on it does anything. His own phone runs
+     a debug build until the release keystore exists, and the probe can set
+     where the keyboard sends audio, so it answers adb's shell, which holds
+     DUMP, and no other app. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".ProtoActivity"
+            android:exported="true"
+            android:label="Prototype" />
+        <!-- What is on the clipboard: Android 10 and up tell a window, not a receiver. -->
+        <activity
+            android:name=".ClipProbe"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:label="Clipboard probe" />
+        <!-- One field, for the keyboard to come up on. -->
+        <activity
+            android:name=".FieldProbe"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:label="Field probe" />
+        <!-- Whether a locked phone can use what is sealed: one log line. -->
+        <receiver
+            android:name=".ProbeReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+    </application>
+</manifest>

@@ -81,7 +81,7 @@ LAYOUT: dict[str, tuple[str, ...]] = {
                           "voice"),
     settings_mod.MESSAGES: ("MESSAGES FROM OTHER PROGRAMS", "claude",
                             "sounds"),
-    settings_mod.PHONE: ("phone", "DICTATING FROM THE PHONE"),
+    settings_mod.PHONE: ("THE PHONE", "devices", "backup", "keyboard", "trouble"),
     settings_mod.ACCOUNT: ("account", "WHAT THE ACCOUNT MAY DO", "lock"),
     settings_mod.PRIVACY: ("keys", "WHAT MAY LEAVE THIS PC",
                            "connections", "said_file", "KEPT ON THIS PC"),
@@ -106,7 +106,10 @@ BLOCK_TITLES: dict[str, tuple[str, str]] = {
     "recording": ("Screen recording", "video"),
     "snip": ("The Snipping-Tool key", "keyboard"),
     "voice": ("No Hebrew voice", "warning"), "claude": ("Claude Code", "message"),
-    "sounds": ("Every sound it makes", "volume"), "phone": ("The phone", "phone"),
+    "sounds": ("Every sound it makes", "volume"),
+    "devices": ("Your devices", "laptop"), "keyboard": ("The keyboard", "download"),
+    "backup": ("When the phone can't reach this PC", "globe"),
+    "trouble": ("If it doesn't work", "help"),
     "account": ("Account", "contact"), "lock": ("The lock", "lock"),
     "keys": ("Your cloud keys", "key"), "connections": ("Every connection", "globe"),
     "said_file": ("What you said", "file"), "version": ("DeskIT", "info"),
@@ -118,7 +121,7 @@ GROUP_GLYPHS: dict[str, str] = {
     "WHEN YOU DICTATE": "mic", "WORDS IT LEARNS": "book",
     "THE TRANSLATE KEY": "globe", "SCREENSHOTS AND RECORDINGS": "camera",
     "THE CAMERA": "camera", "ASK ABOUT THE SCREEN": "help",
-    "MESSAGES FROM OTHER PROGRAMS": "bell", "DICTATING FROM THE PHONE": "phone",
+    "MESSAGES FROM OTHER PROGRAMS": "bell", "THE PHONE": "phone",
     "WHAT THE ACCOUNT MAY DO": "contact", "WHAT MAY LEAVE THIS PC": "globe",
     "KEPT ON THIS PC": "history",
 }
@@ -160,7 +163,7 @@ ACTS = frozenset({
     "snip", "speech.open",
     "claude.flip", "claude.keep", "claude.take",
     "cue.play", "notify.test",
-    "phone.copy",
+    "phone.ask", "phone.keep", "phone.forget", "phone.firewall",
     "account.do", "account.ask", "account.keep",
     "lock.do", "lock.type", "lock.recover", "lock.new", "lock.copy", "lock.done",
     "consent.withdraw", "consent.on", "consent.sync",
@@ -175,7 +178,7 @@ ACCOUNT_DOS = {"google": "opening the browser",
                "signout_all": "signing out of every PC",
                "delete": "deleting"}
 #: The lock verbs (dashboard._paint_lock) and what each says when it worked.
-LOCK_DOS = {"approve": "approving", "decline": "declined",
+LOCK_DOS = {"approve": "approving", "decline": "declined", "same_code": "noted",
             "lock_answer": None, "lock_restore": "put back"}
 #: Files a button opens, by the name the page knows them by.
 FILES = ("app_log", "settings", "folder", "transcripts", "network_log")
@@ -239,6 +242,188 @@ class Refused(ValueError):
     """What the page asked for is not something this place does."""
 
 
+# ------------------------------------------------- Settings > Phone's words
+# One copy, for both desks. A person reads no address and no port on the
+# surface: those stay behind Details.
+
+#: The question a Forget asks in its own row.
+FORGET_ASK = ("It stops reaching this PC and your account. Sign in and Approve "
+              "bring it back as a new device.")
+#: What the firewall button says afterwards, by phone.open_firewall's word.
+FIREWALL_WORDS = {
+    "done": "Windows lets your phone through now. Try it again.",
+    "declined": "Nothing changed. Windows needs a yes from an administrator of this PC.",
+    "failed": "Windows could not do that, and nothing changed.",
+}
+
+
+def phone_info(status) -> dict:
+    """status()["phone"], or nothing: a running app older than this desk
+    still answers a string there, for as long as a restart takes."""
+    info = (status or {}).get("phone")
+    return info if isinstance(info, dict) else {}
+
+
+def _day(stamp: float) -> str:
+    """When, in the words a person says it."""
+    import datetime
+
+    then = datetime.date.fromtimestamp(stamp)
+    gap = (datetime.date.today() - then).days
+    if gap <= 0:
+        return "today"
+    if gap == 1:
+        return "yesterday"
+    return f"on {then.day} {then.strftime('%B')}"
+
+
+def _phone_line(phone: dict) -> str:
+    if phone.get("dictated"):
+        return f"Phone  ·  dictated here {_day(phone['dictated'])}"
+    if phone.get("reached"):
+        return f"Phone  ·  reached this PC {_day(phone['reached'])}"
+    return "Phone  ·  hasn't reached this PC yet"
+
+
+def device_rows(status, asking: str = "") -> list[dict]:
+    """The devices of the account as the card lists them: the phones, this
+    PC, the other PCs. ``asking`` is the id a Forget is asking about."""
+    info = phone_info(status)
+    account = (status or {}).get("account") or {}
+    rows = [{"id": str(d.get("id") or ""), "glyph": "phone", "name": str(d.get("name") or "A phone"),
+             "meta": _phone_line(d), "forget": True} for d in info.get("phones") or []]
+    rows.append({"id": "", "glyph": "laptop", "name": "This PC",
+                 "meta": str(account.get("device_name") or ""), "forget": False})
+    rows += [{"id": str(d.get("id") or ""), "glyph": "laptop", "name": str(d.get("name") or "A PC"),
+              "meta": "Your other PC", "forget": True} for d in info.get("pcs") or []]
+    for row in rows:
+        row["asking"] = bool(asking and row["id"] == asking)
+    return rows
+
+
+def keyboard_card(status) -> dict:
+    """The QR, or, on an anonymous account, the one step that has to come
+    first: a phone signs in with Google, so the account needs a Google side
+    too, and signing in links it and keeps everything."""
+    if ((status or {}).get("account") or {}).get("anonymous"):
+        return {"kind": "line", "line": "Sign in with Google first",
+                "small": ("Your phone joins your account, and it signs in with Google, so the "
+                          "account needs a Google side too. Everything you have stays."),
+                "buttons": [{"label": "Sign in with Google", "do": "account.do", "arg": "google",
+                             "primary": True}]}
+    import phone as phone_mod
+
+    url = phone_mod.download_url()
+    code = phone_mod.qr(url)
+    first = not phone_info(status).get("phones")
+    return {"kind": "keyboard", "qr": code[0] if code else "", "n": code[1] if code else 0,
+            "line": ("Point your phone's camera here to get the DeskIT keyboard" if first
+                     else "Another phone? Point its camera here"),
+            "said": ("Install it, sign in with Google, then press Approve on this PC. "
+                     "For Android phones." + ("" if code else f" It is at {url}"))}
+
+
+def _cloud_key() -> str:
+    """The provider whose key this PC holds, Groq first as the phone tries
+    them, or "": asked of secretstore by name, the value dropped at once."""
+    import secretstore
+
+    for name in ("groq", "gemini"):
+        try:
+            key, _source = secretstore.find_key(name)
+        except Exception:                                    # noqa: BLE001
+            key = None
+        there = bool(key)
+        del key
+        if there:
+            return name
+    return ""
+
+
+#: The provider's name as a sentence says it.
+CLOUD_NAMES = {"groq": "Groq", "gemini": "Gemini"}
+
+
+def backup_card(status, provider: str | None = None) -> dict | None:
+    """The phone's cloud backup, read from its own row (PHONE_LINK_PLAN.md
+    2b, the picture he approved on 2026-11-11): read-only here, because the
+    switch and its yes are the phone's, as every gate is the device's. One
+    line for a phone, one per phone when there are more; nothing for a
+    keyboard older than the backup, whose row names no switch. With no key,
+    the way to add one. ``provider`` is for a test; None asks this PC."""
+    phones = [d for d in phone_info(status).get("phones") or []
+              if isinstance(d.get("backup"), bool)]
+    if not phones:
+        return None
+    if provider is None:
+        provider = _cloud_key()
+    where = CLOUD_NAMES.get(provider, "")
+    turn = "You turn it on and off on the phone, in Settings."
+    if len(phones) > 1:
+        states = "  ·  ".join(f"{d.get('name') or 'A phone'}: {'on' if d['backup'] else 'off'}"
+                              for d in phones)
+        on = any(d["backup"] for d in phones)
+        small = (f"If one can't reach this PC, it sends the recording to {where} with your key. "
+                 if on and where else "") + turn
+        card = {"kind": "line", "line": f"Cloud backup  ·  {states}", "small": small, "buttons": []}
+        if on and not where:
+            card.update(tone="warn", small="Your account has no cloud key yet, so the phones wait "
+                                           "for this PC. " + turn,
+                        buttons=[{"label": "Add a key", "go": "privacy", "primary": True}])
+        return card
+    d = phones[0]
+    name = str(d.get("name") or "your phone")
+    if not d["backup"]:
+        return {"kind": "line", "line": f"Cloud backup on {name}: off",
+                "small": "Its recordings wait for this PC. " + turn, "buttons": []}
+    if where:
+        return {"kind": "line", "ready": True, "line": f"Cloud backup on {name}: on",
+                "small": f"If it can't reach this PC, it sends the recording to {where} with "
+                         f"your key. " + turn, "buttons": []}
+    return {"kind": "line", "tone": "warn", "line": f"Cloud backup on {name}: on, but no key",
+            "small": "Your account has no cloud key yet, so the phone waits for this PC.",
+            "buttons": [{"label": "Add a key", "go": "privacy", "primary": True}]}
+
+
+def trouble_card(status) -> dict | None:
+    """The phone can't connect? Only once there is a phone: before that the
+    question means nothing. Details is the one place an address or a port
+    is said."""
+    info = phone_info(status)
+    if not info.get("phones"):
+        return None
+    details = [{"k": "This PC's address", "v": "  ·  ".join(info.get("addrs") or []) or "—"},
+               {"k": "Port", "v": str(info.get("port") or "—")},
+               {"k": "If you remove DeskIT",
+                "v": "The rule stays in Windows. It names one program and one port, and does "
+                     "nothing once the program is gone."}]
+    if info.get("offline"):
+        details.append({"k": "Offline mode", "v": "Your phone still reaches this PC at home."})
+    if info.get("account_off"):
+        # the door is shut by a yes that went, and Windows has nothing to do
+        # with it: its button would ask for a yes that changes nothing
+        return {"kind": "trouble", "line": "The phone can't connect",
+                "said": ("Your phone comes in through your account, and the account is off on "
+                         "this PC. Turn it on from Home or Settings > Privacy."),
+                "button": "", "details": details}
+    return {"kind": "trouble", "line": "The phone can't connect?",
+            "said": ("Windows may be blocking it. DeskIT asks Windows to let your phone "
+                     "through, and Windows asks you for a yes."),
+            "button": "Let it through", "details": details}
+
+
+def let_it_through(status) -> str:
+    """The press, on whichever desk: it waits for the person's answer to
+    Windows, so a desk calls it outside anything its poll also takes."""
+    import phone as phone_mod
+
+    info = phone_info(status)
+    exe, port = str(info.get("program") or ""), int(info.get("port") or 0)
+    if not exe:
+        return "start dictation first — the door lives in the running app"
+    return FIREWALL_WORDS[phone_mod.open_firewall(exe, port)]
+
+
 class Place:
     """Settings, as data, and what its buttons do. One per window."""
 
@@ -246,6 +431,8 @@ class Place:
         self._send = send
         self._lock = threading.RLock()
         self.status: dict = {}
+        #: The device a Forget is asking about in its row.
+        self._phone_asking = ""
         self.running = False
         self._silent_since: float | None = None
         self._sections_kept: tuple | None = None
@@ -317,8 +504,7 @@ class Place:
                 self._note_text = str(text)
 
     def _poll(self) -> None:
-        """The app's status — dashboard._poller's read, phone link and all:
-        the phone card copies it from here and never hands it to the page."""
+        """The app's status — dashboard._poller's read."""
         import singleton
         reply = self._send("status", timeout_ms=1200)
         if reply is None and singleton.is_running():
@@ -847,21 +1033,23 @@ class Place:
         return {"kind": "sounds", "test": "Send a test notification",
                 "cues": [{"kind": k, "label": SOUND_WORDS.get(k, k)} for k in kinds]}
 
-    def _card_phone(self, sections) -> dict:
-        """The endpoint the phone keyboard talks to (dashboard._phone_block).
-        The link carries the phone's token, so the page is shown it with
-        the token as dots; Copy link copies it from here."""
-        url = str((self.status or {}).get("phone") or "")
-        # whatever follows the address (#t=, or a query) is the token's
-        cut = min((i for i in (url.find("#"), url.find("?")) if i >= 0), default=-1)
-        shown = url[:cut] + url[cut:cut + 3] + "•" * 12 if cut >= 0 else url
-        return {"kind": "phone", "url": shown,
-                "none": "DeskIT is not running, or the switch below is off",
-                "said": ("Put the DeskIT keyboard on your phone, give it this "
-                         "address once, and the phone dictates into this "
-                         "computer over your own private network. It is also "
-                         "how a message from another program reaches this "
-                         "desk.")}
+    def _card_devices(self, sections) -> dict | None:
+        """Your devices, with Forget, which asks in its own row. Nothing to
+        list while this PC is the only one."""
+        rows = device_rows(self.status, self._phone_asking)
+        error = str(phone_info(self.status).get("error") or "")
+        if len(rows) < 2 and not error:     # a Forget's answer outlives the last row
+            return None
+        return {"kind": "devices", "rows": rows, "ask": FORGET_ASK, "say": error}
+
+    def _card_keyboard(self, sections) -> dict:
+        return keyboard_card(self.status)
+
+    def _card_backup(self, sections) -> dict | None:
+        return backup_card(self.status)
+
+    def _card_trouble(self, sections) -> dict | None:
+        return trouble_card(self.status)
 
     def _card_account(self, sections) -> dict:
         """ACCOUNT (dashboard._account_block / _paint_account)."""
@@ -945,7 +1133,7 @@ class Place:
         elif self._lock_mode == "shown":
             said = "Your recovery key. Keep it somewhere safe — it is shown once."
             said_code = self._lock_fresh
-            said_sub = ("With it, a PC with no other PC of yours at hand can open your "
+            said_sub = ("With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.")
             tone = "warn"
             buttons = [{"label": "Copy", "do": "lock.copy"}, {"label": "Done", "do": "lock.done"}]
@@ -969,15 +1157,15 @@ class Place:
                 said_sub += f"  ·  on the server: lock {ch['server']}, here: lock {ch.get('mine') or '—'}"
         elif lock.get("pending") and lock["pending"][0].get("twins"):
             ask = lock["pending"][0]
-            said = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            said = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     "neither can be approved.")
-            said_sub = (f"One of them is not your PC. On {ask.get('name') or 'that PC'}, sign out "
-                        "and sign in again to ask afresh.")
+            said_sub = (f"One of them is not yours. On {ask.get('name') or 'that device'}, sign "
+                        "out and sign in again to ask afresh.")
             tone = "bad"
             buttons = [{"label": "Not now", "do": "lock.do", "arg": ["decline", str(ask.get("id") or "")]}]
         elif lock.get("pending"):
             ask = lock["pending"][0]
-            said = f"{ask.get('name') or 'Another PC'} signed in to your account and asks to join."
+            said = f"{ask.get('name') or 'Another device'} signed in to your account and asks to join."
             said_code = str(ask.get("code") or "")
             said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
                         "It then gets your account's key: your cloud keys and what you "
@@ -985,17 +1173,23 @@ class Place:
             buttons = [{"label": "Approve", "do": "lock.do", "arg": ["approve", str(ask.get("id") or "")]},
                        {"label": "Not now", "do": "lock.do", "arg": ["decline", str(ask.get("id") or "")]}]
         elif lock.get("state") == "waiting":
-            said = "Waiting for your other PC to approve this one."
+            said = "Waiting for another device of yours to approve this PC."
             said_code = str(lock.get("code") or "")
             typing = self._lock_mode == "typing"
             if typing:
                 said_sub = "Your recovery key — 24 letters and digits in six groups:"
                 buttons = [{"label": "Open", "do": "lock.recover"}, {"label": "Cancel", "do": "lock.done"}]
             else:
-                said_sub = ("Open the desk on your other PC: Home there shows this code — press "
-                            "Approve. Until then this PC has your words and settings; "
-                            "what you said and your cloud keys stay locked.")
+                said_sub = ("Open the desk on your other PC, or DeskIT on your phone. If it "
+                            "shows this code, press Approve there and Same code here. Until "
+                            "then this PC has your words and settings; what you said and your "
+                            "cloud keys stay locked.")
                 buttons = [{"label": "Type the recovery key", "do": "lock.type"}]
+                if lock.get("same"):
+                    said = "You pressed Same code — waiting for your other device to approve this PC."
+                else:
+                    buttons.insert(0, {"label": "Same code", "do": "lock.do",
+                                       "arg": ["same_code", str(lock.get("code") or "")]})
             if lock.get("error"):
                 said_sub = f"{lock['error']}  ·  {said_sub}"
         elif lock.get("state") == "have":
@@ -1113,6 +1307,14 @@ class Place:
         do = str(do)
         if do not in ACTS:
             return {"ok": False, "error": f"{do[:40]!r} is not a Settings action"}
+        if do == "phone.firewall":
+            # Windows' prompt waits for the person, as the folder dialog
+            # below does, so it too is opened outside the lock
+            with self._lock:
+                if not self.status:
+                    self._poll()
+                status = self.status
+            arg = let_it_through(status)
         chosen = None
         if do == "browse":
             # Windows' dialog waits for the person, for as long as he
@@ -1156,7 +1358,7 @@ class Place:
 
     @staticmethod
     def _copy(text: str, secret: bool = False) -> None:
-        """A secret (the recovery key, the phone link with its token) is
+        """A secret (the recovery key) is
         kept out of Windows' clipboard history and the cloud clipboard,
         as Home's copy of the same key is (deskweb.copy_text)."""
         if secret:
@@ -1615,17 +1817,28 @@ class Place:
     def _do_notify_test(self, arg) -> str:
         return self._announce(self._ask("notify", do="test"), "test notification sent")
 
-    def _do_phone_copy(self, arg) -> str:
-        url = str((self.status or {}).get("phone") or "")
-        if not url:
-            return "no phone link — [server] enabled = false, or it is not running"
-        try:
-            self._copy(url, secret=True)
-        except Exception:                                    # noqa: BLE001
-            return "could not reach the clipboard"
-        finally:
-            del url
-        return "phone link copied to the clipboard"
+    def _do_phone_firewall(self, arg) -> str:
+        """What Windows answered: the press itself ran outside the lock
+        (act)."""
+        return str(arg or "")
+
+    def _do_phone_ask(self, arg) -> str:
+        self._phone_asking = str(arg or "")
+        return ""
+
+    def _do_phone_keep(self, arg) -> str:
+        self._phone_asking = ""
+        return ""
+
+    def _do_phone_forget(self, arg) -> str:
+        """Only the row that asked: the card names the device, the app finds
+        its certificate."""
+        if not arg or str(arg) != self._phone_asking:
+            raise Refused("the card asks first")
+        self._phone_asking = ""
+        if not self.running:
+            return "start dictation first — your devices live in the running app"
+        return self._announce(self._ask("phone", do="forget", id=str(arg)), "forgetting")
 
     # -- the account
 
@@ -1669,6 +1882,10 @@ class Place:
             ids = {str(a.get("id")) for a in (lock.get("pending") or [])}
             if kind not in ids:
                 return "that request is not waiting any more"
+            said = LOCK_DOS[do]
+        elif do == "same_code":
+            if lock.get("state") != "waiting" or not kind or kind != lock.get("code"):
+                return "the code changed — look at it again"
             said = LOCK_DOS[do]
         elif do == "lock_answer":
             if kind not in ("yes", "no"):

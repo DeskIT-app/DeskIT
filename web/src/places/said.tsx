@@ -13,7 +13,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Caps, Change, IC, Seg, placeCall, useDesk, usePlace } from "../kit";
 import "./said.css";
 
-type Tag = { t: string; g?: "pip" | "phone" | "laptop" };
+/** `s`: words drawn whole after `t`, which is the one that gives way (a phone's name before "· cloud"). */
+type Tag = { t: string; s?: string; g?: "pip" | "phone" | "laptop" | "globe" };
 type Pair = { heard: string; meant: string; rtl: boolean };
 type Row = {
   id: string; kind: string; glyph: string; label: string; when: string; secs: string;
@@ -311,7 +312,8 @@ function RowView({ row, copied, copy }: { row: Row; copied: boolean; copy: (row:
             <span key={`${t.t}${i}`} className="tag">
               {t.g === "pip" ? <span className="pip" />
                 : t.g ? <i className="ic">{IC[t.g]}</i> : null}
-              <span className="tx">{t.t}</span>
+              {t.s ? <span className="tx" dir="auto">{t.t}</span> : <span className="tx">{t.t}</span>}
+              {t.s ? <span className="sx">{t.s}</span> : null}
             </span>
           ))}
           {row.copy ? (

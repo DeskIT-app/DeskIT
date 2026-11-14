@@ -12,13 +12,29 @@
          away from has to read as still running. -->
     <string name="recording_time">Recording  %1$s</string>
     <string name="locked_time">Locked  %1$s · tap to finish</string>
+    <!-- What the mic says when the words above do not fit even shrunk (a 320 dp phone
+         with the largest text): the clock is what must stay. -->
+    <string name="recording_short">%1$s</string>
+    <string name="locked_short">Locked  %1$s</string>
+    <!-- A recording the keyboard closed on is kept (the owner, 2026-11-12: "like a
+         WhatsApp voice recording, where there is an option to continue it after it
+         closes"). The mic itself is Continue, with the kept length; the line under it
+         is the waiting row's shape: the words, Send, the round X. -->
+    <string name="continue_time">Continue  %1$s</string>
+    <string name="continue_short">Continue</string>
+    <string name="paused_line">Recording paused</string>
+    <!-- %1$d older recordings wait behind the paused one, and come back after it. -->
+    <string name="paused_line_older">Recording paused · %1$d older not sent</string>
+    <string name="send_kept">Send</string>
+    <string name="cd_continue">Continue the paused recording</string>
+    <string name="cd_send_kept">Send the paused recording</string>
+    <string name="cd_drop_kept">Delete the paused recording</string>
     <string name="transcribing">Transcribing…</string>
     <string name="translating">Translating…</string>
     <string name="punctuating">Punctuating…</string>
     <string name="too_short">Too short</string>
     <string name="no_speech">No speech</string>
     <string name="discarded">Discarded</string>
-    <string name="recording_cancelled">Keyboard closed — recording discarded</string>
     <string name="nothing_to_translate">Nothing in the field</string>
     <!-- A whole recording of silence is a held microphone, not a quiet room.
          Say so instead of uploading it and returning "No speech". -->
@@ -31,8 +47,64 @@
     <string name="field_changed">The text moved on — left it alone</string>
     <string name="cannot_undo">Nothing of mine to undo</string>
     <string name="undone">Removed</string>
-    <!-- %1$s is the failure. The recording is still in memory. -->
-    <string name="tap_to_retry">%1$s — tap to retry</string>
+
+    <!-- A recording that did not reach the PC waits on the keyboard, an hour at
+         most, and goes only on a press, into the field you are in then (the
+         owner, 2026-11-10). The line says why in a few words, and only what the
+         phone knows: a guess is never put as a fact. -->
+    <string name="send_again">Send again</string>
+    <string name="cd_send_again">Send what did not reach your PC</string>
+    <string name="cd_drop_waiting">Delete what did not reach your PC</string>
+    <string name="sending">Sending…</string>
+    <!-- A press sends everything that waits, oldest first. -->
+    <string name="sending_of">Sending %1$d of %2$d…</string>
+    <string name="not_sent">Not sent</string>
+    <string name="not_sent_many">%1$d not sent</string>
+    <!-- %1$d is how many wait, %2$s why the last try came to nothing. -->
+    <string name="not_sent_why">%1$d not sent · %2$s</string>
+    <!-- Why, one kind each. Nobody answered on any road this phone has: -->
+    <string name="why_no_answer">Your PC didn\'t answer</string>
+    <!-- Nobody answered, and the phone is on no Wi-Fi (or Ethernet) a PC at home
+         could be reached on: Wi-Fi off and Wi-Fi not connected alike, a VPN's
+         network not counted (the owner, 2026-11-10). Said whenever it is true when
+         the line is drawn, and the keyboard's open line says it too. -->
+    <string name="why_no_wifi">Your phone isn\'t on Wi-Fi</string>
+    <!-- The PC answered that its model is unloaded (Stop in the desk, or room for a game): -->
+    <string name="why_model_off">The model is off on your PC</string>
+    <!-- The PC answered that it has no account signed in: -->
+    <string name="why_signed_out">Your PC is signed out</string>
+    <!-- The PC answered that its model is not downloaded, not finished, or old: -->
+    <string name="why_no_model">Your PC\'s speech model isn\'t ready</string>
+    <!-- The phone could not open what it sealed: locked, or its Keystore not answering. -->
+    <string name="why_locked">The phone was locked</string>
+    <string name="why_keystore">The phone\'s secure storage didn\'t answer</string>
+    <!-- The pasted line's token, refused by the PC it points at: -->
+    <string name="why_token">Your PC refused the token</string>
+    <!-- Something answered, and not with anything the phone could read: -->
+    <string name="why_unreadable">Couldn\'t read the answer</string>
+    <!-- The PC answered with an error and no sentence of its own: -->
+    <string name="why_error">Your PC answered with error %1$d</string>
+
+    <!-- The cloud backup (PHONE_LINK_PLAN.md stage 2b, the words he approved in
+         pictures on 2026-11-11). No PC answered, so the recording went to the
+         person's own provider with their own key: the line says so while it is
+         on its way, and on every dictation that went that way. %1$s is Groq or
+         Gemini. -->
+    <string name="transcribing_cloud">Transcribing in the cloud…</string>
+    <string name="from_the_cloud">from the cloud (%1$s)</string>
+    <!-- The keyboard's line after a PC's text came through the account, away from home:
+         "3.7 s · local via your account". -->
+    <string name="via_account">via your account</string>
+    <!-- Home, away from home, a PC there through the account (stage 3). -->
+    <string name="home_via_account">Away from home, through your account.</string>
+    <!-- Away from home with no key and no PC: the button stands where Send
+         again stands, only while there is no road (the owner's d2). -->
+    <string name="add_a_key">Add a key</string>
+    <string name="cd_add_a_key">Add a cloud key, in Settings</string>
+    <!-- Why the cloud did not take it, on the waiting row: -->
+    <string name="why_key_refused">%1$s refused your key</string>
+    <string name="why_limit">%1$s\'s free limit is used up for now</string>
+    <string name="why_cloud">%1$s: %2$s</string>
 
     <!-- A password field is not a place to dictate: the audio and the text
          would both leave the phone, and the text would land in
@@ -79,14 +151,13 @@
     <string name="cd_arrange">Arranging keys — drag one onto another</string>
 
     <string name="needs_permission">No mic permission — tap here</string>
-    <string name="needs_setup">No token — tap here to set up</string>
-    <string name="unreachable">Can\'t reach the PC — is it on, and the link up?</string>
+    <string name="unreachable">Your PC isn\'t reachable from this network.</string>
     <!-- %1$s is the backend the PC answered with: "local" or "gemini". -->
     <string name="ready_on">Slide up to lock ↑ · %1$s</string>
 
-    <!-- The app's screens. English like the keyboard: the owner's
-         decision (2026-09-13) is that the app is an English app end to
-         end, the same as DeskIT on the desktop. -->
+    <!-- The app's screens. English, like the keyboard: the app is English end to
+         end, as DeskIT is on the desktop. His rule, 2026-11-06: keep what a
+         person must have to act, and drop the rest. -->
 
     <!-- Home. -->
     <string name="settings">Settings</string>
@@ -98,68 +169,155 @@
     <string name="update_on_pc">Keyboard %1$s is out</string>
     <string name="update_required">Update the keyboard to keep dictating</string>
     <string name="connected_title">Connected</string>
-    <!-- %1$s is the version of DeskIT the PC answered with. -->
-    <string name="connected_line">The PC answers · DeskIT %1$s</string>
     <string name="unreachable_title">Can\'t reach the PC</string>
-    <string name="unreachable_line">Is the PC on, and the link up at both ends? Tap to try again.</string>
-    <string name="no_token_title">Not set up yet</string>
-    <string name="no_token_line">Point it at the PC in Settings.</string>
-    <string name="steps_title">Set up</string>
+    <string name="unreachable_line">Tap to try again.</string>
+    <string name="no_token_title">Not connected yet</string>
     <string name="step_mic">Allow the microphone</string>
     <string name="step_keyboard">Turn the keyboard on</string>
-    <string name="step_pc">Point it at the PC</string>
     <string name="step_notify">Allow notifications</string>
     <string name="mic_granted">Microphone allowed</string>
-    <string name="mic_denied">Without the microphone the keyboard cannot record</string>
+    <string name="mic_denied">Without the microphone the keyboard can\'t record</string>
     <string name="said_title">What you said</string>
-    <string name="said_empty">Nothing yet — hold the lamp in any app and talk.</string>
     <string name="clear">Clear</string>
     <string name="copied">Copied</string>
 
     <!-- Settings. -->
-    <string name="setup_intro">The phone records; your own PC transcribes. The two must be able to reach each other — over Tailscale today, over home Wi-Fi once pairing lands.</string>
     <string name="url_hint">https://…</string>
-    <string name="the_pc">The PC</string>
-    <string name="the_keyboard">The keyboard</string>
-    <string name="the_app">The app</string>
-    <string name="paste_url_label">Server address — paste the whole line, #t= and all</string>
+    <string name="other_ways">Other ways</string>
+    <string name="paste_url_label">Address</string>
     <string name="token_label">Token</string>
-    <string name="switch_back_label">Back to the previous keyboard once the text lands</string>
+    <string name="switch_back_label">Back to my usual keyboard after dictating</string>
     <string name="save_and_test">Save and test</string>
     <string name="checking">Checking…</string>
-    <string name="reachable">Connected — the PC answers</string>
-    <string name="arrange_help">Hold any key on the keyboard to rearrange the eight of them; drag one onto another to swap.</string>
-    <string name="reset_keys">Reset the keys</string>
+    <string name="reachable">Connected</string>
+    <string name="arrange_help">Hold a key on the keyboard to move it.</string>
+    <string name="reset_keys">Reset keys</string>
     <string name="keys_reset">Keys back in their places</string>
-    <string name="system_keyboards">Keyboard settings</string>
-    <string name="version_line">DeskIT %1$s on this phone</string>
+    <string name="system_keyboards">Keyboards</string>
+    <string name="version_line">DeskIT %1$s</string>
     <string name="check_update">Check for an update</string>
-    <string name="up_to_date">Up to date — v%1$s is the latest</string>
-    <string name="update_available">Keyboard %1$s is out — opening the download…</string>
-    <string name="update_check_failed">Can\'t check — the PC is not reachable, or the token is wrong</string>
+    <string name="up_to_date">Up to date</string>
+    <string name="update_available">Keyboard %1$s is out. Opening the download…</string>
+    <string name="update_check_failed">Can\'t check: the PC isn\'t reachable</string>
+
+    <!-- The cloud backup's switch and the keys, on Settings, and the one-time
+         screen. %1$s is the provider the backup uses (Groq first). The one-time
+         line and its price are the words the yes is given to (Backup.WORDS_VERSION):
+         change them and that version changes too. -->
+    <string name="backup_title">When your PC can\'t be reached</string>
+    <string name="backup_switch">Use the cloud</string>
+    <string name="backup_help">Your recording goes to %1$s with your own key. Off, it waits for your PC.</string>
+    <string name="backup_no_key">No key yet. Until you add one, it waits for your PC.</string>
+    <string name="backup_once_line">If your PC can\'t be reached, your recording goes to %1$s with your own key. You can turn this off here or in Settings.</string>
+    <string name="backup_price">%1$s hears the recording, and its words are less accurate than your PC\'s.</string>
+    <string name="backup_no_key_yet">Your account has no cloud key yet, so nothing is sent.</string>
+    <string name="keys_title">Your cloud keys</string>
+    <string name="keys_line">Kept in your account, locked. Your PCs use the same keys.</string>
+    <string name="groq_why">Carries your dictation when your PC can\'t be reached.</string>
+    <string name="gemini_why">Used only when there\'s no Groq key.</string>
+    <string name="key_change">Change</string>
+    <string name="key_remove">Remove</string>
+    <string name="key_save">Save</string>
+    <string name="key_cancel">Cancel</string>
+    <string name="key_saved">Saved in your account, locked.</string>
+    <string name="key_works">✓  Key works. Saved in your account, locked.</string>
+    <string name="key_changing">The saved key keeps working until a new one is saved. Cancel keeps it.</string>
+    <string name="key_remove_q">Remove your %1$s key?</string>
+    <string name="key_remove_line">It goes from your account, so your PCs stop using it too.</string>
+    <string name="key_paste">Paste your %1$s key</string>
+    <string name="key_free_groq">Get a free key at console.groq.com/keys</string>
+    <string name="key_free_gemini">Get a free key at aistudio.google.com/apikey</string>
+    <string name="key_checking">Checking the key with %1$s…</string>
+    <string name="key_refused">%1$s didn\'t accept this key. Check it and paste it again.</string>
+    <string name="key_offline">Couldn\'t reach %1$s right now. The key is saved, and it\'s checked the first time it\'s used.</string>
+    <string name="key_not_key">That doesn\'t look like a %1$s key. Paste it again.</string>
+    <string name="key_empty">Nothing to save. Paste the key first.</string>
+    <string name="key_removing">Removing…</string>
+    <string name="key_not_now">Your account didn\'t take it: %1$s</string>
+    <string name="home_cloud">You can still dictate. It goes to %1$s with your key.</string>
+    <string name="home_no_key">Add a cloud key, and you can dictate from anywhere.</string>
+    <string name="said_cloud">%1$s · from the cloud</string>
 
     <!-- The second reading. -->
     <string name="channel_review">Second reading</string>
-    <string name="channel_review_desc">A proposal for a sentence you dictated — learned only if you keep it</string>
-    <string name="second_reading">Second reading</string>
+    <string name="channel_review_desc">A proposal for a sentence you dictated</string>
     <string name="review_title">Did you mean…</string>
     <string name="did_you_mean">Did you mean</string>
-    <string name="did_you_mean_row">Did you mean this? · from %1$s</string>
-    <string name="the_phone">the phone</string>
-    <string name="the_desk">the desk</string>
-    <string name="from_the_phone">Said from the phone · %1$s</string>
-    <string name="from_the_desk">Said at the desk · %1$s</string>
-    <string name="you_said">What was written</string>
     <string name="keep">Keep</string>
     <string name="no">No</string>
     <string name="learned">Learned</string>
-    <string name="noted">Noted — nothing changes</string>
-    <string name="later_hint">Back leaves it waiting — you can answer later.</string>
+    <string name="noted">Noted</string>
     <string name="nothing_waiting">Nothing waiting.</string>
     <string name="close">Close</string>
 
+    <!-- The account. -->
+    <string name="your_account">Your account</string>
+    <string name="signing_in">Signing in…</string>
+    <string name="signing_out">Signing out…</string>
+    <string name="phone_locked">Unlock the phone and try again.</string>
+    <string name="keystore_busy">This phone\'s secure storage isn\'t answering. Restart the phone and try again.</string>
+    <string name="sign_in_title">Sign in</string>
+    <string name="sign_in_line">Same Google account as your PC.</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="use_another_account">Use another account</string>
+    <string name="preparing">One moment…</string>
+    <string name="same_code_q">Same code on your PC?</string>
+    <string name="same_code">Same code</string>
+    <string name="approve_on_pc">Press Approve on your PC</string>
+    <string name="waiting_pc">Waiting for your PC…</string>
+    <string name="no_lock_title">Open DeskIT on your PC</string>
+    <string name="declined_title">Your PC said Not now</string>
+    <string name="ask_again">Ask again</string>
+    <string name="removed_word">This phone was removed. Approve it again to bring it back.</string>
+    <string name="ready_title">This phone is ready</string>
+    <string name="done">Done</string>
+    <string name="more">More</string>
+    <string name="changed_title">Your account\'s lock changed. Was it you?</string>
+    <string name="changed_more">If it was, this phone asks to join again and you approve it on your PC. If it wasn\'t, nothing here changes. Until you answer, this phone doesn\'t use your keys or your PCs.</string>
+    <string name="it_wasnt_me">It wasn\'t me</string>
+    <string name="it_was_me">It was me</string>
+    <string name="refused_title">Paused on this phone</string>
+    <string name="refused_line">On your PC, press Sign out of every PC.</string>
+    <string name="asking_title">%1$s asks to join. Same code on its screen?</string>
+    <string name="asking_more">It gets your account\'s key: your cloud keys and what you said open there too. The key crosses sealed, so the server can\'t read it.</string>
+    <string name="approve">Approve</string>
+    <string name="not_now">Not now</string>
+    <string name="twins_title">Two requests say they are %1$s. Neither can be approved.</string>
+    <string name="this_phone">This phone</string>
+    <string name="device_seen">%1$s · %2$s</string>
+    <string name="kind_pc">PC</string>
+    <string name="kind_phone">Phone</string>
+    <string name="seen_today">today</string>
+    <string name="seen_yesterday">yesterday</string>
+    <plurals name="seen_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <string name="forget">Forget</string>
+    <string name="keep_it">Keep it</string>
+    <string name="forget_title">Forget %1$s?</string>
+    <!-- sb.OLDER_COPY_WORDS, but for where the button is: a phone has none. -->
+    <string name="older_copy">That device is off your list but still signed in: it is an older copy of DeskIT, or one that has not said yes yet. To end it, go to your PC and press Sign out of every PC.</string>
+    <string name="sign_out">Sign out</string>
+    <string name="stay_signed_in">Stay signed in</string>
+    <string name="sign_out_title">Sign out of this phone?</string>
+    <plurals name="sign_out_recordings">
+        <item quantity="one">%1$d recording that hasn\'t reached your PC will be deleted.</item>
+        <item quantity="other">%1$d recordings that haven\'t reached your PC will be deleted.</item>
+    </plurals>
+    <string name="sign_out_unreached">Signed out here. On your PC, forget this phone.</string>
+    <string name="try_again">Try again</string>
+    <string name="continue_">Continue</string>
+    <string name="request_gone">That request is gone.</string>
+    <string name="request_expired">%1$s\'s request expired.</string>
+    <string name="request_not_shown">Look at the request again.</string>
+    <string name="request_no_key">%1$s\'s request carries no usable key.</string>
+    <string name="request_changed">%1$s\'s request changed. Not approved.</string>
+    <string name="step_sign_in">Sign in with Google</string>
+    <string name="step_approve">Approve this phone</string>
+    <string name="step_changed">Your account\'s lock changed</string>
+
     <!-- The lookup box. -->
-    <string name="lookup_title">DeskIT · look up</string>
     <string name="looking_up">Looking up…</string>
     <string name="nothing_selected">Nothing selected.</string>
     <string name="copy">Copy</string>

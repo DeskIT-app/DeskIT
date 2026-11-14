@@ -58,8 +58,8 @@ CRED_NAMES: tuple[str, ...] = ("groq", "gemini")
 
 #: Names kept as DPAPI files under DATA_DIR\secrets\: blobs and tokens.
 FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
-                               "supabase_session", "phone_key", "phone_tokens",
-                               "account_key", "account_key_aside")
+                               "supabase_session", "phone_key", "phone_key_pass",
+                               "phone_tokens", "account_key", "account_key_aside")
 
 #: The Credential Manager target is ``<prefix>/<name>``, and no two copies
 #: share a prefix. Until 2026-10-04 every copy that was not a hatch — the
@@ -187,7 +187,7 @@ def storage_sentence(name: str, prefix: str | None = None) -> str:
             f"(Control Panel > Credential Manager > Windows Credentials > "
             f"{target(name, prefix)}). DeskIT sends it as it is only to {KEY_HOSTS[name]}. "
             f"While your settings sync to your account, a copy goes to your account "
-            f"too, locked with a key only your own PCs hold. It is never written to "
+            f"too, locked with a key only your own devices hold. It is never written to "
             f"a file, a log or a report — see Settings > Privacy > EVERY CONNECTION "
             f"for every request.")
 

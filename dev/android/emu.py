@@ -21,9 +21,14 @@ JDK = Path(r"C:\Users\shimr\dev-tools\jdk")
 HERE = Path(__file__).resolve().parent
 # Screenshots and logs go next to the script unless told otherwise.
 OUT = Path(os.environ.get("DESKIT_EMU_OUT", HERE))
-APK = Path(r"C:\Users\shimr\Desktop\Organized\Projects\DeskIT\android\app\build\outputs\apk\debug\app-debug.apk")
-AVD = "deskit"
-IMAGE = "system-images;android-34;google_apis;x86_64"
+# This checkout's own build, so a worktree installs its own; DESKIT_APK to pick another.
+APK = Path(os.environ.get("DESKIT_APK")
+           or HERE.parents[1] / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk")
+# DESKIT_API=26 for the oldest phone the app runs on; the image comes from
+# sdkmanager into dev-tools. One emulator at a time.
+API = os.environ.get("DESKIT_API", "34")
+AVD = "deskit" if API == "34" else f"deskit{API}"
+IMAGE = f"system-images;android-{API};google_apis;x86_64"
 ADB = SDK / "platform-tools" / "adb.exe"
 EMU = SDK / "emulator" / "emulator.exe"
 AVDMGR = SDK / "cmdline-tools" / "latest" / "bin" / "avdmanager.bat"
@@ -99,11 +104,62 @@ def boot():
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
     adb("shell", "svc", "power", "stayon", "true")
     adb("shell", "input", "keyevent", "82")
+    # A crash dialog of anybody's stands in front of every flow after it. The
+    # flows read a crash of ours from the log and the process, not from a dialog.
+    adb("shell", "settings", "put", "global", "hide_error_dialogs", "1")
+    # A browser's own first-run wall stands in front of the page on a fresh
+    # image, and it is not what these checks are about.
+    adb("shell", "am", "set-debug-app", "--persistent", "com.android.chrome", check=False)
+    adb("shell", "sh", "-c",
+        "'echo _ --disable-fre --no-default-browser-check --no-first-run "
+        "> /data/local/tmp/chrome-command-line'", check=False)
+    # Two ways a fresh boot comes up wrong, both met on 2026-11-10. Its lock screen
+    # can still stand (the key above came too early), and a flow that sets a PIN
+    # then leaves the PIN pad over every flow after it. And it can have no route to
+    # the host, "Network is unreachable" from ping and Chrome alike, still five
+    # minutes in: the Wi-Fi off and on cures that, as flow_door's NoInternet knows.
+    if not unlocked():
+        print("the lock screen stayed")
+    if not routed():
+        adb("shell", "svc", "wifi", "disable", check=False)
+        time.sleep(3)
+        adb("shell", "svc", "wifi", "enable", check=False)
+        if not routed():
+            raise SystemExit("booted with no route to the host: boot again")
+
+
+def unlocked(seconds: int = 40) -> bool:
+    """The lock screen dismissed, as far as the image can say: Android 8 has no
+    isKeyguardShowing line, and there the keys above are all there is."""
+    end = time.time() + seconds
+    while time.time() < end:
+        adb("shell", "wm", "dismiss-keyguard", check=False)
+        adb("shell", "input", "keyevent", "82", check=False)
+        time.sleep(2)
+        out = adb("shell", "dumpsys", "window", check=False).stdout or ""
+        if "isKeyguardShowing=true" not in out:
+            return True
+    return False
+
+
+def routed(seconds: int = 60) -> bool:
+    """The host answers a ping from the phone."""
+    end = time.time() + seconds
+    while time.time() < end:
+        out = adb("shell", "ping", "-c", "1", "-W", "2", "10.0.2.2", check=False, timeout=30).stdout or ""
+        if "1 received" in out:
+            return True
+        time.sleep(3)
+    return False
 
 
 def install():
     adb("install", "-r", "-g", APK, timeout=300)
-    adb("shell", "ime", "enable", IME)
+    # The system takes a moment to read a fresh package's input methods.
+    for _ in range(30):
+        if adb("shell", "ime", "enable", IME, check=False).returncode == 0:
+            break
+        time.sleep(0.5)
     adb("shell", "ime", "set", IME)
     print(adb("shell", "ime", "list", "-s").stdout)
 

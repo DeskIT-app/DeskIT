@@ -78,6 +78,8 @@ body.said-here .sky .r2{left:360px;top:540px;width:760px;height:44px;transform:r
   overflow:hidden;text-overflow:ellipsis;background:var(--glass-disc);box-shadow:inset 0 0 0 1px var(--line-faint)}
 .place-said .tag .ic{font-size:11px;color:var(--ink-3);flex:none}
 .place-said .tag .tx{min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* after a name that gives way: never shrunk, never cut ("· cloud") */
+.place-said .tag .sx{flex:none;white-space:nowrap}
 .place-said .tag .pip{width:6px;height:6px;flex:none;border-radius:50%;background:var(--iris);box-shadow:0 0 6px var(--iris-glow)}
 .place-said .tag.copy{color:var(--ink);background:linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));
   box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim)}

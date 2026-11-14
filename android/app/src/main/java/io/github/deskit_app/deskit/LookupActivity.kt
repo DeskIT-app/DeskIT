@@ -38,12 +38,10 @@ class LookupActivity : Activity() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
-            background = Skin.face(this@LookupActivity, Skin.CARD, Skin.LINE_HI, 24)
+            background = Glass(this@LookupActivity, Skin.GLASS_SHEET, 24)
             val p = Skin.dp(this@LookupActivity, 22)
             setPadding(p, p, p, p)
         }
-        col.addView(Skin.eyebrow(this, getString(R.string.lookup_title)))
-        col.addView(Skin.gap(this, 10))
         col.addView(Skin.text(this, selected, 14f, Skin.DIM).apply {
             maxLines = 3
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -68,7 +66,7 @@ class LookupActivity : Activity() {
         row.addView(Skin.button(this, getString(R.string.copy), primary = true) {
             val text = got ?: return@button
             (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("DeskIT", text))
+                .setPrimaryClip(ClipData.newPlainText(Traces.CLIP, text))
             Toast.makeText(this, getString(R.string.copied), Toast.LENGTH_SHORT).show()
             finish()
         }.apply {
@@ -84,9 +82,9 @@ class LookupActivity : Activity() {
         window.setBackgroundDrawableResource(android.R.color.transparent)
 
         if (selected.isEmpty()) { say(getString(R.string.nothing_selected), Skin.DIM); return }
-        if (Prefs.token(this).isEmpty()) { say(getString(R.string.needs_setup), Skin.RED); return }
+        if (!Link.ready(this)) { say(getString(Link.step(this)), Skin.RED); return }
         thread {
-            val r = Transcriber.lookup(Prefs.url(this), Prefs.token(this), selected)
+            val r = Link.ask(this) { Transcriber.lookup(it, selected) }
             runOnUiThread {
                 when (r) {
                     is Transcriber.Result.Ok -> {

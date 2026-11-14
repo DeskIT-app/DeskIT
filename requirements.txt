@@ -20,6 +20,10 @@ skia-python                 # the skin: the glass dot, boot, shelf and notify ca
 # making from its PyPI sdist (dev/proxy_tools_wheel.py, packaging/wheels).
 pywebview
 
+# The QR on Settings > Phone (phone.qr): pure Python, no dependencies, BSD,
+# one small wheel, against about 250 lines of a QR encoder of our own.
+segno
+
 # Backend B: local Hebrew transcription (no quota, works offline). Brings
 # ctranslate2, onnxruntime (Silero VAD), huggingface_hub, tokenizers and
 # av along as its own dependencies.

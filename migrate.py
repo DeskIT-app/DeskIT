@@ -185,7 +185,7 @@ def migrate(where: Path | None = None, *, out=print) -> int:
     settings, state, dropped = config_diff(legacy)
     existing = config_mod.read_settings(paths.SETTINGS_FILE)
     existing.update(settings)
-    machine = config_mod.read_state(paths.STATE_FILE)
+    machine = config_mod.state_to_write(paths.STATE_FILE)
     machine.update(state)
     # The marker file says the wizard has run; state.json says so too from
     # now on, so an installed copy that inherited only these two files

@@ -29,14 +29,29 @@ line here fails the build.
 | `files.pythonhosted.org` | `pack-install` | the GPU pack (NVIDIA's cuBLAS, cuDNN, NVRTC) and the skin pack (skia-python), each wheel pinned by hash; pip then installs them with no network | never | the pack step itself is the consent |
 | `api.github.com` | `update-check` | the weekly look at GitHub Releases for `latest.json` — no identifier of any kind | never | the update-check switch (asked once) |
 | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | `update-check`, `update-download` | the release page and the installer file it links to, verified by SHA-256 before it is run | never | the same, and your click on Download |
-| `eogvmcbwfthxedcltyrs.supabase.co` — the one project named in `sb.py` (`net.SUPABASE_HOST`; Frankfurt) | `account`, `sync`, `history`, `report` | the optional account: sign-in (anonymous, or Google through Supabase's own flow), your learned words and changed settings, what you said and your cloud keys — those two sealed under your account's own key before they leave (`vault.py`; the server carries only sealed text, a public key and a wrapped key, never the key itself), the problem reports you chose to send; and, while you are signed in with a sync on, one open websocket on your account's own topic (`sync`, status 101 on the row that opened it, a `closed` row with the bytes when it went) that carries only "a store changed on another PC — go and pull" | your account's session token as a bearer, to this host only; the project's PUBLISHABLE key in the `apikey` header (public, opens nothing); never a Groq or Google key in a header — they travel only inside the `vault` rows, sealed | the account consent, then one consent per sync; the reports consent |
+| `eogvmcbwfthxedcltyrs.supabase.co` — the one project named in `sb.py` (`net.SUPABASE_HOST`; Frankfurt) | `account`, `sync`, `history`, `report`, `link` | the optional account: sign-in (anonymous, or Google through Supabase's own flow), each device's row (its name, its versions and the id of its session; its certificate and addresses only sealed, `vault.py`), your learned words and changed settings, what you said and your cloud keys — those two sealed under your account's own key before they leave (`vault.py`; the server carries only sealed text, a public key and a wrapped key, never the key itself), the problem reports you chose to send; and, while you are signed in, whatever your syncs say, one open websocket on your account's own topic (`account`, status 101 on the row that opened it, a `closed` row with the bytes when it went) that carries that something changed, which device changed it and, while a device asks to join, that device's name and code. `link` is the relay for a phone away from home (`relay.py`): the phone's recording comes in on that same websocket, and this PC's answer — that it is there, and the text — goes out as a broadcast on the same topic, each piece sealed under your account's own key with the request, the sending device and the receiving device bound into the seal, so the server carries only sealed bytes and their sizes | your account's session token as a bearer, to this host only; the project's PUBLISHABLE key in the `apikey` header (public, opens nothing); never a Groq or Google key in a header — they travel only inside the `vault` rows, sealed | the account consent, then one consent per sync; the reports consent; `link` is the account consent and the switch on Settings > Phone, **Also from outside home** |
 
 The Supabase host is a single value, never a suffix rule: a suffix would
 admit any project on that domain. The schema of that project is
 published in `supabase/migrations/` and has no column that holds a key
 the server can read: your cloud keys reach it only inside the `vault`
-rows, locked with a key only your own PCs hold, and only while your
+rows, locked with a key only your own devices hold, and only while your
 settings sync to your account.
+
+## What can come in
+
+One thing listens beyond this PC's own loopback, and only once a phone has
+joined your account and you said yes to it on this PC: the phone's door at
+home, a TLS port (`server.phone_port`, 8766 unless that is taken) on every
+network this PC is on. It takes only a certificate listed, sealed, in your
+own account; anything else is dropped in the handshake, before a byte of
+what it says is read. A dropped peer is a `dropped` row, and a phone's
+connection one row with the phone's name, the purpose word `phone` and the
+bytes, never what was said. It is inbound and local, so Offline mode does
+not stop it; the switch on Settings > Phone does, and so does withdrawing the
+account's consent, because the door hears a Forget through your account.
+Without a phone in your account nothing listens but the loopback door, and with
+the switch off that door answers only Claude's hook.
 
 ## The desk's web window (WebView2) — outside `net.py`
 

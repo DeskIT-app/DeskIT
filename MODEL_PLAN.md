@@ -218,6 +218,98 @@ then pen 1.0 with both tests).
 Each night changes ONE thing against the best recipe so far, judged on dev:
 - **night6 (done 2026-10-14)**: all 251 h of crowd-transcribe (rehearsal at
   scale) + Reversim twice — level with night4, see §1.
+- **night15 RESULT (2026-10-26) — the model everyone gets, on the real
+  length, with data that may ship.** His answer to the light plan: "train the
+  model everyone gets". `train_acft.py` on ivrit-ai/whisper-large-v3-turbo
+  itself (it is the teacher at 3,000 frames and the base), crowd-transcribe-v5
+  + knesset-committees only (205k clips, 292 h, no Reversim, nothing of
+  night10), 31,675 steps in 506 min, his 22:00-15:00 window. Through the
+  app's own decode at the real length (`eval_applen.py`), six sets: **7,368
+  against today's full window 7,346 (+0.3%)** — only d1 moved (+17, and in
+  both decodes, so the training and not the length). No short-clip loss on
+  Reversim: 5-10 s clips 908 / 643 against today's 911 / 647 (night14b's
+  real length lost +13 there). The short window in the bare loop: 1,133 /
+  1,303 on fleurs_dev / reversim_dev (untrained 1,408 / 1,495, full 1,114 /
+  1,309). CPU int8, 4 threads, median: 0-5 s 1.07 s, 5-10 s 1.66, 10-20 s
+  2.89 (night10's full window 7.2 / 7.5 / 7.8). The light plan's margin hint
+  (more frames after the speech, or a floor under the window) changed
+  nothing on night14b (`runs\margin\report.txt`). Not switched anywhere;
+  shipping it is his call through the light plan.
+- **night16 RESULT (2026-10-27) — the teacher pays: six sets 6,307 against
+  night10's 6,362 (−55, past the ~40 of two identical runs).** WhatsApp −11,
+  FLEURS test −30, Reversim test −13; misheard 3,173 against 3,198 (−25).
+  So the away week (10-28 → 11-04, `scripts\week.ps1`, `runs\week\`) labels
+  228 h more podcasts the same way (cap $78 of the $81.87 left) and trains on
+  them: night18 (data that may ship + the teacher) and its real length
+  night18r first, then night17 (night10's mix + all of it), night16o (the
+  control) and night17r.
+- **THE AWAY WEEK RESULT (2026-10-28 → 11-01, `runs\week\week.report.txt`,
+  the daily notes in `runs\week\daily\`) — the hearing moved at last, and the
+  recipe that may ship is ~10% under today's, nearly all of it on tech talk.**
+  Every job finished on its
+  first try; 228 h of podcasts labelled for **$77.73** of the $78 cap (53,928
+  clips kept, 20,744 changed). Six sets, words wrong, lower is better:
+
+  | model | what | standard decode | the app's real length |
+  |---|---|---|---|
+  | today | what ships | 7,346 | |
+  | night15 / night15b | ships + real length, no teacher | 7,419 / 7,391 | 7,368 / 7,346 |
+  | night18 / night18b | data that may ship + the teacher | 6,618 / 6,591 | |
+  | night18r / night18br | the same at the real length | 6,714 / 6,714 | 6,646 / 6,633 |
+  | night10 | Reversim mix | 6,362 | |
+  | night16 / night16o | + 42 h: Claude's labels / the old labels | 6,307 / 6,381 | |
+  | **night17** | **Reversim mix + all 270 h labelled: the best** | **6,253** | |
+  | night17r | the same at the real length | 6,326 | 6,294 |
+
+  What it settled. (1) **misheard moved at last**: 3,198 on night10 → 3,092 on
+  night17, 3,097 on night18b (today 3,170; no night before night16 had moved
+  it). (2) **The labels did it, not the audio**: night16o, the same clips
+  with audio-v2's own text, is 74 words behind night16 and level with night10.
+  (3) **The recipe that may ship repeats**: 6,618 / 6,591, and 6,646 / 6,633 at
+  the real length — 706 under today on the mean. (4) **Most of that is the two
+  Reversim sets**: −689 there, −53 on the other four (4,756 against 4,809) at
+  the standard decode, −33 at the real length. It is not a leak: the two sets
+  share no 8-word run with either labelled podcast set (0 of 9,976; the only
+  three episodes with the word in their name are another show's, about the
+  Reversim conference, 291 clips), and the error kinds say why: Latin 837 →
+  ~610, added 1,453 → ~1,070 — tech talk in Hebrew and English, which is his
+  and his users' dictation; on plain Hebrew it is a small gain. (5) The real
+  length costs ~0.5% through the app's decode on the same data (6,605 → 6,640);
+  only d1 moves near the spread (night18 491 → 530 / 515, today 499). (6)
+  night15b = night15: the real length with no teacher stays level with today.
+  **Open.** The CPU column of this week read 3.7-3.95 s on 10-20 s clips
+  against night15's 2.89, and night15b reads 3.74 with night15's recipe and
+  structure, so that gap is the machine and not the models: re-time them side
+  by side before quoting either. **Before any of it ships, two of his calls:**
+  night17 carries Reversim (© — private use), night18 does not; and night18's
+  labels are Claude's, while Anthropic's Commercial Terms D.4(a) (effective
+  2025-06-17) bar accessing the Services "to build a competing product or
+  service, including to train competing AI models", leave "competing"
+  undefined, and do not speak of speech models. The Usage Policy and Service
+  Specific Terms are not read yet. night15, without Claude's labels, is what
+  PR 31 ships meanwhile.
+- **night16 — Claude as the teacher of audio with NO human transcript.** The ivrit.ai tech podcasts no night has
+  seen (Geekonomy, startups, בזמן שעבדתם, השור והדוב; 9,987 clips, 42 h)
+  heard by night14b, then corrected by Claude Sonnet through the Batch API
+  with audio-v2's own transcript beside it: **$14.21** (cap $40), 9,979 kept,
+  3,661 changed. night16 = night10's recipe exactly + those clips twice
+  (`night_teacher16.ps1`); `-Labels older` is the control (the same clips,
+  audio-v2's text), run only if night16 wins.
+- **night14 RESULT (2026-10-25) — night10 on the real length WORKS.** Cut on
+  the 24th at 01:59 by a Windows Update restart (step 7,450), run again on
+  the 25th in his 00:00-16:00 window: night14a = the surviving step-7,000
+  adapter, night14b = resumed to the end of the epoch (34,016 steps, loss
+  1.0 → 0.036; `train_acft.py --init-adapter --start-step`). Short window,
+  words wrong on fleurs_dev / reversim_dev: night14b **1,137 / 818** against
+  night10's full window 1,133 / 808 (+0.4% / +1.2%; untrained 1,389 / 1,110).
+  The app's standard full-window decode of night14b, six sets: 6,358 against
+  night10's 6,454 (−1.5%, inside the spread), English and speed the same.
+  CPU int8, 4 threads, 60 FLEURS dev clips, median: 0-5 s 1.22 s, 5-10 s
+  1.75, 10-20 s 3.07 (night10 full window 7.2 / 7.5 / 7.8; zipformer 0.15 /
+  0.22 / 0.38); on the GPU the short window is 35% faster (0.023 against
+  0.035 of the audio). So a CPU tier can keep night10's quality and English;
+  the app side (ct2 generate on a short window, as `eval_dynctx.py`) is not
+  built. night14b could also replace night10 on the GPU path as it is.
 - **night14 (armed for 2026-10-24 00:00-09:15, `night_teacher14.ps1`) — night10
   on the REAL length of a recording, his choice "both, in stages".** The
   lighter-app work with DeskIT - 1 (plan in notes\DeskIT-light-plan-2026-10-22.md)

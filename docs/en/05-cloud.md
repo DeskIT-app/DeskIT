@@ -47,7 +47,7 @@ empty field with **Save** and **Cancel**, Cancel keeps the saved key, and a new 
 provider refuses gives the saved one back. **Remove** deletes it. The sentence under each
 field:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own devices hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 
 [Chapter 4](04-privacy) shows how to check that sentence yourself in two minutes.
 

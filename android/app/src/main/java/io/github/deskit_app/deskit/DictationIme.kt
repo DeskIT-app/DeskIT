@@ -7,11 +7,17 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.text.InputType
+import android.text.TextPaint
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -28,6 +34,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
 import kotlin.concurrent.thread
+import kotlin.math.abs
 
 /**
  * A keyboard that is one microphone button and the few keys you need to
@@ -39,10 +46,16 @@ import kotlin.concurrent.thread
  * result except leave it on the clipboard. Here the transcript is
  * committed straight into whatever field has the cursor, in any app.
  *
- * Recording happens on the phone; transcription happens on the PC, over
- * Tailscale, on the Hebrew fine-tune that lives there. A phone cannot run
- * that model at a useful speed, and its accuracy is the point of the whole
- * project.
+ * Recording happens on the phone; transcription happens on the PC, on the
+ * Hebrew fine-tune that lives there, by whichever road [Link] finds. A phone
+ * cannot run that model at a useful speed, and its accuracy is the point of
+ * the whole project. A recording that finds no PC waits on this keyboard, an
+ * hour at most ([Spool]), with why in a few words, Send again and an X; it goes
+ * only on that press, into the field the person is in then. What comes back
+ * after the field has gone lands in Said and is offered to the next field. A
+ * recording the keyboard closed on (a hide, the field going, the screen off) is
+ * kept the same hour: the mic says Continue and its length, and the line under
+ * it Send and the X ([pauseRecording]).
  *
  * IT IS STILL NOT THE KEYBOARD YOU LIVE IN. There is no letter grid and
  * there will not be one. What the second row buys is the two things
@@ -55,10 +68,10 @@ import kotlin.concurrent.thread
  * The face is in English deliberately. It sits directly under a Hebrew
  * text field, and two scripts in one glance is harder to read, not easier.
  *
- * THE LOOK IS THE DESKTOP'S (Skin.kt): LAMPLIGHT's colours and Rubik, on
+ * THE LOOK IS THE DESKTOP'S (Skin.kt): B+'s colours and Rubik, flat, on
  * shapes cut for a thumb. The microphone is a pill holding the desktop's
  * status dot as a lamp — listening blue, recording red, locked red and
- * breathing, transcribing gold, grey with no halo when the PC cannot be
+ * breathing, transcribing amber, grey with no halo when the PC cannot be
  * reached — so the corner of the desk and the bottom of the phone say the
  * same thing in the same colour.
  */
@@ -74,6 +87,9 @@ class DictationIme : InputMethodService() {
     private lateinit var levelTrack: LinearLayout
     private lateinit var levelFill: View
     private lateinit var status: TextView
+    /** Beside the status, while recordings wait: Send again, and the X that deletes them. */
+    private lateinit var sendKey: TextView
+    private lateinit var dropKey: View
     private lateinit var backspace: TextView
     private lateinit var actionKey: TextView
     private lateinit var row1: LinearLayout
@@ -126,22 +142,90 @@ class DictationIme : InputMethodService() {
     /** The EditorInfo action to fire, or 0 for "Enter means a newline". */
     private var actionId = 0
 
+    /** [Traces.wipes] as of what this keyboard holds: [letGoIfWiped]. */
+    private var traces = Traces.wipes
+
     /** Exactly what this keyboard last put in the field, for undo. */
     private var lastInsert: String? = null
 
-    /** The last recording, kept so a failure can be retried, not respoken. */
-    private var lastWav: ByteArray? = null
+    /**
+     * Recordings the disk refused, which wait with the spool's for as long as this
+     * process lives: a full phone still gets its Send again.
+     */
+    private val unsaved = ArrayList<SpoolFiles.Item>()
+
+    /**
+     * Why the last try came to nothing, in its few words, or null when no try has
+     * said: a PC that answers a knock since clears it, a guess never stands in.
+     * Nobody answering has no words here: [unheard] holds it, and the line gives it
+     * its words when it is drawn ([reasonNow]).
+     */
+    private var why: String? = null
+
+    /**
+     * The last try met nobody: true when it was made with the phone on no Wi-Fi
+     * ([Link.noWifi]), false when on one, null when somebody answered or [why] says
+     * what did.
+     */
+    private var unheard: Boolean? = null
+
+    /** The line is a knock's "nobody answered", which a change of network makes stale. */
+    private var lineUnheard = false
+
+    /**
+     * When the asking began for the recording now being made: the press, when a knock
+     * went ahead while the person spoke ([Backup.knockAhead]); 0 when none did, and
+     * then the release is when it begins.
+     */
+    private var askedAt = 0L
+
+    /**
+     * The button beside the line is Add a key and not Send again: the backup is on and
+     * holds no key, and the phone is on no road to a PC (the owner's d2, 2026-11-11).
+     */
+    private var sendAddsKey = false
+
+    /** A press of Send again under way: how many it set out with, and which is on its way. */
+    private var sendingOf = 0
+    private var sendingAt = 0
+    private var sendStarted = 0L
+
+    /** The line back to what waits, after a passing word has had its moment. */
+    private val rowBack = Runnable { showWaiting() }
 
     /** Text that arrived after its field went away; offered, never forced. */
     private var pending: String? = null
+
+    /**
+     * The recording the keyboard closed on, in this process ([pauseRecording]): what Continue
+     * goes on from and Send sends. The disk has it too ([Spool.keepPaused]), for a process
+     * that dies; null when only the disk has it, or there is none ([keptSeconds] asks both).
+     */
+    private var held: ByteArray? = null
+
+    /** When it was paused, by the wall clock: it is kept the spool's hour from then. */
+    private var heldAt = 0L
+
+    /** The recording being made goes on from a paused one: its end is the paused file's end. */
+    private var continuing = false
+
+    /** The line is the paused recording's: Send and the X at its end are that recording's. */
+    private var pausedShown = false
+
+    /** A paused recording sent and not yet answered: the mic keeps its size until it is. */
+    private var sendingKept = false
+
+    /** The mic's words as last asked for ([mic]), so a new width can fit them again. */
+    private var micLong = ""
+    private var micShort = ""
 
     /** An error stays up until something succeeds, instead of being wiped. */
     private var sticky = false
     private var statusAction: (() -> Unit)? = null
 
     /**
-     * The sticky error is "no microphone" or "no token". Those two are
-     * fixed on the app's screens, not here — so the next field after the
+     * The sticky error is "no microphone" or a step of the account. Those
+     * are fixed on the app's screens, not here — so the next field after the
      * fix must look again instead of keeping a complaint that is no
      * longer true (found on the emulator: the token was saved and the
      * keyboard went on saying there was none).
@@ -184,13 +268,65 @@ class DictationIme : InputMethodService() {
         get() = resources.configuration.orientation ==
                 Configuration.ORIENTATION_LANDSCAPE
 
+    /**
+     * A Wi-Fi or an Ethernet coming or going while this keyboard lives. What the line
+     * says of nobody answering is a fact of the networks, and the person turning the
+     * Wi-Fi on from the shade, the keyboard still up, is the moment it must not go
+     * stale. The rule is [Link.noWifi]'s, asked when the line is drawn: this only says
+     * when to draw it, a moment after Android has the network in or out of its list.
+     */
+    private val netWatch = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = moved()
+        override fun onLost(network: Network) = moved()
+
+        private fun moved() {
+            ui.removeCallbacks(netSettled)
+            ui.postDelayed(netSettled, NET_SETTLE_MS)
+        }
+    }
+    private val netSettled = Runnable { netMoved() }
+    private var watching = false
+
+    /** The keyboard's process starts, after a boot as at any time: an hour that is up goes. */
+    override fun onCreate() {
+        super.onCreate()
+        val app = applicationContext
+        thread { Spool.prune(app) }
+        try {
+            // Wi-Fi or Ethernet, and not a VPN's: a request asks NOT_VPN unless told otherwise.
+            getSystemService(ConnectivityManager::class.java)?.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    .build(), netWatch)
+            watching = true
+        } catch (e: RuntimeException) {
+            // Without it the line is still true when drawn, and it is drawn at every open.
+        }
+    }
+
+    override fun onDestroy() {
+        ui.removeCallbacks(netSettled)
+        if (watching) try {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(netWatch)
+        } catch (e: RuntimeException) {
+            // already gone with the process's binder
+        }
+        watching = false
+        super.onDestroy()
+    }
+
     // ---- the view ----
 
     /**
      * The vertical budget, because it is what decides everything else.
      *
-     * Portrait: 12 padding + 100 mic + 11 level + 30 status + 48 row + 6
-     * gap + 48 row + 14 padding = 269 of 272dp. The mic came down from
+     * Portrait: 12 padding + 100 mic + 30 status + 48 row + 6 gap + 48 row +
+     * 14 padding = 258dp, the level line lying inside the mic. The 272 asked
+     * for below is not what the keyboard gets: InputMethodService puts the
+     * view in its frame with a height of its own, WRAP_CONTENT, so the keyboard
+     * is as tall as its rows (256dp measured on the emulator, 2026-11-10), and
+     * a taller status line makes a taller keyboard. The mic came down from
      * 124dp to make room for the second row, and at 100dp it is still
      * several times the size of any key on any keyboard — it was never a
      * button that had to be found by looking.
@@ -273,6 +409,10 @@ class DictationIme : InputMethodService() {
         }
         face.addView(button)
         pill.addView(face)
+        // A new width (a rotation, the line's keys taking room from the mic) fits its words again.
+        pill.addOnLayoutChangeListener { _, l, _, r, _, ol, _, or, _ ->
+            if (r - l != or - ol) ui.post { refit() }
+        }
 
         // The level line. Not decoration: without it the only evidence the
         // microphone is live is that a lamp turned red, and a microphone
@@ -302,8 +442,8 @@ class DictationIme : InputMethodService() {
             setTextColor(statusText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setPadding(0, dp(8), 0, dp(6))
-            // Server errors are whole sentences. Unbounded, they wrap to
-            // three lines and push the key rows out of a fixed-height view.
+            // Server errors are whole sentences. Unbounded, they wrap to three
+            // lines, and every line is a line more of keyboard over the app.
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             // This is the only feedback channel the keyboard has. Without
@@ -311,8 +451,59 @@ class DictationIme : InputMethodService() {
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
             isClickable = true
             setOnClickListener { statusAction?.invoke() }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        root.addView(status)
+        // While recordings wait: Send again and the X, at the line's end, on the
+        // keys' own quiet face, so the Enter key stays the one lit thing here. Drawn
+        // smaller than the line and as tall as it to the touch, which [rowKeys] makes
+        // 48dp out of the mic's height; nothing reaches into the keys below. The
+        // line's words may wrap; the two are never cut.
+        sendKey = TextView(this).apply {
+            text = getString(R.string.send_again)
+            contentDescription = getString(R.string.cd_send_again)
+            gravity = Gravity.CENTER
+            typeface = Skin.fontLabel(this@DictationIme)
+            includeFontPadding = false
+            setTextColor(keyText)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+            maxLines = 1
+            background = Skin.smallKey(this@DictationIme, ROW_KEY_DP)
+            setPadding(dp(12), 0, dp(12), 0)
+            minWidth = dp(48)
+            visibility = View.GONE
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                when {
+                    pausedShown -> sendKept()
+                    sendAddsKey -> openKeys()
+                    else -> sendWaiting()
+                }
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT
+            ).apply { marginStart = dp(8) }
+        }
+        dropKey = View(this).apply {
+            contentDescription = getString(R.string.cd_drop_waiting)
+            background = Skin.crossKey(this@DictationIme, ROW_KEY_DP)
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                if (pausedShown) dropKept() else dropWaiting()
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(TOUCH_DP), ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(status)
+            addView(sendKey)
+            addView(dropKey)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        })
 
         backspace = repeatKey()
 
@@ -386,8 +577,10 @@ class DictationIme : InputMethodService() {
         }
 
         // A rebuilt view — rotation, a theme change — must not claim the
-        // app is idle while a recording or a request is still in flight.
+        // app is idle while a recording or a request is still in flight,
+        // nor lose what waits.
         restoreState()
+        ui.post { showWaiting() }
         return root
     }
 
@@ -431,7 +624,7 @@ class DictationIme : InputMethodService() {
         setTextColor(if (primary) Skin.ACCENT_ON else keyText)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
         isFocusable = true
-        // The action key is the ONE gold thing on this surface — the
+        // The action key is the ONE lit thing on this surface — the
         // primary action, the same rule every desktop surface keeps.
         background = if (primary) Skin.primaryFace(this@DictationIme, 14)
                      else Skin.secondaryFace(this@DictationIme, 14)
@@ -532,10 +725,11 @@ class DictationIme : InputMethodService() {
                 }
             }
         }
-        button.text = getString(R.string.arrange_done)
+        mic(getString(R.string.arrange_done))
         pill.contentDescription = getString(R.string.arrange_done)
         pill.setOnTouchListener(null)
         pill.setOnClickListener { exitArrange() }
+        rowKeys(false)
         status.text = getString(R.string.arrange_hint)
         status.contentDescription = getString(R.string.cd_arrange)
     }
@@ -600,24 +794,67 @@ class DictationIme : InputMethodService() {
 
     // ---- what field is this? ----
 
-    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
-        super.onStartInputView(info, restarting)
-        // Landing in a new field mid-arrange: the mode's disabled keys
-        // must not be what greets the field. The layout is already saved
-        // after every swap, so leaving loses nothing.
-        if (arranging) exitArrange()
-        val moved = info?.fieldId != editor?.fieldId ||
+    /**
+     * The phone left its account: the transcript waiting for a field, what is held
+     * in memory alone, the reason for what waits and the taps that would have brought
+     * any of it back all go, before the keyboard is seen again. What waits on the
+     * disk is [Lock.dropRecordings]'s.
+     */
+    private fun letGoIfWiped() {
+        if (traces == Traces.wipes) return
+        traces = Traces.wipes
+        pending = null
+        unsaved.clear()
+        // in memory, as unsaved is: what is on the disk is Lock.dropRecordings'
+        held = null
+        why = null
+        unheard = null
+        sendingOf = 0
+        lastInsert = null
+        sticky = false
+        stickySetup = false
+        statusAction = null
+    }
+
+    /**
+     * Every field the cursor lands in, the keyboard on screen or not: a phone back on
+     * its home screen is one too, and text committed there goes nowhere with no
+     * complaint. So this is what moves [session], and not [onStartInputView], which
+     * never hears of a field with no keyboard over it. Only a restart is the same
+     * field again: a fresh start is a new one even under the same package and id,
+     * because Android 8 starts input for a window with nothing to type into, an
+     * app's own included, and a field with no id is -1 in every window.
+     */
+    override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(info, restarting)
+        val moved = !restarting || info?.fieldId != editor?.fieldId ||
                 info?.packageName != editor?.packageName
         editor = info
         if (moved) {
             session++
             lastInsert = null
         }
+    }
+
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        // Landing in a new field mid-arrange: the mode's disabled keys
+        // must not be what greets the field. The layout is already saved
+        // after every swap, so leaving loses nothing.
+        if (arranging) exitArrange()
+        letGoIfWiped()
+        editor = info
         privateField = isPrivate(info)
         refreshActionKey()
         restoreState()
-        if (!sticky || (stickySetup && hasMic() && Prefs.token(this).isNotEmpty())) {
+        if (!sticky || (stickySetup && hasMic() && Link.ready(this))) {
             sayReady()
+        }
+        // What waits is on the line at every open, and one whose hour is up goes first.
+        showWaiting()
+        val app = applicationContext
+        thread {
+            if (Spool.prune(app) > 0) ui.post { showWaiting() }
         }
         if (!privateField) checkHealth()
     }
@@ -703,8 +940,8 @@ class DictationIme : InputMethodService() {
             sayError(getString(R.string.needs_permission)) { openSetup() }
             stickySetup = true; return
         }
-        if (Prefs.token(this).isEmpty()) {
-            sayError(getString(R.string.needs_setup)) { openSetup() }
+        if (!Link.ready(this)) {
+            sayError(getString(Link.step(this))) { openSetup() }
             stickySetup = true; return
         }
         say(
@@ -723,8 +960,8 @@ class DictationIme : InputMethodService() {
      * the retry below is what gets it there.
      */
     private fun checkHealth() {
-        if (Prefs.token(this).isEmpty()) {
-            // Nothing to ask yet: the lamp is grey until the PC is named.
+        if (!Link.ready(this)) {
+            // Nothing to ask yet: the lamp is grey until there is a PC to ask.
             reachable = false
             if (!busy && !holding && !locked) tint(idleColor)
             return
@@ -732,24 +969,59 @@ class DictationIme : InputMethodService() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastHealth < HEALTH_TTL_MS) return
         lastHealth = now
-        val url = Prefs.url(this)
+        val app = applicationContext
         thread {
             // /health says {ok, version} and nothing else (12.3): the
             // engine's name arrives with each transcript instead, and the
             // ready line names the one that answered last.
-            val pcVersion = Transcriber.health(url)
+            var word = getString(R.string.unreachable)
+            var lockedWhy: String? = null
+            var reached = try {
+                Link.reach(app)
+            } catch (e: Sealed.NotNow) {
+                word = Sealed.words(app, e)     // the phone, and nothing about the PC
+                lockedWhy = getString(if (e.locked) R.string.why_locked else R.string.why_keystore)
+                null
+            }
+            // Away from home: a PC there through the account is a PC there (stage 3).
+            if (reached == null && lockedWhy == null && Relay.reach(app)) reached = "relay"
+            val off = offWifi(app)
+            val unheardNow = reached == null && lockedWhy == null
+            // Nobody answered and the phone is on no Wi-Fi: that is the line's words.
+            if (unheardNow && off) word = getString(R.string.why_no_wifi)
+            // Nothing is sent from here, a PC or no PC: what waits is the person's to send.
+            // A phone used only through this keyboard opens no screen that would look.
+            if (Sealed.weak(app)) Lock.look(app)
+            // The keys the backup would use, read when due, and a text row of the cloud's
+            // that had no answer the first time: the one thing that goes unpressed.
+            CloudKeys.refreshIfStale(app)
+            Backup.flushQuietly(app)
             ui.post {
-                reachable = pcVersion != null
+                reachable = reached != null
+                // What waits is told what is true now: a PC answers, the phone cannot
+                // look, or nobody did, which the line words when it is drawn.
+                why = if (reached == null) lockedWhy else null
+                unheard = if (unheardNow) off else null
                 if (busy || holding || locked) return@post
-                tint(idleColor)
-                if (pcVersion == null) {
-                    sayError(getString(R.string.unreachable)) { openSetup() }
+                face()
+                if (reached == null) {
+                    sayError(word) { openSetup() }
+                    lineUnheard = unheardNow
                 } else if (!sticky) {
                     sayReady()
                 }
+                showWaiting()
             }
         }
     }
+
+    /**
+     * The phone is on no Wi-Fi, and that is why nobody answered: [Link.noWifi], unless the
+     * account's channel answered from this network a moment ago (stage 3). Then the phone
+     * reaches its PCs away from home, and a try nobody answered is the PC's: "Your PC
+     * didn't answer", never "isn't on Wi-Fi".
+     */
+    private fun offWifi(c: android.content.Context): Boolean = Link.noWifi(c) && !Relay.heardLately()
 
     private fun hasMic() =
         checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
@@ -760,6 +1032,7 @@ class DictationIme : InputMethodService() {
     private fun press(v: View) {
         if (busy) return
         if (locked) { finishLocked(); return }   // tap while locked = stop
+        if (keptNow() != null) { continuePaused(); return }   // the mic is Continue
         if (!ready()) return
         try {
             recorder.start()
@@ -768,6 +1041,7 @@ class DictationIme : InputMethodService() {
         }
         v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         holding = true
+        askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
         tint(recColor)
         say(getString(R.string.slide_to_lock))
         startTicking()
@@ -775,6 +1049,7 @@ class DictationIme : InputMethodService() {
 
     /** The accessibility path: no finger to hold, so it locks immediately. */
     private fun startLocked() {
+        if (keptNow() != null) { continuePaused(); return }
         if (!ready()) return
         try {
             recorder.start()
@@ -783,6 +1058,7 @@ class DictationIme : InputMethodService() {
         }
         holding = true
         locked = true
+        askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
         tint(lockColor)
         say("")
         startTicking()
@@ -794,8 +1070,8 @@ class DictationIme : InputMethodService() {
             sayError(getString(R.string.needs_permission)) { openSetup() }
             return false
         }
-        if (Prefs.token(this).isEmpty()) {
-            sayError(getString(R.string.needs_setup)) { openSetup() }
+        if (!Link.ready(this)) {
+            sayError(getString(Link.step(this))) { openSetup() }
             return false
         }
         return true
@@ -835,6 +1111,13 @@ class DictationIme : InputMethodService() {
         locked = false
         stopTicking()
         recorder.cancel()
+        if (continuing) {
+            // The whole recording, what came before the keyboard closed included: one
+            // unlink, here, so the mic below is not drawn as Continue a moment longer.
+            continuing = false
+            held = null
+            Spool.dropPaused(applicationContext)
+        }
         reset()
         button.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         say(getString(R.string.discarded))
@@ -848,13 +1131,13 @@ class DictationIme : InputMethodService() {
 
     private fun release(cancelled: Boolean) {
         if (!holding) return
-        holding = false
         if (cancelled) {
-            stopTicking()
-            recorder.cancel()
-            reset()
+            // The system took the touch (a call, a gesture, a window over this one): what
+            // was said is kept, as a hide keeps it. It used to go, silently.
+            pauseRecording()
             return
         }
+        holding = false
         deliverRecording()
     }
 
@@ -863,6 +1146,9 @@ class DictationIme : InputMethodService() {
         val capped = recorder.capped
         val silent = recorder.loudest < SILENCE
         val wav = recorder.stop()
+        // a continued recording, once on its way whole, ends the paused file
+        val cont = continuing
+        continuing = false
         reset()
         if (wav == null) { say(getString(R.string.too_short)); return }
         if (silent) {
@@ -872,48 +1158,557 @@ class DictationIme : InputMethodService() {
             sayError(getString(R.string.no_sound))
             return
         }
-        lastWav = wav
-        send(wav)
+        val app = applicationContext
+        go(since = if (askedAt > 0) askedAt else SystemClock.elapsedRealtime()) {
+            // kept whole first, the paused part after: never a moment with no copy
+            Spool.keep(app, wav).also { if (cont) Spool.dropPaused(app) }
+        }
         if (capped) {
             say(getString(R.string.capped, "${Recorder.MAX_SECONDS / 60} min"))
         }
     }
 
-    private fun send(wav: ByteArray) {
+    /**
+     * One recording on its way, on a thread from its first step: [item] puts it on
+     * the disk, which is not the main thread's to wait for, and from then on a
+     * process killed anywhere loses nothing. [note] is the line meanwhile.
+     */
+    private fun go(note: String = getString(R.string.transcribing),
+                   since: Long = SystemClock.elapsedRealtime(), item: () -> SpoolFiles.Item?) {
         busy = true
         tint(busyColor)
-        say(getString(R.string.transcribing))
-        val url = Prefs.url(this)
-        val token = Prefs.token(this)
+        // the mic is not Continue while what it would continue is on its way
+        mic(getString(R.string.hold_and_talk))
+        say(note)
+        val app = applicationContext
         val mine = session
+        val wipes = Traces.wipes
+        val setOut = SystemClock.elapsedRealtime()
         thread {
-            val result = Transcriber.send(url, token, wav)
-            ui.post { deliver(result, mine) }
+            // Nothing: a paused recording whose hour came between the press and here.
+            val recording = item() ?: run {
+                ui.post {
+                    busy = false
+                    sendingKept = false
+                    face()
+                    showWaiting()
+                }
+                return@thread
+            }
+            // Where it was tried from: a try made off any Wi-Fi says nothing of the PC.
+            val off = offWifi(app)
+            // The PC road, and the cloud backup beside it when no PC answers (stage 2b).
+            val result = Backup.dictate(app, recording, since) {
+                ui.post { if (busy && mine == session) say(getString(R.string.transcribing_cloud)) }
+            }
+            // How long the person waited, whichever road: a measurement, never a word
+            Log.i("DeskIT", "dictation: ${if (result is Transcriber.Result.Ok) "a text" else "no text"} " +
+                "${SystemClock.elapsedRealtime() - setOut} ms after the release" +
+                if (result is Transcriber.Result.Ok && result.via.isNotEmpty()) " (relay)"
+                else if (result is Transcriber.Result.Ok && result.cloud.isNotEmpty()) " (cloud)" else "")
+            ui.post { deliver(result, recording, mine, wipes, off) }
         }
     }
 
-    private fun deliver(result: Transcriber.Result, mine: Int) {
+    /** [off]: it was tried with the phone on no Wi-Fi ([Link.noWifi]). */
+    private fun deliver(result: Transcriber.Result, item: SpoolFiles.Item, mine: Int, wipes: Int,
+                        off: Boolean) {
         busy = false
-        tint(idleColor)
+        sendingKept = false
+        face()
+        // Out of the account while this was on its way: it lands nowhere. What
+        // became of the file is the road's: [Lock.dropRecordings].
+        if (wipes != Traces.wipes) {
+            Spool.free(this, item)
+            sendingOf = 0
+            letGoIfWiped()
+            sayReady()
+            showWaiting()
+            return
+        }
         when (result) {
             is Transcriber.Result.Ok -> {
                 val text = result.text.trim()
-                if (text.isEmpty()) { say(getString(R.string.no_speech)); return }
-                lastWav = null
+                // A PC took it: what one said before is not why any more.
+                why = null
+                unheard = null
+                if (text.isEmpty()) {
+                    Spool.done(this, item)
+                    say(getString(R.string.no_speech))
+                    if (sendingOf > 0) sendNext()
+                    return
+                }
                 // The PC answered, so the link is up whatever /health last
-                // said — and the sentence goes on the phone's own Said.
-                reachable = true
-                if (result.backend.isNotEmpty()) backendName = result.backend
-                Prefs.addSaid(this, text)
-                scheduleReviewPolls()
-                if (!place(text, mine)) return
+                // said — and the sentence goes on the phone's own Said, before
+                // the file goes: a kill between the two says it twice, and
+                // never not at all. The cloud's answer says nothing of the PC.
+                val cloud = result.cloud.isNotEmpty()
+                if (!cloud) {
+                    reachable = true
+                    if (result.backend.isNotEmpty()) backendName = result.backend
+                    // The lamp was tinted above, by what the last knock said: a PC that just
+                    // answered is a PC there, and the lamp says so now, not at the next knock.
+                    face()
+                }
+                Prefs.addSaid(this, text, wipes, cloud)
+                // the recording goes from the phone: the cloud's text is the only copy now
+                Spool.done(this, item)
+                if (cloud) Backup.tellPcs(this, text, result.cloud, result.audio, wipes)
+                else scheduleReviewPolls()
+                if (!place(text, mine)) {
+                    // The field went: the rest wait for the next press.
+                    sendingOf = 0
+                    // Nobody is looking at the status line now.
+                    if (!isInputViewShown) Notify.landed(this, text, wipes)
+                    return
+                }
                 // A decoder loop means words were LOST, not garbled — say
                 // so now, not after the gap is discovered in reading.
                 say(result.warning ?: engineNote(result))
+                if (sendingOf > 0) {
+                    sendNext()
+                    return
+                }
                 if (Prefs.switchBack(this)) goBack()
             }
-            is Transcriber.Result.Err -> retryable(result.message)
+            is Transcriber.Result.Err -> {
+                // The first that does not arrive ends a press's run.
+                val pressed = sendingOf > 0
+                sendingOf = 0
+                if (result.why == Transcriber.Why.REFUSED) {
+                    // A PC will never take this one: it goes, with its own sentence.
+                    Spool.done(this, item)
+                    unsaved.remove(item)
+                    sayError(result.message)
+                    return
+                }
+                if (item.file == null && item.wav != null && item !in unsaved) unsaved.add(item)
+                Spool.free(this, item)
+                if (result.why == Transcriber.Why.UNREACHED) {
+                    reachable = false
+                    why = null
+                    unheard = off
+                } else {
+                    why = reasonFor(result)
+                    unheard = null
+                }
+                face()
+                // A press must be seen to have been made, however fast the no.
+                val left = if (pressed) SENDING_SEEN_MS - (SystemClock.elapsedRealtime() - sendStarted)
+                           else 0L
+                ui.removeCallbacks(rowBack)
+                if (left > 0) ui.postDelayed(rowBack, left) else showWaiting()
+            }
         }
+    }
+
+    /**
+     * Why the line says nothing came of what waits, as it is now. Nobody answering
+     * is worded by where the phone is: on no Wi-Fi now, that is the words, whatever
+     * the try met; tried off any Wi-Fi and on one now, it says nothing of the PC. What
+     * a PC said, and the phone's own reasons, stand as they were.
+     */
+    private fun reasonNow(): String? {
+        val off = unheard ?: return why
+        return when (NoAnswer.say(offThen = off, offNow = offWifi(this))) {
+            NoAnswer.Say.NO_WIFI -> getString(R.string.why_no_wifi)
+            NoAnswer.Say.NO_ANSWER -> getString(R.string.why_no_answer)
+            NoAnswer.Say.NOT_SENT -> null
+        }
+    }
+
+    /**
+     * A Wi-Fi or an Ethernet came or went ([netWatch]). The row is drawn again, as
+     * it is now; and a knock's "nobody answered" was a fact of the network it was
+     * made on, so the line goes back to ready and, the keyboard up, knocks again.
+     */
+    private fun netMoved() {
+        if (waitingNow().isNotEmpty()) {
+            showWaiting()
+            return
+        }
+        if (!lineUnheard || busy || holding || locked || arranging) return
+        lastHealth = 0L
+        sayReady()
+        if (isInputViewShown && !privateField) checkHealth()
+    }
+
+    /**
+     * Why a try that met an answer came to nothing, in a few words: one kind each,
+     * and only what the phone knows. A PC's own sentence of no kind it knows is the
+     * PC's to say, word for word, its first letter raised. Nobody answering is
+     * [reasonNow]'s.
+     */
+    private fun reasonFor(r: Transcriber.Result.Err): String {
+        val m = r.message.trim()
+        return when {
+            m == getString(R.string.phone_locked) -> getString(R.string.why_locked)
+            m == getString(R.string.keystore_busy) -> getString(R.string.why_keystore)
+            m == Transcriber.BAD_TOKEN -> getString(R.string.why_token)
+            m == Transcriber.UNREADABLE -> getString(R.string.why_unreadable)
+            else -> when (PcWords.about(m)) {
+                PcWords.About.MODEL_OFF -> getString(R.string.why_model_off)
+                PcWords.About.SIGNED_OUT -> getString(R.string.why_signed_out)
+                PcWords.About.NO_MODEL -> getString(R.string.why_no_model)
+                PcWords.About.ERROR -> getString(R.string.why_error, PcWords.errorCode(m) ?: 0)
+                PcWords.About.OTHER -> m.trimEnd('.').replaceFirstChar { it.titlecase(Locale.ROOT) }
+            }
+        }
+    }
+
+    // ---- what waits ----
+
+    /** What waits for a press, oldest first: the spool's, then any the disk refused. */
+    private fun waitingNow(): List<SpoolFiles.Item> = Spool.waiting(this) + unsaved
+
+    private val rowShown: Boolean
+        get() = ::dropKey.isInitialized && dropKey.visibility == View.VISIBLE
+
+    /** Send again and the X at the line's end, or not. */
+    private fun rowKeys(on: Boolean, send: Boolean = on) {
+        if (!::dropKey.isInitialized) return
+        // Keys that are not up belong to nobody: the paused row says they are its when it draws them.
+        if (!on) pausedShown = false
+        sendKey.visibility = if (send) View.VISIBLE else View.GONE
+        dropKey.visibility = if (on) View.VISIBLE else View.GONE
+        status.gravity = if (on) Gravity.START or Gravity.CENTER_VERTICAL else Gravity.CENTER
+        // Beside the two keys a reason has less room: on a 320dp phone with larger
+        // text it takes three lines (measured), and a reason cut short is no reason.
+        status.maxLines = if (on) 3 else 2
+    }
+
+    /**
+     * Room for the two keys while anything waits: the line [TOUCH_DP] tall, so each
+     * key is that tall to the touch while drawn at [ROW_KEY_DP]. In portrait the mic
+     * gives up what the line takes, so the keyboard keeps its height and nothing moves
+     * on the app above. There was no gap under the mic to reach into: the line sits
+     * flush against it (measured 2026-11-10). It follows what waits, not what the line
+     * says for a moment, so the mic never changes size under a press.
+     */
+    private fun room(on: Boolean) {
+        if (!::pill.isInitialized) return
+        status.minHeight = if (on) dp(TOUCH_DP) else 0
+        val oneLine = status.paddingTop + status.paddingBottom + status.lineHeight
+        val give = if (on && !landscape) (dp(TOUCH_DP) - oneLine).coerceAtLeast(0) else 0
+        val tall = dp(if (landscape) 56 else 100) - give
+        if (pill.layoutParams.height != tall) {
+            pill.layoutParams = pill.layoutParams.apply { height = tall }
+        }
+    }
+
+    /**
+     * The line as what waits makes it: why in a few words, how many when more
+     * than one, Send again and the X. Nothing of it while something else has the
+     * line first: a recording, a request on its way, a text waiting for its field,
+     * arranging, a private field. Out of the account the step to get back in
+     * stands in for the reason, and there is no Send to press.
+     */
+    private fun showWaiting() {
+        if (!::status.isInitialized) return
+        ui.removeCallbacks(rowBack)
+        val n = waitingNow().size
+        // A recording the keyboard closed on has the line first: it is the one in hand,
+        // and the older ones come back the moment it is sent or deleted.
+        val kept = keptNow()
+        face(kept)
+        if (kept != null) {
+            room(true)
+            if (busy || holding || locked || arranging || pending != null) return
+            showPaused(n)
+            return
+        }
+        pausedShown = false
+        // Nothing waits, or nothing of it belongs here: a password field, where
+        // dictation stays out, and where the row from the field before must not stay
+        // standing, Send again and all.
+        if (n == 0 || privateField) {
+            if (n == 0) {
+                why = null
+                unheard = null
+            }
+            // The last one on its way under a press is still the line's: the mic
+            // holds still until the press has its answer.
+            room(n == 0 && (sendingOf > 0 || sendingKept))
+            if (rowShown) {
+                rowKeys(false)
+                sticky = false
+                sayReady()
+            }
+            return
+        }
+        room(true)
+        if (busy || holding || locked || arranging || pending != null) return
+        if (!Link.ready(this)) {
+            status.text = getString(Link.step(this))
+            status.setTextColor(errorText)
+            sticky = true
+            stickySetup = true
+            statusAction = { openSetup() }
+            rowKeys(on = true, send = false)
+            return
+        }
+        val reason = reasonNow()
+        status.text = when {
+            n == 1 -> reason ?: getString(R.string.not_sent)
+            reason == null -> getString(R.string.not_sent_many, n)
+            else -> getString(R.string.not_sent_why, n, reason)
+        }
+        status.setTextColor(errorText)
+        sticky = true
+        stickySetup = false
+        statusAction = null
+        lineUnheard = false
+        // No road: the backup is on and holds no key, and the phone is on no Wi-Fi (a
+        // pasted line goes over any network, so Link.noWifi says no with one). Then a
+        // key is what would send it, and Send again comes back with the Wi-Fi.
+        sendAddsKey = Backup.active(this) && CloudKeys.provider(this) == null && Link.noWifi(this)
+        sendKey.text = getString(if (sendAddsKey) R.string.add_a_key else R.string.send_again)
+        sendKey.contentDescription = getString(if (sendAddsKey) R.string.cd_add_a_key
+                                               else R.string.cd_send_again)
+        dropKey.contentDescription = getString(R.string.cd_drop_waiting)
+        rowKeys(true)
+    }
+
+    /**
+     * The line as a paused recording makes it: "Recording paused", how many older ones
+     * wait behind it, Send and the X. The mic above it is Continue ([face]). Out of the
+     * account the step to get back in stands in for the words, and there is no Send.
+     */
+    private fun showPaused(older: Int) {
+        pausedShown = true
+        dropKey.contentDescription = getString(R.string.cd_drop_kept)
+        if (!Link.ready(this)) {
+            status.text = getString(Link.step(this))
+            status.setTextColor(errorText)
+            sticky = true
+            stickySetup = true
+            statusAction = { openSetup() }
+            rowKeys(on = true, send = false)
+            return
+        }
+        status.text = if (older > 0) getString(R.string.paused_line_older, older)
+                      else getString(R.string.paused_line)
+        status.setTextColor(statusText)
+        // sticky, so a field opened next keeps it rather than the ready line
+        sticky = true
+        stickySetup = false
+        statusAction = null
+        lineUnheard = false
+        sendAddsKey = false
+        sendKey.text = getString(R.string.send_kept)
+        sendKey.contentDescription = getString(R.string.cd_send_kept)
+        rowKeys(true)
+    }
+
+    // ---- the recording the keyboard closed on ----
+
+    /**
+     * How long the paused recording is, in seconds, or null when none is kept or its hour
+     * is up: this process's copy first, then the disk's (a process that died since).
+     */
+    private fun keptSeconds(): Int? {
+        held?.let {
+            if (System.currentTimeMillis() - heldAt <= Spool.KEEP_MS) {
+                return SpoolFiles.seconds(it.size.toLong())
+            }
+            held = null
+        }
+        return Spool.paused(this)?.seconds
+    }
+
+    /** [keptSeconds], except in a private field, where dictation stays out and it waits. */
+    private fun keptNow(): Int? = if (privateField) null else keptSeconds()
+
+    /**
+     * The keyboard closed, the field went, the screen went off or the system took the
+     * touch, in the middle of a recording: the microphone stops now, and what was said is
+     * kept, offered when the keyboard is next up. Until 2026-11-12 it was thrown away, a
+     * one-minute dictation among it; his words: "do it like a WhatsApp voice recording,
+     * where there is an option to continue it after it closes". A recording too short to
+     * be speech, or with no sound in it, keeps nothing, as a release sends nothing.
+     */
+    private fun pauseRecording() {
+        if (!holding && !locked) return
+        holding = false
+        locked = false
+        stopTicking()
+        val silent = recorder.loudest < SILENCE
+        val wav = recorder.stop()
+        continuing = false
+        reset()
+        if (wav == null || silent) {
+            if (wav != null) sayError(getString(R.string.no_sound))
+            showWaiting()
+            return
+        }
+        held = wav
+        heldAt = System.currentTimeMillis()
+        Spool.keepPaused(applicationContext, wav, heldAt, Spool.pausedGen())
+        Log.i("DeskIT", "keyboard: a recording paused at ${SpoolFiles.seconds(wav.size.toLong())} s")
+        showWaiting()
+    }
+
+    /**
+     * Continue: the paused recording goes on, locked, the clock from where it stopped and
+     * the five-minute cap counting the whole. Its file stays until the recording ends.
+     */
+    private fun continuePaused() {
+        if (!ready()) return
+        val wav = held ?: Spool.pausedBytes(this)
+        if (wav == null) {
+            // its hour came while the mic said Continue
+            showWaiting()
+            return
+        }
+        try {
+            recorder.start(Recorder.pcm(wav))
+        } catch (e: Exception) {
+            sayError(e.message ?: "microphone error")
+            return
+        }
+        button.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        held = null
+        continuing = true
+        holding = true
+        locked = true
+        // This touch is spent: a slip downwards must not throw the whole recording away.
+        gestured = true
+        askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
+        tint(lockColor)
+        say("")
+        startTicking()
+    }
+
+    /** Send: the normal road, as a release sends one; a Send that reaches nobody waits. */
+    private fun sendKept() {
+        if (busy || holding || locked) return
+        if (privateField) {
+            say(getString(R.string.private_field))
+            return
+        }
+        if (!Link.ready(this)) {
+            showWaiting()
+            return
+        }
+        val wav = held
+        held = null
+        pausedShown = false
+        sendingKept = true
+        val app = applicationContext
+        go(since = SystemClock.elapsedRealtime()) { Spool.sendPaused(app, wav) }
+    }
+
+    /** The X: the paused recording goes, at once. Nothing is sent. */
+    private fun dropKept() {
+        if (busy || holding || locked) return
+        held = null
+        pausedShown = false
+        Spool.dropPaused(applicationContext)
+        showWaiting()
+    }
+
+    /**
+     * The mic at rest: Continue and the paused recording's length while one is kept, Hold
+     * & talk otherwise. Continue is the recording's own red, held still (no halo, no
+     * breath): nothing is listening.
+     */
+    private fun face(kept: Int? = keptNow()) {
+        if (!::button.isInitialized || busy || holding || locked || arranging) return
+        if (kept != null) {
+            mic(getString(R.string.continue_time, clock(kept)), getString(R.string.continue_short))
+            pill.contentDescription = getString(R.string.cd_continue)
+            lamp.colour = recColor
+            lamp.halo = false
+            lamp.breathe(false)
+            (pill.background as? GradientDrawable)?.setStroke(dp(1), recColor)
+            if (::backspace.isInitialized) {
+                backspace.text = getString(R.string.backspace_btn)
+                backspace.contentDescription = getString(R.string.cd_backspace)
+            }
+            return
+        }
+        mic(getString(R.string.hold_and_talk))
+        pill.contentDescription = getString(R.string.cd_mic)
+        tint(idleColor)
+    }
+
+    private fun clock(s: Int) = String.format(Locale.US, "%d:%02d", s / 60, s % 60)
+
+    /**
+     * The mic's words, made smaller until they fit rather than cut: [long] when it fits at
+     * [MicFit.FLOOR] of the size or more, [short] otherwise. On a 320 dp phone with larger
+     * text "Locked 0:44 · tap to finish" was cut to "tap t…", and at the largest the clock
+     * itself went (measured 2026-11-12).
+     */
+    private fun mic(long: String, short: String = long) {
+        micLong = long
+        micShort = short
+        val base = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, if (landscape) 16f else 19f,
+                                             resources.displayMetrics)
+        val room = (pill.width - pill.paddingLeft - pill.paddingRight - lamp.width -
+                    (lamp.layoutParams as LinearLayout.LayoutParams).marginEnd - dp(2)).toFloat()
+        val paint = TextPaint(button.paint).apply { textSize = base }
+        var words = long
+        var size = if (pill.width == 0) base else MicFit.size(base, paint.measureText(long), room)
+        if (size == null) {
+            words = short
+            size = MicFit.size(base, paint.measureText(short), room) ?: base * MicFit.FLOOR
+        }
+        if (button.text.toString() != words) button.text = words
+        if (abs(button.textSize - size) > 0.5f) button.setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
+    }
+
+    /** The mic's words again, at a new width. */
+    private fun refit() {
+        if (::button.isInitialized && micLong.isNotEmpty()) mic(micLong, micShort)
+    }
+
+    /**
+     * Send again: everything that waits, oldest first, each into the field the
+     * person is in now. The first that does not arrive ends the run, and the line
+     * says why, as it is now.
+     */
+    private fun sendWaiting() {
+        if (busy || holding || locked) return
+        if (privateField) {
+            say(getString(R.string.private_field))
+            return
+        }
+        val n = waitingNow().size
+        if (n == 0 || !Link.ready(this)) {
+            showWaiting()
+            return
+        }
+        sendingOf = n
+        sendingAt = 0
+        sendStarted = SystemClock.elapsedRealtime()
+        sendNext()
+    }
+
+    /** The next of a press's run, or the end of it. */
+    private fun sendNext() {
+        val next = waitingNow().firstOrNull()
+        if (next == null || sendingAt >= sendingOf || !Spool.claim(next)) {
+            sendingOf = 0
+            ui.removeCallbacks(rowBack)
+            ui.postDelayed(rowBack, ROW_BACK_MS)
+            return
+        }
+        sendingAt++
+        unsaved.remove(next)
+        go(if (sendingOf > 1) getString(R.string.sending_of, sendingAt, sendingOf)
+           else getString(R.string.sending)) { next }
+    }
+
+    /** The X: everything that waits goes, on the disk and in memory. Nothing is sent. */
+    private fun dropWaiting() {
+        if (busy) return
+        val app = applicationContext
+        for (item in Spool.waiting(app)) Spool.done(app, item)
+        unsaved.clear()
+        why = null
+        unheard = null
+        showWaiting()
     }
 
     /**
@@ -933,9 +1728,8 @@ class DictationIme : InputMethodService() {
         }
     }
 
-    private fun engineNote(ok: Transcriber.Result.Ok): String =
-        if (ok.backend.isEmpty()) ""
-        else String.format(Locale.US, "%.1f s · %s", ok.seconds, ok.backend)
+    /** The line after a text landed: the recording's length on both roads ([CloudLine]). */
+    private fun engineNote(ok: Transcriber.Result.Ok): String = CloudLine.note(ok)
 
     /**
      * Put the transcript where it was spoken, or keep it and say so.
@@ -976,13 +1770,8 @@ class DictationIme : InputMethodService() {
         lastInsert = whole
         pending = null
         say("")
-    }
-
-    /** A failed send keeps its audio: "say it again" is the wrong answer. */
-    private fun retryable(message: String) {
-        val wav = lastWav
-        if (wav == null) { sayError(message); return }
-        sayError(getString(R.string.tap_to_retry, message)) { send(wav) }
+        // The text waiting for a field had the line first; what waits is next.
+        showWaiting()
     }
 
     // ---- keys that change what is already there ----
@@ -1015,13 +1804,13 @@ class DictationIme : InputMethodService() {
         return Target(before + after, true, before.length, after.length)
     }
 
-    private fun translateField() = fieldOp(R.string.translating) { url, token, text ->
-        Transcriber.translate(url, token, text)
+    private fun translateField() = fieldOp(R.string.translating) { road, text ->
+        Transcriber.translate(road, text)
     }
 
     private fun punctuateField() =
-        fieldOp(R.string.punctuating) { url, token, text ->
-            Transcriber.punctuate(url, token, text)
+        fieldOp(R.string.punctuating) { road, text ->
+            Transcriber.punctuate(road, text)
         }
 
     /**
@@ -1035,12 +1824,12 @@ class DictationIme : InputMethodService() {
      */
     private fun fieldOp(
         note: Int,
-        call: (String, String, String) -> Transcriber.Result,
+        call: (Link.Road, String) -> Transcriber.Result,
     ) {
         if (busy) return
         if (privateField) { say(getString(R.string.private_field)); return }
-        if (Prefs.token(this).isEmpty()) {
-            sayError(getString(R.string.needs_setup)) { openSetup() }; return
+        if (!Link.ready(this)) {
+            sayError(getString(Link.step(this))) { openSetup() }; return
         }
         val ic = currentInputConnection ?: return
         val target = readTarget(ic)
@@ -1048,11 +1837,10 @@ class DictationIme : InputMethodService() {
         busy = true
         tint(busyColor)
         say(getString(note))
-        val url = Prefs.url(this)
-        val token = Prefs.token(this)
+        val app = applicationContext
         val mine = session
         thread {
-            val result = call(url, token, target.text)
+            val result = Link.ask(app) { call(it, target.text) }
             ui.post { putBack(result, target, mine) }
         }
     }
@@ -1142,15 +1930,22 @@ class DictationIme : InputMethodService() {
         )
     }
 
+    /** Add a key: Settings, at the keys. */
+    private fun openKeys() {
+        startActivity(
+            Intent(this, SettingsActivity::class.java)
+                .putExtra(SettingsActivity.AT_KEYS, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             if (!holding && !locked) return
             if (recorder.capped) { finishLocked(); return }
-            val s = recorder.seconds.toInt()
-            val clock = String.format(Locale.US, "%d:%02d", s / 60, s % 60)
-            button.text = getString(
-                if (locked) R.string.locked_time else R.string.recording_time, clock
-            )
+            val clock = clock(recorder.seconds.toInt())
+            if (locked) mic(getString(R.string.locked_time, clock), getString(R.string.locked_short, clock))
+            else mic(getString(R.string.recording_time, clock), getString(R.string.recording_short, clock))
             val track = levelTrack.width
             if (track > 0) {
                 val p = levelFill.layoutParams
@@ -1161,8 +1956,15 @@ class DictationIme : InputMethodService() {
         }
     }
 
+    /**
+     * The recording's clock and level, and the screen held on while it runs: a locked
+     * minute is longer than a Samsung's default 30-second timeout, and the screen going off
+     * hides the keyboard (the owner's yes, 2026-11-12). Let go by [stopTicking], which every
+     * end of a recording passes through: a finish, a discard, a pause, a hide.
+     */
     private fun startTicking() {
         levelTrack.visibility = View.VISIBLE
+        pill.keepScreenOn = true
         ui.removeCallbacks(ticker)
         ui.post(ticker)
     }
@@ -1170,6 +1972,7 @@ class DictationIme : InputMethodService() {
     private fun stopTicking() {
         ui.removeCallbacks(ticker)
         if (::levelTrack.isInitialized) levelTrack.visibility = View.INVISIBLE
+        if (::pill.isInitialized) pill.keepScreenOn = false
     }
 
     /** After the view is rebuilt, show what is actually going on. */
@@ -1180,20 +1983,16 @@ class DictationIme : InputMethodService() {
             holding -> { tint(recColor); startTicking() }
             busy -> {
                 tint(busyColor)
-                button.text = getString(R.string.hold_and_talk)
+                mic(getString(R.string.hold_and_talk))
             }
-            else -> {
-                tint(idleColor)
-                button.text = getString(R.string.hold_and_talk)
-            }
+            else -> face()
         }
     }
 
     private fun reset() {
         locked = false
         stopTicking()
-        tint(idleColor)
-        button.text = getString(R.string.hold_and_talk)
+        face()
     }
 
     /**
@@ -1229,6 +2028,19 @@ class DictationIme : InputMethodService() {
         sticky = false
         stickySetup = false
         statusAction = null
+        lineUnheard = false
+        lineTaken()
+    }
+
+    /**
+     * A word that is not what waits has the line: the keys at its end step aside,
+     * and the line goes back to what waits once the word has had its moment. While
+     * something is on its way, its answer brings the line back instead.
+     */
+    private fun lineTaken() {
+        rowKeys(false)
+        ui.removeCallbacks(rowBack)
+        ui.postDelayed(rowBack, ROW_BACK_MS)
     }
 
     /**
@@ -1242,28 +2054,30 @@ class DictationIme : InputMethodService() {
         sticky = true
         stickySetup = false
         statusAction = action
+        lineUnheard = false
         if (!::status.isInitialized) return
         status.text = msg
         status.setTextColor(errorText)
+        lineTaken()
     }
 
     /**
-     * The keyboard was swiped away, or the host app hid it.
+     * The keyboard was swiped away, the host app hid it, another window took the focus
+     * (a screen recorder's start, a dialog) or the screen went off.
      *
      * This is the hook that fires then. onFinishInput is the EDITOR going
      * away, which is a different event, and having only that one meant a
      * locked recording kept the microphone open — and the system's green
-     * mic dot lit — with nothing on screen to explain it.
+     * mic dot lit — with nothing on screen to explain it. So the microphone
+     * stops here, on the spot; what was said is kept ([pauseRecording]).
      */
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        // the account's channel goes with the keyboard, unless a recording is on it
+        Relay.hidden()
+        if (holding || locked) pauseRecording()
         stopTicking()
         for (r in repeats) ui.removeCallbacks(r)
-        if (holding || locked) {
-            holding = false; locked = false
-            recorder.cancel()
-            sayError(getString(R.string.recording_cancelled))
-        }
     }
 
     override fun onFinishInput() {
@@ -1275,10 +2089,8 @@ class DictationIme : InputMethodService() {
         // until it lands.
         busy = false
         lastInsert = null
-        if (holding || locked) {
-            holding = false; locked = false
-            recorder.cancel()
-        }
+        // the field went in the middle of a recording: kept, as a hide keeps it
+        if (holding || locked) pauseRecording()
     }
 
     private companion object {
@@ -1294,5 +2106,38 @@ class DictationIme : InputMethodService() {
         const val SILENCE = 0.01f
 
         const val HEALTH_TTL_MS = 60_000L
+
+        /** Send again and the X, as drawn: a key's face, smaller than the line they stand in. */
+        const val ROW_KEY_DP = 26
+
+        /** Send again and the X, to the touch: the least a thumb is given anywhere here. */
+        const val TOUCH_DP = 48
+
+        /**
+         * A press of Send again shows Sending… at least this long: a try that fails
+         * at once must still be seen to have been made.
+         */
+        const val SENDING_SEEN_MS = 700L
+
+        /** A passing word on the line, before the line goes back to what waits. */
+        const val ROW_BACK_MS = 3000L
+        /** A network's callback can come before Android's list has it in or out. */
+        const val NET_SETTLE_MS = 600L
+    }
+}
+
+/**
+ * How big the mic's words may be in the room they have: their own size when they fit,
+ * smaller down to [FLOOR] of it, and null below that, when shorter words have to stand in.
+ * Pure, so the JVM holds the rule.
+ */
+object MicFit {
+    const val FLOOR = 0.6f
+
+    fun size(base: Float, wants: Float, room: Float): Float? = when {
+        wants <= room -> base
+        room <= 0f -> null
+        base * room / wants >= base * FLOOR -> base * room / wants
+        else -> null
     }
 }

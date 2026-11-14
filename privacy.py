@@ -88,10 +88,18 @@ TEXT_VERSIONS: dict[str, str] = {
     "cloud_screenshots": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
     # 2026-09-23: the words stop promising the keys never travel there
     # (they go sealed, through the syncs); carried forward, see below.
-    "account": "deskit-terms-0+en-2026-09-23",
+    # 2026-11-06: the words name the id of a device's session and the one
+    # connection a signed-in copy keeps, syncs on or off. Both are new under
+    # this gate, so the old rows go stale and it asks once more; never
+    # carried forward.
+    "account": "deskit-terms-0+en-2026-11-06",
     "report_upload": "deskit-terms-0+en-2026-09-19",
     "settings_sync": "deskit-terms-0+en-2026-09-21",
-    "history_sync": "deskit-terms-0+en-2026-09-21",
+    # 2026-11-07: "only your own PCs hold the key" went false at the first
+    # phone join, so it says devices. A row given under the old words named
+    # fewer holders: it goes stale and Home asks, with the account's; never
+    # carried forward.
+    "history_sync": "deskit-terms-0+en-2026-11-07",
 }
 
 #: The versions a step of migrations.py carries forward without asking
@@ -125,6 +133,10 @@ PURPOSE_KINDS: dict[str, str] = {
     "ask-screen": "cloud_screenshots",
     "account": "account", "report": "report_upload", "sync": "settings_sync",
     "history": "history_sync",
+    # the sealed relay (relay.py): what crosses is sealed under the account
+    # key on the account's own topic, so it is the account's yes and no
+    # card of its own (PHONE_LINK_PLAN.md stage 3)
+    "link": "account",
     "update-check": "update_check",
 }
 
@@ -201,7 +213,12 @@ def _write_file(rows: list[dict]) -> None:
 def rows() -> list[dict]:
     """The consent rows on disk, re-read when the file changed. A row
     that disappeared since the last read — withdrawn from the dashboard,
-    another process — runs this process's tear-downs for its kind."""
+    another process — runs this process's tear-downs for its kind, and so
+    does one whose words moved: a Turn on on Home answers a row that was
+    already there, and in the desk's process, so nothing else tells the
+    app that its gate just opened. The tear-downs run after the lock is let
+    go: they reach other modules' locks, and those call back in here."""
+    moved: list[str] = []
     with _lock:
         try:
             mtime = paths.CONSENT_FILE.stat().st_mtime_ns
@@ -209,21 +226,27 @@ def rows() -> list[dict]:
             mtime = None
         if mtime == _rows_cache["mtime"]:
             return list(_rows_cache["rows"])
-        before = {r["kind"] for r in _rows_cache["rows"]}
+        was = {r["kind"]: r.get("text_version") for r in _rows_cache["rows"]}
         fresh = _read_file()
         _rows_cache.update(mtime=mtime, rows=fresh)
-        now = {r["kind"] for r in fresh}
+        words = {r["kind"]: r.get("text_version") for r in fresh}
+        before, now = set(was), set(words)
+        for kind in before & now:
+            if kind in KINDS and was[kind] != words[kind]:
+                moved.append(kind)
         for kind in before - now:
             _gates[kind] = False
-            _run_resets(kind)
+            moved.append(kind)
         for kind in now - before:
             if kind in KINDS:
                 # Granted from the dashboard, another process: its
                 # settings mirror was written too, so the gate opens
                 # here without a restart.
                 _gates[kind] = True
-                _run_resets(kind)
-        return list(fresh)
+                moved.append(kind)
+    for kind in moved:
+        _run_resets(kind)
+    return list(fresh)
 
 
 def consent(kind: str) -> dict | None:
@@ -269,6 +292,22 @@ def allowed(kind: str) -> bool:
     if _gates["offline"] or not _gates[kind]:
         return False
     return consent(kind) is not None
+
+
+def granted(kind: str) -> bool:
+    """Has the person said yes to ``kind``, whatever Offline mode says?
+    ``allowed`` asks whether something may leave now. This asks what the
+    person decided, for a thing that rests on the yes and sends nothing
+    itself: the phone door stays open in Offline mode, and shuts on Withdraw.
+    A row under older words counts in Offline mode: Home cannot ask then
+    (``stale``), and words that moved are not a person's no."""
+    if kind not in KINDS:
+        raise ValueError(f"unknown consent kind {kind!r}")
+    if not _gates[kind]:
+        return False
+    if consent(kind) is not None:
+        return True
+    return bool(_gates["offline"]) and any(r.get("kind") == kind for r in rows())
 
 
 def require(kind: str) -> str:
@@ -393,12 +432,14 @@ def _write_gate(kind: str, value: bool) -> None:
                  kind, value, e)
 
 
-def carry_forward(kind: str, old_versions) -> bool:
+def carry_forward(kind: str, old_versions, to: str | None = None) -> bool:
     """A row given under one of ``old_versions`` becomes a row of the
     current version — migrations.py's door for a card whose new words
     promise less than the old (the lock, 2026-09-21): the date and the
     app version of the original press stay, ``carried_from`` names the
-    words it was given under. True if a row was rewritten. A row of any
+    words it was given under. ``to`` stops it at the version a step was
+    written for, so a row never claims words later than the ones that
+    step said nothing new about. True if a row was rewritten. A row of any
     other version, or none, is left alone."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
@@ -407,7 +448,7 @@ def carry_forward(kind: str, old_versions) -> bool:
         row = next((r for r in current if r.get("kind") == kind), None)
         if row is None or row.get("text_version") not in tuple(old_versions):
             return False
-        moved = {**row, "text_version": TEXT_VERSIONS[kind],
+        moved = {**row, "text_version": to or TEXT_VERSIONS[kind],
                  "carried_from": row.get("text_version")}
         kept = [r for r in current if r.get("kind") != kind] + [moved]
         _write_file(kept)
@@ -415,17 +456,20 @@ def carry_forward(kind: str, old_versions) -> bool:
         _gates[kind] = True
     _write_gate(kind, True)
     log.info("consent carried forward: %s (%s -> %s)", kind, row.get("text_version"),
-             TEXT_VERSIONS[kind])
+             to or TEXT_VERSIONS[kind])
     return True
 
 
-def grant(kind: str, text_version: str | None = None) -> dict:
+def grant(kind: str, text_version: str | None = None, *, from_a_step: bool = False) -> dict:
     """The person pressed [Turn on] on the card for ``kind``: one row,
-    written atomically, and the gate mirrored into the settings."""
+    written atomically, and the gate mirrored into the settings.
+    ``from_a_step`` is migrations.py's door and no other's: a step grants
+    under the words it was written about, which may be older than the
+    card's, and then Home asks about the rest like any stale row."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
     version_ = text_version or TEXT_VERSIONS[kind]
-    if version_ != TEXT_VERSIONS[kind]:
+    if version_ != TEXT_VERSIONS[kind] and not from_a_step:
         raise ValueError(f"{kind}: the card shown was {version_}, the "
                          f"current card is {TEXT_VERSIONS[kind]}")
     row = {"kind": kind, "text_version": version_,

@@ -3962,10 +3962,33 @@ def test_a_dead_microphone_is_told_once_and_the_all_clear_once() -> None:
     assert not r.silent()
 
     told.clear()
-    r.begin()                              # fully silent, short
+    r.begin()                              # quiet, short
     for _ in range(3):
-        r._callback(np.zeros(16000, dtype=np.int16), 16000, None, None)
+        r._callback(quiet, len(quiet), None, None)
     assert told == [] and r.silent(), "too short to alarm, still silent"
+
+    # A muted headset is not quiet, it is ZERO — and that is told after
+    # DEAD_AFTER_S (2026-10-25: four muted dictations, each under ten
+    # seconds, none of them alarmed). One converter step of dither, as
+    # MME hands a muted Arctis over, is still zero; three are a live room.
+    for buffer in (np.zeros(8000, dtype=np.int16),
+                   np.full(8000, 1, dtype=np.int16)):
+        told.clear()
+        r.begin()
+        for _ in range(3):                 # 1.5 s
+            r._callback(buffer, len(buffer), None, None)
+        assert told == [], "a second and a half of zeros: not yet"
+        r._callback(buffer, len(buffer), None, None)
+        assert told == ["silent"], told
+        r._callback(loud, len(loud), None, None)
+        assert told == ["silent", "sound"], told
+    told.clear()
+    r.begin()
+    hiss = np.full(8000, 3, dtype=np.int16)
+    for _ in range(8):                     # four seconds of a live floor
+        r._callback(hiss, len(hiss), None, None)
+    assert told == [], "a live microphone's floor is not a muted one"
+    assert rec.DEAD_AFTER_S < rec.SILENT_AFTER_S
 
 
 def test_the_dot_alarm_travels_to_the_centre_and_comes_back() -> None:
@@ -3980,22 +4003,44 @@ def test_the_dot_alarm_travels_to_the_centre_and_comes_back() -> None:
     assert rest[0] > half[0] > centre[0] and rest[1] > half[1] > centre[1]
 
     dot = overlay_mod.StatusDot.off()
-    assert dot.alarming() is None
-    assert dot.alarm_frame(rest, box, work) == (rest, None), "no alarm: rest"
+    assert dot.alarming() is None and not dot.alarm_busy()
+    assert dot.alarm_frame(rest, box, work) == (rest, box, None), "at rest"
     dot.alarm(True)
     since = dot._alarm_since
-    assert since > 0 and dot.alarming() is not None
+    assert since > 0 and dot.alarming() is not None and dot.alarm_busy()
     dot.alarm(True)
     assert dot._alarm_since == since, "a second alarm does not restart it"
-    at, fill = dot.alarm_frame(rest, box, work)
+    at, size, fill = dot.alarm_frame(rest, box, work)
     assert fill in (overlay_mod.DOT_ALARM_FILL, overlay_mod.DOT_ALARM_DIM)
-    dot._alarm_since = time.monotonic() - overlay_mod.DOT_ALARM_TRAVEL_S * 2
+    assert box <= size < box * 1.2, "it starts at its own size"
+    dot._alarm_since = time.monotonic() - overlay_mod.DOT_ALARM_GROW_S * 2
     assert dot.alarming() == 1.0
-    assert dot.alarm_frame(rest, box, work)[0] == centre, "arrived"
+    at, size, _fill = dot.alarm_frame(rest, box, work)
+    assert size == box * overlay_mod.DOT_ALARM_SCALE, size
+    # arrived, and grown about the centre: its middle is the screen's
+    assert (at[0] + size / 2, at[1] + size / 2) == (960, 540), (at, size)
     dot.alarm(False)
-    assert dot.alarming() is None
-    assert dot.alarm_frame(rest, box, work) == (rest, None), "back home"
+    assert dot.alarming() is None and dot.alarm_busy(), "on its way home"
+    at, size, fill = dot.alarm_frame(rest, box, work)
+    assert fill is None, "the way home is in the state's own colour"
+    assert box < size <= box * overlay_mod.DOT_ALARM_SCALE
+    ended, k0, s0 = dot._alarm_back
+    dot._alarm_back = (ended - overlay_mod.DOT_ALARM_BACK_S / 2, k0, s0)
+    half_at, half_size, _f = dot.alarm_frame(rest, box, work)
+    assert box < half_size < size and half_at[0] > at[0], (half_at, at)
+    dot._alarm_back = (ended - overlay_mod.DOT_ALARM_BACK_S, k0, s0)
+    assert not dot.alarm_busy()
+    assert dot.alarm_frame(rest, box, work) == (rest, box, None), "home"
     dot.alarm(False)                        # idempotent
+    assert not dot.alarm_busy()
+
+    # the growing, alone: its own size at the start, eased out, capped
+    scale = overlay_mod.dot_alarm_scale
+    assert scale(0.0) == 1.0
+    assert scale(overlay_mod.DOT_ALARM_GROW_S) == overlay_mod.DOT_ALARM_SCALE
+    assert scale(99.0) == overlay_mod.DOT_ALARM_SCALE
+    arrived = scale(overlay_mod.DOT_ALARM_TRAVEL_S)
+    assert 2.0 < arrived < 3.5, "most of it happens on the way"
 
 
 def test_real_config_has_a_reachable_latch_key() -> None:
@@ -4185,16 +4230,16 @@ def test_phone_server_binds_its_port_exclusively() -> None:
     import server as server_mod
 
     assert server_mod._Server.allow_reuse_address is False
-    port = 8791
+    port = _door_port()
 
     def fake(wav):
         return "", "fake"
 
-    first = server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+    first = server_mod._Server(("127.0.0.1", port), "tok", server_mod.Routes(fake), lambda: True)
     try:
         raised = False
         try:
-            server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+            server_mod._Server(("127.0.0.1", port), "tok", server_mod.Routes(fake), lambda: True)
         except OSError:
             raised = True
         assert raised, "a second listener bound a port the first already held"
@@ -4897,6 +4942,54 @@ print('ok')
     assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
 
 
+def test_the_real_dot_window_grows_while_it_alarms() -> None:
+    """The dead-microphone alarm, asked of the REAL window (2026-10-25):
+    it grows about the middle of the screen and comes home at its own
+    size. The first version passed every test without a window and the
+    real one died on its first resize — a GPU-backed Glass refuses to
+    resize — so the window is the thing asked here. A subprocess, for
+    the reason the test above gives."""
+    import subprocess
+    if not _glass_dot_here():
+        return
+    here = Path(__file__).resolve().parent
+    script = r"""
+import ctypes, time, overlay
+d = overlay.StatusDot(x=520, y=340)
+d.on_click = lambda: None
+d.start(); time.sleep(1.0)
+u = ctypes.WinDLL('user32')
+class R(ctypes.Structure):
+    _fields_ = [('l',ctypes.c_int),('t',ctypes.c_int),
+                ('r',ctypes.c_int),('b',ctypes.c_int)]
+def rect():
+    rc = R(); u.GetWindowRect(ctypes.c_void_p(d.hwnd), ctypes.byref(rc))
+    return rc.l, rc.t, rc.r - rc.l, rc.b - rc.t
+assert rect() == (520, 340, 38, 38), rect()
+d.alarm(True)
+time.sleep(overlay.DOT_ALARM_GROW_S + 0.5)
+assert d.hwnd, 'the dot window died while it alarmed'
+x, y, w, h = rect()
+assert w == h == 38 * overlay.DOT_ALARM_SCALE, ('it did not grow', w, h)
+work = overlay._work_area()
+mid = (work[0] + work[2] // 2, work[1] + work[3] // 2)
+assert abs(x + w // 2 - mid[0]) <= 1 and abs(y + h // 2 - mid[1]) <= 1, (
+    'not grown about the middle of the screen', (x, y, w, h), mid)
+assert d.rect == (x, y, x + w, y + h), ('the dot does not say where it is',
+                                        d.rect)
+d.alarm(False)
+time.sleep(overlay.DOT_ALARM_BACK_S + 0.4)
+assert rect() == (520, 340, 38, 38), ('not home at its own size', rect())
+d.stop()
+print('ok')
+"""
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=90)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "ok" in out.stdout, out.stdout
+
+
 def test_the_dot_still_moves_with_the_skin_folder_gone() -> None:
     """skin\\'s promise for the dot, and it is not only about pixels.
 
@@ -5169,6 +5262,43 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
                 f"the {state} halo no longer reads at 14 px")
 
 
+def test_a_grown_dot_is_the_same_dot_larger() -> None:
+    """The dead-microphone alarm grows the dot's window up to
+    overlay.DOT_ALARM_SCALE times BOX (2026-10-25). The picture is drawn
+    at BOX and scaled, so the rule above still holds at every size —
+    alpha 0 along the whole border — the disc is that many times wider,
+    and the button grows with it."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        import skia
+        from skin import dot as skin_dot
+        from skin.glass import HTCLIENT, HTTRANSPARENT
+    except Exception:
+        return
+    import overlay as overlay_mod
+    B = skin_dot.BOX
+    for scale in (1.0, 2.6, overlay_mod.DOT_ALARM_SCALE):
+        side = 2 * int(round(B * scale / 2.0))
+        d = skin_dot.Dot()
+        d.scale = side / B
+        surface = skia.Surface(side, side)
+        for frame in range(6):
+            d.draw(surface.getCanvas(), frame * 22.0,
+                   overlay_mod.DOT_ALARM_FILL)
+        alpha = surface.makeImageSnapshot().toarray(
+            colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
+        border = [int(alpha[0].max()), int(alpha[side - 1].max()),
+                  int(alpha[:, 0].max()), int(alpha[:, side - 1].max())]
+        assert border == [0, 0, 0, 0], (scale, border)
+        mid = side // 2
+        disc = skin_dot.CORE / 2.0 * d.scale
+        assert alpha[mid, int(mid + disc * 0.5)] == 255, (scale, "the disc")
+        assert d.hit(mid, mid + disc) == HTCLIENT, scale
+        assert d.hit(0, 0) == HTTRANSPARENT, scale
+
+
 def test_a_settled_dot_is_not_painted_again() -> None:
     """The dot repainted itself 45 times a second whatever it showed: on
     the live app (2026-10-23) 8.5-10% of a core for its thread and 7-8%
@@ -5237,6 +5367,7 @@ def test_a_settled_dot_is_not_painted_again() -> None:
 
         def moving(self): return False
         def alarming(self): return None
+        def alarm_busy(self): return False
         def end_move(self): pass
 
     def painted() -> int:
@@ -5515,28 +5646,6 @@ def test_splash_log_forwards_app_messages_and_trims_long_ones() -> None:
     assert len(seen[1]) <= 110 and seen[1].endswith("…"), len(seen[1])
 
 
-def test_subprocess_output_survives_a_hebrew_locale() -> None:
-    """This machine's locale code page is cp1255. subprocess(text=True)
-    decodes with it, so a tool emitting UTF-8 raises UnicodeDecodeError in
-    the reader thread and returns stdout=None — and because that is a
-    ValueError, a broad except reports the tool as absent. Exactly how the
-    app came to log "tailscale is not up" while Tailscale was up."""
-    import json as json_mod
-
-    import server as server_mod
-
-    # “ is 0x9c in cp1255's undefined range — the real byte that broke it
-    payload = {"Self": {"DNSName": "yoav.example.ts.net."},
-               "note": "עברית “quoted”"}
-    script = ("import sys,io;"
-              "sys.stdout=io.TextIOWrapper(sys.stdout.buffer,encoding='utf-8');"
-              f"print({json_mod.dumps(json_mod.dumps(payload))})")
-    out = server_mod.run_utf8([sys.executable, "-c", script])
-    assert out is not None, "utf-8 stdout came back as None"
-    assert json_mod.loads(out)["Self"]["DNSName"] == "yoav.example.ts.net."
-    assert server_mod.run_utf8(["definitely-not-a-real-binary-xyz"]) is None
-
-
 def test_phone_token_is_generated_once_and_reused() -> None:
     """It travels in a URL the user bookmarks — regenerating it on every
     start would silently break the phone."""
@@ -5561,11 +5670,12 @@ def test_phone_audio_decode_accepts_a_plain_wav() -> None:
 
 
 def test_phone_endpoint_never_binds_anything_but_loopback() -> None:
-    """`tailscale serve` proxies to localhost and terminates TLS. Binding
-    anywhere else both hides the server from it and puts a socket where the
-    home LAN can reach it."""
+    """The loopback door is still loopback. `tailscale serve` proxies to
+    localhost, and it is plain HTTP with a bearer: binding anywhere else
+    would put that where the network can reach it. What a phone reaches
+    from the network is the other door, behind a client certificate."""
     import server as server_mod
-    assert config_mod.ServerConfig.enabled is False   # opt in, not out
+    assert config_mod.ServerConfig.enabled is True    # the phone door waits for a phone itself
     assert config_mod.ServerConfig.host == ""
     cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.server.host in ("", "127.0.0.1", "localhost"), cfg.server.host
@@ -5629,6 +5739,2748 @@ def test_phone_routes_no_apk_no_web_page() -> None:
         assert body["version"] == version_mod.VERSION
     finally:
         srv.stop()
+
+
+# ---------------------------------------------------------- the phone's door
+# PHONE_LINK_PLAN.md stage 1: the phone reaches this PC straight over the
+# house's network. Every socket here is on loopback and on a port the system
+# picked: 8756 is his running app's, and a bind on 0.0.0.0 would put Windows'
+# firewall dialog on his screen.
+
+
+def _door_port() -> int:
+    """A port nothing holds right now, for a test that has to name one."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _a_phone(folder: Path, name: str, subject: str | None = None) -> dict:
+    """A phone as the door sees it: its certificate, and a file a test
+    client can hold it in. A real phone keeps this key in Android Keystore."""
+    import phone as phone_mod
+
+    der, sec1 = phone_mod.make_pair(subject or f"CN test {name}")
+    chain = folder / f"{phone_mod.fingerprint(der)[:12]}.pem"
+    chain.write_text(phone_mod._pem("CERTIFICATE", der) + phone_mod._pem("EC PRIVATE KEY", sec1),
+                     "ascii")
+    return {"name": name, "der": der, "chain": chain,
+            "fingerprint": phone_mod.fingerprint(der)}
+
+
+def _anchors(*phones) -> dict:
+    return {p["fingerprint"]: {"name": p["name"], "der": p["der"]} for p in phones}
+
+
+def _dial(port: int, chain=None, maximum=None):
+    """A TLS connection to the door, the way the keyboard's would be: it
+    trusts by pin, so nothing here checks the PC's certificate."""
+    import socket
+    import ssl
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    if chain is not None:
+        ctx.load_cert_chain(str(chain))
+    if maximum is not None:
+        ctx.maximum_version = maximum
+    return ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5))
+
+
+def _knock(port: int, chain=None, maximum=None) -> bytes | None:
+    """One word to the door and its answer; None when the door dropped us,
+    which TLS 1.3 only says on the first read after the handshake."""
+    import ssl
+
+    try:
+        with _dial(port, chain, maximum) as tls:
+            tls.settimeout(5)
+            tls.sendall(b"hello\n")
+            return tls.recv(64) or None
+    except (ssl.SSLError, OSError):
+        return None
+
+
+def _silent_peer(port: int, ip: str = "127.0.0.2"):
+    """A peer that connects from ``ip`` and says nothing. Loopback answers on
+    the whole of 127/8, so a test has as many addresses as it wants."""
+    import socket
+
+    peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    peer.settimeout(5)
+    peer.bind((ip, 0))
+    peer.connect(("127.0.0.1", port))
+    return peer
+
+
+def _echo_door(anchors: dict, *, port: int = 0):
+    """A door on loopback whose handler says who came in, with what came
+    in kept on the object: the transport alone, no routes."""
+    import net as net_mod
+    import phone as phone_mod
+
+    phone_mod.identity()
+    came: list = []
+
+    def handler(sock, address, peer):
+        came.append(peer)
+        sock.settimeout(10)
+        data = sock.recv(64)
+        if data:
+            sock.sendall(b"in:" + peer.name.encode("utf-8"))
+        sock.recv(64)                      # until the phone hangs up, or is cut
+
+    door = net_mod.serve_tls("127.0.0.1", port, chain=phone_mod.key_path(),
+                             passphrase=phone_mod.PASS_NAME, anchors=anchors,
+                             handler=handler)
+    door.came = came
+    return door
+
+
+def test_the_door_lets_a_listed_phone_in_and_drops_the_rest_in_the_handshake() -> None:
+    """The whole promise of the home road: only a certificate the account
+    lists gets past the handshake, and everybody else is gone before a
+    byte of theirs reaches anything of ours. Over TLS 1.3 and over 1.2,
+    which the keyboard's oldest Android needs."""
+    import ssl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26, stranger = _a_phone(folder, "S26 Ultra"), _a_phone(folder, "stranger")
+        door = _echo_door(_anchors(s26))
+        try:
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra"
+            assert _knock(door.port, s26["chain"], ssl.TLSVersion.TLSv1_2) == b"in:S26 Ultra"
+            assert len(door.came) == 2
+            assert door.came[0].fingerprint == s26["fingerprint"]
+
+            assert _knock(door.port) is None, "a client with no certificate got an answer"
+            assert _knock(door.port, stranger["chain"]) is None, "a stranger got an answer"
+            assert _knock(door.port, stranger["chain"], ssl.TLSVersion.TLSv1_2) is None
+            assert len(door.came) == 2, "a dropped peer reached the handler"
+        finally:
+            door.stop()
+
+
+def test_the_door_refuses_a_leaf_signed_by_a_listed_phone() -> None:
+    """VERIFY_X509_PARTIAL_CHAIN lets a chain end at any anchor, so a
+    certificate that a listed phone's key signed could verify. Only the
+    listed certificate itself is a phone: the door checks the leaf."""
+    import net as net_mod
+
+    door = None
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        listed = _a_phone(folder, "listed")
+        door = _echo_door(_anchors(listed))
+        try:
+            known = dict(door._known)
+            with door._lock:              # the handshake passes, the list says no
+                door._known = {}
+            assert _knock(door.port, listed["chain"]) is None
+            assert not door.came
+            with door._lock:
+                door._known = known
+            assert _knock(door.port, listed["chain"]) == b"in:listed"
+        finally:
+            door.stop()
+    assert net_mod.DOOR_HANDSHAKES == 16 and net_mod.DOOR_HANDSHAKE_S == 10.0
+
+
+def test_two_phones_with_one_subject_both_get_in_and_removing_one_leaves_the_other() -> None:
+    """Android's self-signed certificates may share a subject (CN=fake is
+    its default), and OpenSSL takes the first anchor of a name unless told
+    otherwise: [ok, SSLError, refused], measured 2026-11-06. And a context
+    cannot lose an anchor, so taking a phone off the list has to build a
+    new one and close what that phone already has open."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        one = _a_phone(folder, "one", subject="CN fake")
+        two = _a_phone(folder, "two", subject="CN fake")
+        three = _a_phone(folder, "three", subject="CN fake")
+        door = _echo_door(_anchors(one, two, three))
+        try:
+            for phone in (one, two, three):
+                assert _knock(door.port, phone["chain"]) == f"in:{phone['name']}".encode(), phone["name"]
+
+            held = _dial(door.port, two["chain"])
+            held.settimeout(5)
+            held.sendall(b"hello\n")
+            assert held.recv(64) == b"in:two"
+
+            door.admit(_anchors(one, three))
+            try:
+                assert held.recv(64) == b"", "the removed phone's connection stayed open"
+            except OSError:
+                pass                      # closed under it: as good
+            finally:
+                held.close()
+            assert _knock(door.port, two["chain"]) is None, "the removed phone still gets in"
+            assert _knock(door.port, one["chain"]) == b"in:one", "removing one cost the other"
+            assert _knock(door.port, three["chain"]) == b"in:three"
+        finally:
+            door.stop()
+
+
+def test_a_peer_that_says_nothing_does_not_stop_the_next_phone() -> None:
+    """The handshake runs on the connection's own thread, never in accept.
+    Sixteen peers that connect and say nothing hold the sixteen places, a
+    seventeenth is closed at once, and when one leaves the phone gets in.
+    Ten seconds is the deadline for a whole handshake. It takes four
+    addresses to fill them: one holds four at most."""
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = _echo_door(_anchors(s26))
+        each = net_mod.DOOR_HANDSHAKES_EACH
+        silent = []
+        try:
+            silent.append(_silent_peer(door.port))
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra", \
+                "a silent peer stopped the next phone"
+            for i in range(1, net_mod.DOOR_HANDSHAKES):
+                silent.append(_silent_peer(door.port, f"127.0.0.{2 + i // each}"))
+            assert _until(lambda: door._slots._value == 0, 5), door._slots._value
+
+            late = _silent_peer(door.port, "127.0.0.9")
+            try:
+                assert late.recv(1) == b"", "the seventeenth peer was kept"
+            except OSError:
+                pass
+            finally:
+                late.close()
+
+            for sock in silent:
+                sock.close()
+            silent.clear()
+            assert _until(lambda: door._slots._value == net_mod.DOOR_HANDSHAKES, 5)
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra"
+        finally:
+            for sock in silent:
+                sock.close()
+            door.stop()
+
+
+def test_a_connection_through_the_door_is_a_row_with_a_name_and_no_body() -> None:
+    """One row per connection in the Network log: the phone's name, the
+    bytes, never what was said. A peer that never got in is a row too, by
+    its address, and a scanner does not get to fill the table with them.
+    A name is the account's table talking, so it stays one clean cell."""
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26 = _a_phone(folder, "S26 | Ultra\nforged")
+        door = _echo_door(_anchors(s26))
+        before = len(net_mod.rows())
+        try:
+            assert _knock(door.port, s26["chain"])
+            assert _until(lambda: len(net_mod.rows()) > before, 5)
+            row = net_mod.rows()[-1]
+            assert row.host == "S26 / Ultraforged" and row.purpose == "phone", row
+            assert row.status == "closed" and row.down == 6 and row.up == len("in:S26 / Ultraforged"), row
+            assert row.secret == "-" and row.consent == "-", row
+            line = net_mod.format_row(row)
+            assert net_mod.parse_row(line) == row, line
+            assert "hello" not in line
+
+            count = len(net_mod.rows())
+            for _ in range(5):
+                assert _knock(door.port) is None
+            assert _until(lambda: len(net_mod.rows()) == count + 1, 5)
+            time.sleep(0.2)
+            rows = net_mod.rows()
+            assert len(rows) == count + 1, rows[count:]
+            assert rows[-1].host == "127.0.0.1" and rows[-1].status == "dropped", rows[-1]
+        finally:
+            door.stop()
+
+
+def test_the_door_takes_its_passphrase_by_name_and_says_so_when_the_key_will_not_open() -> None:
+    """The value never travels: serve_tls is handed a NAME, and asks the
+    store inside OpenSSL's callback. Any other name is a programming
+    error. A key that will not open is DoorError, told apart from a busy
+    port (OSError), because the answers are different: a new identity
+    against the next port."""
+    import net as net_mod
+    import phone as phone_mod
+    import secretstore
+
+    phone_mod.identity()
+    try:
+        net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(), passphrase="groq",
+                          anchors={}, handler=print)
+    except ValueError as e:
+        assert "groq" in str(e)
+    else:
+        raise AssertionError("a door took a cloud key's name")
+
+    real = secretstore.get(phone_mod.PASS_NAME)
+    secretstore.set(phone_mod.PASS_NAME, "not the passphrase")
+    try:
+        try:
+            net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(),
+                              passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+        except net_mod.DoorError as e:
+            assert "not the passphrase" not in str(e)
+        else:
+            raise AssertionError("a key opened with the wrong passphrase")
+    finally:
+        secretstore.set(phone_mod.PASS_NAME, real)
+    del real
+
+    holder = net_mod.serve_tls("127.0.0.1", 0, chain=phone_mod.key_path(),
+                               passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+    try:
+        try:
+            net_mod.serve_tls("127.0.0.1", holder.port, chain=phone_mod.key_path(),
+                              passphrase=phone_mod.PASS_NAME, anchors={}, handler=print)
+        except net_mod.DoorError:
+            raise AssertionError("a busy port read as a key that will not open") from None
+        except OSError:
+            pass
+        else:
+            raise AssertionError("two doors held one port")
+    finally:
+        holder.stop()
+
+
+def _ask_door(port: int, chain, method: str, route: str, body: bytes = b"") -> tuple[int, dict]:
+    """One HTTP request through the door, the way the keyboard's would go."""
+    with _dial(port, chain) as tls:
+        tls.settimeout(10)
+        tls.sendall(f"{method} {route} HTTP/1.0\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+                    + body)
+        got = b""
+        while True:
+            more = tls.recv(65536)
+            if not more:
+                break
+            got += more
+    head, _, reply = got.partition(b"\r\n\r\n")
+    return int(head.split()[1]), json.loads(reply)
+
+
+def test_the_phone_door_runs_the_routes_for_a_listed_phone_only_and_has_no_notify() -> None:
+    """The door with its routes: a listed certificate reaches them with no
+    bearer, a client with none is dropped before any route runs, and
+    /notify exists on loopback and not here."""
+    import dataclasses
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server,
+                                                              phone_port=_door_port()))
+    lookups, notes = [], []
+
+    def lookup(text):
+        lookups.append(text)
+        return "answer", "en", "fake", 0.1
+
+    routes = server_mod.Routes(lambda wav: ("", "fake"), lookup=lookup,
+                               notify=lambda body: notes.append(body) or {"ok": True, "id": 1})
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        s26, stranger = _a_phone(folder, "S26 Ultra"), _a_phone(folder, "stranger")
+        door = server_mod.PhoneDoor(cfg, routes)
+        port = door.start(_anchors(s26))
+        try:
+            assert server_mod.PHONE_BIND == "127.0.0.1", "a test bound beyond loopback"
+            assert _ask_door(port, s26["chain"], "GET", "/health")[0] == 200
+            status, reply = _ask_door(port, s26["chain"], "POST", "/lookup", b'{"text": "word"}')
+            assert status == 200 and reply["text"] == "answer" and lookups == ["word"], reply
+
+            status, _reply = _ask_door(port, s26["chain"], "POST", "/notify", b'{"title": "x"}')
+            assert status == 404 and not notes, status
+            assert routes.handle("/notify", b'{"title": "x"}', None)[0] == 200 and notes
+
+            for chain in (None, stranger["chain"]):
+                try:
+                    _ask_door(port, chain, "POST", "/lookup", b'{"text": "nobody"}')
+                except (OSError, ValueError, IndexError):
+                    pass
+                else:
+                    raise AssertionError("a peer with no listed certificate got an answer")
+            assert lookups == ["word"], "a route ran for a client the door should have dropped"
+        finally:
+            door.stop()
+    assert not door.running
+
+
+def test_a_busy_port_falls_through_and_the_real_ports_stay_his() -> None:
+    """A door whose port is taken takes the next one, and a process the
+    suite started never asks for 8756 or 8766: his app is on the first."""
+    import dataclasses
+    import socket
+
+    import server as server_mod
+
+    with socket.socket() as held:
+        held.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        taken = held.getsockname()[1]
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server, enabled=True,
+                                                                  host="127.0.0.1", port=taken))
+        srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake")
+        srv.start()
+        try:
+            assert srv.port is not None and taken < srv.port <= taken + server_mod.PORT_TRIES
+        finally:
+            srv.stop()
+    assert server_mod._asked(8756) != 8756 and server_mod._asked(8766) != 8766
+    assert server_mod._asked(50123) == 50123
+
+
+# -- the account's side of the door, with sb as PHONE_LINK_PLAN.md section 12 says it
+
+
+_ACCOUNT_UID = "11111111-2222-3333-4444-555555555555"
+_THIS_PC = "aaaaaaaa-0000-0000-0000-000000000001"
+
+
+@contextlib.contextmanager
+def _phone_account(key: bytes | None = None):
+    """A signed-in account for phone.py: sb's section 12 functions as fakes
+    over `box["rows"]`, and vault's key. Nothing here reaches a server."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    key = key or os.urandom(32)
+    box = {"rows": [], "gone": set(), "written": [], "key": key, "uid": _ACCOUNT_UID,
+           "offline": False}
+
+    def devices():
+        if box["offline"]:
+            raise OSError("no network")
+        return [dict(r) for r in box["rows"]]
+
+    fakes = {"user": lambda: {"id": box["uid"]}, "device_id": lambda: _THIS_PC,
+             "devices": devices, "write_link": box["written"].append,
+             "forgotten": lambda: set(box["gone"])}
+    kept = {n: getattr(sb, n, None) for n in fakes}
+    real_key, real_aad = vault.key, getattr(vault, "AAD_DEVICE", None)
+    for name, fake in fakes.items():
+        setattr(sb, name, fake)
+    vault.key = lambda uid: box["key"] if uid == box["uid"] else None
+    vault.AAD_DEVICE = "device/{uid}/{device_id}"
+    phone_mod._view_kept = None
+    try:
+        with _consented("account"):
+            yield box
+    finally:
+        for name, value in kept.items():
+            if value is None:
+                delattr(sb, name)
+            else:
+                setattr(sb, name, value)
+        vault.key = real_key
+        if real_aad is None:
+            del vault.AAD_DEVICE
+        else:
+            vault.AAD_DEVICE = real_aad
+        phone_mod.drop_rows()
+        phone_mod._view_kept = None
+
+
+def _phone_row(box: dict, phone: dict, ident: str, *, key: bytes | None = None,
+               cloud: bool | None = None) -> dict:
+    """A phone's `link` row the way a phone seals it. ``cloud``: the cloud
+    backup's switch as a keyboard of stage 2b writes it; None is an older
+    keyboard's row, whose "backup": True meant nothing."""
+    import base64
+
+    import vault
+
+    link = {"v": 1, "kind": "phone", "cert": base64.b64encode(phone["der"]).decode("ascii"),
+            "proto": 1, "backup": True, "a field from a later version": 1}
+    if cloud is not None:
+        link["cloud_backup"] = cloud
+    sealed = vault.seal_json(key or box["key"], link,
+                             vault.AAD_DEVICE.format(uid=box["uid"], device_id=ident))
+    return {"id": ident, "name": phone["name"], "platform": "android-34", "link": sealed}
+
+
+def _door_app(cfg=None):
+    """An App with its doors and nothing else: start() would bring the
+    hook, the dot and the model. `cfg` is the files' unless said."""
+    import dataclasses
+    import threading
+
+    import main as main_mod
+    import phone as phone_mod
+    import server as server_mod
+
+    cfg = cfg or config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(
+        cfg.server, host="127.0.0.1", port=_door_port(), phone_port=_door_port()))
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg, app.config_path = cfg, None
+    app._stopping = threading.Event()
+    app.phone = server_mod.PhoneServer(cfg, lambda wav: ("שלום", "fake"), lambda: "fake",
+                                       notify=lambda body: {"ok": True, "id": 7})
+    app.phone_door = server_mod.PhoneDoor(cfg, app.phone.routes)
+    app._doors_lock = threading.RLock()
+    app._phone_no = False
+    app._approved = set()
+    app._phone_hook = phone_mod.keyless(app._phone_account)
+    app._loopback_first = lambda: None
+    app._hook_connected = lambda: False
+    app._say = lambda *a, **k: None
+    return app
+
+
+def _shut_doors(app) -> None:
+    app.phone_door.stop()
+    app.phone.stop()
+    config_mod.save({"server.port": None, "server.phone_port": None,
+                     "server.phone_allowed": None}, derived=True)
+
+
+def test_a_link_row_that_does_not_open_adds_no_anchor() -> None:
+    """The server knows only the account, so it could write a row: what
+    keeps it from adding a device is that a row sealed under anything but
+    the account key is nobody. And a PC's own row is no anchor."""
+    import phone as phone_mod
+    import vault
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        folder = Path(tmp)
+        real, planted = _a_phone(folder, "real"), _a_phone(folder, "planted")
+        box["rows"] = [_phone_row(box, real, "bbbbbbbb-0000-0000-0000-000000000002"),
+                       _phone_row(box, planted, "cccccccc-0000-0000-0000-000000000003",
+                                  key=os.urandom(32)),
+                       {"id": "dddddddd-0000-0000-0000-000000000004", "name": "no row", "link": None},
+                       {"id": _THIS_PC, "name": "this PC", "link": vault.seal_json(
+                           box["key"], {"v": 1, "kind": "pc", "cert": "ab"},
+                           vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC))}]
+        phone_mod.refresh()
+        assert [d["id"] for d in phone_mod.view()["phones"]] == ["bbbbbbbb-0000-0000-0000-000000000002"]
+        assert list(phone_mod.anchors()) == [real["fingerprint"]]
+        assert phone_mod.anchors()[real["fingerprint"]]["der"] == real["der"]
+        # moved under another row's id, a seal does not open either: the
+        # device's id is in what it was sealed with
+        box["rows"][0]["id"] = "eeeeeeee-0000-0000-0000-000000000005"
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}
+
+
+def test_a_forgotten_device_stays_out_after_its_row_comes_back_unchanged() -> None:
+    """A forgotten phone still holds the account key, so it could write its
+    row back, and the server could restore a deleted one unchanged. The
+    list says no, by its id, and by its certificate under a new id. It
+    only ever grows, whatever the account says next."""
+    import phone as phone_mod
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "lost")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        assert phone["fingerprint"] in phone_mod.anchors()
+
+        box["gone"] = {ident, phone["fingerprint"]}
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}, "the row came back and the phone with it"
+
+        box["rows"] = [_phone_row(box, phone, "cccccccc-0000-0000-0000-000000000003")]
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}, "a new id under a forgotten certificate"
+
+        box["gone"] = set()                # a server that forgets the list
+        phone_mod.refresh()
+        assert phone_mod.anchors() == {}, "the kept list shrank"
+        assert not phone_mod.view()["phones"]
+
+
+def test_a_restart_with_no_network_still_opens_the_door() -> None:
+    """Home needs nobody: the rows are kept, sealed, and opening them takes
+    only the account key, which is local. A pass that cannot reach the
+    account leaves them alone, because a door must not close when the
+    internet goes."""
+    import dataclasses
+
+    import phone as phone_mod
+    import server as server_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+
+        box["offline"] = True
+        try:
+            phone_mod.refresh()
+        except OSError:
+            pass
+        else:
+            raise AssertionError("no network, and refresh pretended it read the account")
+        assert phone_mod.rows_path().is_file()
+        assert "link" not in json.dumps(phone_mod.anchors(), default=str)   # the plain side
+        assert "v1." in phone_mod.rows_path().read_text("utf-8"), "the rows are kept sealed"
+        assert '"kind"' not in phone_mod.rows_path().read_text("utf-8")
+
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server,
+                                                                  phone_port=_door_port()))
+        door = server_mod.PhoneDoor(cfg, server_mod.Routes(lambda wav: ("", "fake")))
+        port = door.start(phone_mod.anchors())
+        try:
+            assert _ask_door(port, phone["chain"], "GET", "/health")[0] == 200
+        finally:
+            door.stop()
+
+        phone_mod.drop_rows()               # signed out: nothing to open from
+        assert phone_mod.anchors() == {}
+
+
+def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None:
+    """The row is §12's, sealed for this device. Nothing leaves when
+    nothing moved; a new address or port does. A PC that said no names no
+    address, so a phone does not take its Not now for a firewall. A PC on
+    the forgotten list writes nothing."""
+    import phone as phone_mod
+    import vault
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        args = {"port": 8766, "listening": True, "words_sync": True}
+        assert phone_mod.publish(**args) is True
+        aad = vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC)
+        row = vault.open_json(box["key"], box["written"][-1], aad)
+        assert row == {"v": 1, "kind": "pc", "cert": phone_mod.identity(), "addrs": ["10.1.2.3"],
+                       "port": 8766, "proto": 1, "words_sync": True, "history_sync": False}, row
+
+        box["rows"] = [{"id": _THIS_PC, "name": "me", "link": box["written"][-1]}]
+        phone_mod.refresh()
+        assert phone_mod.publish(**args) is False, "an unchanged row went out"
+
+        assert phone_mod.publish(**dict(args, port=8767)) is True
+        assert vault.open_json(box["key"], box["written"][-1], aad)["port"] == 8767
+
+        assert phone_mod.publish(**dict(args, listening=False)) is True
+        assert vault.open_json(box["key"], box["written"][-1], aad)["addrs"] == []
+
+        # whether this PC's account keeps what was said: where a phone writes the
+        # text of a dictation the cloud carried (stage 2b)
+        assert phone_mod.publish(**dict(args, listening=False, history_sync=True)) is True
+        assert vault.open_json(box["key"], box["written"][-1], aad)["history_sync"] is True
+
+        count = len(box["written"])
+        box["gone"] = {_THIS_PC}
+        assert phone_mod.publish(**dict(args, port=9000)) is False
+        assert len(box["written"]) == count
+
+
+def test_a_long_phone_name_gives_way_and_cloud_stays_whole_on_said() -> None:
+    """His Said row at 22:48 on 2026-11-11: "ה-Yoav של S26 Ultra · cl…". The
+    word that says where the text came from is the one that got cut. The
+    phone's name and "· cloud" are two parts of the tag: the name, isolated
+    in its own direction (a name is whatever its owner typed, Hebrew and
+    Latin mixed), is the part that shrinks and ellipsizes, and "· cloud" is
+    drawn after it and never shrinks. The Tk desk draws no such tag: its
+    line says "from the cloud" before the phone's name."""
+    import dataclasses
+    import datetime
+
+    import desk_said
+    import history as history_mod
+
+    name = "ה-Yoav של S26 Ultra עם שם ארוך מאוד שלא נגמר"
+    event = history_mod.Event(datetime.datetime(2026, 11, 11, 22, 48), "dictation",
+                              text="שלום", engine="groq", seconds=2.2,
+                              note=f"from {name}", cloud=True)
+    tags = desk_said._row(event, "1")["tags"]
+    assert tags == [{"t": name, "s": "· cloud", "g": "globe"}], tags
+    assert "cloud" not in tags[0]["t"], "the word that can be cut holds cloud"
+    assert desk_said._row(dataclasses.replace(event, cloud=False), "1")["tags"] == [
+        {"t": f"From {name}", "g": "laptop"}]
+
+    page = (REPO / "web" / "src" / "places" / "said.tsx").read_text("utf-8")
+    css = (REPO / "web" / "src" / "places" / "said.css").read_text("utf-8")
+    # the name in the part that gives way, in its own direction; the suffix after it, apart
+    assert '<span className="tx" dir="auto">{t.t}</span>' in page, "the name is not isolated"
+    assert '<span className="sx">{t.s}</span>' in page, "the suffix is not drawn apart"
+    assert page.index('className="tx" dir="auto"') < page.index('className="sx"')
+    sx = re.search(r"\.place-said \.tag \.sx\{([^}]*)\}", css)
+    assert sx and "flex:none" in sx.group(1) and "white-space:nowrap" in sx.group(1), \
+        "the suffix can shrink"
+    tx = re.search(r"\.place-said \.tag \.tx\{([^}]*)\}", css)
+    assert tx and "min-width:0" in tx.group(1) and "text-overflow:ellipsis" in tx.group(1), \
+        "the name cannot give way"
+
+
+def test_the_phones_cloud_switch_reaches_settings_phone_from_its_own_row() -> None:
+    """Stage 2b, picture f, approved 2026-11-11: the desk reads the phone's
+    cloud backup from the phone's own sealed row, read-only, because the
+    switch and its yes are the phone's. A keyboard older than the backup
+    names no switch and shows nothing, even the one before it, whose row
+    said "backup": True and meant nothing by it. On, with a key, it says
+    where the recording goes; on with none, Add a key, on Privacy; off,
+    that it waits for this PC. The card stands between the devices and the
+    keyboard, in both desks."""
+    import dashboard as dash
+    import desk_settings
+    import phone as phone_mod
+    import settings as settings_mod
+
+    one, two = "bbbbbbbb-0000-0000-0000-000000000002", "bbbbbbbb-0000-0000-0000-000000000003"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        old, new = _a_phone(Path(tmp), "Old phone"), _a_phone(Path(tmp), "Dana's phone")
+
+        def view(*rows) -> dict:
+            box["rows"] = list(rows)
+            phone_mod.refresh()
+            phone_mod._view_kept = None
+            return {"phone": phone_mod.view()}
+
+        status = view(_phone_row(box, old, one), _phone_row(box, new, two, cloud=True))
+        seen = {p["name"]: p["backup"] for p in status["phone"]["phones"]}
+        assert seen == {"Old phone": None, "Dana's phone": True}, seen
+
+        card = desk_settings.backup_card(status, provider="groq")
+        assert card == {"kind": "line", "ready": True, "line": "Cloud backup on Dana's phone: on",
+                        "small": "If it can't reach this PC, it sends the recording to Groq with "
+                                 "your key. You turn it on and off on the phone, in Settings.",
+                        "buttons": []}, card
+        assert "Gemini" in desk_settings.backup_card(status, provider="gemini")["small"]
+        card = desk_settings.backup_card(status, provider="")
+        assert card["tone"] == "warn" and card["line"].endswith("on, but no key"), card
+        assert card["buttons"] == [{"label": "Add a key", "go": "privacy", "primary": True}]
+        assert "privacy" in desk_settings.SLUGS.values()
+
+        off = desk_settings.backup_card(view(_phone_row(box, new, two, cloud=False)), provider="groq")
+        assert off["line"] == "Cloud backup on Dana's phone: off" and off["buttons"] == [], off
+        assert desk_settings.backup_card(view(_phone_row(box, old, one)), provider="groq") is None
+
+        both = desk_settings.backup_card(view(_phone_row(box, old, one, cloud=False),
+                                              _phone_row(box, new, two, cloud=True)), provider="groq")
+        assert "Old phone: off" in both["line"] and "Dana's phone: on" in both["line"], both
+        assert json.dumps(both).count("buttons") == 1
+
+    assert desk_settings.LAYOUT[settings_mod.PHONE] == (
+        "THE PHONE", "devices", "backup", "keyboard", "trouble")
+    assert dash.Dashboard.LAYOUT[settings_mod.PHONE] == desk_settings.LAYOUT[settings_mod.PHONE]
+    assert desk_settings.BLOCK_TITLES["backup"][0] == "When the phone can't reach this PC"
+    assert hasattr(dash.Dashboard, "_backup_block")
+
+
+def test_a_phones_cloud_dictation_reaches_said_marked_from_the_phone_and_the_cloud() -> None:
+    """Stage 2b: once the cloud's text has landed on the phone, the phone
+    deletes the recording and sends the TEXT on, sealed, as a row of the
+    account's history store with ``source: phone-cloud`` sealed beside the
+    words. A PC opens it under the stamp as Postgres hands it back (without
+    its trailing zeros), writes it into sync\history.log as a REMOTE line
+    with the engine marked, and the Said page shows it from the phone's
+    name and from the cloud. A PC's own rows carry no mark."""
+    import dataclasses
+
+    import desk_said
+    import history as history_mod
+    import sb
+    import sync
+    import vault
+
+    key, uid = os.urandom(32), _ACCOUNT_UID
+    phone = "cccccccc-0000-0000-0000-000000000004"
+    said = "אני בדרך הביתה, אגיע בעוד עשר דקות"
+    # the phone seals under its own spelling of the stamp (HistoryRow.stamp)
+    sealed = vault.seal_json(key, {"text": said, "raw": None, "source": "phone-cloud"},
+                             vault.AAD_HISTORY.format(uid=uid, device_id=phone,
+                                                      ts="2026-11-11T16:40:12.300+00:00",
+                                                      kind="dictation"))
+    pulled = {"device_id": phone, "ts": "2026-11-11T16:40:12.3+00:00", "kind": "dictation",
+              "cipher": sealed, "engine": "groq", "seconds": 3.0,
+              "updated_at": "2026-11-11T16:40:13+00:00"}
+    opened = sb._open_history(key, uid, pulled)
+    assert opened is not None and opened["text"] == said and opened["source"] == sync.CLOUD_SOURCE
+    line = sync.remote_line(opened, "Dana's phone")
+    assert "| REMOTE | dictation | Dana's phone | cloud:groq | 3.0s | " + said in line, line
+
+    pc_row = dict(pulled, cipher=vault.seal_json(key, {"text": "x", "raw": None},
+                                                 sb._history_aad(uid, pulled)))
+    assert sb._open_history(key, uid, pc_row)["source"] == ""
+    assert "| cloud:" not in sync.remote_line(sb._open_history(key, uid, pc_row), "HOME-PC")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "history.log"
+        log.write_text(line + "\n", "utf-8")
+        event = history_mod._events_in(log)[0]
+    assert event.cloud and event.engine == "groq" and event.text == said, event
+    assert "from Dana's phone" in event.note and "from the cloud" in event.meta()
+    tags = desk_said._row(event, "1")["tags"]
+    # one tag, so the row's narrow column does not cut two of them to "From …"
+    assert tags == [{"t": "Dana's phone", "s": "· cloud", "g": "globe"}], tags
+    assert desk_said._row(dataclasses.replace(event, note=""), "1")["tags"] == [
+        {"t": "From the cloud", "g": "globe"}]
+
+
+def test_the_addresses_come_from_the_machine_on_any_network() -> None:
+    """A general product: whatever networks a PC is on, the row is its own
+    private addresses, the default route's first. Virtual adapters never,
+    and no address in the code: these fixtures are made-up networks."""
+    import phone as phone_mod
+
+    def adapter(index, name, ips, *, kind=6, up=True, description="Ethernet Controller"):
+        return {"index": index, "name": name, "description": description, "type": kind,
+                "up": up, "ipv4": ips}
+
+    home_router = [adapter(4, "Wi-Fi", ["10.0.0.17"]), adapter(9, "Ethernet", ["172.20.3.9"])]
+    assert phone_mod.pick_addresses(home_router, 9) == ["172.20.3.9", "10.0.0.17"]
+    assert phone_mod.pick_addresses(home_router, 4) == ["10.0.0.17", "172.20.3.9"]
+    assert phone_mod.pick_addresses(home_router, None) == ["10.0.0.17", "172.20.3.9"]
+
+    noise = [adapter(2, "Tailscale", ["100.101.102.103"], kind=53, description="Tailscale Tunnel"),
+             adapter(3, "vEthernet (WSL)", ["172.29.0.1"], description="Hyper-V Virtual Ethernet Adapter"),
+             adapter(5, "vEthernet (Default Switch)", ["172.18.0.1"],
+                     description="Hyper-V Virtual Ethernet Adapter"),
+             adapter(6, "VirtualBox Host-Only Network", ["192.168.56.1"],
+                     description="VirtualBox Host-Only Ethernet Adapter"),
+             adapter(7, "Loopback Pseudo-Interface 1", ["127.0.0.1"], kind=24),
+             adapter(8, "Bluetooth Network Connection", ["169.254.1.2"], up=False),
+             adapter(10, "Wi-Fi 2", ["169.254.7.7"]),
+             adapter(12, "Ethernet 2", ["192.168.200.4"], up=False),
+             adapter(13, "WireGuard", ["10.8.0.2"], kind=53, description="WireGuard Tunnel")]
+    assert phone_mod.pick_addresses(noise + home_router, 2) == ["10.0.0.17", "172.20.3.9"]
+    assert phone_mod.pick_addresses(noise, 2) == []
+    # a network that hands out routable addresses is a network too
+    assert phone_mod.pick_addresses(noise + [adapter(11, "Wi-Fi", ["192.0.2.7"])], 11) == ["192.0.2.7"]
+    many = [adapter(i, f"net{i}", [f"10.0.{i}.1"]) for i in range(1, 20)]
+    assert len(phone_mod.pick_addresses(many, 1)) == phone_mod.MAX_ADDRS
+
+    real = phone_mod.addresses()
+    assert all(phone_mod._reachable(ip) for ip in real), real
+    assert not any(ip.startswith(("127.", "169.254.")) for ip in real)
+
+    # NOTHING TUNED TO ONE PLACE. The owner's rule (2026-11-06): whoever
+    # downloads this, on any router, in any country. Not an address, a
+    # subnet or a router of anybody's in the code that builds the row.
+    for name in ("phone.py", "server.py", "desk_settings.py"):
+        text = (REPO / name).read_text("utf-8")
+        for ip in re.findall(r"(?<![\d.])\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])", text):
+            assert ip in ("127.0.0.1", "0.0.0.0"), f"{name} names the address {ip}"
+
+
+def test_no_secret_reaches_a_log_the_status_or_a_report() -> None:
+    """The door's passphrase and key, the bearer: not in app.log, not in
+    network.log, not in status(), not in what a report carries."""
+    import dataclasses
+    import logging
+
+    import net as net_mod
+    import phone as phone_mod
+    import problems as problems_mod
+    import secretstore
+    import server as server_mod
+
+    lines: list[str] = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    keep = Keep()
+    logger = logging.getLogger("app")
+    level = logger.level
+    logger.addHandler(keep)
+    logger.setLevel(logging.DEBUG)
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        config_mod.save({"server.phone_allowed": True})
+        app.cfg = config_mod.load_layered()
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+            app.cfg.server, host="127.0.0.1", port=_door_port(), phone_port=_door_port()))
+        app._doors()
+        try:
+            assert app.phone_door.running
+            assert _ask_door(app.phone_door.port, phone["chain"], "GET", "/health")[0] == 200
+            status = json.dumps(app._phone_status())
+            secrets_here = [secretstore.get(phone_mod.PASS_NAME), server_mod.load_token(),
+                            box["key"].hex()]
+            text = phone_mod.key_path().read_text("ascii")
+            private = text[text.index("-----BEGIN ENCRYPTED"):]
+            logged = "\n".join(lines)
+            rows = "\n".join(net_mod.format_row(r) for r in net_mod.rows())
+            env = json.dumps(problems_mod.env(), default=str)
+            for value in secrets_here + [private]:
+                for where, said in (("app.log", logged), ("network.log", rows),
+                                    ("status", status), ("a report", env)):
+                    assert value not in said, f"a secret reached {where}"
+            assert "url" not in app._phone_status(), "status still carries a link"
+        finally:
+            _shut_doors(app)
+            del secrets_here
+    logger.removeHandler(keep)
+    logger.setLevel(level)
+
+
+def test_the_door_on_the_real_sb_over_the_fake_server() -> None:
+    """The two halves together: Approve here for a device, its row arrives,
+    the door opens, a phone comes in over TLS, this PC's own row is up and
+    opens, nothing is written twice, Forget closes it, and the row restored
+    unchanged brings nothing back. Real sb, real vault, real TLS; only the
+    server is the fake."""
+    import base64
+
+    import phone as phone_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with _fixture_project() as fake, _consented("account", "settings_sync"), a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                assert key is not None
+                app = _door_app()
+                with _patched(sb, "ACCOUNT_HOOKS", [app._phone_hook]), \
+                        _patched(sb, "SIGNED_OUT_HOOKS", [app._phone_signed_out]):
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "a door with no phone"
+                    phone = _a_phone(Path(tmp), "S26 Ultra")
+                    link = vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1, "backup": True,
+                                                 "cert": base64.b64encode(phone["der"]).decode()},
+                                           vault.AAD_DEVICE.format(uid=fake.UID, device_id=_PHONE))
+                    row = _a_phone_row(fake, link=link, session_id="aaaaaaaa-0000-4000-8000-000000000009")
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "nobody pressed anything on this PC"
+                    assert app._phone_status()["ask"] is True, "Home did not ask"
+
+                    app._phone_no = False
+                    pid, _public = _a_phone_asks(fake)
+                    sb.account_pass("test")
+                    assert app._account_command("approve", pid)["ok"] is True
+                    assert app._approved == {_PHONE}, "the press did not name the phone that asked"
+                    sb.account_pass("test")
+                    assert app.phone_door.running, "Approve here, the row arrived, the door stayed shut"
+                    assert app.cfg.server.phone_allowed and app._approved == set()
+                    _until(lambda: not any(t.name == "phone-row" for t in threading.enumerate()), 5)
+                    assert _ask_door(app.phone_door.port, phone["chain"], "GET", "/health")[0] == 200
+                    assert _knock(app.phone_door.port) is None
+                    status = app._phone_status()
+                    assert status["on"] and status["phones"][0]["id"] == _PHONE, status
+
+                    _until(lambda: any(r.get("link") for r in fake.tables["devices"]
+                                       if r["id"] == sb.device_id()), 5)
+                    mine = next(r for r in fake.tables["devices"] if r["id"] == sb.device_id())
+                    opened = vault.open_json(key, mine["link"], vault.AAD_DEVICE.format(
+                        uid=fake.UID, device_id=sb.device_id()))
+                    assert opened["kind"] == "pc" and opened["cert"] == phone_mod.identity(), opened
+                    assert opened["port"] == app.phone_door.port, opened
+                    writes = sum(1 for c in fake.calls if c["path"] == "rest/v1/devices"
+                                 and c.get("method") == "POST")
+                    sb.account_pass("test")
+                    assert writes == sum(1 for c in fake.calls if c["path"] == "rest/v1/devices"
+                                         and c.get("method") == "POST"), "an unchanged row went out"
+
+                    sb.forget_device(_PHONE, phone["fingerprint"])
+                    assert not app.phone_door.running, "Forget left the door open"
+                    fake.tables["devices"].append(row)
+                    sb.account_pass("test")
+                    assert not app.phone_door.running, "a row restored unchanged brought the phone back"
+                _shut_doors(app)
+        finally:
+            phone_mod.drop_rows()
+            phone_mod._view_kept = None
+
+
+def test_approve_names_the_device_that_asked() -> None:
+    """The press on Home is for one request, and the request says which
+    device it came from: that is how this PC knows the phone whose row
+    arrives next is the one it said yes to. A refused approval names nobody."""
+    import sb
+
+    app = _door_app()
+    app._phone_publish = lambda: None
+    asking = {"state": "have", "pending": [{"id": "r1", "name": "A phone", "device": "d1"}]}
+
+    def refused(pid):
+        raise sb.AccountError("that request is gone")
+
+    with _patched(sb, "configured", lambda: True), _patched(sb, "lock_status", lambda: asking):
+        with _patched(sb, "approve_pairing", refused):
+            assert app._account_command("approve", "r1")["ok"] is False
+            assert app._approved == set()
+        with _patched(sb, "approve_pairing", lambda pid: "A phone"):
+            assert app._account_command("approve", "r1")["ok"] is True
+    assert app._approved == {"d1"} and app._phone_listening()
+
+    app._doors = lambda: None
+    app._phone_signed_out()
+    assert app._approved == set(), "an Approve outlived the session it was pressed in"
+
+
+def _server_on(app) -> None:
+    """The switch on and this PC's yes given, for this App alone."""
+    app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+        app.cfg.server, enabled=True, phone_allowed=True))
+
+
+def _door_shows(port: int, chain) -> str:
+    """The fingerprint of the certificate the door shows: what a phone pins."""
+    import phone as phone_mod
+
+    with _dial(port, chain) as tls:
+        return phone_mod.fingerprint(tls.getpeercert(binary_form=True))
+
+
+def test_a_forgotten_pc_comes_back_with_a_new_certificate() -> None:
+    """sb.FORGOTTEN_HOOKS: the list never lets the old certificate back, so
+    a PC that finds itself on it makes a new one, and what its door opened
+    from, and any Approve still waiting for its row, go with it. The hook
+    runs again when it trips (sb.settle_left), so twice must end where once
+    does: and the key of the last run is the one the door opens with."""
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        before = phone_mod.identity()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        try:
+            assert _door_shows(app.phone_door.port, phone["chain"]) == before
+            app._approved.add("a device whose row never came")
+            for _ in range(2):
+                app._phone_forgotten()
+                assert phone_mod.identity() != before and not phone_mod.rows_path().exists()
+                assert not app.phone_door.running and app._approved == set()
+            phone_mod.refresh()
+            app._doors()
+            assert _door_shows(app.phone_door.port, phone["chain"]) == phone_mod.identity()
+        finally:
+            _shut_doors(app)
+
+
+def test_a_certificate_on_the_list_is_replaced_and_its_row_says_so() -> None:
+    """A state.json lost with the secrets folder intact: a new id, the old
+    certificate, and a stale row someone may Forget, which bans the live
+    certificate while this PC stays in the account. sb cannot see inside a
+    row, so the account pass looks: a new certificate, the door under it, the
+    row says it. Until that pass no row carries what the list names, and it
+    happens once."""
+    import phone as phone_mod
+    import vault
+
+    stale = "dddddddd-0000-0000-0000-000000000004"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box, \
+            _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        app = _door_app()
+        _server_on(app)
+        aad = vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC)
+        try:
+            app._phone_account()
+            old = phone_mod.identity()
+            assert vault.open_json(box["key"], box["written"][-1], aad)["cert"] == old
+            assert _door_shows(app.phone_door.port, phone["chain"]) == old
+
+            box["gone"] = {stale, old}
+            count = len(box["written"])
+            assert phone_mod.publish(port=8766, listening=True, words_sync=False) is False
+            assert len(box["written"]) == count, "a row went out with a certificate the list names"
+
+            app._phone_account()
+            new = phone_mod.identity()
+            assert new != old
+            assert vault.open_json(box["key"], box["written"][-1], aad)["cert"] == new
+            assert _door_shows(app.phone_door.port, phone["chain"]) == new
+
+            app._phone_account()
+            assert phone_mod.identity() == new, "a new certificate at every pass"
+
+            # the worker and the live thread both run this: one replacement
+            box["gone"] = {new}
+            made: list[str] = []
+            real = phone_mod.rotate
+
+            def counted():
+                made.append("one")
+                time.sleep(0.05)
+                return real()
+
+            with _patched(phone_mod, "rotate", counted):
+                both = [threading.Thread(target=app._phone_check_certificate, daemon=True)
+                        for _ in range(2)]
+                for one in both:
+                    one.start()
+                for one in both:
+                    one.join(10)
+            assert made == ["one"], "two passes each made a certificate"
+        finally:
+            _shut_doors(app)
+
+
+def test_a_leaving_waits_for_the_app_and_finishes_before_the_door_binds() -> None:
+    """The real sb over the fake server. A leaving noticed where no hook is
+    registered (the desk, the wizard) leaves the mark, and while it stands
+    this PC's row is "not yet": nothing written, nothing raised. The app
+    settles it before its door binds, because the worker's first turn is 30 s
+    off: a new certificate, the mark gone, and the row out under the new id
+    and the new certificate. One device id twice on the list changes none
+    of that."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    args = {"port": 8766, "listening": False, "words_sync": False}
+
+    def posts(fake) -> int:
+        return sum(1 for c in fake.calls if c["path"] == "rest/v1/devices" and c["method"] == "POST")
+
+    started = (REPO / "main.py").read_text("utf-8")
+    started = started[started.index("    def start(self) -> None:"):]
+    assert started.index("self._settle_left()") < started.index("self._doors()")
+
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            key = vault.key(fake.UID)
+            old, before = sb.device_id(), phone_mod.identity()
+            sb._keep_forgotten(fake.UID, [{"device": old, "cert": "", "at": ""},
+                                          {"device": old, "cert": "ab" * 32, "at": ""}])
+            with _patched(sb, "FORGOTTEN_HOOKS", []):
+                assert sb._forgotten_pass(fake.UID) is True
+                vault.keep(fake.UID, key)        # the join came through in the desk too
+                sent = posts(fake)
+                assert phone_mod.publish(**args) is False, "a row before the certificate changed"
+                assert posts(fake) == sent
+                assert config_mod.read_state(paths.STATE_FILE)["account.left"] == old
+
+            app = _door_app()
+            with _patched(sb, "FORGOTTEN_HOOKS", [app._phone_forgotten]):
+                app._settle_left()
+            assert not config_mod.read_state(paths.STATE_FILE).get("account.left")
+            new, mine = phone_mod.identity(), sb.device_id()
+            assert new != before and mine != old
+
+            assert phone_mod.publish(**args) is True
+            assert posts(fake) == sent + 1
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            opened = vault.open_json(key, row["link"], vault.AAD_DEVICE.format(uid=fake.UID, device_id=mine))
+            assert opened["cert"] == new, opened
+            _shut_doors(app)
+    finally:
+        a.gone()
+        phone_mod.drop_rows()
+        phone_mod._view_kept = None
+
+
+def test_every_road_to_this_pcs_row_reads_the_account_first() -> None:
+    """Sign out of every PC clears the other PCs' `link` from one of them,
+    and the copy kept here still has it, so a publish on its word would say
+    nothing changed and leave the row empty. The account pass reads first,
+    and so does a press, here or on the switch."""
+    import phone as phone_mod
+
+    def cleared(box, mine) -> None:
+        box["rows"] = [dict(mine, link=box["written"][-1])]
+        phone_mod.refresh()
+        box["rows"] = [dict(mine, link=None)]
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: ["10.1.2.3"]):
+        app = _door_app()
+        try:
+            app._phone_account()
+            mine = {"id": _THIS_PC, "name": "me", "link": box["written"][-1]}
+            box["rows"] = [mine]
+            app._phone_account()
+            assert len(box["written"]) == 1, "an unchanged row went out"
+
+            cleared(box, mine)
+            app._phone_account()
+            assert len(box["written"]) == 2, "the pass left the row cleared"
+
+            cleared(box, mine)
+            app._phone_approved("")
+            assert _until(lambda: len(box["written"]) == 3, 5), "an Approve left the row cleared"
+
+            cleared(box, mine)
+            app._doors_soon()
+            assert _until(lambda: len(box["written"]) == 4, 5), "the switch left the row cleared"
+        finally:
+            _until(lambda: not any(t.name in ("doors", "phone-row") for t in threading.enumerate()), 5)
+            _shut_doors(app)
+
+
+def test_the_desks_poll_never_waits_on_the_network_behind_the_rows() -> None:
+    """view() answers status() on the pipe, whose handlers must never block,
+    and it shares a lock with what reads and writes the rows. Held across
+    the account's answer, a stalled network would stall the desk. A sign-in
+    to another account meanwhile drops the answer instead of keeping it."""
+    import phone as phone_mod
+    import sb
+
+    with _phone_account() as box, _patched(phone_mod, "addresses", lambda max_age=0.0: []):
+        stuck, free = threading.Event(), threading.Event()
+
+        def stall(*_args):
+            stuck.set()
+            free.wait(10)
+            return []
+
+        for name, call in (("devices", phone_mod.refresh),
+                           ("write_link", lambda: phone_mod.publish(port=8766, listening=False,
+                                                                    words_sync=False))):
+            stuck.clear()
+            free.clear()
+            answered = threading.Event()
+            with _patched(sb, name, stall):
+                worker = threading.Thread(target=call, daemon=True)
+                worker.start()
+                assert stuck.wait(5), f"sb.{name} was never reached"
+                threading.Thread(target=lambda: (phone_mod.view(), phone_mod.anchors(), answered.set()),
+                                 daemon=True).start()
+                try:
+                    assert answered.wait(3), f"the poll waited on sb.{name}"
+                finally:
+                    free.set()
+                    worker.join(5)
+
+        phone_mod.drop_rows()
+        stuck.clear()
+        free.clear()
+        with _patched(sb, "devices", stall):
+            worker = threading.Thread(target=phone_mod.refresh, daemon=True)
+            worker.start()
+            assert stuck.wait(5)
+            box["uid"] = "22222222-3333-4444-5555-666666666666"
+            free.set()
+            worker.join(5)
+        assert not phone_mod.rows_path().exists(), "one account's rows kept under another's sign-in"
+
+
+def test_this_pcs_id_is_asked_for_each_time_and_may_not_be_known() -> None:
+    """device_id() is per account, a leaving changes it, and it raises while
+    a state file will not read. So a row is sealed under the id as it stands,
+    a row with no id waits, and the card keeps the phones it can show: only
+    the PCs need to know which one is this one, and a later poll does. A PC
+    under a forgotten certificate is forgotten, whatever id it came back on."""
+    import phone as phone_mod
+    import sb
+    import vault
+
+    laptop = "cccccccc-0000-0000-0000-000000000003"
+    other = "eeeeeeee-0000-0000-0000-000000000005"
+    handset = "bbbbbbbb-0000-0000-0000-000000000002"
+    args = {"port": 8766, "listening": False, "words_sync": False}
+
+    def unknown():
+        raise sb.AccountError("this PC's state file will not read")
+
+    def door_aad(box, ident):
+        return vault.AAD_DEVICE.format(uid=box["uid"], device_id=ident)
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        cert = "ef" * 32
+        link = {"v": 1, "kind": "pc", "cert": cert, "addrs": [], "port": 8766, "proto": 1,
+                "words_sync": False}
+        box["rows"] = [_phone_row(box, _a_phone(Path(tmp), "S26 Ultra"), handset),
+                       {"id": laptop, "name": "laptop", "platform": "windows",
+                        "link": vault.seal_json(box["key"], link, door_aad(box, laptop))}]
+        phone_mod.refresh()
+
+        assert phone_mod.publish(**args) is True
+        assert vault.open_json(box["key"], box["written"][-1], door_aad(box, _THIS_PC))["kind"] == "pc"
+        with _patched(sb, "device_id", lambda: other):
+            assert phone_mod.publish(**args) is True
+        assert vault.open_json(box["key"], box["written"][-1], door_aad(box, other))["kind"] == "pc"
+
+        count = len(box["written"])
+        phone_mod._view_kept = None
+        with _patched(sb, "device_id", unknown):
+            assert phone_mod.publish(**args) is False
+            seen = phone_mod.view()
+        assert len(box["written"]) == count
+        assert [d["id"] for d in seen["phones"]] == [handset] and seen["pcs"] == [], seen
+        assert [d["id"] for d in phone_mod.view()["pcs"]] == [laptop], "the poll kept the blind answer"
+
+        box["gone"] = {cert}
+        phone_mod._view_kept = None
+        assert phone_mod.view()["pcs"] == [], "a PC back on a forgotten certificate"
+
+
+class _Patient:
+    """A lock that gives up. Two threads deadlocked on a real lock can never
+    be unwound, so a test that drives an inversion hands the code this: the
+    regression is a failure, and not a suite that hangs."""
+
+    def __init__(self, seconds: float) -> None:
+        self._lock = threading.RLock()
+        self.seconds = seconds
+        self.gave_up = False
+
+    def __enter__(self):
+        if not self._lock.acquire(timeout=self.seconds):
+            self.gave_up = True
+            raise TimeoutError("a lock inversion")
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self._lock.release()
+        return False
+
+
+def test_the_signed_out_hook_takes_no_lock_on_the_thread_that_called_it() -> None:
+    """sb.SIGNED_OUT_HOOKS can come with sb._lock held, and phone.py and
+    _doors take their own locks first and sb._lock second. So the hook must
+    return with sb._lock in its caller's hand and both of those held by
+    somebody else, and the door follows once they are free."""
+    import phone as phone_mod
+    import sb
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        assert app.phone_door.running
+        holding, free, returned = threading.Event(), threading.Event(), threading.Event()
+
+        def hold():
+            with phone_mod._lock, app._doors_lock:
+                holding.set()
+                free.wait(10)
+
+        def hook():
+            with sb._lock:
+                app._phone_signed_out()
+            returned.set()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        assert holding.wait(5)
+        threading.Thread(target=hook, daemon=True).start()
+        try:
+            assert returned.wait(3), "the hook waited for a lock on sb._lock's thread"
+        finally:
+            free.set()
+            holder.join(5)
+        try:
+            assert _until(lambda: not app.phone_door.running, 5), "the door stayed open"
+            assert not phone_mod.rows_path().exists()
+        finally:
+            _shut_doors(app)
+
+
+def test_a_refused_refresh_beside_the_desks_poll_is_no_deadlock() -> None:
+    """The inversion itself, on the real sb. A refused refresh holds sb._lock
+    through _fresh, _refresh, _account_gone and SIGNED_OUT_HOOKS, while the
+    desk's poll is inside phone.view with phone._lock in hand, waiting for
+    sb._lock through _uid(). With the hook's work on the calling thread both
+    wait for ever, with status() and locked() behind them and the pause key
+    on the keyboard hook's thread. Here each lock gives up instead."""
+    import base64
+
+    import phone as phone_mod
+    import sb
+    import secretstore
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with _fixture_project() as fake, _consented("account"), a:
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+                key = vault.key(fake.UID)
+                phone = _a_phone(Path(tmp), "S26 Ultra")
+                link = vault.seal_json(key, {"v": 1, "kind": "phone", "proto": 1,
+                                             "cert": base64.b64encode(phone["der"]).decode()},
+                                       vault.AAD_DEVICE.format(uid=fake.UID, device_id=_PHONE))
+                _a_phone_row(fake, link=link)
+                app = _door_app()
+                _server_on(app)
+                phone_mod.refresh()
+                app._doors()
+                assert app.phone_door.running
+
+                session = json.loads(secretstore.get("supabase_session"))
+                session["expires_at"] = time.time() - 5
+                secretstore.set("supabase_session", json.dumps(session))
+                sb.forget_cache()
+                fake.script["auth/v1/token"] = [
+                    (400, b'{"error_description":"Invalid Refresh Token: Refresh Token Not Found"}')]
+
+                in_refresh, poll_waits = threading.Event(), threading.Event()
+                real_auth, real_uid = sb._auth, phone_mod._uid
+                rows_lock, doors_lock = _Patient(8), _Patient(8)
+                app._doors_lock = doors_lock
+                refused: list = []
+
+                def held_auth(*args, **kwargs):       # on the thread holding sb._lock
+                    in_refresh.set()
+                    assert poll_waits.wait(8)
+                    time.sleep(0.2)                   # the poll is at sb._lock by now
+                    return real_auth(*args, **kwargs)
+
+                def poll_uid():                       # with phone._lock in hand
+                    poll_waits.set()
+                    return real_uid()
+
+                def refresh():
+                    try:
+                        sb._fresh()
+                    except sb.AccountError as e:
+                        refused.append(e)
+
+                def poll():
+                    assert in_refresh.wait(8)
+                    phone_mod.view()
+
+                with _patched(sb, "_auth", held_auth), _patched(phone_mod, "_uid", poll_uid), \
+                        _patched(phone_mod, "_lock", rows_lock), \
+                        _patched(sb, "SIGNED_OUT_HOOKS", [app._phone_signed_out]):
+                    both = [threading.Thread(target=t, daemon=True) for t in (refresh, poll)]
+                    for thread in both:
+                        thread.start()
+                    for thread in both:
+                        thread.join(25)
+                    assert not any(t.is_alive() for t in both), "the two threads never ended"
+                    assert not rows_lock.gave_up and not doors_lock.gave_up, \
+                        "the hook took a lock against the poll's order"
+                    assert refused, "the refresh was not refused"
+                    assert _until(lambda: not any(t.name == "phone-gone" for t in threading.enumerate()), 10)
+                assert not sb.signed_in()
+                assert not app.phone_door.running, "the session went and the door stayed"
+                assert not phone_mod.rows_path().exists()
+                _shut_doors(app)
+        finally:
+            a.gone()
+            phone_mod.drop_rows()
+            phone_mod._view_kept = None
+
+
+def test_one_address_cannot_hold_every_handshake_place() -> None:
+    """Sixteen places shared by everybody let one host keep a phone out for
+    as long as it liked: connect sixteen times, say nothing, and again ten
+    seconds later. One address holds four at most, whatever it sends past
+    that is closed at once, and a phone at another address walks in."""
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = _echo_door(_anchors(s26))
+        each = net_mod.DOOR_HANDSHAKES_EACH
+        silent = []
+        try:
+            for _ in range(each):
+                silent.append(_silent_peer(door.port))
+            assert _until(lambda: door._shaking.get("127.0.0.2") == each, 5), door._shaking
+            for _ in range(net_mod.DOOR_HANDSHAKES):
+                late = _silent_peer(door.port)
+                try:
+                    assert late.recv(1) == b"", "one address went past its share"
+                except OSError:
+                    pass
+                finally:
+                    late.close()
+            assert door._shaking == {"127.0.0.2": each}, door._shaking
+            assert door._slots._value == net_mod.DOOR_HANDSHAKES - each
+            assert _knock(door.port, s26["chain"]) == b"in:S26 Ultra", "the phone was kept out"
+            for sock in silent:
+                sock.close()
+            silent.clear()
+            assert _until(lambda: not door._shaking
+                          and door._slots._value == net_mod.DOOR_HANDSHAKES, 5), door._shaking
+        finally:
+            for sock in silent:
+                sock.close()
+            door.stop()
+
+
+def _a_door(port: int | None = None):
+    """A PhoneDoor on a free port, with routes that answer /health."""
+    import server as server_mod
+
+    cfg = config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(
+        cfg.server, phone_port=port or _door_port()))
+    return server_mod.PhoneDoor(cfg, server_mod.Routes(lambda wav: ("", "fake")))
+
+
+def test_a_list_that_builds_no_context_still_drops_the_forgotten() -> None:
+    """Door.admit built the new context first, so a key that would not load
+    changed nothing: a forgotten phone stayed on the list and stayed
+    connected. The list moves first. PhoneDoor then opens again for a key
+    that will not open, and keeps the door and tries again for one that was
+    only not read."""
+    import net as net_mod
+
+    def refused(kind, times=10):
+        left = [times]
+        real = net_mod._door_context
+
+        def door_context(*args):
+            if left[0] > 0:
+                left[0] -= 1
+                raise kind("the door's key will not open")
+            return real(*args)
+        return door_context
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stays, goes = _a_phone(Path(tmp), "S26 Ultra"), _a_phone(Path(tmp), "Old phone")
+        door = _echo_door(_anchors(stays, goes))
+        try:
+            inside = _dial(door.port, goes["chain"])
+            inside.settimeout(5)
+            inside.sendall(b"hello\n")
+            assert inside.recv(64) == b"in:Old phone"
+            with _patched(net_mod, "_door_context", refused(net_mod.DoorError)):
+                try:
+                    door.admit(_anchors(stays))
+                except net_mod.DoorError:
+                    pass
+                else:
+                    raise AssertionError("the key's trouble went unsaid")
+            try:
+                assert inside.recv(64) == b"", "a forgotten phone stayed connected"
+            except OSError:
+                pass
+            inside.close()
+            assert _knock(door.port, goes["chain"]) is None, "a forgotten phone still came in"
+            assert _knock(door.port, stays["chain"]) == b"in:S26 Ultra"
+        finally:
+            door.stop()
+
+        door = _a_door()
+        both, one = _anchors(stays, goes), _anchors(stays)
+        try:
+            port = door.start(both)
+            with _patched(net_mod, "_door_context", refused(net_mod.DoorUnread)):
+                assert door.start(one) == port
+            assert door.running and _knock(port, goes["chain"]) is None
+            assert len(door._list) == 2, "a list that never built its context counted as done"
+            assert door.start(one) == port
+            assert len(door._list) == 1
+
+            with _patched(net_mod, "_door_context", refused(net_mod.DoorError, 1)):
+                assert door.start(both) == port, "the door moved"
+            assert door.running and len(door._list) == 2
+            assert _ask_door(port, goes["chain"], "GET", "/health")[0] == 200
+        finally:
+            door.stop()
+
+
+def test_a_forget_that_fails_and_rows_that_will_not_go_still_move_the_door() -> None:
+    """A failure on the way must not leave the door where it was. Forget
+    moves the list first, and a server that then refuses runs no hook, so a
+    door followed only the hooks went on admitting a phone this PC had
+    already forgotten. Rows that cannot be deleted at a sign-out, or at a
+    leaving, are the same case."""
+    import phone as phone_mod
+    import sb
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+
+    def locked():
+        raise PermissionError("the rows file is in use")
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._phone_error = ""
+        app._doors()
+        assert app.phone_door.running
+
+        def refused(device, cert):
+            box["gone"] |= {device, cert}
+            raise sb.AccountError("the server refused to forget it")
+
+        try:
+            with _patched(sb, "forget_device", refused):
+                app._phone_forget(ident, phone["fingerprint"])
+            assert not app.phone_door.running, "a phone this PC forgot kept the door"
+            assert "try again" in app._phone_error
+
+            box["gone"] = set()
+            app._doors()
+            assert app.phone_door.running
+            with _patched(phone_mod, "drop_rows", locked), _patched(sb, "user", lambda: None):
+                app._phone_gone()
+                assert not app.phone_door.running, "the session went and the door stayed"
+
+            app._doors()
+            assert app.phone_door.running
+            before = phone_mod.identity()
+            with _patched(phone_mod, "drop_rows", locked):
+                try:
+                    app._phone_forgotten()
+                except PermissionError:
+                    pass
+                else:
+                    raise AssertionError("the hook hid its failure from settle_left")
+            assert phone_mod.identity() != before
+            assert _door_shows(app.phone_door.port, phone["chain"]) == phone_mod.identity()
+        finally:
+            _shut_doors(app)
+
+
+def test_an_older_read_of_the_rows_does_not_overwrite_a_newer_one() -> None:
+    """refresh() reads outside the lock, so two reads can cross, and the
+    slower answer may be the older one: put back, it takes away a phone a
+    newer read had found, and the door stops for a whole pass. A read still
+    out when the rows are dropped lands on nothing either."""
+    import phone as phone_mod
+    import sb
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        row = _phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")
+        asked, go = threading.Event(), threading.Event()
+        calls: list[int] = []
+
+        def devices():
+            calls.append(1)
+            if len(calls) == 1:
+                answer = [dict(r) for r in box["rows"]]
+                asked.set()
+                go.wait(10)
+                return answer
+            return [dict(r) for r in box["rows"]]
+
+        with _patched(sb, "devices", devices):
+            slow = threading.Thread(target=phone_mod.refresh, daemon=True)
+            slow.start()
+            assert asked.wait(5)
+            box["rows"] = [row]
+            phone_mod.refresh()
+            assert phone["fingerprint"] in phone_mod.anchors()
+            go.set()
+            slow.join(5)
+            assert phone["fingerprint"] in phone_mod.anchors(), "an older answer took a phone away"
+
+            calls.clear()
+            asked.clear()
+            go.clear()
+            slow = threading.Thread(target=phone_mod.refresh, daemon=True)
+            slow.start()
+            assert asked.wait(5)
+            phone_mod.drop_rows()
+            go.set()
+            slow.join(5)
+            assert not phone_mod.rows_path().exists(), "a read came back to rows that had gone"
+
+
+def test_a_handshake_still_running_when_the_door_stops_finds_nobody_home() -> None:
+    """stop() cuts who is inside, and a peer still in the handshake was not
+    inside yet: it finished, found itself on the list and came in, past a
+    door already shut."""
+    import socket
+    import ssl
+
+    import net as net_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = _echo_door(_anchors(s26))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.load_cert_chain(str(s26["chain"]))
+        raw = socket.create_connection(("127.0.0.1", door.port), timeout=5)
+        assert _until(lambda: door._slots._value == net_mod.DOOR_HANDSHAKES - 1, 5)
+        door.stop()
+        got = b""
+        try:
+            with ctx.wrap_socket(raw) as tls:
+                tls.settimeout(5)
+                tls.sendall(b"hello\n")
+                got = tls.recv(64)
+        except (ssl.SSLError, OSError):
+            pass
+        assert got == b"" and door.came == [], "a handshake outlived the door"
+
+
+def test_with_the_switch_off_the_loopback_door_answers_only_the_hook() -> None:
+    """The loopback door stays up for Claude's hook with the phone switched
+    off. That is all it stays up for: the old road through `tailscale serve`
+    reached every route on it, so a person who turned the phone off had not.
+    The switch is asked per request, so nothing restarts."""
+    import http.client
+
+    import server as server_mod
+
+    cfg = config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(
+        cfg.server, enabled=False, host="127.0.0.1", port=_door_port()))
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake",
+                                 notify=lambda body: {"ok": True, "id": 7})
+    srv.start()
+    token = server_mod.load_token()
+
+    def ask(method, route, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=5)
+        try:
+            conn.request(method, route, body, {"Authorization": f"Bearer {token}"})
+            return conn.getresponse().status
+        finally:
+            conn.close()
+
+    try:
+        assert ask("GET", "/health") == 200
+        assert ask("POST", "/notify", json.dumps({"title": "done"}).encode()) == 200, \
+            "the hook lost its door"
+        for method, route in (("GET", "/review"), ("GET", "/api/version"), ("POST", "/transcribe"),
+                              ("POST", "/translate"), ("POST", "/punctuate"), ("POST", "/lookup"),
+                              ("POST", "/review/decide")):
+            assert ask(method, route, b"{}" if method == "POST" else None) == 404, route
+        srv.cfg = dataclasses.replace(srv.cfg, server=dataclasses.replace(srv.cfg.server, enabled=True))
+        assert ask("GET", "/api/version") == 200
+        assert ask("POST", "/transcribe", b"{}") != 404
+    finally:
+        srv.stop()
+
+
+def test_review_scope_is_live_on_a_running_door() -> None:
+    """Settings says a [server] change is live, and a running door kept the
+    scope it opened with until the next start."""
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app.phone.routes.review_pending = lambda: [{"id": "1", "text": "שלום", "changes": [],
+                                                    "source": "desktop"}]
+        app._doors()
+        try:
+            status, said = _ask_door(app.phone_door.port, phone["chain"], "GET", "/review")
+            assert status == 200 and said["items"] == [], said
+            app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+                app.cfg.server, review_scope="all"))
+            app._doors()
+            status, said = _ask_door(app.phone_door.port, phone["chain"], "GET", "/review")
+            assert status == 200 and [i["id"] for i in said["items"]] == ["1"], said
+        finally:
+            _shut_doors(app)
+
+
+def test_a_door_that_lost_its_port_says_so_in_the_checkout() -> None:
+    """A copy started first can take 8756, and his Dev then falls through
+    while `tailscale serve` and the phone go on reaching the other copy, under
+    a token that is not this one's. A stranger's copy says it quietly."""
+    import logging
+    import socket
+
+    import server as server_mod
+
+    lines: list[tuple[int, str]] = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append((record.levelno, record.getMessage()))
+
+    port = _door_port()
+    cfg = config_mod.load_layered()
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server, host="127.0.0.1", port=port))
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    holder.bind(("127.0.0.1", port))
+    holder.listen(1)
+    keep = Keep()
+    logger = logging.getLogger("app")
+    level = logger.level
+    logger.addHandler(keep)
+    logger.setLevel(logging.INFO)
+    try:
+        for developer, loudness in ((True, logging.WARNING), (False, logging.INFO)):
+            with _patched(server_mod.paths, "DEVELOPER", developer):
+                srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake")
+                srv.start(port)
+                try:
+                    assert srv.port != port
+                finally:
+                    srv.stop()
+            moved = [row for row in lines if "THE LOOPBACK DOOR MOVED" in row[1]]
+            assert moved and moved[-1][0] == loudness, moved
+            lines.clear()
+    finally:
+        logger.removeHandler(keep)
+        logger.setLevel(level)
+        holder.close()
+
+
+def test_the_stranger_asks_for_ports_of_its_own() -> None:
+    """The Stranger runs beside DeskIT Dev, and a default port is Dev's: its
+    own ports are in its own settings.toml, past where either of Dev's doors
+    falls through to, at every start, after a reset and over nothing a
+    person changed."""
+    import importlib.util
+
+    import main as main_mod
+    import server as server_mod
+
+    spec = importlib.util.spec_from_file_location("stranger_under_test", REPO / "dev" / "stranger.py")
+    stranger = importlib.util.module_from_spec(spec)
+    # its first lines put dev\ in front of the path, and sixteen tests after
+    # this one read defaults.toml from sys.path[0]
+    path_before = list(sys.path)
+    try:
+        spec.loader.exec_module(stranger)
+    finally:
+        sys.path[:] = path_before
+
+    devs = set(range(8756, 8756 + server_mod.PORT_TRIES)) | set(range(8766, 8766 + server_mod.PORT_TRIES))
+    assert not devs & set(stranger.PORTS.values()), stranger.PORTS
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        path = home / "settings.toml"
+        stranger.seed_ports(home)
+        assert config_mod.read_settings(path) == stranger.PORTS
+        bare = main_mod.App.__new__(main_mod.App)
+        bare.config_path = None
+        with _patched(paths, "SETTINGS_FILE", path):
+            assert bare._loopback_first() == stranger.PORTS["server.port"]
+
+        config_mod.write_settings(path, {"server.port": 9100, "hint.enabled": False})
+        stranger.seed_ports(home)
+        after = config_mod.read_settings(path)
+        assert after["server.port"] == 9100 and after["hint.enabled"] is False
+        assert after["server.phone_port"] == stranger.PORTS["server.phone_port"]
+
+    main = (REPO / "dev" / "stranger.py").read_text("utf-8")
+    main = main[main.index("def main("):]
+    assert main.index("reset(home") < main.index("seed_ports(home)") < main.index("start(home, env)")
+
+
+def _another_process_wrote_consents(rows: list[dict]) -> None:
+    """consent.json as another process leaves it. privacy.rows() goes by the
+    file's stamp, and on a runner two writes a millisecond apart can carry the
+    same one, which reads as no write at all: 891cb9d failed on that alone,
+    twice in a row. That is a test's timing, never a person's press."""
+    import privacy
+
+    privacy._write_file(rows)
+    privacy._rows_cache["mtime"] = None
+
+
+def test_a_withdraw_on_the_desk_shuts_the_door_with_offline_mode_on() -> None:
+    """Withdraw runs in the desk's process, and the app hears of it when
+    something reads the consent file. With Offline mode on nothing does,
+    because `allowed` stops first, so the watch reads it. The card then says
+    why and offers no Windows button: a yes that went is not a firewall."""
+    import main as main_mod
+
+    import desk_settings
+    import phone as phone_mod
+    import privacy
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        privacy.on_change("account", app._doors_soon)
+        watch = None
+        try:
+            assert app.phone_door.running
+            with _patched(privacy, "_gates", dict(privacy._gates, offline=True)), \
+                    _patched(main_mod, "HOOK_WATCH_S", 0.05):
+                assert app._phone_status()["offline"] is True
+                assert "Offline mode" in str(desk_settings.trouble_card({"phone": app._phone_status()}))
+                watch = threading.Thread(target=app._watch_hook, daemon=True)
+                watch.start()
+                _another_process_wrote_consents([r for r in privacy.rows() if r["kind"] != "account"])
+                assert _until(lambda: not app.phone_door.running, 5), "the door outlived the consent"
+            card = desk_settings.trouble_card({"phone": app._phone_status()})
+            assert card["button"] == "" and "account is off" in card["said"], card
+        finally:
+            app._stopping.set()
+            if watch is not None:
+                watch.join(timeout=3)
+            _shut_doors(app)
+
+
+def test_a_consent_tear_down_runs_outside_the_consent_lock() -> None:
+    """rows() ran the tear-downs under its lock, and one of them is sb.nudge,
+    which takes sb._lock, while a refresh holds sb._lock and asks net, which
+    asks rows(). The two locks must not nest that way round."""
+    import privacy
+
+    free: list[bool] = []
+
+    def reset() -> None:
+        got: list[bool] = []
+
+        def try_it() -> None:
+            took = privacy._lock.acquire(timeout=2)
+            got.append(took)
+            if took:
+                privacy._lock.release()
+        thread = threading.Thread(target=try_it)
+        thread.start()
+        thread.join()
+        free.append(got == [True])
+
+    with _consented("account"), _patched(privacy, "_resets", {}):
+        privacy.on_change("account", reset)
+        row = next(r for r in privacy.rows() if r["kind"] == "account")
+        _another_process_wrote_consents([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+        privacy.rows()
+        assert free == [True], free
+
+
+def test_words_that_moved_do_not_shut_the_door_while_home_cannot_ask() -> None:
+    """An update moved the account's words on a PC in Offline mode: Home asks
+    nothing then (`stale` is empty), so a row under older words still stands
+    for the door, and only for as long as Offline mode lasts."""
+    import privacy
+
+    with _consented("account"):
+        row = next(r for r in privacy.rows() if r["kind"] == "account")
+        _another_process_wrote_consents([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+        assert not privacy.granted("account"), "a stale row is no yes with the internet on"
+        with _patched(privacy, "_gates", dict(privacy._gates, offline=True)):
+            assert privacy.stale() == [] and privacy.granted("account")
+            _another_process_wrote_consents([])
+            assert not privacy.granted("account"), "no row is no yes, Offline or not"
+
+
+def test_a_forgets_answer_outlives_the_last_row_on_the_card() -> None:
+    """Forget took the only other device and it stays signed in: the row is
+    gone, and the card that says so must not go with it."""
+    import desk_settings
+
+    place = desk_settings.Place.__new__(desk_settings.Place)
+    place.status = {"phone": {"phones": [], "pcs": [], "error": "still signed in"}}
+    place._phone_asking = ""
+    with _patched(desk_settings, "device_rows", lambda status, asking: [{"id": "", "name": "This PC"}]):
+        card = place._card_devices(None)
+        assert card is not None and card["say"] == "still signed in", card
+        place.status = {"phone": {"phones": [], "pcs": [], "error": ""}}
+        assert place._card_devices(None) is None
+
+
+def test_only_a_missing_file_makes_a_new_key() -> None:
+    """A new key means every phone loses its pin, so a read that failed must
+    not make one: a file another program has open, a blob this Windows
+    account cannot open and a file with no certificate in it all say so and
+    change nothing. A file that is gone, the key's or the passphrase's, is
+    the one case with no other way on."""
+    import phone as phone_mod
+    import secretstore
+
+    first = phone_mod.identity()
+    path = phone_mod.key_path()
+    saved = path.read_bytes()
+
+    def raises(kind):
+        try:
+            phone_mod.identity()
+        except kind:
+            return True
+        return False
+
+    def refused(name):
+        raise secretstore.SecretError("a blob from another account")
+
+    real_read = Path.read_text
+
+    def held(self, *args, **kwargs):              # the read alone: a new key could still be written
+        if self == path:
+            raise PermissionError(13, "another program has the file open")
+        return real_read(self, *args, **kwargs)
+
+    with _patched(Path, "read_text", held):
+        assert raises(OSError), "a read that failed did not say so"
+    assert path.read_bytes() == saved, "a failed read made a new key"
+    assert phone_mod.identity() == first
+
+    with _patched(secretstore, "get", refused):
+        assert raises(secretstore.SecretError), "an unreadable passphrase made a new key"
+    assert path.read_bytes() == saved and phone_mod.identity() == first
+
+    path.write_text("not a key", "ascii")
+    try:
+        assert raises(ValueError), "a file with no certificate made a new key"
+    finally:
+        path.write_bytes(saved)
+    assert phone_mod.identity() == first
+
+    secretstore.delete(phone_mod.PASS_NAME)
+    second = phone_mod.identity()
+    assert second != first, "a key with no passphrase can never open"
+    path.unlink()
+    assert phone_mod.identity() != second, "no key file and no new key"
+
+
+def test_a_door_keeps_its_key_through_a_failed_read_and_follows_a_new_one() -> None:
+    """A failed read under a running door costs nothing: same door, same
+    key. A new key under it, by whatever road, reopens it, because a door
+    shows the certificate it opened with and a phone pins what the row says.
+    With the door shut, a read that failed leaves it shut and the key alone;
+    a key that will never open is a new identity, and the door opens."""
+    import net as net_mod
+    import phone as phone_mod
+    import secretstore
+
+    def locked():
+        raise PermissionError("the file is in use")
+
+    def refused(name):
+        raise secretstore.SecretError("a blob from another account")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        anchors = _anchors(s26)
+        door = _a_door()
+        try:
+            port = door.start(anchors)
+            shown = _door_shows(port, s26["chain"])
+            assert shown == phone_mod.identity()
+
+            with _patched(phone_mod, "_on_disk", locked):
+                assert door.start(anchors) == port
+            with _patched(secretstore, "get", refused):
+                assert door.start(anchors) == port
+            assert door.running and _door_shows(port, s26["chain"]) == shown
+
+            new = phone_mod.rotate()
+            assert door.start(anchors) == port, "a new key moved the door"
+            assert _door_shows(port, s26["chain"]) == new, "the door kept the key it opened with"
+
+            door.stop()
+            with _patched(phone_mod, "_on_disk", locked):
+                try:
+                    door.start(anchors)
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("a door opened on a key nobody read")
+            assert not door.running and phone_mod.identity() == new
+
+            def unread(*_args):
+                raise net_mod.DoorUnread("the door's key was not read")
+
+            with _patched(net_mod, "_door_context", unread):
+                try:
+                    door.start(anchors)
+                except net_mod.DoorUnread:
+                    pass
+                else:
+                    raise AssertionError("a door opened on a key nobody read")
+            assert not door.running and phone_mod.identity() == new, "a failed read made a new key"
+
+            junk = Path(tmp) / "junk.pem"
+            junk.write_text("not a key", "ascii")
+            said = []
+            for chain in (Path(tmp) / "nowhere.pem", junk):
+                try:
+                    net_mod._door_context(chain, phone_mod.PASS_NAME, {})
+                except net_mod.DoorError as e:
+                    said.append(type(e))
+            assert said == [net_mod.DoorUnread, net_mod.DoorError], said
+
+            phone_mod.key_path().write_text("not a key", "ascii")
+            assert door.start(anchors) == port
+            again = phone_mod.identity()
+            assert again != new and _door_shows(port, s26["chain"]) == again
+
+            door.stop()
+            secretstore.blob_path(phone_mod.PASS_NAME).write_bytes(b"another account's blob")
+            assert door.start(anchors) == port
+            assert phone_mod.identity() != again and door.running
+            assert _door_shows(port, s26["chain"]) == phone_mod.identity()
+        finally:
+            door.stop()
+
+
+def test_the_elevated_line_takes_only_a_real_program() -> None:
+    """The program comes over the pipe and goes into a line an elevated
+    cmd.exe runs behind the person's yes: a quote in it would be a command of
+    its own. And rules are the machine's, so the first delete names the
+    program: a second Windows user's press must not delete the first one's."""
+    import desk_settings
+    import phone as phone_mod
+
+    ran: list[str] = []
+    netsh = r"C:\Windows\System32\netsh.exe"
+
+    with _patched(phone_mod, "_elevated", lambda system, line, verb="runas": ran.append(line) or "done"), \
+            _patched(phone_mod, "network_profiles", lambda: "any"), \
+            _patched(phone_mod, "block_rules", lambda exe: []):
+        for exe, port in ((r'C:\x" & calc & "y.exe', 8766), (r"C:\there\is\no\such.exe", 8766),
+                          (sys.executable, 0), (sys.executable, 70000), ("", 8766)):
+            assert phone_mod.open_firewall(exe, port) == "failed", exe
+        status = {"phone": {"program": r'C:\x" & calc & "y.exe', "port": 8766}}
+        assert desk_settings.let_it_through(status) == desk_settings.FIREWALL_WORDS["failed"]
+        assert ran == [], "a line went to the elevated shell"
+        assert phone_mod.open_firewall(sys.executable, 8766) == "done"
+        assert len(ran) == 1 and sys.executable in ran[0]
+
+    first = phone_mod.firewall_line(netsh, sys.executable, 8766, "any", []).split(" & ")[0]
+    assert f'delete rule name="{phone_mod.RULE_NAME}"' in first and f'program="{sys.executable}"' in first
+
+
+def test_a_door_shows_a_stranger_nothing_about_what_it_is() -> None:
+    """A door hands its certificate to whoever knocks, before any proof, so
+    what is in it is what a prober on any network learns. A subject is random
+    and says nothing else, and no two PCs share one."""
+    import phone as phone_mod
+
+    def subject(der: bytes) -> str:
+        at = der.index(phone_mod._OID_CN) + len(phone_mod._OID_CN)
+        assert der[at] == 0x0c, hex(der[at])
+        return der[at + 2:at + 2 + der[at + 1]].decode("ascii")
+
+    phone_mod.rotate()
+    door = _echo_door({})
+    try:
+        with _dial(door.port) as tls:
+            der = tls.getpeercert(binary_form=True)
+    finally:
+        door.stop()
+    assert phone_mod.fingerprint(der) == phone_mod.identity()
+    assert b"DeskIT" not in der and b"deskit" not in der.lower(), "the product's name went out"
+    name = subject(der)
+    assert re.fullmatch(r"[0-9a-f]{16}", name), name
+    phone_mod.rotate()
+    assert subject(phone_mod._on_disk()) != name
+
+
+def test_the_account_key_stays_out_of_main() -> None:
+    """A secret goes into a variable in the modules that handle secrets. sb
+    hands every account hook the key, so main's arrives through
+    phone.keyless, which drops it, and phone.py asks vault itself."""
+    import inspect
+
+    import main as main_mod
+    import phone as phone_mod
+
+    # Flags only, never a key: history_sync came with stage 2b (a phone's
+    # cloud text goes only where a PC's row says its account keeps it).
+    assert list(inspect.signature(phone_mod.publish).parameters) == [
+        "port", "listening", "words_sync", "history_sync"]
+    assert not inspect.signature(phone_mod.anchors).parameters
+    assert list(inspect.signature(main_mod.App._phone_account).parameters) == ["self"]
+    assert list(inspect.signature(main_mod.App._phone_publish).parameters) == ["self"]
+    seen: list[tuple] = []
+    phone_mod.keyless(lambda *a: seen.append(a))(b"the account key")
+    assert seen == [()], seen
+    source = (REPO / "main.py").read_text("utf-8")
+    assert re.search(r"^\s*import vault\b|\bvault\.key\b", source, re.M) is None
+    assert "sb.ACCOUNT_HOOKS.append(self._phone_hook)" in source
+
+
+def test_a_person_who_withdraws_closes_the_door_and_the_internet_does_not() -> None:
+    """The door hears a Forget through the account, so with the `account`
+    consent withdrawn it would stand on kept rows, deaf to one. That is a
+    person's act, and it shuts the door. A network's state does not: no
+    internet, or Offline mode, leaves it open on the kept rows, as the
+    Phone card promises. A yes opens it again, with nothing restarted."""
+    import phone as phone_mod
+    import privacy
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        app = _door_app()
+        _server_on(app)
+        app._doors()
+        privacy.on_change("account", app._doors_soon)
+        try:
+            assert app.phone_door.running
+            box["offline"] = True
+            app._phone_account()
+            assert app.phone_door.running, "the internet went and the door closed"
+
+            with _patched(privacy, "_gates", dict(privacy._gates, offline=True)):
+                assert not privacy.allowed("account") and privacy.granted("account")
+                app._doors()
+                assert app.phone_door.running, "Offline mode closed the door"
+
+            privacy.withdraw("account")
+            assert _until(lambda: not app.phone_door.running, 5), "the door outlived the consent"
+            app._doors()
+            assert not app.phone_door.running
+
+            privacy.grant("account")
+            assert _until(lambda: app.phone_door.running, 5), "a yes did not open it again"
+        finally:
+            app._stopping.set()
+            _until(lambda: not any(t.name == "doors" for t in threading.enumerate()), 5)
+            _shut_doors(app)
+    assert 'privacy.on_change("account", self._doors_soon)' in (REPO / "main.py").read_text("utf-8")
+
+
+def test_a_door_opened_again_keeps_its_port_with_phones_still_connected() -> None:
+    """A port the door moved off is outside the rule the person let through.
+    Measured 2026-11-07, on loopback: SO_EXCLUSIVEADDRUSE refuses a bind
+    beside a live listener (10048) and not beside what a closed one left, 40
+    rounds of connections ESTABLISHED, closing and in TIME_WAIT, no refusal,
+    the slowest bind 0.15 ms. So no retry: this holds it through the real
+    door, with real phones. Every interface is not measured: that bind raises
+    the firewall dialog, and M4 is where it can be."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s26, a55 = _a_phone(Path(tmp), "S26 Ultra"), _a_phone(Path(tmp), "A55")
+        anchors = _anchors(s26, a55)
+        door = _a_door()
+        left: list = []
+        try:
+            port = door.start(anchors)
+            for _ in range(6):
+                for phone in (s26, a55):
+                    tls = _dial(port, phone["chain"])
+                    tls.settimeout(5)
+                    tls.sendall(b"GET /health HTTP/1.0\r\n\r\n")
+                    assert tls.recv(16).startswith(b"HTTP/")
+                    left.append(tls)
+                closing = _dial(port, s26["chain"])
+                closing.close()
+                door.stop()
+                assert door.start(anchors) == port, "the door moved off its port"
+            assert _ask_door(port, s26["chain"], "GET", "/health")[0] == 200
+        finally:
+            for tls in left:
+                tls.close()
+            door.stop()
+
+
+def test_phone_py_imports_stay_narrow() -> None:
+    """phone.py touches a private key for a moment, as vault.py does, so it
+    is held the same way: no transport, none of the modules that read a
+    cloud key, no environment. The door is reached by name from server.py."""
+    src = (REPO / "phone.py").read_text("utf-8")
+    forbidden = ("apikey", "translate", "polish", "punctuate", "lookup", "visual_qa", "gemini_pool",
+                 "httpx", "requests", "socket", "ssl", "http", "urllib", "net")
+    for m in re.finditer(r"^\s*(?:import|from)\s+([\w.]+)", src, re.M):
+        assert m.group(1).split(".")[0] not in forbidden, f"phone.py imports {m.group(1)}"
+    assert "os.environ" not in src and "getenv" not in src, "phone.py reads the environment"
+    assert re.search(r"\blog\.\w+\([^)]*(passphrase|sec1)", src) is None, "a key near a log line"
+
+
+def test_a_door_opens_with_a_phone_the_switch_and_this_pcs_yes_and_never_otherwise() -> None:
+    """The phone door's three conditions, and the loopback door's two: it
+    runs with the switch on OR the Claude hook connected, the silent hole
+    of today. With no phone in the account nothing listens beyond this PC,
+    whatever the switch says."""
+    import dataclasses
+
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        app = _door_app()
+
+        def server(**changes):
+            app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, **changes))
+
+        try:
+            server(enabled=True, phone_allowed=True)
+            app._doors()
+            assert app.phone.running and not app.phone_door.running, "a door with no phone"
+
+            box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+            phone_mod.refresh()
+            server(phone_allowed=False)
+            app._doors()
+            assert not app.phone_door.running, "no yes from this PC, and the door opened"
+
+            server(phone_allowed=True)
+            app._doors()
+            assert app.phone_door.running
+            status = app._phone_status()
+            assert status["on"] and [p["name"] for p in status["phones"]] == ["S26 Ultra"], status
+
+            server(enabled=False)
+            app._doors()
+            assert not app.phone_door.running and not app.phone.running
+
+            app._hook_connected = lambda: True
+            app._doors()
+            assert app.phone.running and not app.phone_door.running, "the hook's door, and only it"
+            app._hook_connected = lambda: False
+            app._doors()
+            assert not app.phone.running
+        finally:
+            _shut_doors(app)
+
+
+def test_the_hook_works_with_the_phone_switch_off() -> None:
+    """Connect Claude writes the hook's lines and the phone switch is
+    another matter: with the switch off the hook used to post into nothing,
+    in silence. And the hook finds the door where it landed."""
+    import dataclasses
+
+    import net as net_mod
+    import notify_hook
+
+    app = _door_app()
+    app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, enabled=False))
+    app._hook_connected = lambda: True
+    held = None
+    try:
+        app._doors()
+        assert app.phone.running
+        import server as server_mod
+
+        state = json.dumps({"server.port": app.phone.port})
+        paths.STATE_FILE.write_text(state, "utf-8")
+        assert notify_hook.server_port() == app.phone.port
+        status, _h, body = net_mod.request(
+            "POST", notify_hook.server_url(), "notify", body=b'{"title": "done"}',
+            headers={"Authorization": f"Bearer {server_mod.load_token()}",
+                     "Content-Type": "application/json"})
+        assert status == 200 and json.loads(body)["ok"], body
+    finally:
+        _shut_doors(app)
+        paths.STATE_FILE.unlink(missing_ok=True)
+    del held
+
+
+def test_a_busy_port_lands_in_state_json_for_both_doors() -> None:
+    """Both doors fall through and say where. A phone cached the phone
+    door's port, so that one starts from where it landed; nothing outside
+    this PC caches the loopback door's, so that one starts from the
+    setting's again, and one clash does not move it for good."""
+    import dataclasses
+    import socket
+
+    import phone as phone_mod
+
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box, \
+            socket.socket() as one, socket.socket() as two:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, "bbbbbbbb-0000-0000-0000-000000000002")]
+        phone_mod.refresh()
+        for sock in (one, two):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(1)
+        loop, door = one.getsockname()[1], two.getsockname()[1]
+        app = _door_app()
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(
+            app.cfg.server, enabled=True, phone_allowed=True, port=loop, phone_port=door))
+        try:
+            app._doors()
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert app.phone.port != loop and state["server.port"] == app.phone.port, state
+            assert app.phone_door.port != door and state["server.phone_port"] == app.phone_door.port
+            assert app.cfg.server.phone_port == app.phone_door.port, "the phone door's next try"
+        finally:
+            _shut_doors(app)
+
+    import main as main_mod
+
+    bare = main_mod.App.__new__(main_mod.App)
+    bare.config_path = None
+    config_mod.save({"server.port": 40123})
+    try:
+        assert bare._loopback_first() == config_mod.defaults_flat()["server.port"], \
+            "the loopback door starts from last time's clash"
+    finally:
+        config_mod.save({"server.port": None}, derived=True)
+
+
+def test_the_doors_start_and_stop_with_no_restart() -> None:
+    """The switch acts where it stands, on the running app."""
+    import main as main_mod
+
+    assert "server" in main_mod.LIVE_SECTIONS
+    app = _door_app()
+    try:
+        app._doors()
+        assert app.phone.running
+        said = app.set_option("server.enabled", False)
+        assert _until(lambda: not app.phone.running, 10), "the switch did not shut the door"
+        assert "next time" not in said, said
+        app.set_option("server.enabled", True)
+        assert _until(lambda: app.phone.running, 10), "the switch did not open the door"
+    finally:
+        config_mod.save({"server.enabled": True})
+        _shut_doors(app)
+
+
+def test_an_approve_here_is_this_pcs_yes_and_any_other_pc_asks_on_home() -> None:
+    """The first listen raises Windows' dialog, so it follows a press. On
+    the PC he pressed Approve on, the phone's row arriving is enough. On any
+    other, Home asks; Allow is the yes, Not now holds until the next start,
+    and from then on the door binds with nothing asked. Approving another
+    PC gives no yes."""
+    import phone as phone_mod
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        app = _door_app()
+        app._phone_publish = lambda: None
+        try:
+            app._approved = {ident}
+            box["rows"] = [_phone_row(box, phone, ident)]
+            app._phone_account()
+            assert app.cfg.server.phone_allowed and app.phone_door.running, "Approve here"
+            assert not app._approved and not app._phone_status()["ask"]
+            app.phone_door.stop()
+            config_mod.save({"server.phone_allowed": None}, derived=True)
+            phone_mod.drop_rows()
+
+            further = _door_app()
+            further._phone_publish = lambda: None
+            further._approved = {"cccccccc-0000-0000-0000-000000000003"}    # another PC, approved here
+            box["rows"] = [_phone_row(box, phone, ident)]
+            further._phone_account()
+            assert not further.phone_door.running, "a door with nobody having pressed anything"
+            assert further._phone_listening(), "the approved device's row has not come back yet"
+            assert further._phone_status()["ask"] is True, "Home did not ask"
+
+            assert further.control_command("phone", {"do": "notnow"})["ok"]
+            assert further._phone_status()["ask"] is False and not further.phone_door.running
+
+            next_start = _door_app()
+            assert next_start._phone_status()["ask"] is True, "Not now outlived its start"
+
+            further.control_command("phone", {"do": "allow"})
+            assert _until(lambda: further.phone_door.running, 10), "Allow did not open the door"
+            assert config_mod.read_state(paths.STATE_FILE)["server.phone_allowed"] is True
+            assert further._phone_status()["ask"] is False
+            assert further.control_command("phone", {"do": "nonsense"})["ok"] is False
+            _shut_doors(further)
+            _shut_doors(next_start)
+        finally:
+            _shut_doors(app)
+
+
+def test_forget_goes_to_the_account_and_a_failure_is_said_in_words() -> None:
+    """Forget names the device and the app finds its certificate. A row
+    that is gone is an answer, and a failure stays on the card."""
+    import phone as phone_mod
+    import sb
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        app = _door_app()
+        asked: list = []
+        had = getattr(sb, "forget_device", None)
+        sb.forget_device = lambda d, c: asked.append((d, c))
+        try:
+            reply = app.control_command("phone", {"do": "forget", "id": ident})
+            assert reply["ok"] and "S26 Ultra" in reply["message"], reply
+            assert _until(lambda: bool(asked), 5) and asked == [(ident, phone["fingerprint"])]
+            assert app.control_command("phone", {"do": "forget", "id": "nobody"})["ok"] is False
+
+            # off the list and still signed in: the person who pressed it is
+            # looking at this card, not at the account's
+            sb.forget_device = lambda d, c: False
+            app.control_command("phone", {"do": "forget", "id": ident})
+            assert _until(lambda: app._phone_status()["error"] == sb.OLDER_COPY_WORDS, 5), \
+                app._phone_status()
+
+            def refused(d, c):
+                raise OSError("no network")
+            sb.forget_device = refused
+            app.control_command("phone", {"do": "forget", "id": ident})
+            assert _until(lambda: bool(app._phone_status()["error"]), 5)
+            assert "no network" not in app._phone_status()["error"]
+        finally:
+            if had is None:
+                del sb.forget_device
+            else:
+                sb.forget_device = had
+            _shut_doors(app)
+
+
+def test_a_phone_on_the_door_dictating_is_what_the_card_says() -> None:
+    """"Hasn't reached this PC yet" is the one hint a person has that the
+    firewall stands in between, so it must be true: a connection moves it,
+    and a dictation says so."""
+    import dataclasses
+    import io
+    import wave as wave_mod
+
+    import desk_settings
+    import phone as phone_mod
+    import server as server_mod
+
+    ident = "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as tmp, _phone_account() as box:
+        phone = _a_phone(Path(tmp), "S26 Ultra")
+        box["rows"] = [_phone_row(box, phone, ident)]
+        phone_mod.refresh()
+        assert "hasn't reached this PC yet" in desk_settings.device_rows(
+            {"phone": phone_mod.view()})[0]["meta"]
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server,
+                                                                  phone_port=_door_port()))
+        door = server_mod.PhoneDoor(cfg, server_mod.Routes(lambda wav: ("שלום", "fake")))
+        port = door.start(phone_mod.anchors())
+        try:
+            assert _ask_door(port, phone["chain"], "GET", "/health")[0] == 200
+            assert _until(lambda: phone_mod.view()["phones"][0]["reached"], 5)
+            assert "reached this PC today" in desk_settings.device_rows(
+                {"phone": phone_mod.view()})[0]["meta"]
+            buf = io.BytesIO()
+            with wave_mod.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(np.zeros(1600, dtype=np.int16).tobytes())
+            status, reply = _ask_door(port, phone["chain"], "POST", "/transcribe", buf.getvalue())
+            assert status == 200 and reply["text"] == "שלום", reply
+            assert "dictated here today" in desk_settings.device_rows(
+                {"phone": phone_mod.view()})[0]["meta"]
+        finally:
+            door.stop()
+
+
+def test_get_review_answers_the_phones_own_unless_the_scope_says_all() -> None:
+    """D22: what was said at the desk stays at the desk. The developer line
+    keeps desk proposals answerable from the sofa."""
+    import server as server_mod
+
+    pending = lambda: [{"id": "1", "text": "מהטלפון", "source": "phone", "changes": []},
+                       {"id": "2", "text": "מהשולחן", "source": "desktop", "changes": []},
+                       {"id": "3", "text": "ישן", "changes": []}]
+    routes = server_mod.Routes(lambda wav: ("", "fake"), review_pending=pending)
+    assert [i["id"] for i in routes.handle("/review")[1]["items"]] == ["1"]
+    routes.review_scope = "all"
+    assert [i["id"] for i in routes.handle("/review")[1]["items"]] == ["1", "2", "3"]
+    try:
+        config_mod.build({"server": {"review_scope": "everyone"}})
+    except config_mod.ConfigError as e:
+        assert "review_scope" in str(e)
+    else:
+        raise AssertionError("a review scope nobody knows was accepted")
+
+
+def test_the_firewall_line_lets_this_program_through_on_this_port() -> None:
+    """One elevated line, whatever the network's profile: this PC's real
+    interpreter and this port, its block rules gone first, because a block
+    rule outranks any allow rule. A rule's name that is not plain is never
+    spelled inside an elevated cmd.exe. The running image is the real
+    program, not a venv's launcher."""
+    import phone as phone_mod
+
+    exe = r"C:\Users\Dana Levi\AppData\Local\Programs\DeskIT\python\pythonw.exe"
+    netsh = r"C:\Windows\System32\netsh.exe"
+    line = phone_mod.firewall_line(netsh, exe, 8801, "public", ["Python", "Python"])
+    steps = line.split(" & ")
+    assert steps[0].endswith(f'delete rule name="{phone_mod.RULE_NAME}" dir=in program="{exe}"'), steps[0]
+    assert steps[1].endswith(f'delete rule name="Python" dir=in program="{exe}"'), steps[1]
+    assert len(steps) == 3, steps                 # one delete per name
+    assert f'add rule name="{phone_mod.RULE_NAME}" dir=in action=allow program="{exe}" ' in steps[2]
+    assert steps[2].endswith("protocol=TCP localport=8801 profile=public"), steps[2]
+    assert all(s.startswith(f'"{netsh}" ') for s in steps), "an elevated netsh by its full path"
+
+    for blocks in (None, ['x" & calc & "']):
+        line = phone_mod.firewall_line(netsh, exe, 8801, "any", blocks)
+        assert f'delete rule name=all dir=in program="{exe}"' in line and "calc" not in line
+    assert phone_mod.firewall_line(netsh, exe, 8801, "private,public", []).endswith(
+        "profile=private,public")
+    assert "name=all" not in phone_mod.firewall_line(netsh, exe, 8801, "any", [])
+
+    me = Path(phone_mod.program())
+    assert me.is_file() and me.name.lower() in ("python.exe", "pythonw.exe"), me
+    assert "Scripts" not in me.parts or ".venv" not in me.parts, f"a launcher: {me}"
+    assert isinstance(phone_mod.block_rules(str(me)), (list, type(None)))
+
+
+def test_the_elevated_call_runs_its_line_and_reads_its_answer() -> None:
+    """Everything of the firewall's press but Windows' prompt, with the verb
+    that raises none: the structure Windows reads, a full path in quotes
+    surviving cmd.exe, nothing on the screen, and the exit code read back."""
+    import ctypes
+
+    import phone as phone_mod
+
+    assert ctypes.sizeof(phone_mod._ExecuteInfo) == 112, "SHELLEXECUTEINFOW on 64 bits"
+    system = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
+    quiet = f'"{os.path.join(system, "hostname.exe")}"'
+    assert phone_mod._elevated(system, f"{quiet} > NUL", "open") == "done"
+    assert phone_mod._elevated(system, f"{quiet} > NUL & exit 3", "open") == "failed"
+    assert phone_mod._elevated(system, "exit 0", "no such verb") == "failed"
+
+
+def test_the_phone_cant_connect_says_what_windows_answered() -> None:
+    """An administrator's yes, a standard user with no administrator to ask,
+    and a failure each get plain words, and the press gets no further than
+    the elevated call. The call sits in one place, so this is the one test
+    that does not raise a dialog by mistake."""
+    import desk_settings
+    import phone as phone_mod
+
+    asked: list = []
+
+    def elevated(system, line):
+        asked.append((system, line))
+        return answers.pop(0)
+
+    answers = ["done", "declined", "failed"]
+    status = {"phone": {"program": sys.executable, "port": 8801, "phones": [{"id": "1"}]}}
+    with _patched(phone_mod, "_elevated", elevated), \
+            _patched(phone_mod, "network_profiles", lambda: "public"), \
+            _patched(phone_mod, "block_rules", lambda exe: []):
+        assert "lets your phone through" in desk_settings.let_it_through(status)
+        assert "administrator" in desk_settings.let_it_through(status)
+        assert "nothing changed" in desk_settings.let_it_through(status)
+        assert "start dictation" in desk_settings.let_it_through({"phone": {}})
+    assert len(asked) == 3 and "localport=8801 profile=public" in asked[0][1]
+
+
+def test_settings_phone_says_it_in_plain_words_and_details_holds_the_numbers() -> None:
+    """The approved cards: the devices with Forget, which asks in its row,
+    the QR, the question, and an address or a port nowhere but Details."""
+    import desk_settings
+
+    status = {"account": {"device_name": "MY-PC"},
+              "phone": {"on": True, "port": 8801, "addrs": ["10.9.8.7"], "error": "",
+                        "phones": [{"id": "p", "name": "A phone", "cert": "c", "reached": 0,
+                                    "dictated": 0}],
+                        "pcs": [{"id": "l", "name": "Laptop", "cert": "d"}]}}
+    rows = desk_settings.device_rows(status, "p")
+    assert [r["name"] for r in rows] == ["A phone", "This PC", "Laptop"]
+    assert rows[0]["asking"] and rows[0]["forget"] and not rows[1]["forget"] and rows[2]["forget"]
+    assert rows[1]["meta"] == "MY-PC"
+    surface = json.dumps(rows)
+    trouble = desk_settings.trouble_card(status)
+    surface += trouble["line"] + trouble["said"] + trouble["button"]
+    card = desk_settings.keyboard_card(status)
+    surface += card["line"] + card["said"]
+    assert "10.9.8.7" not in surface and "8801" not in surface, "a number on the surface"
+    assert trouble["button"] == "Let it through"
+    assert "10.9.8.7" in json.dumps(trouble["details"]) and "8801" in json.dumps(trouble["details"])
+    assert desk_settings.trouble_card({"phone": {"phones": []}}) is None, "no phone, no question"
+    assert len(desk_settings.device_rows({"phone": {}})) == 1
+    first = desk_settings.keyboard_card({"phone": {"phones": []}})
+    assert "get the DeskIT keyboard" in first["line"]
+    google = desk_settings.keyboard_card({"account": {"anonymous": True}})
+    assert google["kind"] == "line" and google["buttons"][0]["arg"] == "google"
+    assert desk_settings.phone_info({"phone": "an older app's string"}) == {}
+    for tab, layout in desk_settings.LAYOUT.items():
+        for entry in layout:
+            assert entry.isupper() or entry in desk_settings.BLOCK_TITLES, entry
+
+
+def test_the_tk_desks_phone_tab_and_home_row_still_work() -> None:
+    """The Tk desk opens where WebView2 cannot, so its card stands on the
+    same words: the devices, the QR, the question, Home's row."""
+    import dashboard as dash
+    import settings as settings_mod
+
+    try:
+        board = dash.Dashboard()
+    except Exception as e:                      # no display: nothing to test
+        print(f"    (skipped: no Tk window — {e})")
+        return
+    try:
+        board.closing = True
+        board.status = {"stage": "running", "account": {"device_name": "MY-PC"},
+                        "phone": {"on": False, "ask": True, "port": 8801, "addrs": [], "error": "",
+                                  "phones": [{"id": "p", "name": "A phone", "cert": "c",
+                                              "reached": 0, "dictated": 0}], "pcs": []}}
+        rows = board._waiting_phone()
+        assert rows[0]["text"] == "Your phone can use this PC too" and rows[0]["eyebrow"] == "A phone"
+        assert [b[0] for b in rows[0]["buttons"]] == ["Allow", "Not now"]
+        board._show("Settings")
+        board._settings_go(settings_mod.PHONE)
+        board._finish_settings()
+        board.root.update()
+        board._phone_ask("p")
+        board._finish_settings()
+        board.root.update()
+        assert board._phone_asking == "p"
+        board._phone_keep()
+        assert board._phone_asking == ""
+        board.status["phone"]["ask"] = False
+        assert board._waiting_phone() == []
+        board.status["phone"] = "an older app's string"
+        assert board._waiting_phone() == []
+    finally:
+        try:
+            board.root.destroy()
+            board._bury()
+        except Exception:
+            pass
+
+
+def test_the_settings_phone_tab_presses_reach_the_app() -> None:
+    """Forget asks first, the app is told by id, and the firewall press
+    leaves the lock so the page's poll does not wait on Windows' prompt."""
+    import desk_settings
+
+    status = dict(_WEB_STATUS, phone={
+        "on": True, "port": 8801, "addrs": [], "error": "", "program": r"C:\x\pythonw.exe",
+        "phones": [{"id": "p", "name": "A phone", "cert": "c", "reached": 0, "dictated": 0}],
+        "pcs": []}, account={"device_name": "MY-PC"})
+    with _web_settings(status=status) as (place, asked, doors, _files):
+        assert place.act("phone.forget", "p")["ok"] is False, "Forget before it asked"
+        assert place.act("phone.ask", "p")["ok"]
+        cards = {s["kind"]: s for s in place.read()["pages"]["phone"]}
+        assert cards["devices"]["rows"][0]["asking"] and cards["keyboard"]["kind"] == "keyboard"
+        assert place.act("phone.keep", None)["ok"] and not place._phone_asking
+        place.act("phone.ask", "p")
+        place.act("phone.forget", "p")
+        assert ("phone", {"do": "forget", "id": "p"}) in asked
+        with _patched(desk_settings, "let_it_through", lambda s: "Windows answered"):
+            assert place.act("phone.firewall", None)["note"] == "Windows answered"
+
+
+def test_home_asks_a_further_pc_with_one_row_and_the_press_reaches_the_app() -> None:
+    """On both desks' pile: the phone's name, one sentence, Allow, Not now."""
+    status = dict(_WEB_STATUS, phone={"on": False, "ask": True, "phones": [{"name": "A phone"}]})
+    with _web_desk(status) as (model, folder, asked):
+        row = next(r for r in model.home()["pile"] if r["id"] == "phone:allow")
+        assert row["text"] == "Your phone can use this PC too" and row["title"] == "A phone"
+        assert [b["label"] for b in row["buttons"]] == ["Allow", "Not now"]
+        model.act("phone.allow")
+        assert ("phone", {"do": "allow"}) in asked
+    status = dict(_WEB_STATUS, phone={"on": False, "ask": False, "phones": []})
+    with _web_desk(status) as (model, folder, asked):
+        assert not [r for r in model.home()["pile"] if r["kind"] == "phone"]
+        assert "not waiting" in model.act("phone.allow")["note"]
+
+
+def test_a_pc_makes_its_identity_once_and_a_lost_passphrase_is_a_new_one() -> None:
+    """identity() answers the same fingerprint for as long as the key is
+    there; the file holds no private key in the clear. A passphrase that
+    is gone is a new identity, because the key could never open again. One
+    that only will not open is another matter: a read that failed is not a
+    missing file (test_only_a_missing_file_makes_a_new_key)."""
+    import ssl
+
+    import phone as phone_mod
+    import secretstore
+
+    first = phone_mod.identity()
+    assert len(first) == 64 and phone_mod.identity() == first
+    text = phone_mod.key_path().read_text("ascii")
+    assert "BEGIN ENCRYPTED PRIVATE KEY" in text and "BEGIN EC PRIVATE KEY" not in text
+    assert "BEGIN PRIVATE KEY" not in text
+    der = ssl.PEM_cert_to_DER_cert(text[:text.index("-----END CERTIFICATE-----") + 25])
+    assert phone_mod.fingerprint(der) == first
+    assert phone_mod.key_path().parent == paths.SECRETS_DIR
+
+    secretstore.delete(phone_mod.PASS_NAME)
+    second = phone_mod.identity()
+    assert second != first and phone_mod.identity() == second
 
 
 def test_phone_api_version_fields() -> None:
@@ -5726,6 +8578,13 @@ def test_the_keyboard_has_its_own_identity_and_no_default_pc() -> None:
     assert "android/keystore.properties" in ignore and "android/*.jks" in ignore
     manifest = (src / "AndroidManifest.xml").read_text("utf-8")
     assert 'android:allowBackup="false"' in manifest
+    # allowBackup binds the cloud and not a phone-to-phone transfer on Android 12 up
+    assert 'android:dataExtractionRules="@xml/data_extraction_rules"' in manifest
+    rules = (src / "res" / "xml" / "data_extraction_rules.xml").read_text("utf-8")
+    for road in ("cloud-backup", "device-transfer"):
+        inside = rules.split(f"<{road}>")[1].split(f"</{road}>")[0]
+        for domain in ("root", "file", "database", "sharedpref", "external"):
+            assert f'<exclude domain="{domain}" path="." />' in inside, (road, domain)
 
 
 def test_needs_translation_skips_text_with_no_hebrew() -> None:
@@ -13768,8 +16627,7 @@ def test_a_door_that_lands_on_a_tab_shows_nothing_but_the_old_screen_and_the_new
                         assert lit == [board.nav.selected], lit
 
             rows = board._waiting_lock()
-            assert rows and rows[0]["buttons"][0][0] == "Type the recovery key", rows
-            door = rows[0]["buttons"][0][2]
+            door = next(b[2] for b in rows[0]["buttons"] if b[0] == "Type the recovery key")
             assert door == board._lock_go_type
             press(door)
             assert board.screen == "Settings" and board._settings_tab == settings_mod.ACCOUNT, \
@@ -28039,7 +30897,12 @@ def test_notify_interrupt_decides_who_may_ring_and_who_is_reminded() -> None:
         assert cue == ["notify"], cue
         _awake_until(lambda: len(cue) == 3)
         assert len(cue) == 3, cue
-        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        # The reminder cues, presents the card, THEN logs (notify.py's
+        # reminder loop), so the third cue can land before its log line:
+        # CI read the log in between on 2026-11-11 and saw only 1/2.
+        log_path = Path(d) / "notify.log"
+        _awake_until(lambda: "REMINDED 2/2" in log_path.read_text("utf-8"))
+        log_text = log_path.read_text("utf-8")
         assert "REMINDED 2/2" in log_text, log_text
         eng.stop()
     with tempfile.TemporaryDirectory() as d:
@@ -28404,12 +31267,14 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     # Cowork's only road in (notify_watch.py), and Claude Code's turns
     # left to the hook that already cards them.
     assert cfg.notify.watch == "cowork"
+    # A finish read off its transcript before the hook knocks (2026-10-24).
+    assert cfg.notify.early is True
     sections = {s.name: s for s in settings_mod.read(here / "defaults.toml")}
     assert "notify" in sections, sorted(sections)
     keys = {s.key for s in sections["notify"].settings}
     assert keys == {"enabled", "cue", "card_seconds", "stack_max",
                     "remind_every_s", "remind_times", "coalesce_s",
-                    "interrupt", "quiet_s", "watch",
+                    "interrupt", "quiet_s", "watch", "early",
                     "summarize", "summary_wait_s", "summary_model",
                     "summary_language",
                     "corner", "anchor", "x", "y",
@@ -28856,6 +31721,72 @@ def test_the_hook_names_the_session_the_notification_came_from() -> None:
         assert needle in module, needle
 
 
+def test_the_session_store_is_found_where_the_app_keeps_it_now() -> None:
+    """THE STORE MOVED (notify_hook.py, 2026-10-21): the desktop app's
+    sessions live under %LOCALAPPDATA%\\Claude-Data\\claude_<hash> now,
+    and from that morning every card went out without a link and the
+    arrival watcher found nothing, in silence. The roots are one list,
+    current layout first and the two old places after it; the hook's
+    link and the engine's watcher both read it; and the link is found
+    through it with no folder named."""
+    import notify
+    import notify_hook as hook
+
+    desk = "6abc45c7-8df5-460d-a90f-cbadbbbd4cb2"
+    live = "add068f2-9cd4-4904-b19c-d73859fad53e"
+    with tempfile.TemporaryDirectory() as d:
+        local, appdata = Path(d) / "Local", Path(d) / "Roaming"
+        assert hook.session_roots(local, appdata) == [], "nothing there"
+        new = local / "Claude-Data" / "claude_pzs8sxrjxfjjc" / "claude-code-sessions"
+        old = appdata / "Claude" / "claude-code-sessions"
+        boxed = (local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache"
+                 / "Roaming" / "Claude" / "claude-code-sessions")
+        for root in (boxed, old, new):
+            root.mkdir(parents=True)
+        (local / "Claude-Data" / "README.txt").write_text("not a store", "utf-8")
+        assert hook.session_roots(local, appdata) == [new, old, boxed]
+        folder = new / "acct" / "org"
+        folder.mkdir(parents=True)
+        (folder / f"local_{desk}.json").write_text(json.dumps(
+            {"sessionId": f"local_{desk}", "cliSessionId": live,
+             "priorCliSessionIds": [], "lastFocusedAt": 1792857363656}),
+            "utf-8")
+        saved = {k: os.environ.get(k) for k in ("LOCALAPPDATA", "APPDATA")}
+        os.environ["LOCALAPPDATA"], os.environ["APPDATA"] = str(local), str(appdata)
+        try:
+            assert hook.session_link(live) == f"claude://resume?session={desk}"
+            assert notify.session_roots() == [new, old, boxed], \
+                "the watcher reads the same list"
+            assert notify.focus_times()[f"local_{desk}"] == 1792857363656
+            # A file that has not changed is not parsed again — these are
+            # up to 1 MB each and the watcher asks every 2 s — and one
+            # that has is.
+            parsed: list = []
+            real = notify._focus_of
+            notify._focus_of = lambda p: (parsed.append(p), real(p))[1]
+            try:
+                assert notify.focus_times()[live] == 1792857363656
+                assert parsed == [], parsed
+                (folder / f"local_{desk}.json").write_text(json.dumps(
+                    {"sessionId": f"local_{desk}", "cliSessionId": live,
+                     "priorCliSessionIds": [], "lastFocusedAt": 1792857999999,
+                     "moved": True}), "utf-8")
+                assert notify.focus_times()[live] == 1792857999999
+                assert len(parsed) == 1, parsed
+            finally:
+                notify._focus_of = real
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    # Neither module keeps a list of its own any more.
+    source = (REPO / "notify.py").read_text(encoding="utf-8")
+    assert "PACKAGES" not in source and "SESSIONS_UNDER" not in source
+    assert "notify_hook.session_roots()" in source
+
+
 def _toast(title: str, body: str = "") -> bytes:
     """One toast's payload, the shape Windows stores: the app's own XML
     with the title and the body as <text> nodes, as bytes."""
@@ -29092,6 +32023,242 @@ def test_a_toast_the_watcher_cannot_read_is_not_a_card() -> None:
     hwnd, title = notify_watch.claude_window()
     assert isinstance(hwnd, int) and isinstance(title, str)
     assert (hwnd > 0) == bool(title), (hwnd, title)
+
+
+def _transcript_line(kind: str = "text", *, stop: str = "end_turn",
+                     message: str = "msg_1", session: str = "S1",
+                     text: str = "Done.", cwd: str = r"C:\work\DeskIT",
+                     side: bool = False) -> bytes:
+    """One line of a Claude Code transcript, the shape the desktop app
+    writes (2.1.308): one content block per line, the message's
+    stop_reason on every one of them."""
+    block = {"text": {"type": "text", "text": text},
+             "thinking": {"type": "thinking", "thinking": "hm"},
+             "tool_use": {"type": "tool_use", "id": "toolu_1", "name": "Bash",
+                          "input": {"command": "ls"}}}[kind]
+    return (json.dumps({
+        "parentUuid": "p", "isSidechain": side, "type": "assistant",
+        "message": {"id": message, "type": "message", "role": "assistant",
+                    "content": [block], "stop_reason": stop},
+        "uuid": f"u-{message}-{kind}", "timestamp": "2026-10-24T15:05:33.123Z",
+        "entrypoint": "claude-desktop", "cwd": cwd, "sessionId": session,
+    }, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def test_the_tail_reads_a_finish_off_the_transcript_as_the_hook_would_send_it() -> None:
+    """The owner, 2026-10-24: the card comes "a terribly long delay"
+    after the answer is done. The answer is on disk seconds before the
+    Stop hook starts (notify_tail.py has the measurements), so it is read
+    from there: only a main-chain end_turn with text is a finish, what is
+    sent is the hook's own payload plus `via`, history before the start
+    is skipped, a file born later is read from its first byte, a message
+    written twice is one finish, half a line waits for the rest, and a
+    copy that does not hold Claude Code's door sends nothing."""
+    import notify
+    import notify_hook
+    import notify_tail
+
+    assert notify_tail.VIA == notify.VIA == "transcript"
+    long_text = "סיימתי. " + "word " * 1200 + "\nLeft for you: restart."
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "projects"
+        (root / "C--work-DeskIT" / "S1" / "subagents").mkdir(parents=True)
+        f1 = root / "C--work-DeskIT" / "S1.jsonl"
+        f1.write_bytes(_transcript_line(text="an old answer", message="old"))
+        # A subagent's file is never looked at, end_turn or not.
+        (root / "C--work-DeskIT" / "S1" / "subagents" / "agent-a.jsonl") \
+            .write_bytes(b"")
+        seen: list = []
+        door = {"mine": True}
+        tail = notify_tail.Tail(seen.append, root=root,
+                                connected=lambda: door["mine"],
+                                window=lambda: (4321, "Claude"),
+                                link=lambda s: f"claude://resume?session={s}")
+        assert tail.once() == 0 and seen == [], "history is not news"
+        with f1.open("ab") as f:
+            f.write(_transcript_line("tool_use", stop="tool_use", message="m1"))
+            f.write(json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": "end_turn"}]}}).encode()
+                + b"\n")
+            f.write(_transcript_line("thinking", message="m2"))
+            f.write(_transcript_line(text=long_text, message="m2"))
+            f.write(_transcript_line(text="a subagent's", message="m3",
+                                     side=True))
+        (root / "C--work-DeskIT" / "S1" / "subagents" / "agent-a.jsonl") \
+            .write_bytes(_transcript_line(text="not his", message="m4"))
+        assert tail.once() == 1, seen
+        sent = seen[0]
+        expected = notify_hook.payload_from_hook(
+            {"hook_event_name": "Stop", "session_id": "S1",
+             "cwd": r"C:\work\DeskIT", "last_assistant_message": long_text},
+            window=(4321, "Claude"), link="claude://resume?session=S1")
+        assert sent == dict(expected, via="transcript"), (sent, expected)
+        assert sent["kind"] == "done" and sent["title"] == "Claude finished"
+        assert sent["project"] == "DeskIT" and len(sent["body"]) == 300
+        assert sent["text"] == long_text[:5000] and sent["hwnd"] == 4321
+        # The same message written again is the same finish.
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text=long_text, message="m2"))
+        assert tail.once() == 0 and len(seen) == 1
+        # Half a line is not a line: it is read when the rest lands.
+        line = _transcript_line(text="second answer", message="m5")
+        with f1.open("ab") as f:
+            f.write(line[:40])
+        assert tail.once() == 0
+        with f1.open("ab") as f:
+            f.write(line[40:])
+        assert tail.once() == 1 and seen[-1]["body"] == "second answer"
+        # A session born after the start is read from its first byte —
+        # found by the next rescan, which the test asks for at once.
+        f2 = root / "C--work-MarsT" / "S2.jsonl"
+        f2.parent.mkdir()
+        f2.write_bytes(_transcript_line(text="hello", message="m6",
+                                        session="S2", cwd=r"C:\work\MarsT"))
+        tail.rescan()
+        assert tail.once() == 1 and seen[-1]["session"] == "S2"
+        assert seen[-1]["project"] == "MarsT"
+        # A copy that does not hold the door cards nothing, asked per finish.
+        door["mine"] = False
+        with f2.open("ab") as f:
+            f.write(_transcript_line(text="again", message="m7", session="S2"))
+        assert tail.once() == 0 and len(seen) == 3
+        door["mine"] = True
+        # A file that was asleep at the last rescan keeps its offset, so
+        # what it gains before the next one is read, not skipped.
+        clock = {"now": time.time() + 10_000}
+        sleepy = notify_tail.Tail(seen.append, root=root, active_s=60,
+                                  connected=lambda: True,
+                                  window=lambda: (0, ""), link=lambda s: "",
+                                  clock=lambda: clock["now"])
+        sleepy.rescan()
+        assert f1 not in sleepy._active, "an old file is not polled"
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="woke up", message="m8"))
+        assert sleepy.once() == 0, "not looked at until the next rescan"
+        sleepy.rescan()
+        assert sleepy.once() == 1 and seen[-1]["body"] == "woke up"
+        # The tiers: a file written five minutes ago is still active but
+        # not hot, so it is looked at every WARM_EVERY-th pass; once it
+        # gains bytes it is hot again and looked at every pass.
+        clock["now"] = time.time() + 300
+        tiers = notify_tail.Tail(seen.append, root=root, rescan_s=1e9,
+                                 connected=lambda: True,
+                                 window=lambda: (0, ""), link=lambda s: "",
+                                 clock=lambda: clock["now"])
+        assert tiers.once() == 0 and f1 in tiers._active
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="warm", message="m9"))
+        caught = [tiers.once() for _ in range(notify_tail.WARM_EVERY)]
+        assert caught == [0] * (notify_tail.WARM_EVERY - 1) + [1], caught
+        with f1.open("ab") as f:
+            f.write(_transcript_line(text="hot", message="m10"))
+        assert tiers.once() == 1 and seen[-1]["body"] == "hot"
+        # Switched off: nothing is read at all.
+        off = notify_tail.Tail(seen.append, enabled=False, root=root)
+        off.start()
+        assert off.once() == 0 and off._thread is None
+    # The line-level gate on its own: what is not a finish is None.
+    assert notify_tail.finish_of(b"not json end_turn") is None
+    assert notify_tail.finish_of(_transcript_line("thinking")) is None
+    assert notify_tail.finish_of(_transcript_line(text="   ")) is None
+    assert notify_tail.finish_of(_transcript_line(stop="max_tokens")) is None
+    assert notify_tail.finish_of(_transcript_line(side=True)) is None
+    assert notify_tail.finish_of(_transcript_line(session="")) is None
+    assert notify_tail.finish_of(_transcript_line())["text"] == "Done."
+
+
+def test_notify_folds_the_hooks_finish_into_the_one_the_transcript_told() -> None:
+    """One finish, two roads (notify.py, "THE SAME FINISH TOLD TWICE"):
+    whichever arrives first is the card and the one summary; the hook
+    arriving second gives that card its window and link and nothing
+    else; the transcript arriving second is dropped. A different body,
+    another session, or a hook with no transcript copy behind it lands
+    exactly as it always did."""
+    import notify
+
+    sentence = "הענף נדחף, נשאר להפעיל מחדש."
+    early = {"source": "claude-code", "kind": "done",
+             "title": "Claude finished", "session": "S1", "project": "DeskIT",
+             "body": "Done. Left for you: restart.",
+             "text": "Done. Left for you: restart.", "hwnd": 0, "app": "",
+             "link": "", "via": "transcript"}
+    hook = dict(early, hwnd=4321, app="Claude",
+                link="claude://resume?session=6abc45c7-8df5-460d-a90f-cbadbbbd4cb2")
+    hook.pop("via")
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary(sentence, delay=0.05)
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input",
+                                                 summary_wait_s=2.0),
+                            card=card, summary=fake)
+        reply = eng.receive(early)
+        assert reply["held"] is True and reply["summary"] == "pending", reply
+        _awake_until(lambda: card.shown)
+        reply = eng.receive(hook)
+        assert reply["folded"] is True and reply["id"] == 1, reply
+        items = eng.store.items()
+        assert len(items) == 1, items
+        item = items[0]
+        assert item["via"] == "transcript" and item["folded"] is True
+        assert item["hwnd"] == 4321 and item["app"] == "Claude"
+        assert item["link"] == hook["link"] and item["body"] == sentence
+        assert len(fake.asked) == 1 and len(card.shown) == 1, \
+            "never summarised twice, never shown twice"
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "| via transcript" in log_text, log_text
+        assert "FOLDED the hook into #1 | the transcript was 0." in log_text
+        # The next turn of the same session is a new finish: it lands,
+        # and it retires the one before it, the way it always has.
+        reply = eng.receive(dict(early, body="Second.", text="Second."))
+        assert reply.get("folded") is None and reply["id"] == 2, reply
+        _awake_until(lambda: eng.state()["held"] == 0)
+        assert eng.store.items()[0]["seen"] is True, "superseded"
+        # Another session with the very same words is its own finish.
+        reply = eng.receive(dict(hook, session="S9", body="Second.",
+                                 text="Second."))
+        assert reply.get("folded") is None and reply["id"] == 3, reply
+        eng.stop()
+    # The hook first, the transcript second: dropped, one card, one ask.
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary(sentence)
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input"),
+                            card=card, summary=fake)
+        eng.receive(hook)
+        _awake_until(lambda: card.shown)
+        reply = eng.receive(early)
+        assert reply["folded"] is True and reply["id"] == 1, reply
+        assert len(eng.store.items()) == 1 and len(fake.asked) == 1
+        assert "via" not in eng.store.items()[0]
+        assert "TOLD TWICE #1 | the hook was first" in \
+            (Path(d) / "notify.log").read_text("utf-8")
+        # Two hooks with the same words and no transcript behind either:
+        # the door as it was — the second is its own card.
+        reply = eng.receive(hook)
+        assert reply.get("folded") is None and reply["id"] == 2, reply
+        eng.stop()
+
+
+def test_the_tail_is_built_started_and_stopped_with_the_door() -> None:
+    """Wired in main.py beside the toast watcher, fed by the same
+    callable, stopped before the engine; [notify] early is on unless the
+    config says otherwise, and the shipped file says what it does."""
+    import config
+
+    source = (REPO / "main.py").read_text(encoding="utf-8")
+    assert "import notify_tail as notify_tail_mod" in source
+    assert "notify_tail_mod.Tail(" in source
+    assert "self.notify_tail.start()" in source
+    i = source.index("self.notify_tail.stop()")
+    assert i < source.index("self.notify.stop()"), \
+        "the tail feeds the engine, so it stops first"
+    assert config.NotifyConfig.early is True
+    defaults = (REPO / "defaults.toml").read_text(encoding="utf-8")
+    assert "\nearly = true " in defaults
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "config.toml"
+        path.write_text("[notify]\nearly = false\n", "utf-8")
+        assert config.load(path).notify.early is False
 
 
 def test_the_watcher_is_built_started_and_stopped_with_the_door() -> None:
@@ -30841,6 +34008,13 @@ def test_the_copy_that_travels_is_the_toggles_and_nothing_else() -> None:
         assert problems_mod.sent_line(failed) == "could not be sent: HTTP 400: violates check constraint"
         (problems_mod.outbox_dir(tmp) / f"{rid}.failed").unlink()
         assert store._edit(item["id"], sent=problems_mod.QUEUED)
+        # moved aside for its account (sb._reports_wait) is not sent
+        waiting = problems_mod.outbox_dir(tmp) / paths.OUTBOX_WAITING / "someone"
+        waiting.mkdir(parents=True)
+        target.replace(waiting / target.name)
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 0, "a waiting report read as sent"
+        assert problems_mod.sent_line(store.get(item["id"])) == "waiting to send"
+        (waiting / target.name).replace(target)
         target.unlink()                                  # sb.py sent it
         assert problems_mod.sync_outbox(store, app_dir=tmp) == 1
         assert problems_mod.sent_line(store.get(item["id"])) == "sent to the developer"
@@ -34019,7 +37193,7 @@ _PATHS_PROBE = (
     "print(json.dumps({k: str(getattr(paths, k)) for k in ("
     "'APP_DIR','DATA_DIR','PORTABLE','DEVELOPER','FLAT','RECENT_DIR',"
     "'PENDING_DIR','APP_LOG','TRANSCRIPTS_LOG','PHONE_TOKEN','CUES_DIR',"
-    "'VOCAB_FILE','LEGACY_CONFIG','APP_ID','DEFAULT_PORT')}"
+    "'VOCAB_FILE','LEGACY_CONFIG','APP_ID')}"
     " | {'mutex': paths.kernel_name(r'Local\\DeskIT.instance'),"
     "    'pipe': paths.kernel_name(r'\\\\.\\pipe\\DeskIT.control'),"
     "    'ensured': str(paths.ensure())}))"
@@ -34126,7 +37300,7 @@ def test_paths_portable_marker_env_and_default_home():
         assert got["DATA_DIR"] == str(local / "DeskIT"), got
         assert got["RECENT_DIR"] == str(local / "DeskIT" / "audio" / "recent")
         assert (local / "DeskIT" / "logs").is_dir(), "ensure() made the tree"
-        assert got["APP_ID"] == "DeskIT.App" and got["DEFAULT_PORT"] == "8756"
+        assert got["APP_ID"] == "DeskIT.App"
         assert got["mutex"] == r"Local\DeskIT.instance", got["mutex"]
         assert got["pipe"] == r"\\.\pipe\DeskIT.control", got["pipe"]
 
@@ -34151,7 +37325,7 @@ def test_paths_dev_mark_only_in_a_checkout():
     import paths
     assert paths.DEV_SUFFIX == ".dev" and paths.DEV_TAG == "Dev"
     assert paths.APP_ID == "DeskIT.Dev"
-    assert paths.DEFAULT_PORT == 8757
+    assert not hasattr(paths, "DEFAULT_PORT"), "every copy asks for the same port and falls through"
     assert paths.kernel_name(r"Local\DeskIT.instance") == r"Local\DeskIT.dev.instance"
     assert paths.kernel_name(r"\\.\pipe\DeskIT.control") == r"\\.\pipe\DeskIT.dev.control"
     assert paths.kernel_name(r"Local\Other.thing") == r"Local\Other.thing.dev"
@@ -34173,7 +37347,7 @@ _STRANGER_PROBE = (
     "import paths, autostart, notify_hook, secretstore, models, packs;"
     "print(json.dumps({'STRANGER': paths.STRANGER, 'DEVELOPER': paths.DEVELOPER,"
     " 'PORTABLE': paths.PORTABLE, 'FLAT': paths.FLAT, 'DATA_DIR': str(paths.DATA_DIR),"
-    " 'suffix': paths.DEV_SUFFIX, 'tag': paths.DEV_TAG, 'port': paths.DEFAULT_PORT,"
+    " 'suffix': paths.DEV_SUFFIX, 'tag': paths.DEV_TAG,"
     " 'app_id': paths.APP_ID, 'mutex': paths.kernel_name(r'Local\\DeskIT.instance'),"
     " 'run_key': autostart.RUN_KEY, 'hook_file': str(notify_hook.DEFAULT_SETTINGS),"
     " 'prefix': secretstore.TARGET_PREFIX,"
@@ -34227,7 +37401,7 @@ def test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy():
         got = probe({"DESKIT_HOME": str(tmp), "DESKIT_STRANGER": "1"})
         assert got["STRANGER"] and not got["DEVELOPER"] and not got["PORTABLE"] and not got["FLAT"], got
         assert got["DATA_DIR"] == str(tmp), got
-        assert got["suffix"] == ".test" and got["tag"] == "" and got["port"] == 8758, got
+        assert got["suffix"] == ".test" and got["tag"] == "", got
         assert got["app_id"] == "DeskIT.Test" and got["mutex"] == r"Local\DeskIT.test.instance", got
         assert got["run_key"] == r"Software\DeskIT.test\Run", got
         assert got["hook_file"] == str(tmp / "claude-settings.json"), got
@@ -34543,14 +37717,14 @@ def test_settings_toml_roundtrip_all_kinds():
     try:
         values = {"local.extra_fillers": ["כאילו", 'say "hi"', "a\\b"],
                   "vocab.max_terms": 55, "polish.max_wait_s": 2.5,
-                  "server.enabled": True, "local.initial_prompt": "שלום, \"world\""}
+                  "server.enabled": False, "local.initial_prompt": "שלום, \"world\""}
         config_mod.save(values, settings=s, state=t)
         back = config_mod.read_settings(s)
         for key, value in values.items():
             assert back[key] == value, (key, back.get(key))
         cfg = config_mod.load_layered(settings=s, state=t)
         assert list(cfg.local.extra_fillers) == values["local.extra_fillers"]
-        assert cfg.polish.max_wait_s == 2.5 and cfg.server.enabled is True
+        assert cfg.polish.max_wait_s == 2.5 and cfg.server.enabled is False
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -34615,7 +37789,7 @@ def test_defaults_toml_carries_no_owner_values():
     assert flat["capture.folder"] == "{pictures}/DeskIT" and flat["camera.folder"] == "{pictures}/DeskIT"
     assert flat["capture.clip_folder"] == "{videos}/DeskIT"
     assert flat["vocab.terms"] == []
-    assert flat["server.enabled"] is False
+    assert flat["server.enabled"] is True
     for key in ("dot.x", "dot.y", "hint.x", "hint.y", "notify.x", "notify.y",
                 "problems.x", "problems.y", "review.x", "review.y",
                 "shelf.x", "shelf.y"):
@@ -34637,11 +37811,11 @@ def test_migrate_config_diff_splits_settings_from_state():
         text = text.replace('device = ""', 'device = "Old Mic"', 1)
         old.write_text(text, encoding="utf-8")
         config_mod.set_values(old, {"vocab.max_terms": 41, "polish.when": "known",
-                                    "server.enabled": True, "notify.x": 10, "notify.y": 20,
+                                    "server.enabled": False, "notify.x": 10, "notify.y": 20,
                                     "lookup.dwell_ms": 5})
         settings, state, dropped = migrate_mod.config_diff(old)
         assert settings == {"vocab.max_terms": 41, "polish.when": "known",
-                            "server.enabled": True}, settings
+                            "server.enabled": False}, settings
         assert state == {"audio.device": "Old Mic", "notify.x": 10, "notify.y": 20}, state
         assert "lookup.dwell_ms" in dropped
     finally:
@@ -36559,7 +39733,7 @@ def test_reset_spares_the_owners_training_data():
 # and what replaces each one is where it says it is.
 #
 # What STAYS is underneath and is not a surface: the portable layout,
-# OWNER_DATA, the .dev names, port 8757, autostart refusing in a
+# OWNER_DATA, the .dev names, autostart refusing in a
 # checkout, updates that look and never install.
 
 def test_the_product_has_no_owner_surface_left():
@@ -36923,6 +40097,120 @@ def test_the_ladder_honours_the_number_format():
         lw.LocalWhisperTranscriber("m", "he", device="cpu", compute_type="int8")
         assert [b[:2] for b in built] == [("cpu", "int8")] and built[0][2] == {}
     assert config_mod.LocalConfig().compute_type == "auto" and config_mod.LocalConfig().cpu_threads == 0
+
+
+def test_the_real_length_cuts_the_padded_window_back_to_the_clip():
+    """local_whisper, the real length (2026-10-25): a window faster-whisper
+    padded to 3,000 frames reaches the encoder as its own frames + 100,
+    rounded up to a hundred — what night14b was scored with — and a full
+    window, or one that is not padded, goes through untouched. The zero
+    padding is found on the REAL extractor's output: a frame of silence is
+    never all zeros, so a quiet stretch inside a clip is never cut."""
+    import numpy as np
+    import transcribers.local_whisper as lw
+    from faster_whisper.audio import pad_or_trim
+    from faster_whisper.feature_extractor import FeatureExtractor
+
+    assert [lw.real_length_frames(n) for n in (0, 1, 100, 101, 437, 2899, 2900, 2999)] \
+        == [100, 200, 200, 300, 600, 3000, 3000, 3000]
+
+    extractor = FeatureExtractor(feature_size=128)
+    rate = 16000
+    t = np.arange(int(2.3 * rate)) / rate
+    tone = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    # a second of digital silence INSIDE the clip, and one at its end
+    clip = np.concatenate([tone, np.zeros(rate, np.float32), tone,
+                           np.zeros(rate, np.float32)])
+    for audio in (clip, np.zeros(rate, np.float32)):
+        feats = extractor(audio)
+        own = feats.shape[-1]
+        padded = pad_or_trim(feats)
+        assert padded.shape[-1] == 3000 and lw._content_frames(padded) == own
+        assert lw._content_frames(padded[None]) == own        # a batch of one
+
+    seen: list = []
+    encode = lw._at_real_length(lambda f: seen.append(f) or "encoded")
+    feats = pad_or_trim(extractor(clip))
+    assert encode(feats) == "encoded"
+    assert seen[-1].shape == (128, lw.real_length_frames(extractor(clip).shape[-1]))
+    assert not seen[-1][:, -100:].any()                      # the margin is silence
+    full = np.ones((128, 3000), np.float32)
+    encode(full)
+    assert seen[-1] is full                                   # 30 s of speech: as it came
+    short = np.ones((128, 500), np.float32)
+    encode(short)
+    assert seen[-1] is short                                  # never padded: as it came
+
+
+def test_the_real_length_is_the_cpu_tiers_and_never_the_english_models():
+    """[local] real_length: off (the default — the shipped model is not
+    trained for it) never shortens; cpu shortens the Hebrew model only on
+    the processor, whichever rung of the ladder got it there; always on a
+    card too. The English detector keeps Whisper's 30 s in every mode.
+    The key travels from the file through local_kwargs, and a word that is
+    not a mode is refused."""
+    import tempfile
+    import transcribers.local_whisper as lw
+    from transcribers import local_kwargs
+
+    class _FakeModel:
+        def __init__(self, model, device, compute_type, **kw):
+            self.device = device
+            if device == "cuda" and failing:
+                raise RuntimeError("no card here")
+
+        def encode(self, features):
+            return features
+
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+    def shortened(model) -> bool:
+        return "encode" in vars(model)
+
+    import faster_whisper
+    with _patched(faster_whisper, "WhisperModel", _FakeModel), \
+            _patched(lw, "_register_cuda_dlls", lambda: None):
+        failing = False
+        for mode, device, want in (("off", "cpu", False), ("cpu", "cpu", True),
+                                   ("cpu", "cuda", False), ("always", "cuda", True),
+                                   ("always", "cpu", True)):
+            t = lw.LocalWhisperTranscriber("m", "he", device=device, real_length=mode)
+            assert t.at_real_length is want and shortened(t._model) is want, (mode, device)
+            assert not shortened(t._load("e")), (mode, device)    # the English model
+        # a card that will not run lands on the processor: cpu mode follows it there
+        failing = True
+        t = lw.LocalWhisperTranscriber("m", "he", device="auto", real_length="cpu")
+        assert t.device == "cpu" and t.at_real_length and shortened(t._model)
+
+    assert config_mod.LocalConfig().real_length == "off"
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.toml"
+        p.write_text("backend = 'local'\n[local]\nreal_length = 'CPU'\n", "utf-8")
+        assert local_kwargs(config_mod.load(p))["real_length"] == "cpu"
+        p.write_text("backend = 'local'\n[local]\nreal_length = 'yes'\n", "utf-8")
+        try:
+            config_mod.load(p)
+        except config_mod.ConfigError as e:
+            assert "real_length" in str(e)
+        else:
+            raise AssertionError("expected ConfigError on real_length = 'yes'")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert local_kwargs(cfg)["real_length"] == "off"
+
+
+def test_faster_whisper_still_encodes_the_padded_window_through_self_encode():
+    """The real length rides on one line of faster-whisper 1.2.1: each
+    window is padded by pad_or_trim and then handed to self.encode, which
+    an instance attribute can stand in for. An upgrade that moves either
+    would leave the CPU tier at 30 s without a word — so it fails here."""
+    import inspect
+    from faster_whisper.transcribe import WhisperModel
+
+    source = inspect.getsource(WhisperModel.generate_segments)
+    pad = source.index("segment = pad_or_trim(segment)")
+    assert source.index("encoder_output = self.encode(segment)") > pad
+    assert "WhisperModel.encode(" not in inspect.getsource(WhisperModel)
 
 
 # ------------------------------------------- the load, timed and warmed
@@ -38617,8 +41905,11 @@ def test_network_md_matches_net_py():
     else:
         assert "`<ref>.supabase.co`" in page
     for purpose in ("model-download", "pack-install", "update-check", "update-download",
-                    "ollama", "notify", "account", "sync", "history", "report"):
+                    "ollama", "notify", "account", "sync", "history", "report", "link"):
         assert f"`{purpose}`" in page, purpose
+    # the relay rides the account's gate, never a card of its own
+    import privacy
+    assert privacy.PURPOSE_KINDS["link"] == "account" and "link" in net_mod.PURPOSES
     assert "us.aws.cdn.hf.co" in page and "Offline" in page
 
 
@@ -39678,7 +42969,7 @@ def test_the_wizard_downloads_in_the_background_and_hands_the_rest_to_the_app():
             assert written.get("notify.enabled") is None, "notify.enabled is the default already"
             assert hooked == ["install"], hooked
             assert set(w.switches) == {"autostart", "phone"}, "the last page's two"
-            assert w.switches["phone"].get() is False and w.switches["autostart"].get() is False
+            assert w.switches["phone"].get() is True and w.switches["autostart"].get() is False
             w.switches["phone"].toggle()
             assert "server.enabled" not in config_mod.read_settings(s), "written on Finish, not before"
             assert "setup.autostart" not in config_mod.read_state(t), "an unmoved switch was written"
@@ -39687,7 +42978,7 @@ def test_the_wizard_downloads_in_the_background_and_hands_the_rest_to_the_app():
             assert w.result.saved and w.result.open_desk
             assert w.result.downloads is None, "a finished queue was handed to the app"
             assert config_mod.read_state(t).get("setup.done") is True
-            assert config_mod.read_settings(s).get("server.enabled") is True
+            assert config_mod.read_settings(s).get("server.enabled") is False, "each PC keeps its no"
             assert bool(w.result) is True
         finally:
             gate.set()
@@ -44316,7 +47607,7 @@ class _FakeSupabase:
     #: lookup sealed past the cap was refused live for three days with
     #: every test green.
     SEALED = {"history": ("cipher",), "vault": ("cipher",), "recovery": ("wrapped",),
-              "pairings": ("applicant", "handed")}
+              "pairings": ("applicant", "handed"), "devices": ("link",)}
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -44328,6 +47619,9 @@ class _FakeSupabase:
         self.email = ""
         self.name = ""
         self.deleted = False
+        self.ended: list = []              # the sessions forget_device() ended
+        self.sessions: dict = {}           # session id -> the account that owns it
+        self.rls = False                   # each account reads its own rows (see _answer)
 
     def session(self, email: str = "", token: str | None = None) -> dict:
         return {"access_token": token or self.TOKEN, "token_type": "bearer",
@@ -44350,12 +47644,29 @@ class _FakeSupabase:
                 return _FakeRaw(data, status)
         return self._answer(method, path, query, headers, body or b"")
 
+    @staticmethod
+    def _claims(headers) -> dict:
+        """The bearer's claims, the way the server reads them."""
+        import base64
+        try:
+            part = str(headers.get("Authorization", "")).split(".")[1]
+            return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        except (IndexError, ValueError):
+            return {}
+
     def _answer(self, method, path, query, headers, body):
         is_json = "json" in str(headers.get("Content-Type", "")).lower()
         payload = json.loads(body.decode("utf-8")) if body and is_json else None
+        sid = self._claims(headers).get("session_id")
+        if sid in self.ended and path.startswith("rest/v1/"):
+            # 0006: a session that is gone is 401 at the door
+            return _FakeRaw(b'{"code":"PT401","message":"this session was signed out"}', 401)
         if path == "auth/v1/signup":
             return _FakeRaw(json.dumps(self.session()).encode(), 200)
         if path == "auth/v1/token" and query.get("grant_type") == "refresh_token":
+            if any(str((payload or {}).get("refresh_token")) == f"refresh-{s}" for s in self.ended):
+                return _FakeRaw(b'{"error":"invalid_grant","error_description":'
+                                b'"Invalid Refresh Token: Refresh Token Not Found"}', 400)
             self.refreshes += 1
             return _FakeRaw(json.dumps(self.session(self.email, token=self.TOKEN + str(self.refreshes))).encode(), 200)
         if path == "auth/v1/token" and query.get("grant_type") == "pkce":
@@ -44379,6 +47690,20 @@ class _FakeSupabase:
             self.deleted = True
             self.tables.clear()
             return _FakeRaw(b"", 204)
+        if path == "rest/v1/rpc/forget_device":
+            # migration 0007: the row and the session it names, each only
+            # where it is the caller's own: the column is the client's word.
+            # True when no session of that row is left to end: ended here, or
+            # over already. A row naming somebody else's leaves it and says so
+            caller = self.sessions.get(sid, self.UID)
+            rows = self.tables.setdefault("devices", [])
+            hit = [r for r in rows if r.get("id") == payload["target"] and r.get("user_id") == caller]
+            rows[:] = [r for r in rows if not any(r is h for h in hit)]
+            alive = {s: who for s, who in self.sessions.items() if s not in self.ended}
+            named = [r["session_id"] for r in hit if r.get("session_id")]
+            self.ended += [s for s in named if alive.get(s) == caller]
+            left = [s for s in named if s in alive and alive[s] != caller]
+            return _FakeRaw(b"true" if named and not left else b"false", 200)
         if path.startswith("rest/v1/"):
             table = path[len("rest/v1/"):]
             rows = self.tables.setdefault(table, [])
@@ -44389,8 +47714,12 @@ class _FakeSupabase:
                 # PostgREST's filters, the ones the client uses: eq, neq,
                 # gt, is.null — a PATCH and a DELETE act on what matches
                 hit = list(rows)
+                if self.rls:
+                    # row-level security, for a test that walks two accounts
+                    # over one fake: UID is whoever signed in last
+                    hit = [r for r in hit if r.get("user_id", self.UID) == self.UID]
                 for k, v in query.items():
-                    if k in ("select", "order", "limit", "on_conflict") or "." not in v:
+                    if k in ("select", "order", "limit", "offset", "on_conflict") or "." not in v:
                         continue
                     op, val = v.split(".", 1)
                     if op == "eq":
@@ -44402,7 +47731,13 @@ class _FakeSupabase:
                     elif op == "is" and val == "null":
                         hit = [r for r in hit if r.get(k) is None]
                 if method == "GET":
-                    return _FakeRaw(json.dumps(hit).encode(), 200)
+                    # PostgREST's paging, the way the client asks for it
+                    for spec in reversed([s for s in str(query.get("order", "")).split(",") if s]):
+                        name, _dot, way = spec.partition(".")
+                        hit.sort(key=lambda r: str(r.get(name) or ""), reverse=way == "desc")
+                    start = int(query.get("offset", 0))
+                    end = start + int(query["limit"]) if "limit" in query else None
+                    return _FakeRaw(json.dumps(hit[start:end]).encode(), 200)
                 if method == "DELETE":
                     rows[:] = [r for r in rows if not any(r is h for h in hit)]
                     return _FakeRaw(b"", 204)
@@ -44423,6 +47758,13 @@ class _FakeSupabase:
                 refused = self._refused(table, items)
                 if refused:
                     return refused
+                if table == "devices" and any(
+                        str(r.get("id")) == str(i.get("id")) and r.get("user_id") != i.get("user_id")
+                        for r in rows for i in items):
+                    # devices.id is the whole primary key: row-level
+                    # security refuses an upsert over another account's row
+                    return _FakeRaw(b'{"code":"42501","message":"new row violates row-level '
+                                    b'security policy for table \\"devices\\""}', 403)
                 stamped = []
                 for item in items:
                     item = dict(item)
@@ -44503,11 +47845,17 @@ class _fixture_project:
         secretstore.delete("account_key_aside")
         self.sb.forget_cache()
         self.sb._status.update(busy="", last_error="", last_sync="", signin_url="")
-        self.sb._device_names.update(at=0.0, names={})       # the other PCs' names, believed 10 min
+        self.sb._device_names.update(at=0.0, names={}, phone=False)       # believed 10 min
         self.sb._forget_lock_state()
         self.sync.forget_all()
+        for leftover in paths.SECRETS_DIR.glob("forgotten-*.json"):
+            leftover.unlink(missing_ok=True)
         config_mod.save({"account.device_id": None, "account.device_seen_at": None,
-                         "account.device_name": None})
+                         "account.device_name": None, "account.device_session": None,
+                         "account.device_ids": None, "account.past_devices": None,
+                         "account.history_floor": None, "account.left": None,
+                         self.sb.LAST_ACCOUNT: None, self.sb.HELD_BACK: None,
+                         self.sb.PUSHED: None})
 
     def __exit__(self, *exc):
         try:
@@ -44866,11 +48214,17 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
                 assert not any(c["path"].startswith("rest/v1/settings_sync") for c in fake.calls[calls:]), \
                     "a history nudge touched the settings"
                 assert len(fake.broadcasts) == 2
-                # the socket goes when the gate shuts
+                # both syncs shut: the socket stays (every signed-in copy
+                # holds one, whatever its syncs say; PHONE_LINK_PLAN.md
+                # stage 1) and it goes with the account's own gate
                 import privacy
                 privacy.withdraw("settings_sync")
                 privacy.withdraw("history_sync")
-                assert server.closed.wait(5), "the socket stayed open with both gates shut"
+                time.sleep(1.5)
+                assert not server.closed.is_set() and sb.status()["live"], \
+                    "the socket went with the syncs"
+                privacy.withdraw("account")
+                assert server.closed.wait(5), "the socket stayed open with the account gate shut"
                 sb._live_stop.set()
                 thread.join(5)
                 assert not thread.is_alive()
@@ -44878,6 +48232,7 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
 
             # 3. a refused join: logged, retried, never raised
             sb._live_stop.clear()
+            privacy.grant("account")
             privacy.grant("settings_sync")
             privacy.grant("history_sync")
             refused = _FakeRealtime(refuse_join="Unauthorized")
@@ -44896,6 +48251,319 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
         sb._live_state.update(on=False, error="")
         sb._pending.clear()
         shutil.rmtree(d, ignore_errors=True)
+
+
+class _RelayBench:
+    """relay.Relay with every callable faked and the real seal: one account,
+    one PC (``me``), one phone of it (``phone``), a forgotten one, and what
+    went out (``sent``, each piece opened back as the phone would)."""
+
+    UID = "11111111-2222-3333-4444-555555555555"
+    ME = "aaaaaaaa-0000-4000-8000-000000000001"
+    PHONE = "bbbbbbbb-0000-4000-8000-000000000002"
+    OTHER_PC = "cccccccc-0000-4000-8000-000000000003"
+    FORGOTTEN = "dddddddd-0000-4000-8000-000000000004"
+
+    def __init__(self, **over):
+        import net as net_mod
+        import relay
+        self.relay_mod = relay
+        self.key = os.urandom(32)
+        self.sent: list[dict] = []
+        self.heard: list[tuple[bytes, object]] = []
+        self.why: str | None = None
+        self.on = True
+        self.now = time.time()
+        self.peer = net_mod.Peer("f" * 64, "Pixel")
+        self.answer = (200, {"text": "שלום מהדרך", "seconds": 4.5, "backend": "local"})
+        self.done = threading.Event()
+
+        def transcribe(wav, peer):
+            self.heard.append((wav, peer))
+            self.done.set()
+            return self.answer
+        args = dict(who=lambda: (self.UID, self.ME), key=lambda uid: self.key if uid == self.UID else None,
+                    phones=lambda: {self.PHONE: self.peer}, can_take=lambda: self.why,
+                    allowed=lambda: self.on, send=self._send, transcribe=transcribe,
+                    clock=lambda: self.now)
+        args.update(over)
+        self.relay = relay.Relay(**args)
+
+    def _send(self, payload):
+        self.sent.append(payload)
+        return True
+
+    def piece(self, head, body=b"", *, n=0, rid="0" * 32, frm=None, to=None, key=None):
+        return self.relay_mod.seal(key or self.key, self.UID, frm or self.PHONE, to or self.ME,
+                                   rid, n, head, body)
+
+    def recording(self, wav, rid, *, frm=None, to=None, key=None, at=None):
+        """Every piece of one recording, as the phone sends them."""
+        import hashlib
+        step = self.relay_mod.FRAME_BYTES
+        chunks = [wav[i:i + step] for i in range(0, len(wav), step)]
+        out = [self.piece({"k": "audio"}, c, n=i, rid=rid, frm=frm, to=to, key=key)
+               for i, c in enumerate(chunks)]
+        out.append(self.piece({"k": "end", "frames": len(chunks), "bytes": len(wav),
+                               "sha256": hashlib.sha256(wav).hexdigest(),
+                               "at": int((self.now if at is None else at) * 1000)},
+                              n=len(chunks), rid=rid, frm=frm, to=to, key=key))
+        return out
+
+    def opened(self, payload):
+        """A piece this PC sent, opened the way the phone opens it."""
+        return self.relay_mod.open_(self.key, self.UID, payload)
+
+
+def _relay_wav(seconds: float) -> bytes:
+    """A real 16 kHz mono 16-bit WAV of a tone, what the keyboard records."""
+    import numpy as np
+    from recorder import frames_to_wav
+    t = np.arange(int(16000 * seconds)) / 16000.0
+    return frames_to_wav([(np.sin(2 * np.pi * 220 * t) * 8000).astype(np.int16)], 16000)
+
+
+def test_the_relay_takes_a_sealed_recording_from_a_phone_of_the_account_once():
+    """relay.py (PHONE_LINK_PLAN.md stage 3, Q1): a phone away from home pings
+    every PC and this one answers it is there with no model involved; the
+    recording comes in sealed pieces, in any order, is checked whole, handed to
+    the phone door's own route and answered once, sealed, to that phone. Each
+    rule is broken once on purpose: a device that is not a phone of the
+    account, a forgotten one, a piece moved to another place in the request,
+    another sender's or another PC's, a key that is not the account's, a
+    replay, a recording outside the time window, a missing piece, pieces that
+    do not add up, a PC that cannot take it now, and the switch off."""
+    import relay
+    b = _RelayBench()
+    # the piece fits the broadcast cap with room, at the size the phone cuts
+    full = b.piece({"k": "audio"}, os.urandom(relay.FRAME_BYTES), n=0, rid="1" * 32)
+    assert relay.size(full) < relay.PAYLOAD_MAX * 0.6, relay.size(full)
+    try:
+        relay.seal(b.key, b.UID, b.PHONE, b.ME, "1" * 32, 0, {"k": "audio"}, os.urandom(200_000))
+    except relay.Refused:
+        pass
+    else:
+        raise AssertionError("a piece over the broadcast cap was sealed")
+
+    # 1. the ping: answered with no model, to that phone, sealed under its AAD
+    b.relay.heard(b.piece({"k": "ping"}, rid="a" * 32, to="*"))
+    assert len(b.sent) == 1, b.sent
+    pong = b.sent[0]
+    assert pong["device"] == b.ME and pong["to"] == b.PHONE and pong["rid"] == "a" * 32 and pong["n"] == 0
+    head, _ = b.opened(pong)
+    assert head == {"v": 1, "k": "pong", "ready": True}, head
+    assert "שלום" not in json.dumps(pong, ensure_ascii=False)
+    b.relay.heard(b.piece({"k": "ping"}, rid="a" * 32, to="*"))
+    assert len(b.sent) == 1, "the same ping answered twice"
+    # a PC that cannot now says its own words, and the phone knows before the release
+    b.why = "The model is off on your PC."
+    b.relay.heard(b.piece({"k": "ping"}, rid="b" * 32, to="*"))
+    head, _ = b.opened(b.sent[-1])
+    assert head == {"v": 1, "k": "pong", "ready": False, "why": "The model is off on your PC."}, head
+    b.why = None
+
+    # 2. a recording of 10 s: four pieces, sent out of order, taken whole
+    wav = _relay_wav(10.0)
+    pieces = b.recording(wav, "c" * 32)
+    assert len(pieces) == 5
+    sent = len(b.sent)
+    for p in (pieces[2], pieces[0], pieces[3], pieces[1], pieces[4]):
+        b.relay.heard(p)
+    assert b.done.wait(5), "the recording never reached the route"
+    deadline = time.monotonic() + 5
+    while len(b.sent) < sent + 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b.heard[0][0] == wav and b.heard[0][1] is b.peer, "not the recording, or not the phone"
+    took, text = b.sent[sent], b.sent[sent + 1]
+    assert (took["n"], text["n"]) == (relay.N_TOOK, relay.N_TEXT)
+    assert b.opened(took)[0] == {"v": 1, "k": "took"}
+    head, _ = b.opened(text)
+    assert head == {"v": 1, "k": "text", "status": 200, "body": b.answer[1]}, head
+    assert all(p["to"] == b.PHONE and p["device"] == b.ME for p in b.sent)
+
+    # 3. the same request again: a replay is dropped whole
+    for p in pieces:
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.heard) == 1 and b.relay.counts.get("replay"), b.relay.counts
+
+    # 4. nobody else's pieces are opened, and nothing goes back
+    before = (len(b.sent), len(b.heard))
+    stranger = "eeeeeeee-0000-4000-8000-000000000005"
+    for p in b.recording(wav, "d" * 32, frm=stranger):              # not a phone of the account
+        b.relay.heard(p)
+    b.relay.heard(b.piece({"k": "ping"}, rid="d" * 32, to="*", frm=b.FORGOTTEN))   # forgotten
+    counted = dict(b.relay.counts)
+    for p in b.recording(wav, "e" * 32, to=b.OTHER_PC):             # another PC's
+        b.relay.heard(p)
+    assert b.relay.counts == counted, f"another PC's pieces were opened here: {b.relay.counts}"
+    for p in b.recording(wav, "f" * 32, key=os.urandom(32)):        # not the account's key
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert (len(b.sent), len(b.heard)) == before, "a piece that is not this PC's was answered"
+    assert b.relay.counts.get("stranger", 0) >= 2 and b.relay.counts.get("refused", 0) >= 1, b.relay.counts
+
+    # 5. a piece moved: to another place, another request or another sender
+    moved = dict(b.recording(wav, "1" * 32)[0], n=1)
+    other_req = dict(b.recording(wav, "2" * 32)[0], rid="3" * 32)
+    for bad in (moved, other_req):
+        try:
+            relay.open_(b.key, b.UID, bad)
+        except relay.Refused:
+            pass
+        else:
+            raise AssertionError(f"a moved piece opened: {bad['rid']}/{bad['n']}")
+
+    # 6. outside the time window: the phone's own clock, sealed in the end
+    before = len(b.heard)
+    for p in b.recording(wav, "4" * 32, at=b.now - relay.SKEW_S - 60):
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.heard) == before and b.relay.counts.get("stale"), b.relay.counts
+
+    # 7. a missing piece: let go after the straggle, nothing transcribed
+    with _patched(relay, "STRAGGLE_S", 0.2):
+        short = b.recording(wav, "5" * 32)
+        for p in short[:1] + short[2:]:
+            b.relay.heard(p)
+        time.sleep(0.6)
+    assert len(b.heard) == before and b.relay.counts.get("incomplete"), b.relay.counts
+    # pieces that do not add up to what the end says
+    lie = b.recording(wav, "6" * 32)
+    lie[-1] = b.piece({"k": "end", "frames": 4, "bytes": len(wav), "sha256": "0" * 64,
+                       "at": int(b.now * 1000)}, n=4, rid="6" * 32)
+    for p in lie:
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.heard) == before and b.relay.counts.get("corrupt"), b.relay.counts
+
+    # 8. the switch off: nothing is opened or answered
+    b.on = False
+    sent = len(b.sent)
+    b.relay.heard(b.piece({"k": "ping"}, rid="7" * 32, to="*"))
+    for p in b.recording(wav, "8" * 32):
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(b.sent) == sent and len(b.heard) == before
+
+
+def test_the_live_loop_hands_the_relay_on_and_never_waits_on_a_pull():
+    """sb._live_once (PHONE_LINK_PLAN.md stage 3): a ``link`` broadcast goes to
+    LINK_HOOKS on a thread that is not the socket's, and a pull runs on a lane
+    of its own, so a ping that lands in the middle of a slow pull is answered
+    within it, not after it. A piece of this device's own is never handed on.
+    sb.send_link goes out under the purpose ``link`` on the private topic, and
+    not at all with the account's gate shut."""
+    import net as net_mod
+    import privacy
+    import sb
+    import secretstore
+
+    got: list[tuple[dict, str, float]] = []
+    pulled = threading.Event()
+
+    def slow_pull(*a, **k):
+        pulled.set()
+        time.sleep(3.0)
+        return {}
+
+    def hook(payload):
+        got.append((payload, threading.current_thread().name, time.monotonic()))
+
+    with _fixture_project() as fake, _consented("account", "settings_sync"), \
+            _patched(sb, "LIVE_HEARTBEAT_S", 30.0), _patched(sb, "LIVE_ENABLED", True), \
+            _patched(sb, "sync_now", slow_pull), _patched(sb, "LINK_HOOKS", [hook]):
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        sb._live_stop.clear()
+        mine = sb.device_id()
+        other = "99999999-8888-7777-6666-555555555555"
+        server = _FakeRealtime()
+        try:
+            with _patched(net_mod, "_ws_connect", server.connect):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True,
+                                          name="the-socket")
+                thread.start()
+                assert server.joined.wait(5), "no join"
+                topic = f"realtime:user:{fake.UID}"
+                server.push({"event": "broadcast", "topic": topic, "payload": {
+                    "type": "broadcast", "event": "changed",
+                    "payload": {"stores": ["history"], "device": other}}})
+                assert pulled.wait(5), "the pull never started"
+                t0 = time.monotonic()
+                piece = {"device": other, "to": "*", "rid": "a" * 32, "n": 0, "s": "v1.AAAA"}
+                server.push({"event": "broadcast", "topic": topic, "payload": {
+                    "type": "broadcast", "event": "link", "payload": piece}})
+                server.push({"event": "broadcast", "topic": topic, "payload": {
+                    "type": "broadcast", "event": "link", "payload": dict(piece, device=mine)}})
+                deadline = time.monotonic() + 5
+                while not got and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                assert got, "the link piece never reached its hook"
+                payload, name, at = got[0]
+                assert payload == piece, payload
+                assert at - t0 < 1.0, f"the piece waited {at - t0:.2f} s behind the pull"
+                assert name != "the-socket" and name == "account-link", name
+                time.sleep(0.3)
+                assert len(got) == 1, "this device's own piece was handed on"
+                sb._live_stop.set()
+                thread.join(6)
+        finally:
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+        # sending: the purpose `link`, the private topic, the event, the piece
+        before = len(fake.broadcasts)
+        assert sb.send_link(dict(piece, device=mine)) is True
+        msg = fake.broadcasts[before]["messages"][0]
+        assert msg == {"topic": f"user:{fake.UID}", "event": "link", "private": True,
+                       "payload": dict(piece, device=mine)}, msg
+        assert net_mod.rows()[-1].purpose == "link"
+        privacy.withdraw("account")
+        assert sb.send_link(piece) is False and len(fake.broadcasts) == before + 1
+        assert net_mod.rows()[-1].status == "refused"
+
+
+def test_the_relay_answers_through_the_running_app():
+    """main.App's relay: the phone door's own route, the switch on Settings >
+    Phone (``server.away``) and Dictate from the phone both in front of it, and
+    a ping answered with the app's own words when the model is off or the app
+    is locked."""
+    import main as main_mod
+    import relay
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = config_mod.load_layered()
+    app._stopping = threading.Event()
+    app.LOCK_WORDS = main_mod.App.LOCK_WORDS
+    app.MODEL_OFF_WORDS = main_mod.App.MODEL_OFF_WORDS
+    app.locked = lambda: False
+    app._model_state = "on"
+    with _consented("account"):
+        assert app.cfg.server.away is True, "Also from outside home ships on"
+        assert main_mod.App._relay_allowed(app) is True
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, away=False))
+        assert main_mod.App._relay_allowed(app) is False
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, away=True,
+                                                                          enabled=False))
+        assert main_mod.App._relay_allowed(app) is False, "Dictate from the phone is off"
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, enabled=True))
+    assert main_mod.App._relay_allowed(app) is False, "the account's gate is shut"
+    assert main_mod.App._relay_can_take(app) is None
+    app._model_state = "off"
+    assert main_mod.App._relay_can_take(app) == main_mod.App.MODEL_OFF_WORDS
+    app.locked = lambda: True
+    assert main_mod.App._relay_can_take(app) == main_mod.App.LOCK_WORDS
+    # the setting is drawn on the Phone tab, under its plain words
+    import settings as settings_mod
+    rows = {f.path: (tab.name, f) for tab in settings_mod.TABS for g in tab.groups for f in g.rows
+            if hasattr(f, "path")}
+    assert rows["server.away"][0] == settings_mod.PHONE
+    assert rows["server.away"][1].label == "Also from outside home"
+    # relay.py imports no transport and logs no sealed value
+    src = (REPO / "relay.py").read_text("utf-8")
+    assert not re.search(r"^\s*(import|from)\s+(socket|ssl|urllib|http)", src, re.M)
+    carried = re.findall(r"log\.\w+\(.*?,\s*(sealed|key|wav|text|body|payload|plain)\s*[,)]", src)
+    assert not carried, f"relay.py logs what it carries: {carried}"
+    assert relay.FRAME_BYTES * 4 // 3 + 200 < relay.PAYLOAD_MAX // 2 + 1000
 
 
 def test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second():
@@ -45061,7 +48729,7 @@ class _pc:
                              "_lock_state": {"at": 0.0, "state": "", "lock_id": "", "pairing": None,
                                              "pending": [], "recovery": None, "error": "",
                                              "changed": None},
-                             "_device_names": {"at": 0.0, "names": {}},
+                             "_device_names": {"at": 0.0, "names": {}, "phone": False},
                              "_seen_pairings": set(), "_pending": set()},
                       "vault": {"_applicants": {}}}
         self._sb, self._vault = sb, vault
@@ -45069,7 +48737,8 @@ class _pc:
     def __enter__(self):
         import history as history_mod
         import secretstore
-        self._saved = {"paths": {k: getattr(paths, k) for k in ("SECRETS_DIR", "SYNC_DIR", "STATE_FILE", "SETTINGS_FILE")},
+        self._saved = {"paths": {k: getattr(paths, k) for k in ("SECRETS_DIR", "SYNC_DIR", "STATE_FILE", "SETTINGS_FILE",
+                                                                "VOCAB_FILE", "OUTBOX_DIR")},
                        "prefix": secretstore.TARGET_PREFIX, "log": history_mod.LOG,
                        "sb": {k: getattr(self._sb, k) for k in self.FIELDS},
                        "vault": {"_applicants": self._vault._applicants}}
@@ -45077,6 +48746,8 @@ class _pc:
         paths.SYNC_DIR = self.home / "sync"
         paths.STATE_FILE = self.home / "state.json"
         paths.SETTINGS_FILE = self.home / "settings.toml"
+        paths.VOCAB_FILE = self.home / "vocab.json"
+        paths.OUTBOX_DIR = self.home / "outbox"
         history_mod.LOG = self.log = self.home / "transcripts.log"
         secretstore.TARGET_PREFIX = self.prefix
         for k, v in self.state["sb"].items():
@@ -45166,7 +48837,7 @@ def test_vault_seals_hands_over_and_recovers_through_cng():
         recovery = vault.new_recovery()
         assert re.fullmatch(r"([0-9A-HJKMNP-TV-Z]{4}-){5}[0-9A-HJKMNP-TV-Z]{4}", recovery), recovery
         assert not hasattr(vault, "new_code"), "a random pairing code is back"
-        code = vault.pairing_code(uid, "req-1", pub)
+        code = vault.pairing_code(uid, "req-1", pub, vault.fingerprint(key))
         assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", code), code
         assert vault.normalize("0l1o-abcd", 8) == "0110ABCD" and vault.normalize("ABCD-EFG", 8) is None \
             and vault.normalize("ABCD-EFGU", 8) is None and vault.pretty("0110ABCD") == "0110-ABCD"
@@ -45294,7 +48965,7 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 b_name = f"laptop · {sb.copy_name()}"
                 assert req["device_name"] == b_name and req["code"] == lock["code"].replace("-", "")[:8] \
                     and req["applicant"].startswith("p1.") and req.get("handed") is None, req
-                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"])
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"], fp)
                 assert set(req) == {"id", "user_id", "device_id", "device_name", "code", "applicant", "updated_at"}
                 pairing = [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
                 assert len(pairing) == 1 and pairing[0]["messages"][0]["payload"]["code"] == lock["code"]
@@ -45329,6 +49000,9 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
 
             # ---- B: takes the key, syncs everything
             with b:
+                sb.sync_now()
+                assert vault.key(fake.UID) is None, "the key was taken before Same code"
+                sb.same_code(b_code)
                 out = sb.sync_now()
                 lock = sb.status()["lock"]
                 assert lock["state"] == "have" and lock["code"] == "", lock
@@ -45410,11 +49084,3331 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 fake.tables["profiles"][0]["lock_id"] = fp
                 sb.delete_account()
                 assert vault.key(fake.UID) is None and sb.status()["lock"] == {
-                    "state": "", "id": "", "code": "", "pending": [], "recovery": None, "error": "",
-                    "changed": None}
+                    "state": "", "id": "", "code": "", "same": False, "pending": [], "recovery": None,
+                    "error": "", "quiet": False, "changed": None}
     finally:
         for pc in (a, b, c):
             pc.gone()
+
+
+def test_the_code_binds_the_lock_and_tells_two_screens_apart():
+    """Stage 1 of PHONE_LINK_PLAN.md: until now the code proved the asking
+    device to the approver and nothing proved the approver to the asking
+    device: hand_over is unauthenticated, and the one check afterwards is
+    the fingerprint against lock_id, both written by the server. The lock
+    goes into the code: the asking device uses the lock_id it read, the
+    approver the fingerprint of the key it holds, never the column. The
+    two worked examples are chapter 12's, and a Kotlin test holds the same
+    two. Against the fake project: a server that names B another lock gets
+    two different codes on the two screens, and the honest road gives one.
+    A's Approve goes by what A computes, whatever the column says. That
+    the difference protects anything is the next test's business: on its
+    own it does not."""
+    import base64
+    import sb
+    import secretstore
+    import vault
+
+    uid, pid = _FakeSupabase.UID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    point = "p1." + base64.b64encode(b"\x41" * 64).decode("ascii")
+    vault._codes.clear()
+    assert vault.pairing_code(uid, pid, point, "0123456789abcdef") == "WK0MS-7HN8C"
+    assert vault.pairing_code(uid, pid, point, "fedcba9876543210") == "R85CJ-HRE9H"
+    assert vault.code_hint("WK0MS-7HN8C") == "WK0MS7HN"
+    assert vault.AAD_DEVICE.format(uid=uid, device_id=pid) == f"device/{uid}/{pid}"
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            session = json.dumps(fake.session("p@example.com"))
+
+            def sign_in(name):
+                secretstore.set("supabase_session", session)
+                sb.forget_cache()
+                config_mod.save({"account.device_name": name})
+
+            with a:
+                sign_in("desk")
+                sb.sync_now()
+                fp = vault.fingerprint(vault.key(fake.UID))
+            # the server tells B another lock while B asks
+            forged = "f" * 16
+            fake.tables["profiles"][0]["lock_id"] = forged
+            with b:
+                sign_in("laptop")
+                sb.sync_now()
+                lied_to = sb.status()["lock"]["code"]
+            fake.tables["profiles"][0]["lock_id"] = fp
+            with a:
+                shown = sb.pending_pairings()
+                assert len(shown) == 1 and shown[0]["code"] != lied_to, "the lie left one code"
+                req = fake.tables["pairings"][0]
+                assert shown[0]["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"], fp)
+                assert lied_to == vault.pairing_code(fake.UID, req["id"], req["applicant"], forged)
+                sb.decline_pairing(shown[0]["id"])
+            # told the truth, the two screens agree
+            with b:
+                sb.sync_now()
+                honest = sb.status()["lock"]["code"]
+            assert honest != lied_to
+            with a:
+                # the approver reads its own key, never the server's column
+                fake.tables["profiles"][0]["lock_id"] = forged
+                assert [p["code"] for p in sb.pending_pairings()] == [honest]
+                fake.tables["profiles"][0]["lock_id"] = fp
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(honest)
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "have"
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_a_forged_answer_is_never_kept_until_the_person_here_says_same_code():
+    """What the review found: the lock in the code protected nothing,
+    because the joining device took whatever `handed` said. A dishonest
+    server names a lock of its own, writes `handed` itself with no PC
+    involved, and the joiner keeps that key and seals to it. Both sides
+    press, as Bluetooth pairing does: until the person here presses Same
+    code the answer is neither opened nor kept, on the worker's pass, the
+    sync, the live channel's road or the wizard's poll. The press may come
+    before or after the Approve, and it goes for the code the screen
+    showed: a request made afresh meanwhile is not answered by it. A
+    joiner with nobody to press never holds a key the server made."""
+    import sb
+    import vault
+
+    forged_key = os.urandom(32)
+    forged = vault.fingerprint(forged_key)
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    opened: list = []
+    real_take = vault.take
+
+    def take(*args):
+        opened.append(args[0])
+        return real_take(*args)
+
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(vault, "take", take):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                fp = vault.fingerprint(key)
+            # the server names its own lock to B and answers by itself
+            fake.tables["profiles"][0]["lock_id"] = forged
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+                lock = sb.status()["lock"]
+                assert lock["state"] == "waiting" and lock["same"] is False, lock
+                req = fake.tables["pairings"][0]
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"], forged)
+                req["handed"] = vault.hand_over(forged_key, req["applicant"],
+                                                vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=req["id"]))
+                for look in (sb.sync_now, lambda: sb.account_pass("test"), sb.poll_lock,
+                             lambda: sb._worker_pass(None, None, None)):
+                    look()
+                    assert vault.key(fake.UID) is None, f"{look} kept the server's key"
+                assert opened == [], "what the server wrote was opened before the press"
+                assert sb.status()["lock"]["state"] == "waiting"
+                assert fake.tables["pairings"], "the unanswered request was taken away"
+                assert not any(r.get("cipher") for r in fake.tables.get("history", [])), \
+                    "something was sealed to the server's key"
+                # the screen's code and no other
+                for wrong in ("", "AAAAA-AAAAA", None):
+                    try:
+                        sb.same_code(wrong)
+                    except sb.AccountError as e:
+                        assert "changed" in str(e), str(e)
+                    else:
+                        raise AssertionError(f"{wrong!r} answered the request")
+                assert sb.status()["lock"]["same"] is False
+                # a request made afresh is not answered by the press on the old one
+                old = sb.status()["lock"]["code"]
+                fake.tables["profiles"][0]["lock_id"] = "e" * 16
+                sb.sync_now()
+                fresh = sb.status()["lock"]["code"]
+                assert fresh != old and sb.status()["lock"]["state"] == "waiting"
+                try:
+                    sb.same_code(old)
+                except sb.AccountError as e:
+                    assert "changed" in str(e), str(e)
+                else:
+                    raise AssertionError("a press on the old code answered the new request")
+            fake.tables["profiles"][0]["lock_id"] = fp
+
+            # the press before the Approve, on the honest road
+            with b:
+                sb.sync_now()
+                fresh = sb.status()["lock"]["code"]
+                sb.same_code(fresh)
+                assert sb.status()["lock"]["same"] is True
+                sb.sync_now()
+                assert vault.key(fake.UID) is None, "a press with no answer gave a key"
+            with a:
+                shown = sb.pending_pairings()
+                assert [p["code"] for p in shown] == [fresh], "the honest road shows two codes"
+                sb.approve_pairing(shown[0]["id"])
+            with b:
+                sb.sync_now()
+                assert vault.key(fake.UID) == key and sb.status()["lock"]["state"] == "have"
+                try:
+                    sb.same_code(fresh)
+                except sb.AccountError as e:
+                    assert "not waiting" in str(e), str(e)
+                else:
+                    raise AssertionError("a press with nothing waiting")
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def _sign_in_pc(fake, name: str, *, sid: str = "", uid: str = "") -> None:
+    """A device of the account inside a test: its session (the claim the
+    real token carries, when the test wants one) and its name."""
+    import base64
+    import sb
+    import secretstore
+    token = None
+    blob = fake.session("p@example.com")
+    if uid:
+        blob["user"]["id"] = uid
+    if sid:
+        claims = base64.urlsafe_b64encode(json.dumps({"session_id": sid}).encode()).rstrip(b"=").decode()
+        blob["access_token"] = f"eyJhbGciOiJFUzI1NiJ9.{claims}.sig"
+        blob["refresh_token"] = f"refresh-{sid}"
+        fake.sessions[sid] = uid or fake.UID
+    secretstore.set("supabase_session", json.dumps(blob))
+    sb.forget_cache()
+    config_mod.save({"account.device_name": name})
+
+
+_PHONE = "99999999-8888-7777-6666-555555555501"
+_PHONE_CERT = "ab" * 32
+
+
+def _a_phone_asks(fake, phone: str = _PHONE) -> tuple[str, str]:
+    """What Lock.kt writes: the request, as _request_pairing does it, with
+    the private half kept in vault.py's memory. Returns (id, public)."""
+    import uuid
+    import vault
+    pid = str(uuid.uuid4())
+    public = vault.applicant(pid)
+    lock_id = fake.tables["profiles"][0]["lock_id"]
+    code = vault.pairing_code(fake.UID, pid, public, lock_id)
+    fake.tables.setdefault("pairings", []).append(
+        {"id": pid, "user_id": fake.UID, "device_id": phone, "device_name": "Galaxy S26",
+         "code": vault.code_hint(code), "applicant": public, "handed": None})
+    return pid, public
+
+
+def _a_phone_row(fake, phone: str = _PHONE, platform: str = "android-36", **extra) -> dict:
+    row = {"id": phone, "user_id": fake.UID, "name": "Galaxy S26", "platform": platform, **extra}
+    fake.tables.setdefault("devices", []).append(row)
+    return row
+
+
+def test_with_both_syncs_off_the_account_pass_makes_the_lock_and_hears_a_phone():
+    """The account pass (PHONE_LINK_PLAN.md stage 1). A person with both
+    syncs off could not be reached at all: the lock lived inside sync_now,
+    which returns at once with the gates shut, the worker read the
+    requests only once the lock said have, there was no socket, and
+    _broadcast was hard-wired to the purpose sync. With the account gate
+    alone: the pass makes the lock, unseen (no recovery-key row on Home in
+    either desk); touches no store; a phone's request reaches
+    pending_pairings and Home; the answer and its broadcast go out under
+    `account`, nothing is refused, and the phone can open what it was
+    handed. The recovery row comes the moment there is a phone, or a
+    sync. ACCOUNT_HOOKS run with the key at the end of every pass once the
+    lock says have, and never before; a hook that trips stops nothing."""
+    import dashboard
+    import deskweb
+    import net as net_mod
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    asked: list[dict] = []
+    keys: list[bytes] = []
+
+    def tripping(_key):
+        raise RuntimeError("a hook that trips")
+
+    def rows_of(lock):
+        board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+        board.running = True
+        board.status = {"account": {"signed_in": True, "lock": dict(lock)}}
+        tk_rows = [r["text"] for r in board._waiting_lock()]
+        model = deskweb.Model.__new__(deskweb.Model)
+        model.running = True
+        model.status = {"account": {"signed_in": True, "lock": dict(lock)}}
+        model._lock_fresh, model._lock_typing, model._lock_asking = "", False, False
+        return tk_rows, [r["text"] for r in model._lock_rows()]
+
+    try:
+        with _fixture_project() as fake, _consented("account"), a, \
+                _patched(sb, "PAIRING_HOOKS", [asked.append]), \
+                _patched(sb, "ACCOUNT_HOOKS", [tripping, keys.append]):
+            _sign_in_pc(fake, "desk")
+            net_mod.ROWS.clear()
+            before = 0
+            out = sb.account_pass("test")
+            assert out["lock"] == "have" and not [v for v in out.values() if v.startswith("error")], out
+            key = vault.key(fake.UID)
+            assert key is not None and fake.tables["profiles"][0]["lock_id"] == vault.fingerprint(key)
+            assert keys == [key], "the hooks did not get the key"
+            touched = {c["path"] for c in fake.calls}
+            assert not touched & {"rest/v1/settings_sync", "rest/v1/vocab_sync", "rest/v1/history"}, touched
+            assert not any(r.status == "refused" for r in net_mod.rows()[before:]), net_mod.rows()[before:]
+            assert {r.purpose for r in net_mod.rows()[before:]} == {"account"}
+            # unseen: the fact is there, and Home asks nothing
+            lock = sb.status()["lock"]
+            assert lock["state"] == "have" and lock["recovery"] is False and lock["quiet"] is True, lock
+            assert rows_of(lock) == ([], []), "a recovery row for someone who asked for nothing"
+            assert sb._live_purpose() == "account", "no socket with both syncs off"
+
+            # a phone asks: the request reaches this PC, the card, and Home
+            pid, public = _a_phone_asks(fake)
+            _a_phone_row(fake)
+            sb._device_names["at"] = 0.0
+            sb.account_pass("test")
+            code = vault.pairing_code(fake.UID, pid, public, vault.fingerprint(key))
+            assert [(r["id"], r["name"], r["code"], r["device"]) for r in sb.pending_pairings()] == \
+                [(pid, "Galaxy S26", code, _PHONE)], "the request did not reach this PC"
+            assert [r["code"] for r in asked] == [code], asked
+            lock = sb.status()["lock"]
+            assert lock["quiet"] is False, "a phone in the account and the lock still unseen"
+            tk_rows, web_rows = rows_of(lock)
+            assert any("Galaxy S26 asks to join your account" in t and code in t for t in tk_rows), tk_rows
+            assert any("Galaxy S26 asks to join your account" in t and code in t for t in web_rows), web_rows
+            # a name brings no marks of its own: it is drawn beside that code
+            asked_row = next(r for r in fake.tables["pairings"] if r["id"] == pid)
+            asked_row["device_name"] = "\u202eGalaxy S26\u2069"
+            assert sb.pending_pairings()[0]["name"] == "Galaxy S26"
+            asked_row["device_name"] = "Galaxy S26"
+            assert any(t.startswith("Make a recovery key") for t in tk_rows), "the row did not come with the phone"
+            assert any(t.startswith("Make a recovery key") for t in web_rows)
+
+            # Approve: under `account`, and the phone opens what it got
+            net_mod.ROWS.clear()
+            before = 0
+            assert sb.approve_pairing(pid) == "Galaxy S26"
+            row = next(r for r in fake.tables["pairings"] if r["id"] == pid)
+            assert vault.take(pid, row["handed"], vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=pid)) == key
+            paired = fake.broadcasts[-1]["messages"][0]
+            assert paired["event"] == "paired" and paired["payload"]["id"] == pid, paired
+            assert not any(r.status == "refused" for r in net_mod.rows()[before:]), net_mod.rows()[before:]
+            assert {r.purpose for r in net_mod.rows()[before:]} == {"account"}, "the answer needed a sync"
+
+            # no phone, a sync on: the recovery row comes with the sync
+            fake.tables["devices"][:] = [r for r in fake.tables["devices"] if r["id"] != _PHONE]
+            sb._device_names.update(at=0.0, phone=False)
+            sb.account_pass("test")
+            assert sb.status()["lock"]["quiet"] is True
+            with _consented("settings_sync"):
+                assert sb.status()["lock"]["quiet"] is False, "a sync on and the lock still unseen"
+    finally:
+        a.gone()
+
+
+def test_a_further_pc_with_the_syncs_off_asks_to_join_only_once_there_is_a_phone():
+    """A PC with both syncs off that does not hold the key holds nothing,
+    and asks for nothing: no "Waiting for your other PC" lands on the
+    Home of someone who asked for nothing. It asks once the account has a
+    phone (a row whose platform starts with android-, or web), because
+    then the join is what lets the phone reach it, and the phone is what
+    can approve a PC with nobody else. A forgotten phone is no phone. An
+    explicit answer is asking too: [It was me] on a changed lock does not
+    wait for a phone. And a broadcast naming `devices` is read: a phone
+    appearing makes the waiting PC ask at once, with no 15-minute wait."""
+    import net as net_mod
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+                key = vault.key(fake.UID)
+            with b:
+                _sign_in_pc(fake, "laptop")
+                out = sb.account_pass("test")
+                assert out["lock"] == "not asked", out
+                assert sb.status()["lock"]["state"] == "" and sb.status()["lock"]["code"] == ""
+                assert not fake.tables.get("pairings"), "a PC with its syncs off asked to join"
+                assert not [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
+                assert vault.key(fake.UID) is None
+
+                # a forgotten phone is no phone
+                _a_phone_row(fake)
+                sb._keep_forgotten(fake.UID, [{"device": _PHONE, "cert": _PHONE_CERT, "at": "2026-11-06"}])
+                sb._device_names["at"] = 0.0
+                sb.account_pass("test")
+                assert not fake.tables.get("pairings"), "a forgotten phone made this PC ask"
+                sb._forgotten_file(fake.UID).unlink()
+
+                # a phone: the broadcast is read, the request goes out at once
+                sb._device_names["at"] = 0.0
+                sb._live_stop.clear()
+                sb._live_state.update(on=False, error="")
+                sb._wake.clear()
+                server = _FakeRealtime()
+                with _patched(net_mod, "_ws_connect", server.connect), \
+                        _patched(sb, "LIVE_RETRY_S", (0.2,)), _patched(sb, "LIVE_ENABLED", True):
+                    thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                    thread.start()
+                    assert server.joined.wait(5), "no socket with both syncs off"
+                    server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                                 "payload": {"type": "broadcast", "event": "changed",
+                                             "payload": {"stores": ["devices"], "device": _PHONE}}})
+                    assert _until(sb._wake.is_set), "the worker was left on its 15-minute wait"
+                    sb._wake.clear()
+                    assert fake.tables.get("pairings"), "the phone did not make it ask"
+                    sb._live_stop.set()
+                    thread.join(5)
+                sb._live_stop.clear()
+                lock = sb.status()["lock"]
+                assert lock["state"] == "waiting" and lock["code"], lock
+                req = fake.tables["pairings"][0]
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"],
+                                                          vault.fingerprint(key))
+                event = [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
+                assert len(event) == 1, "the request's broadcast did not go out under account"
+                # looking again is the same request, not a new one
+                sb.account_pass("test")
+                assert len(fake.tables["pairings"]) == 1
+
+            # the web page counts too
+            fake.tables["pairings"].clear()
+            fake.tables["devices"][:] = [r for r in fake.tables["devices"] if r["id"] != _PHONE]
+            with b:
+                sb._forget_lock_state()
+                vault.drop(req["id"])
+                sb.account_pass("test")
+                assert not fake.tables["pairings"]
+                _a_phone_row(fake, platform="web")
+                sb._device_names["at"] = 0.0
+                sb.account_pass("test")
+                assert fake.tables["pairings"], "the web page is a phone here"
+                assert sb._is_phone({"platform": "android-26"}) and sb._is_phone({"platform": "web"})
+                assert not sb._is_phone({"platform": "windows-10.0.26200"})
+                assert not sb._is_phone({"platform": ""}) and not sb._is_phone({})
+
+            # a request the person asked for is not held back: It was me
+            fake.tables["pairings"].clear()
+            fake.tables["devices"].clear()
+            with a:
+                sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
+                other = os.urandom(32)
+                fake.tables["profiles"][0]["lock_id"] = vault.fingerprint(other)
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "changed"
+                assert sb.lock_answer(True) == "asked"
+                assert sb.status()["lock"]["state"] == "waiting" and fake.tables["pairings"], \
+                    "It was me on a PC with its syncs off asked nothing"
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_a_pc_with_its_syncs_off_takes_the_key_the_moment_it_is_approved():
+    """`paired` used to go straight to sync_now, which returns at once with
+    both syncs off, so a PC in that state would have sat on an approved
+    request until the next pass. The live channel runs the account pass:
+    the key is taken within the second, and a `paired` naming another
+    request takes nothing."""
+    import net as net_mod
+    import sb
+    import vault
+
+    other = "99999999-8888-7777-6666-555555555555"
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.account_pass("test")
+                key = vault.key(fake.UID)
+            _a_phone_row(fake)
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "waiting"
+                req = fake.tables["pairings"][0]
+                sb._live_stop.clear()
+                sb._live_state.update(on=False, error="")
+                server = _FakeRealtime()
+
+                def paired(ident):
+                    server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                                 "payload": {"type": "broadcast", "event": "paired",
+                                             "payload": {"id": ident, "device": other}}})
+
+                with _patched(net_mod, "_ws_connect", server.connect), \
+                        _patched(sb, "LIVE_RETRY_S", (0.2,)), _patched(sb, "LIVE_ENABLED", True):
+                    thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                    thread.start()
+                    assert server.joined.wait(5), "no socket with both syncs off"
+                    req["handed"] = vault.hand_over(key, req["applicant"],
+                                                    vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=req["id"]))
+                    # another request's answer: nothing is taken
+                    paired("00000000-0000-0000-0000-000000000000")
+                    time.sleep(0.4)
+                    assert vault.key(fake.UID) is None, "a paired for another request took the key"
+                    # the answer, before this side pressed: nothing either
+                    paired(req["id"])
+                    time.sleep(0.4)
+                    assert vault.key(fake.UID) is None, "the key was taken before Same code"
+                    sb.same_code(sb.status()["lock"]["code"])
+                    t0 = time.monotonic()
+                    paired(req["id"])
+                    assert _until(lambda: vault.key(fake.UID) == key), "the approved PC did not take the key"
+                    took = time.monotonic() - t0
+                    assert took < 2.0, f"{took:.2f} s from the approval to the key"
+                    assert _until(lambda: sb.status()["lock"]["state"] == "have")
+                    assert fake.tables["pairings"] == [], "the request stayed after it was answered"
+                    sb._live_stop.set()
+                    thread.join(5)
+                    assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_the_worker_starts_a_whole_pass_with_the_account_and_a_nudge_stays_small():
+    """One turn of the worker (sb._worker_pass). A pass over everything
+    runs the account pass first, and sync_now takes what it found, so a PC
+    waiting to be approved looks at its request once a turn and not twice.
+    A nudge names a store and is that store: a dictation costs no account
+    pass. With both syncs off the turn still reaches the lock, which is
+    the whole point of the pass, and signed out it does nothing."""
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake:
+            with _consented("account"), a:
+                calls = len(fake.calls)
+                sb._worker_pass(None, None, None)
+                assert len(fake.calls) == calls, "a turn with nobody signed in made a request"
+                _sign_in_pc(fake, "desk")
+                sb._worker_pass(None, None, None)
+                assert vault.key(fake.UID) is not None and sb.status()["lock"]["state"] == "have"
+            with _consented("account", "settings_sync", "history_sync"):
+                with a:
+                    # a nudge: the store it named, and no account pass
+                    with _patched(sb, "account_pass", lambda reason="": fake.calls.clear()):
+                        fake.calls.append({"path": "nudge", "url": ""})
+                        sb._worker_pass(None, None, ["history"])
+                    assert any(c["path"] == "nudge" for c in fake.calls), "a nudge ran the account pass"
+                    assert not any(c["path"] == "rest/v1/settings_sync" for c in fake.calls), \
+                        "a nudge touched another store"
+                with b:
+                    _sign_in_pc(fake, "laptop")
+                    sb._worker_pass(None, None, None)
+                    assert sb.status()["lock"]["state"] == "waiting"
+                    # a PC that waits: one look at its request a turn
+                    n = len(fake.calls)
+                    sb._worker_pass(None, None, None)
+                    looks = [c for c in fake.calls[n:] if c["path"] == "rest/v1/pairings"
+                             and c["method"] == "GET"]
+                    assert len(looks) == 1, f"{len(looks)} looks at the request in one turn"
+                    assert sb.status()["lock"]["state"] == "waiting"
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_names_under_a_shut_history_gate_leave_the_socket_up():
+    """Found by notes\\phone-link-probes\\names_probe.py: _names() asked
+    under the purpose `history`, so a copy with the words sync on and the
+    history sync off had every broadcast from another device end in
+    EgressRefused and the socket dropped, 5 s to 5 min of no channel each
+    time. The names are the account's: the broadcast is logged, the store
+    pulled, and the socket stays. A push of history alone goes out under
+    its own gate, which this same copy's mirror image used to have refused."""
+    import net as net_mod
+    import privacy
+    import sb
+    import vocab as vocab_mod
+
+    other = "99999999-8888-7777-6666-555555555555"
+    d = Path(tempfile.mkdtemp(prefix="deskit-names-"))
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"):
+            _sign_in_pc(fake, "desk")
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+            assert not privacy.allowed("history_sync")
+            fake.tables["devices"] = [{"id": other, "name": "laptop", "user_id": fake.UID}]
+            net_mod.ROWS.clear()
+            before = 0
+            assert sb._names()[other] == "laptop", "the names need the history gate"
+            assert net_mod.rows()[before].purpose == "account"
+            server = _FakeRealtime()
+            vocab = vocab_mod.Vocab(d / "vocab.json")
+            with _patched(net_mod, "_ws_connect", server.connect), _patched(sb, "LIVE_RETRY_S", (0.2,)):
+                thread = threading.Thread(target=sb._live_loop, args=(vocab,), daemon=True)
+                thread.start()
+                assert server.joined.wait(5)
+                assert _until(lambda: sb.status()["live"])
+                sb._device_names.update(at=0.0, names={})        # the line that dropped it
+                server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                             "payload": {"type": "broadcast", "event": "changed",
+                                         "payload": {"stores": ["settings"], "device": other}}})
+                assert _until(lambda: any(c["path"] == "rest/v1/settings_sync" for c in fake.calls)), \
+                    "the store was not pulled"
+                time.sleep(0.5)
+                assert sb.status()["live"] and not server.closed.is_set(), "the socket dropped"
+                assert not any(r.status == "refused" for r in net_mod.rows()[before:]), \
+                    [r for r in net_mod.rows()[before:] if r.status == "refused"]
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+        # history alone: the broadcast under history, with the words gate shut
+        sb._live_stop.clear()
+        with _fixture_project() as fake, _consented("account", "history_sync"):
+            _sign_in_pc(fake, "desk")
+            net_mod.ROWS.clear()
+            before = 0
+            sb._broadcast(["history"], purpose="history")
+            assert fake.broadcasts, "a push of history alone was refused"
+            assert net_mod.rows()[before].purpose == "history"
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_devices_row_carries_its_session_and_a_link_goes_up_sealed():
+    """What phone.py is offered. ensure_profile writes the session this
+    device runs on beside its row, read off the token's own claim, as soon
+    as it moved and not at the next daily write: it is what Forget ends. A
+    token with no claim writes no column. devices() is every row with link
+    as stored; write_link is this device's row and then one broadcast,
+    `changed` naming `devices`; what is not sealed is refused before it
+    leaves, and so is a device on the forgotten list. The row keeps what
+    ensure_profile wrote."""
+    import sb
+    import vault
+
+    first, second = "aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk", sid=first)
+            sb.ensure_profile()
+            mine = sb.device_id()
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            assert row["session_id"] == first and row["platform"].startswith("windows"), row
+            # once a day...
+            calls = len(fake.calls)
+            sb.ensure_profile()
+            assert len(fake.calls) == calls, "the row was written twice in a day"
+            # ...and at once for a new session under the same row
+            _sign_in_pc(fake, "desk", sid=second)
+            sb.ensure_profile()
+            assert row["session_id"] == second, row
+            # a token with no claim: the column is left alone
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            body = json.loads(next(c for c in reversed(fake.calls) if c["path"] == "rest/v1/devices")["body"])
+            assert "session_id" not in body and row["session_id"] == second, body
+            for bad in ("eyJ.notjson.sig", "nodots", "", "a.!!!.c"):
+                assert sb._session_id({"access_token": bad}) == "", bad
+
+            # the rows, as stored
+            sb.account_pass("test")
+            key = vault.key(fake.UID)
+            sealed = vault.seal_json(key, {"v": 1, "kind": "pc", "cert": "cd" * 32, "addrs": ["192.168.68.50"],
+                                           "port": 8766, "proto": 1, "words_sync": True},
+                                     vault.AAD_DEVICE.format(uid=fake.UID, device_id=mine))
+            told = len(fake.broadcasts)
+            sb.write_link(sealed)
+            assert row["link"] == sealed and row["session_id"] == second and row["name"] == "desk", row
+            msg = fake.broadcasts[-1]["messages"][0]
+            assert len(fake.broadcasts) == told + 1 and msg["event"] == "changed", fake.broadcasts[told:]
+            assert msg["payload"] == {"device": mine, "stores": ["devices"]}, msg
+            _a_phone_row(fake, link=vault.seal_json(key, {"v": 1, "kind": "phone"}, "elsewhere"))
+            rows = {r["id"]: r for r in sb.devices()}
+            assert rows[mine]["link"] == sealed and rows[_PHONE]["link"].startswith("v1."), rows
+            assert sb._device_names["phone"] is True and sb._names()[_PHONE] == "Galaxy S26"
+            # refused before it leaves
+            for bad in ("", "plain text", "gsk_" + "a" * 40):
+                try:
+                    sb.write_link(bad)
+                except sb.AccountError as e:
+                    assert "sealed" in str(e), str(e)
+                else:
+                    raise AssertionError(f"{bad!r} went up as a link")
+            sb._keep_forgotten(fake.UID, [{"device": mine, "cert": "", "at": ""}])
+            try:
+                sb.write_link(sealed)
+            except sb.AccountError as e:
+                assert "forgotten" in str(e), str(e)
+            else:
+                raise AssertionError("a forgotten device wrote its row")
+    finally:
+        a.gone()
+
+
+def test_each_account_keeps_its_own_device_id_on_this_pc():
+    """devices.id is the whole primary key, across accounts, so a PC with
+    one id for life had the second account's row refused by row-level
+    security: cosmetic while the row only named a PC, and a silent loss now
+    that the row is how a phone finds it (a family PC, a test account and
+    then a real one). One id per account: B gets its own, and A back on
+    this PC finds A's id and A's row, with no second row of a certificate
+    that a Forget could then ban under the live device. An id that is
+    another account's all the same (42501: a copy from before the map, a
+    state file put back) gives way once and the row goes up. A failed write
+    costs nothing: the next pass writes the same id."""
+    import sb
+
+    second = "22222222-3333-4444-5555-666666666666"
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            first = sb.device_id()
+            sb.sign_out(everywhere=False)
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            assert sb.device_id() == first, "the same account back took a new id"
+
+            # the control: under A's id B's row is refused
+            sb.sign_out(everywhere=False)
+            fake.UID = second
+            _sign_in_pc(fake, "desk", sid="bbbbbbbb-0000-4000-8000-000000000002")
+            status, data = sb._rest("POST", "devices", purpose="account", query="on_conflict=id",
+                                    payload={"id": first, "user_id": second},
+                                    prefer="resolution=merge-duplicates,return=minimal")
+            assert status == 403 and b"42501" in data, (status, data)
+
+            sb.ensure_profile(force=True)
+            mine = sb.device_id()
+            assert mine != first, "another account under the same id"
+            row = next(r for r in fake.tables["devices"] if r["id"] == mine)
+            assert row["user_id"] == second and row["session_id"] == "bbbbbbbb-0000-4000-8000-000000000002", row
+            old = next(r for r in fake.tables["devices"] if r["id"] == first)
+            assert old["user_id"] == _FakeSupabase.UID, "the first account's row moved"
+            sb.account_pass("test")
+            assert not sb.status()["last_error"], sb.status()["last_error"]
+
+            # A again: its own id and its own row, and nothing new on it
+            sb.sign_out(everywhere=False)
+            fake.UID = _FakeSupabase.UID
+            _sign_in_pc(fake, "desk")
+            sb.ensure_profile(force=True)
+            assert sb.device_id() == first, "A came back as another device"
+            assert sum(r["user_id"] == fake.UID for r in fake.tables["devices"]) == 1, fake.tables["devices"]
+
+            # an id that is another account's after all, with no map to say so
+            config_mod.save({"account.device_id": mine, "account.device_ids": None,
+                             "account.device_seen_at": None})
+            sb.ensure_profile(force=True)
+            third = sb.device_id()
+            assert third not in (mine, first), "the refused id stayed"
+            assert any(r["id"] == third and r["user_id"] == fake.UID for r in fake.tables["devices"])
+
+            # a failed write: the next pass writes that same id
+            sb.sign_out(everywhere=False)
+            fake.UID = second
+            _sign_in_pc(fake, "desk")
+            config_mod.save({"account.device_ids": {fake.UID: "cccccccc-0000-4000-8000-000000000003"}})
+            fake.script["rest/v1/devices"] = [(500, b'{"message":"no"}')]
+            try:
+                sb.ensure_profile(force=True)
+            except sb.AccountError:
+                pass
+            else:
+                raise AssertionError("a refused row said nothing")
+            mine = sb.device_id()
+            sb.ensure_profile(force=True)
+            assert sb.device_id() == mine, "a failed write minted another id"
+            assert any(r["id"] == mine for r in fake.tables["devices"]), "the row never went up"
+    finally:
+        a.gone()
+
+
+def test_no_device_id_is_minted_over_a_state_file_that_will_not_read():
+    """config.read_state answers {} for a missing file and for a damaged
+    one, and a new id minted on the second would be written over the very
+    file that may hold the real one, taking every other state key with it.
+    So a damaged file is an AccountError, the bytes stay as they are, and
+    the next pass looks again; a missing file is a first start."""
+    import sb
+
+    a = _pc("A", "DeskIT.test")
+    try:
+        with a:
+            paths.STATE_FILE.write_text("{ this is not json", "utf-8")
+            try:
+                sb.device_id()
+            except sb.AccountError as e:
+                assert "will not read" in str(e), str(e)
+            else:
+                raise AssertionError("an id was minted over a damaged state file")
+            assert paths.STATE_FILE.read_text("utf-8") == "{ this is not json"
+            paths.STATE_FILE.unlink()
+            first = sb.device_id()
+            assert first and config_mod.read_state(paths.STATE_FILE)["account.device_id"] == first
+            assert sb.device_id() == first
+    finally:
+        a.gone()
+
+
+def test_a_key_moved_aside_by_another_account_comes_back_with_its_account():
+    """One slot holds one key. A second account's first pass makes it a
+    lock (with the syncs off too, now), and keep() moved the first
+    account's key aside, with no way back: that person, signing in again,
+    would have been a new PC asking to join, and with the syncs off there
+    may be nobody to ask. vault.key() brings it back when its account signs
+    in, the other going aside in its place, as often as they take turns. A
+    key given up on purpose stays given up: one set aside for a lock that
+    changed, or by a PC the account forgot."""
+    import sb
+    import vault
+
+    one, two = "11111111-aaaa-4aaa-8aaa-111111111111", "22222222-bbbb-4bbb-8bbb-222222222222"
+    a = _pc("A", "DeskIT.test")
+    try:
+        with a:
+            key1 = vault.create(one)
+            key2 = vault.create(two)
+            assert vault.aside(one) == [vault.fingerprint(key1)]
+            assert vault.key(one) == key1, "the first account's key did not come back"
+            assert vault._read()["uid"] == one and vault.aside(one) == []
+            assert vault.aside(two) == [vault.fingerprint(key2)]
+            assert vault.key(two) == key2 and vault.key(one) == key1 and vault.key(two) == key2
+            assert vault.key("33333333-cccc-4ccc-8ccc-333333333333") is None
+            assert vault.key(two) == key2, "asking for a stranger's key moved this one"
+            # given up on purpose: it stays given up
+            assert vault.set_aside(two, vault.fingerprint(key2), why="this PC was forgotten")
+            assert vault.key(two) is None, "a forgotten PC took its key back by itself"
+            assert vault.key(one) == key1
+            assert vault.set_aside(one, "0" * 16)
+            assert vault.key(one) is None, "a key set aside for a changed lock came back"
+            vault.forget(one)
+            vault.forget(two)
+
+        # the whole road, both syncs off: nobody to ask
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            first = vault.key(fake.UID)
+            assert first and sb.status()["lock"]["state"] == "have"
+            sb.sign_out(everywhere=False)
+            fake.UID = two
+            fake.tables["profiles"] = []
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            assert vault.key(two) not in (None, first) and sb.status()["lock"]["state"] == "have"
+            lock_two = fake.tables["profiles"][0]["lock_id"]
+            sb.sign_out(everywhere=False)
+            fake.UID = _FakeSupabase.UID
+            fake.tables["profiles"][0].update(user_id=fake.UID, lock_id=vault.fingerprint(first))
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            assert vault.key(fake.UID) == first, "the first account's key has no way back"
+            assert sb.status()["lock"]["state"] == "have" and not fake.tables.get("pairings"), \
+                "the first account asks to join its own lock"
+            assert vault.fingerprint(first) != lock_two
+    finally:
+        a.gone()
+
+
+_ONE = "aaaaaaaa-1111-4111-8111-111111111111"
+_TWO = "bbbbbbbb-2222-4222-8222-222222222222"
+_THREE = "cccccccc-3333-4333-8333-333333333333"
+_FOUR = "dddddddd-4444-4444-8444-444444444444"
+
+
+def _signs_in(fake, uid: str) -> None:
+    """The real road in, the one every desk takes: Google, the code back on
+    the loopback listener, the exchange, the session, and what sign_in_google
+    does after it. `fake.UID` is whoever signs in."""
+    import sb
+
+    def browser(url: str) -> bool:
+        redirect = dict(urllib_parse.parse_qsl(urllib_parse.urlsplit(url).query))["redirect_to"]
+
+        def come_back():
+            time.sleep(0.05)
+            import urllib.request as ur
+            with ur.urlopen(redirect + "?code=fixture-code", timeout=5) as r:
+                r.read()
+        threading.Thread(target=come_back, daemon=True).start()
+        return True
+
+    fake.UID = uid
+    sb.sign_in_google(open_browser=browser, timeout_s=10)
+
+
+def _logs(pc, line: str, ahead_s: float = 0.0) -> None:
+    """One line into this PC's log, stamped now, as the app writes it."""
+    from datetime import datetime, timedelta
+    time.sleep(0.01)
+    now = datetime.now() + timedelta(seconds=ahead_s)
+    with pc.log.open("a", encoding="utf-8") as f:
+        f.write(f"{now:%Y-%m-%d %H:%M:%S},{now.microsecond // 1000:03d} | {line}\n")
+
+
+def _says(pc, text: str, ahead_s: float = 0.0) -> None:
+    _logs(pc, f"OK | 1.0s | local | 0.4s latency | {text}", ahead_s)
+
+
+def _history_of(fake, uid: str, key: bytes) -> list[str]:
+    """What an account holds of what was said, opened under its own key."""
+    import sb
+    return [sb._open_history(key, uid, r)["text"] for r in fake.tables.get("history", [])
+            if r["user_id"] == uid]
+
+
+def test_what_one_account_said_never_goes_up_as_anothers():
+    """The family PC, on a fake with row-level security, through the real
+    sign-in. transcripts.log names no owner and a sign-out takes the cursors,
+    so until 2026-11-06 a second account's first sync sealed every line the
+    first had said into its own account, and the first, back again, took the
+    second's. The first account a PC ever has takes what is here; the same
+    account back loses nothing; a different one starts past everything, in
+    both directions, however often they take turns. What was said stays on
+    this PC's Said page: this is about what leaves."""
+    import history as history_mod
+    import sb
+    import vault
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            _says(pc, "before any account")
+            _signs_in(fake, _ONE)
+            _says(pc, "said by one")
+            sb.sync_now()
+            one = vault.key(_ONE)
+            assert _history_of(fake, _ONE, one) == ["before any account", "said by one"]
+
+            # the same account back: nothing lost, nothing held
+            sb.sign_out(everywhere=False)
+            _says(pc, "said while away")
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            assert _history_of(fake, _ONE, one)[-1] == "said while away"
+            assert len(_history_of(fake, _ONE, one)) == 3, "the same rows went up twice"
+            sb.sign_out(everywhere=False)
+
+            # forward: the second account's first sync pushes nothing
+            _signs_in(fake, _TWO)
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 0", out
+            assert not any(r["user_id"] == _TWO for r in fake.tables["history"])
+            _says(pc, "said by two")
+            assert sb.sync_now()["history"] == "pulled 0, pushed 1"
+            two = vault.key(_TWO)
+            assert _history_of(fake, _TWO, two) == ["said by two"]
+            sb.sign_out(everywhere=False)
+
+            # back: what the second said sits above the first's old rows
+            _signs_in(fake, _ONE)
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 0", out
+            assert vault.key(_ONE) == one
+            _says(pc, "said by one again")
+            sb.sync_now()
+            assert "said by two" not in _history_of(fake, _ONE, one)
+            assert _history_of(fake, _ONE, one)[-1] == "said by one again"
+            sb.sign_out(everywhere=False)
+
+            # and round again
+            _signs_in(fake, _TWO)
+            sb.sync_now()
+            assert _history_of(fake, _TWO, two) == ["said by two"]
+            said = [ev.text for ev in history_mod.all_events()]
+            assert "said by one" in said and "said by two" in said, "the Said page lost a line"
+    finally:
+        pc.gone()
+
+
+def test_the_line_between_two_accounts_outlives_forget_all_a_sign_out_and_a_crash():
+    """The record is in state.json, written before the session is, so nothing
+    that takes the cursors takes it. A crash straight after a sign-in finds
+    it; a line said before the first sync is the new account's and goes up;
+    a sign-out and back loses the line nowhere. A door that tripped at the
+    sign-in costs no sign-in, and the first sync is the door. A state file
+    that will not read cannot say who was here, so nothing moves at all."""
+    import secretstore
+    import sb
+    import sync as sync_mod
+    import vault
+
+    def boom(uid):
+        raise OSError("no")
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            door = sb._take_over
+            seen: list = []
+
+            def spy(uid):
+                seen.append(secretstore.get("supabase_session"))
+                door(uid)
+
+            with _patched(sb, "_take_over", spy):
+                _signs_in(fake, _ONE)
+            assert seen and seen[0] is None, "the session went down before the record"
+            _says(pc, "said by one")
+            sb.sync_now()
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            sb.forget_cache()                  # the crash: nothing in memory
+            sb._forget_lock_state()
+            sync_mod.forget_all()
+            _says(pc, "right after the sign-in")
+            sb.sync_now()
+            two = vault.key(_TWO)
+            assert _history_of(fake, _TWO, two) == ["right after the sign-in"]
+
+            sb.sign_out(everywhere=False)
+            assert not sync_mod.cursor_path().exists()
+            _signs_in(fake, _TWO)
+            sb.sync_now()
+            assert _history_of(fake, _TWO, two) == ["right after the sign-in"]
+            sb.sign_out(everywhere=False)
+
+            with _patched(sb, "_take_over", boom):
+                _signs_in(fake, _THREE)
+            assert sb.signed_in(), "a sign-in failed over the record"
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            assert not any(r["user_id"] == _THREE for r in fake.tables["history"])
+            sb.sign_out(everywhere=False)
+
+            # a file that will not open: nobody can say whose this is, so nothing moves
+            real = Path.read_text
+
+            def held(self, *a, **k):
+                if self == paths.STATE_FILE:
+                    raise PermissionError("held")
+                return real(self, *a, **k)
+
+            with _patched(Path, "read_text", held):
+                _signs_in(fake, _FOUR)
+                fake.calls.clear()
+                assert sb.sync_now() == {}
+                assert not [c for c in fake.to_project() if c["method"] == "POST"], "a store moved"
+                assert "will not read" in sb.status()["last_error"]
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            assert not any(r["user_id"] == _FOUR for r in fake.tables["history"])
+            sb.sign_out(everywhere=False)
+
+            # a damaged one is mended at the door, and reads as somebody else's
+            good = paths.STATE_FILE.read_text("utf-8")
+            paths.STATE_FILE.write_text("{ this is not json", "utf-8")
+            _signs_in(fake, _FOUR)
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _FOUR
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            assert not any(r["user_id"] == _FOUR for r in fake.tables["history"])
+            paths.STATE_FILE.write_text(good, "utf-8")
+
+            # a crash inside a sign-out leaves that account's cursor here
+            sb.sign_out(everywhere=False)
+            sync_mod.write_cursor({"vocab_pulled_at": "2026-09-18T12:00:00+00:00"})
+            fake.UID = _ONE
+            _sign_in_pc(fake, "desk", uid=_ONE)
+            sb.sync_now()
+            assert "vocab_pulled_at" not in sync_mod.read_cursor(), "the last account's cursor stayed"
+    finally:
+        pc.gone()
+
+
+def test_the_floor_stands_past_an_open_question_and_a_clock_that_was_ahead():
+    """The end of the log is more than its last line. A translation asked
+    under one account lands under the next with the stamp of the asking, so
+    the floor is at least this moment. A line from a clock that was ahead is
+    past this moment, so the floor is at least the log's end. And a floor
+    never comes down."""
+    import sb
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            _says(pc, "said by one")
+            sb.sync_now()
+            _logs(pc, "TRANSLATE-IN | 1.0s | asked by one")
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _TWO)
+            _logs(pc, "TRANSLATE-OUT | 1.0s | cloud | answered for one")
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            sb.sign_out(everywhere=False)
+
+            _says(pc, "from a clock that was ahead", ahead_s=3600)
+            _signs_in(fake, _THREE)
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+            sb.sign_out(everywhere=False)
+
+            later = "2099-01-01T00:00:00.000+00:00"
+            config_mod.save({"account.history_floor": {_TWO: later}})
+            _signs_in(fake, _TWO)
+            assert config_mod.read_state(paths.STATE_FILE)["account.history_floor"][_TWO] == later
+    finally:
+        pc.gone()
+
+
+def test_a_copy_from_before_the_record_counts_the_way_the_evidence_does():
+    """An update finds no record. A live session is the account whose lines
+    these are, so nothing is held and it is written down. Nobody signed in
+    and a device id on file means somebody was here, and the next person
+    takes nothing of theirs."""
+    import sb
+    import vault
+
+    live, out = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            fake.rls = True
+            with live:
+                config_mod.save({"account.device_id": "ffffffff-6666-4666-8666-666666666666"})
+                _says(live, "said before the update")
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                assert _history_of(fake, fake.UID, vault.key(fake.UID)) == ["said before the update"]
+                assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == fake.UID
+            with out:
+                config_mod.save({"account.device_id": "eeeeeeee-5555-4555-8555-555555555555"})
+                _says(out, "said by somebody")
+                _signs_in(fake, _TWO)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+    finally:
+        live.gone()
+        out.gone()
+
+
+def test_one_accounts_words_stay_out_of_anothers_account():
+    """vocab.json is one file too, and vocab_changed sends every row on a
+    first sync, in the clear: a person's names on another's account. A pair
+    left here stays out of the rows and out of the snapshot, so its heard
+    form cannot leave as a tombstone either, and a tombstone cannot take the
+    account's own meaning of the same heard form. A pair the account holds
+    too is its own from then on. Dictation here still has every word."""
+    import sb
+    import vocab as vocab_mod
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+
+            def rows(uid):
+                return {r["heard"]: r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == uid}
+
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            for heard, meant in (("grandma heard", "grandma meant"), ("grandpa heard", "grandpa meant"),
+                                 ("both heard", "both meant"), ("clash heard", "meaning of one")):
+                v.learn_by_hand(heard, meant)
+            _signs_in(fake, _ONE)
+            sb.sync_now(v)
+            assert len(rows(_ONE)) == 4, rows(_ONE)
+            sb.sign_out(everywhere=False)
+
+            stamp = "2026-09-18T11:00:00+00:00"
+            fake.tables["vocab_sync"] += [
+                {"user_id": _TWO, "heard": "both heard", "meant": "both meant", "hits": 1,
+                 "last_used": None, "deleted": False, "updated_at": stamp},
+                {"user_id": _TWO, "heard": "clash heard", "meant": "meaning of two", "hits": 1,
+                 "last_used": None, "deleted": False, "updated_at": stamp}]
+            _signs_in(fake, _TWO)
+            assert sb.sync_now(v)["vocab"].endswith("pushed 0")
+            assert set(rows(_TWO)) == {"both heard", "clash heard"}, rows(_TWO)
+            assert v.find("grandma heard"), "the words here went"
+            sb.sync_now(v)
+            assert rows(_TWO)["clash heard"]["meant"] == "meaning of two"
+            assert not rows(_TWO)["clash heard"]["deleted"], "a tombstone took the account's own"
+            assert not rows(_TWO)["both heard"]["deleted"], "a pair let go came back as held"
+
+            v.learn_by_hand("heard by two", "meant by two")
+            assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+            v.edit("grandma heard", "grandma heard", "grandma meant by two")
+            assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+            assert rows(_TWO)["grandma heard"]["meant"] == "grandma meant by two"
+            v.forget("grandpa heard")
+            sb.sync_now(v)
+            assert "grandpa heard" not in rows(_TWO), "a tombstone named a word it never held"
+            v.forget("both heard")
+            sb.sync_now(v)
+            assert rows(_TWO)["both heard"]["deleted"], "a pair the account holds is its own"
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            assert sb.sync_now(v)["vocab"].endswith("pushed 0")
+            assert "heard by two" not in rows(_ONE)
+            assert v.find("grandpa heard"), "the first account's word did not come back"
+            v.learn_by_hand("heard by one", "meant by one")
+            assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+    finally:
+        pc.gone()
+
+
+def test_a_word_list_that_will_not_read_is_still_what_the_last_account_left():
+    """From a vocab.json that will not read the app takes its last good copy
+    (Vocab.load), and a pass after the mending would send it, so the door
+    marks what the app will go on with and not an empty list."""
+    import sb
+    import vocab as vocab_mod
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            v.learn_by_hand("a name heard", "a name meant")
+            v.learn_by_hand("another heard", "another meant")
+            _signs_in(fake, _ONE)
+            sb.sync_now(v)
+            sb.sign_out(everywhere=False)
+            paths.VOCAB_FILE.write_text("{ cut in half", "utf-8")
+            _signs_in(fake, _TWO)
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            assert v.broken and v.find("a name heard"), "the fixture is not the case"
+            sb.sync_now(v)
+            assert not v.broken
+            sb.sync_now(v)
+            assert not [r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == _TWO]
+    finally:
+        pc.gone()
+
+
+def test_one_accounts_settings_stay_out_of_anothers_blob():
+    """vocab.terms is "the people you mention", and it syncs. An account with
+    no blob used to take the whole file as its own. Now what was here stays
+    out and an empty blob is not sent, because it would empty the settings of
+    that account's next PC; what the person sets goes up alone; a pull makes
+    the file the account's, so everything in it syncs again."""
+    import sb
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+
+            def blob(uid):
+                return next((r["json"] for r in fake.tables.get("settings_sync", [])
+                             if r["user_id"] == uid), None)
+
+            theirs = {"vocab.terms": ["a name of the first"], "translate.target": "Hebrew"}
+            config_mod.save(theirs)
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            assert blob(_ONE) == theirs
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            assert sb.sync_now()["settings"] == "same"
+            assert blob(_TWO) is None, "an account with nothing to say got a blob"
+            assert config_mod.read_settings(paths.SETTINGS_FILE)["vocab.terms"] == theirs["vocab.terms"]
+            config_mod.save({"polish.when": "never"})
+            assert sb.sync_now()["settings"] == "pushed"
+            assert blob(_TWO) == {"polish.when": "never"}
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            assert sb.sync_now()["settings"] == "pulled"
+            assert blob(_ONE) == theirs
+            config_mod.save({"polish.when": "never"})
+            assert sb.sync_now()["settings"] == "pushed"
+            assert blob(_ONE) == {**theirs, "polish.when": "never"}, "the pull did not lift the marks"
+    finally:
+        pc.gone()
+
+
+def test_a_cloud_key_left_on_this_pc_is_never_sealed_into_another_account():
+    """One slot, and a slot with no record is a fresh PC's, so the first
+    account's API key went up sealed for the second and reached all its
+    devices: the road of 2026-10-03 in AGENTS.md by another door. A key left
+    here stays here and keeps working on this PC; one pasted since is the
+    account's own; one the account holds comes down; and the second's key
+    does not reach the first on the way back."""
+    import secretstore
+    import sb
+    import vault
+
+    first, second = "first-account-key-0123456789", "second-account-key-0123456789"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+
+            def names(uid):
+                return {r["name"] for r in fake.tables.get("vault", []) if r["user_id"] == uid}
+
+            def opened(key, uid, name):
+                row = next(r for r in fake.tables["vault"] if r["user_id"] == uid and r["name"] == name)
+                return vault.open_json(key, row["cipher"], vault.AAD_VAULT.format(uid=uid, name=name))["v"]
+
+            secretstore.set("groq", first)
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            one = vault.key(_ONE)
+            assert opened(one, _ONE, "groq") == first
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            assert sb.sync_now()["vault"].endswith("pushed 0")
+            assert names(_TWO) == set(), names(_TWO)
+            assert secretstore.get("groq") == first, "the key stopped working here"
+            secretstore.set("groq", second)
+            secretstore.set("gemini", second)
+            assert sb.sync_now()["vault"].endswith("pushed 2")
+            assert opened(vault.key(_TWO), _TWO, "groq") == second
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            assert secretstore.get("groq") == first, "the account's own did not come down"
+            assert names(_ONE) == {"groq"}, "the second's key reached the first"
+    finally:
+        pc.gone()
+
+
+def test_a_report_waits_for_the_account_that_queued_it():
+    """A report goes out as whoever is signed in when the outbox drains, with
+    that person's dictation and a picture of their screen. One queued offline
+    went out as the next account's. It waits, uncounted, and goes as its own
+    account's, with its file, when that account is back; another account's
+    waiting reports survive a Delete my account; a report queued here and
+    now goes as usual."""
+    import sb
+
+    def queue(rid: str) -> None:
+        folder = paths.OUTBOX_DIR / rid
+        folder.mkdir(parents=True)
+        shot = folder / "shot.jpg"
+        shot.write_bytes(b"\xff\xd8fixture")
+        (paths.OUTBOX_DIR / f"{rid}.json").write_text(json.dumps({
+            "id": rid, "kind": "wrong", "text": "the word came out wrong",
+            "dictation_raw": "said by whoever queued it",
+            "attachments": [{"name": "shot.jpg", "path": str(shot)}]}), "utf-8")
+
+    of_one = "aaaaaaaa-bbbb-cccc-dddd-000000000001"
+    of_two = "aaaaaaaa-bbbb-cccc-dddd-000000000002"
+    waits = "aaaaaaaa-bbbb-cccc-dddd-000000000003"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "report_upload"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            queue(of_one)
+            assert sb.queued() == 1
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _TWO)
+            assert sb.queued() == 0, "another account's report on this one's row"
+            assert sb.drain_outbox() == {}, "another account's report went out"
+            queue(of_two)
+            assert sb.drain_outbox() == {of_two: "sent"}
+            queue(waits)
+            sb.sign_out(everywhere=False)
+
+            _signs_in(fake, _ONE)
+            assert sb.queued() == 1
+            assert sb.drain_outbox() == {of_one: "sent"}
+            rows = {r["id"]: r for r in fake.tables["problem_reports"]}
+            assert rows[of_two]["user_id"] == _TWO and rows[of_one]["user_id"] == _ONE, rows
+            assert rows[of_one]["attachments"] == [f"{_ONE}/{of_one}/shot.jpg"], rows[of_one]
+
+            # one that did not make it back is still this account's to delete
+            stuck = sb._reports_folder(_ONE)
+            stuck.mkdir(parents=True)
+            (stuck / "stuck.json").write_text("{}", "utf-8")
+            sb.delete_account()
+            assert not stuck.exists(), "Delete left a report of this account's"
+            assert (sb._reports_folder(_TWO) / f"{waits}.json").exists(), "Delete took another account's"
+            assert not [e for e in paths.OUTBOX_DIR.iterdir() if e.name != paths.OUTBOX_WAITING]
+            fake.tables.setdefault("problem_reports", [])
+            _signs_in(fake, _TWO)
+            assert sb.drain_outbox() == {waits: "sent"}, "it never came back"
+            assert not (paths.OUTBOX_DIR / paths.OUTBOX_WAITING).exists()
+    finally:
+        pc.gone()
+
+
+def test_delete_my_account_leaves_the_next_account_nothing_of_it():
+    """The files stay after Delete my account, so the record must too, or
+    the next person is this PC's first and takes everything. It stays as a
+    word: no account key is left in state.json, and no id."""
+    import sb
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            _says(pc, "said by one")
+            sb.sync_now()
+            sb.delete_account()
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert not any(k.startswith("account.") for k in state), state
+            assert state[sb.LAST_ACCOUNT] == sb.SOMEBODY
+            assert _ONE not in paths.STATE_FILE.read_text("utf-8")
+            _signs_in(fake, _TWO)
+            assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+
+            # an account with a record of its own takes that and no other's
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _THREE)
+            sb.delete_account()
+            left = paths.STATE_FILE.read_text("utf-8")
+            assert _THREE not in left and _TWO in left, left
+    finally:
+        pc.gone()
+
+
+def test_delete_my_account_takes_its_own_key_and_no_others():
+    """One slot, and until an account's first look at it the slot may hold
+    the account before it. vault.forget deleted whatever was there, so
+    Delete my account could take the other person's key, and on a PC that
+    held the only copy, with the syncs off and no recovery key, that key
+    was gone for good."""
+    import sb
+    import vault
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with pc:
+            first = vault.create(_ONE)
+            second = vault.create(_TWO)
+            assert vault.aside(_ONE) == [vault.fingerprint(first)]
+            assert vault.forget(_ONE) is False, "it said it took a key it left"
+            assert vault.aside(_ONE) == [], "its own set-aside key stayed"
+            assert vault.key(_TWO) == second, "another account's key went"
+            assert vault.forget(_TWO) is True and vault.key(_TWO) is None
+            assert vault.create(_ONE) and vault.forget() is True, "the plain call stopped working"
+
+        with _fixture_project() as fake, _consented("account"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _TWO)
+            sb.account_pass("test")
+            second = vault.key(_TWO)
+            sb.sign_out(everywhere=False)
+            # back, and no look at the slot yet: it still holds the other's
+            fake.UID = _ONE
+            _sign_in_pc(fake, "desk", uid=_ONE)
+            sb.delete_account()
+            assert vault.key(_TWO) == second, "Delete my account took another account's key"
+    finally:
+        pc.gone()
+
+
+def test_a_damaged_state_file_leaves_somebody_behind_and_nothing_goes_up():
+    """The road a start really takes. migrations.apply() runs first and
+    config.save wrote {config_version} over a state.json that would not read:
+    the record, the floors, the marks and the device id all gone, and the
+    next start saw a live session and counted it as this PC's first account,
+    so everything the last account left went up as this one's. Whatever
+    replaces the file now sets it aside and says somebody was here."""
+    import migrations
+    import secretstore
+    import sb
+    import vault
+    import version
+    import vocab as vocab_mod
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            fake.rls = True
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+            v.learn_by_hand("a name heard", "a name meant")
+            config_mod.save({"vocab.terms": ["a name of the first"]})
+            secretstore.set("groq", "first-account-key-0123456789")
+            _says(pc, "said by one")
+            _signs_in(fake, _ONE)
+            sb.sync_now(v)
+            sb.sign_out(everywhere=False)
+            _signs_in(fake, _TWO)
+            sb.sync_now(v)
+
+            paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+            sb.forget_cache()
+            sb._forget_lock_state()
+            assert migrations.current() == version.CONFIG_VERSION, "a step ran on a guess"
+            assert migrations.apply() is None
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert state[sb.LAST_ACCOUNT] == sb.SOMEBODY, state
+            assert state["config_version"] == version.CONFIG_VERSION
+            kept = [p for p in pc.home.iterdir() if p.name.startswith("state.json.broken-")]
+            assert len(kept) == 1 and kept[0].read_text("utf-8") == "{ cut in half", "the old file went"
+
+            out = sb.sync_now(v)
+            assert out["history"] == "pulled 0, pushed 0", out
+            assert out["settings"] == "same" and out["vocab"].endswith("pushed 0"), out
+            assert not [r for r in fake.tables.get("history", []) if r["user_id"] == _TWO]
+            assert not [r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == _TWO]
+            assert not [r for r in fake.tables.get("settings_sync", []) if r["user_id"] == _TWO]
+            assert not [r for r in fake.tables.get("vault", []) if r["user_id"] == _TWO and r["name"] == "groq"]
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _TWO
+            assert vault.key(_TWO), "the account's own key went with the file"
+    finally:
+        pc.gone()
+
+
+def test_one_bad_read_of_the_state_file_is_not_an_empty_file():
+    """read_state answers {} for a read that failed this once, and a file
+    that was fine by then passed the check after it. A read tried again
+    gets the file; one that keeps failing raises, and a save then writes
+    nothing, where it used to write back {} plus its one key over everything
+    in the file."""
+    import sb
+
+    real = Path.read_text
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            ident = sb.device_id()
+            before = paths.STATE_FILE.read_bytes()
+            failures = [1]
+
+            def once(self, *a, **k):
+                if self == paths.STATE_FILE and failures:
+                    failures.pop()
+                    raise PermissionError("held for a moment")
+                return real(self, *a, **k)
+
+            def always(self, *a, **k):
+                if self == paths.STATE_FILE:
+                    raise PermissionError("held")
+                return real(self, *a, **k)
+
+            with _patched(Path, "read_text", once):
+                assert config_mod.read_state_strict(paths.STATE_FILE).get("account.device_id") == ident
+            assert not failures
+            with _patched(Path, "read_text", always):
+                for ask in (lambda: sb._take_over(_TWO), sb.device_id, lambda: sb._per_account("account.device_ids")):
+                    try:
+                        ask()
+                    except sb.AccountError as e:
+                        assert "will not read" in str(e), str(e)
+                    else:
+                        raise AssertionError("a read that failed answered")
+                try:
+                    config_mod.save({"dot.x": 5})
+                except config_mod.StateUnreadable as e:
+                    assert not e.damaged
+                else:
+                    raise AssertionError("a save wrote over a file it could not read")
+            assert paths.STATE_FILE.read_bytes() == before, "a failed read cost the file"
+    finally:
+        pc.gone()
+
+
+def test_a_save_waits_for_another_process_and_never_for_long():
+    """Two programs write state.json, each reading the whole file and writing
+    it back, so one could lose what the other just wrote. One byte beside it
+    keeps them in turn. The wait has a bound: past it the save goes on
+    without the byte, so nothing can hang the app or the desk on it."""
+    import msvcrt
+
+    d, s, t = _layer_files()
+    lock = t.with_name(t.name + ".lock")
+    try:
+        config_mod.write_state(t, {"sync.first": 1})
+        other = lock.open("a+b")               # another process's handle
+        msvcrt.locking(other.fileno(), msvcrt.LK_NBLCK, 1)
+
+        def saves():
+            config_mod.save({"sync.second": 2}, settings=s, state=t)
+
+        worker = threading.Thread(target=saves, daemon=True)
+        with _patched(config_mod, "SAVE_WAIT_S", 5.0):
+            worker.start()
+            time.sleep(0.15)
+            assert worker.is_alive(), "the save did not wait its turn"
+            config_mod.write_state(t, {"sync.first": 1, "sync.from_the_other": 3})
+            other.seek(0)
+            msvcrt.locking(other.fileno(), msvcrt.LK_UNLCK, 1)
+            worker.join(3)
+        assert not worker.is_alive()
+        state = config_mod.read_state(t)
+        assert state.get("sync.from_the_other") == 3 and state.get("sync.second") == 2, state
+
+        other.seek(0)
+        msvcrt.locking(other.fileno(), msvcrt.LK_NBLCK, 1)     # held and never let go
+        start = time.monotonic()
+        with _patched(config_mod, "SAVE_WAIT_S", 0.1):
+            config_mod.save({"sync.third": 3}, settings=s, state=t)
+        assert time.monotonic() - start < 2.0, "a held byte hung a save"
+        assert config_mod.read_state(t).get("sync.third") == 3
+        other.seek(0)
+        msvcrt.locking(other.fileno(), msvcrt.LK_UNLCK, 1)
+        other.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_copy_at_config_version_1_stops_at_the_words_each_step_wrote_for():
+    """Steps 2 and 4 carried a row with no `to=`, so a copy at config_version
+    1 or 2 went from the 2026-09-19 words straight to the 2026-11-06 ones, a
+    yes to words nobody showed it. Each stops at the words it was written
+    about, and then Home asks. A row short of the current words still says
+    the person signed in, so step 2 goes on granting the sync it grants."""
+    import migrations
+    import privacy
+
+    old = "deskit-terms-0+en-2026-09-19"
+    versions = {**privacy.TEXT_VERSIONS, "account": old, "settings_sync": old, "history_sync": old}
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            with _patched(privacy, "TEXT_VERSIONS", versions):
+                for kind in ("account", "settings_sync", "history_sync"):
+                    privacy.grant(kind, old)
+            assert migrations.current() == 1
+            assert migrations.apply() is None
+            rows = {r["kind"]: r for r in privacy.rows()}
+            assert rows["account"]["text_version"] == migrations.ACCOUNT_WORDS, rows["account"]
+            assert rows["account"]["text_version"] != privacy.TEXT_VERSIONS["account"]
+            assert rows["settings_sync"]["text_version"] == migrations.SYNC_WORDS
+            # a stale row is a yes to older words, not no row: step 3 read it
+            # as none and granted over it, at the card's words of the day
+            assert rows["history_sync"]["text_version"] == migrations.SYNC_WORDS, rows["history_sync"]
+            assert rows["history_sync"].get("carried_from") == old, "granted over and not carried"
+            assert privacy.consent("account") is None and "account" in privacy.stale()
+            assert "history_sync" in privacy.stale()
+
+            # an account row and no sync rows: signed in, so the sync follows
+            for kind in ("account", "settings_sync", "history_sync"):
+                privacy.withdraw(kind)
+            config_mod.save({"config_version": None})
+            with _patched(privacy, "TEXT_VERSIONS", versions):
+                privacy.grant("account", old)
+            assert migrations.apply() is None
+            assert privacy.consent("settings_sync") is not None, "step 2 read the row as not signed in"
+            rows = {r["kind"]: r for r in privacy.rows()}
+            assert rows["account"]["text_version"] == migrations.ACCOUNT_WORDS
+            assert rows["history_sync"]["text_version"] == migrations.SYNC_WORDS, "a step claimed later words"
+    finally:
+        for kind in ("account", "settings_sync", "history_sync"):
+            privacy.withdraw(kind)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_home_asks_about_the_account_and_what_was_said_on_one_row():
+    """Two cards moved in one release, the account's and the history's, and
+    Home has a row per card. One person, one press: the row says what
+    changed in each, and Turn on answers both, in both desks. Not now the
+    same. Alone, each is its own row. And only a card on a person's own key
+    says so: the account's row ended "on your own key", which it is not."""
+    import consent_card as cc
+    import deskweb
+
+    both = cc.asked_again(["account", "history_sync"])
+    assert [r["kinds"] for r in both] == [["account", "history_sync"]], both
+    assert both[0]["title"] == "Your account", "this row is read by someone who has one"
+    assert cc.TEXTS["account"]["changed"] in both[0]["text"]
+    assert cc.TEXTS["history_sync"]["changed"] in both[0]["text"]
+    assert "own key" not in both[0]["note"], both[0]["note"]
+    assert cc.TEXTS["account"]["more"] in both[0]["note"]
+    # Home shows two lines of each (photographed, 2026-11-07: the first
+    # version of this row was cut off before its second change, and a yes to
+    # a sentence nobody can finish is no yes)
+    for kinds in [["account", "history_sync"]] + [[k] for k, c in cc.TEXTS.items() if c.get("changed")]:
+        row = cc.asked_again(kinds)[0]
+        assert len(row["text"]) <= 110, (kinds, len(row["text"]), row["text"])
+        assert len(row["note"]) <= 165, (kinds, len(row["note"]), row["note"])
+    assert [r["kinds"] for r in cc.asked_again(["history_sync", "cloud_text"])] \
+        == [["history_sync"], ["cloud_text"]]
+    assert [r["kinds"] for r in cc.asked_again(["cloud_text", "account", "history_sync"])] \
+        == [["account", "history_sync"], ["cloud_text"]]
+    assert "own key" in cc.asked_again(["cloud_text"])[0]["note"]
+    assert "own key" not in cc.asked_again(["account"])[0]["note"]
+
+    granted: list[str] = []
+    with _web_desk(_WEB_STATUS) as (model, _folder, _asked), \
+            _patched(__import__("privacy"), "stale", lambda: ["account", "history_sync"]), \
+            _patched(__import__("privacy"), "grant", lambda kind, *a: granted.append(kind)):
+        rows = model._consent_rows()
+        assert [r["id"] for r in rows] == ["consent:account"], rows
+        arg = rows[0]["buttons"][0]["arg"]
+        assert model.act("consent.on", arg)["note"] == "turned on"
+        assert granted == ["account", "history_sync"], granted
+        granted.clear()
+        assert model.act("consent.on", "account,cloud_text")["note"] \
+            == "that consent is not waiting for an answer", "a kind the row never named"
+        assert granted == []
+        model.act("consent.later", arg)
+        assert model._consent_later == {"account", "history_sync"}, model._consent_later
+        assert model._consent_rows() == []
+
+
+def test_the_words_say_devices_wherever_the_key_is_named():
+    """Only your own PCs hold the key: false at the first phone join. No
+    screen, card or page says it, and the words that moved a card moved its
+    version (D11)."""
+    import consent_card as cc
+    import privacy
+
+    assert cc.TEXTS["history_sync"]["version"] == privacy.TEXT_VERSIONS["history_sync"]
+    assert privacy.TEXT_VERSIONS["history_sync"] not in privacy.CARRIED_FORWARD["history_sync"]
+    pages = ["consent_card.py", "firstrun.py", "dashboard.py", "deskweb.py", "secretstore.py",
+             "settings.py", "supabase/README.md", "docs/privacy.md", "docs/en/02-first-run.md",
+             "docs/en/04-privacy.md", "docs/en/05-cloud.md", "docs/he/04-privacy.md",
+             "docs/he/05-cloud.md", "docs/en/settings.md", "docs/he/settings.md",
+             "docs/strings/consent.json", "docs/strings/wizard.json", "docs/strings/keys.json"]
+    for name in pages:
+        text = " ".join((REPO / name).read_text("utf-8").split())
+        assert "your own PCs hold" not in text and "only your own PCs" not in text, name
+    assert "שרק המחשבים שלך" not in (REPO / "docs" / "he" / "02-first-run.md").read_text("utf-8")
+
+
+def test_only_a_migration_step_may_write_a_row_of_older_words():
+    """A consent row says which words the person saw, so grant refuses any
+    but the card's. A migration step grants under the words it was written
+    about, and then the row is stale and Home asks about the rest."""
+    import privacy
+
+    old = "deskit-terms-0+en-2026-09-21"
+    assert privacy.TEXT_VERSIONS["history_sync"] != old
+    try:
+        privacy.grant("history_sync", old)
+    except ValueError as e:
+        assert "current card" in str(e), str(e)
+    else:
+        raise AssertionError("a press claimed words no card shows")
+    try:
+        row = privacy.grant("history_sync", old, from_a_step=True)
+        assert row["text_version"] == old and "history_sync" in privacy.stale()
+        assert not privacy.allowed("history_sync"), "a step's row opened the gate"
+    finally:
+        privacy.withdraw("history_sync")
+
+
+def test_forget_says_whether_it_ended_the_device():
+    """0007 took the row and ended the session the row named. A copy older
+    than it never wrote `session_id`, nor did a new copy with its account gate
+    shut, so Forget took the row, ended nothing, and said it was done: that
+    device went on working. The server now answers whether a session ended,
+    and the person is told, in plain words, what to press instead."""
+    import sb
+
+    older = "99999999-8888-7777-6666-555555555502"
+    sid = "bbbbbbbb-0000-4000-8000-000000000009"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            fake.sessions[sid] = _ONE
+            _a_phone_row(fake, _PHONE, session_id=sid)
+            _a_phone_row(fake, older)
+            assert sb.forget_device(_PHONE, _PHONE_CERT) is True
+            assert fake.ended == [sid] and not sb.status()["last_error"]
+            assert sb.forget_device(older, "") is False, "it said it ended a copy it did not"
+            assert fake.ended == [sid]
+            assert sb.status()["last_error"] == sb.OLDER_COPY_WORDS
+            assert "older copy" in sb.OLDER_COPY_WORDS and "Sign out of every PC" in sb.OLDER_COPY_WORDS
+            assert older in sb.forgotten(), "the list must hold it either way"
+            assert all(r["id"] != older for r in fake.tables["devices"]), "the row stayed"
+
+            # a PC that signed out keeps its row and a session that is over:
+            # told "still signed in", the person threw out every device for it
+            sb._status["last_error"] = ""
+            out, over = "99999999-8888-7777-6666-555555555503", "bbbbbbbb-0000-4000-8000-00000000000b"
+            _a_phone_row(fake, out, session_id=over)
+            assert sb.forget_device(out, "") is True, "a session that is over reads as still signed in"
+            assert not sb.status()["last_error"] and over not in fake.ended
+            fake.sessions[over] = _ONE
+            fake.ended.append(over)
+            _a_phone_row(fake, out, session_id=over)
+            assert sb.forget_device(out, "") is True and fake.ended.count(over) == 1
+
+            # the column is the client's word: somebody else's stays, and says so
+            liar, theirs = "99999999-8888-7777-6666-555555555504", "bbbbbbbb-0000-4000-8000-00000000000c"
+            fake.sessions[theirs] = _TWO
+            _a_phone_row(fake, liar, session_id=theirs)
+            assert sb.forget_device(liar, "") is False, "it answered for somebody else's session"
+            assert theirs not in fake.ended and sb.status()["last_error"] == sb.OLDER_COPY_WORDS
+    finally:
+        pc.gone()
+
+
+
+
+def test_sign_out_of_every_pc_ends_them_or_says_it_did_not():
+    """With the account gate stale each logout was refused at the gate and
+    swallowed, so Sign out of every PC ended nothing and said it had, and that
+    is the button the changed lock's "It wasn't me" points to, to throw a
+    stranger out. It raises now, with the words, and this PC stays signed in
+    to try again. Plain Sign out is this PC's own and needs no server."""
+    import privacy
+    import sb
+
+    stale = {**privacy.TEXT_VERSIONS, "account": "deskit-terms-0+en-2099-01-01"}
+
+    def no_road(*a, **k):
+        raise OSError("no road")
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            with _patched(privacy, "TEXT_VERSIONS", stale):
+                assert not privacy.allowed("account")
+                fake.calls.clear()
+                try:
+                    sb.sign_out()
+                except sb.AccountError as e:
+                    assert str(e) == sb.SAY_YES_FIRST, str(e)
+                else:
+                    raise AssertionError("it said it signed out the others")
+                assert sb.signed_in(), "this PC went and the others stayed"
+                assert not fake.to_project(), "a refused request left a row in network.log"
+            with _patched(sb, "_auth", no_road):
+                try:
+                    sb.sign_out()
+                except sb.AccountError as e:
+                    assert str(e) == sb.NO_ROAD_THERE, str(e)
+                else:
+                    raise AssertionError("it said it signed out the others")
+            assert sb.signed_in()
+            assert len(sb.SAY_YES_FIRST) <= 200 and len(sb.NO_ROAD_THERE) <= 200, "main cuts at 200"
+            with _patched(sb, "_auth", no_road):
+                sb.sign_out(everywhere=False)
+            assert not sb.signed_in(), "this PC's own sign-out needs no server"
+    finally:
+        pc.gone()
+
+
+def test_with_the_account_gate_shut_nothing_leaves():
+    """sync_now asked the two syncs' gates and never the account's, under them
+    both. With that gate stale the words and settings went on syncing until
+    the token's hour was over, and then every dictation left refused rows in
+    network.log. Shut means shut: no request, no row, reports included."""
+    import net as net_mod
+    import privacy
+    import sb
+
+    stale = {**privacy.TEXT_VERSIONS, "account": "deskit-terms-0+en-2099-01-01"}
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, \
+                _consented("account", "settings_sync", "history_sync", "report_upload"), pc:
+            _signs_in(fake, _ONE)
+            sb.sync_now()
+            _says(pc, "said with the gate shut")
+            paths.OUTBOX_DIR.mkdir(parents=True)
+            (paths.OUTBOX_DIR / "aaaaaaaa-bbbb-cccc-dddd-000000000004.json").write_text("{}", "utf-8")
+            with _patched(privacy, "TEXT_VERSIONS", stale):
+                net_mod.ROWS.clear()
+                fake.calls.clear()
+                assert sb.sync_now() == {}
+                assert sb.drain_outbox() == {}
+                sb._worker_pass(None, None, ["history"])
+                sb._worker_pass(None, None, None)
+                assert not fake.to_project(), [c["path"] for c in fake.to_project()]
+                assert not list(net_mod.ROWS), "a refused row in network.log"
+            assert "pushed 1" in sb.sync_now()["history"], "the yes did not bring it back"
+    finally:
+        pc.gone()
+
+
+def test_turn_on_wakes_the_worker():
+    """The account's own card was not among the gates that nudge the worker,
+    so after Turn on the rest waited for the next dictation or 15 minutes.
+    And Home's Turn on is in the desk's process, answering a row that was
+    already there: the app sees only the file change, and a list of kinds
+    does not change when a row's words do, so it has to compare those too."""
+    import main
+    import privacy
+    import sb
+    import types
+
+    stub = types.SimpleNamespace(vocab=None, _report_sent=None, _lock=lambda: None,
+                                 _pairing_asked=lambda *a: None, _pairing_settled=lambda *a: None)
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project(), pc, _patched(privacy, "_resets", {}), \
+                _patched(sb, "start_worker", lambda **k: None), _patched(sb, "SIGNED_OUT_HOOKS", []), \
+                _patched(sb, "PAIRING_HOOKS", []), _patched(sb, "LOCK_HOOKS", []):
+            main.App._start_account(stub)
+            sb._pending.clear()
+            with _consented("account"):
+                assert "*" in sb._pending, "Turn on left the worker asleep"
+                # another process answers a stale row: only the file changes
+                row = next(r for r in privacy.rows() if r["kind"] == "account")
+                _another_process_wrote_consents([{**row, "text_version": "deskit-terms-0+en-2020-01-01"}])
+                assert privacy.rows() and not privacy.allowed("account")
+                sb._pending.clear()
+                _another_process_wrote_consents([row])
+                assert privacy.allowed("account")
+                assert "*" in sb._pending, "a yes given on Home never reached the app's worker"
+    finally:
+        pc.gone()
+
+
+def test_a_sign_out_and_back_doubles_nothing_on_the_other_devices():
+    """forget_all took the cursor and nothing kept it, so a plain sign-out and
+    sign-in pushed every line again, the server's trigger stamped each row
+    new, and every other device appended them a second time. Sign out of every
+    PC did it to every pair of copies. Where the history stood goes back with
+    the account, through a refused session too, and a line not yet up still
+    goes. It is kept with its lock and is not a floor: a lock that changed
+    means the rows must go up again, under the new key."""
+    import sb
+    import sync as sync_mod
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    sid = "bbbbbbbb-0000-4000-8000-000000000011"
+
+    def lines() -> str:
+        return sync_mod.remote_history_path().read_text("utf-8")
+
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with a:
+                _sign_in_pc(fake, "desk", sid=sid)
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+            with a:
+                _says(a, "said once")
+                assert sb.sync_now()["history"] == "pulled 0, pushed 1"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 1, pushed 0"
+
+                # a plain sign-out and back
+            with a:
+                sb.sign_out(everywhere=False)
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "it pushed its lines again"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "the other device took them twice"
+                assert lines().count("said once") == 1
+
+                # a line not yet up goes, and only that one
+            with a:
+                _says(a, "said last")
+                sb.sign_out(everywhere=False)
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 1"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 1, pushed 0"
+
+                # the road through a refused session
+            with a:
+                fake.ended.append(sid)
+                sb.sync_now()
+                assert not sb.signed_in() and not sync_mod.cursor_path().exists()
+                fake.ended.clear()
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "a dead session cost the mark"
+            with b:
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+                assert lines().count("said once") == 1 and lines().count("said last") == 1
+
+                # under another lock the rows go up again, as they must
+            with a:
+                sb.sign_out(everywhere=False)
+                kept = config_mod.read_state(paths.STATE_FILE)[sb.PUSHED]
+                config_mod.save({sb.PUSHED: {fake.UID: {**kept[fake.UID], "lock": "0" * 16}}})
+                _sign_in_pc(fake, "desk", sid=sid)
+                assert sb.sync_now()["history"] == "pulled 0, pushed 2", "a mark of another lock held them"
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_the_worker_writes_down_whose_the_stores_are_before_anything_can_end_the_session():
+    """A copy from before the record learned whose the stores were at a
+    refresh or inside sync_now, behind its gates. A session that died first
+    left no record and a device id on file, which reads as somebody else, so
+    the person's own account came back to nothing of its own. The worker
+    writes it at its start, with no network."""
+    import sb
+
+    class Held:
+        def __init__(self, *a, **k):
+            self.daemon = True
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), pc:
+            config_mod.save({"account.device_id": "ffffffff-6666-4666-8666-666666666666"})
+            fake.UID = _ONE
+            _sign_in_pc(fake, "desk", uid=_ONE)
+            _says(pc, "said before the update")
+            assert sb.LAST_ACCOUNT not in config_mod.read_state(paths.STATE_FILE)
+            fake.calls.clear()
+            with _patched(sb, "_worker", None), _patched(sb, "_live", None), \
+                    _patched(threading, "Thread", Held):
+                sb.start_worker()
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _ONE
+            assert not fake.to_project(), "the record cost a request"
+            sb._account_gone("the session died before the first pass")
+            _signs_in(fake, _ONE)
+            assert sb.sync_now()["history"] == "pulled 0, pushed 1", "its own account came back as another"
+    finally:
+        pc.gone()
+
+
+def test_dictation_does_not_starve_the_fifteen_minute_pass():
+    """The pass was only ever the wait running out, and every nudge restarts
+    the wait, so a person dictating more often than that never got one, and
+    that pass is the account pass now: the forgotten list, the requests to
+    join, the hooks. Two hours of a dictation a minute: one every 15."""
+    import sb
+
+    plan: dict = {}
+    assert sb._plan_turn(plan, set(), 1000.0, False) is None, "the first turn is a whole one"
+    turns = [sb._plan_turn(plan, {"history"}, 1000.0 + minute * 60.0, False) for minute in range(1, 121)]
+    assert sum(t is None for t in turns) == 8, turns
+    assert turns[0] == ["history"] and turns[14] is None, "a nudge is still small between them"
+    assert sb._plan_turn(plan, {"*"}, 1000.0 + 7300.0, False) is None, "a nudge of everything"
+    assert sb._plan_turn(plan, set(), 1000.0 + 7310.0, False) is None, "a wait that ran out"
+
+
+def test_a_pc_left_waiting_backs_off_and_asks_for_nothing_else():
+    """Waiting to be approved it looked every 5 s for as long as it waited,
+    with the settings and the words each turn: one copy left waiting was 2,880
+    requests an hour on a free tier. A look now asks about the lock alone,
+    every few seconds for the life of the first request, and then at the pass's
+    pace. A press here starts the quick looks again. The wizard the same."""
+    import firstrun
+    import sb
+    import types
+
+    plan: dict = {}
+    assert sb._plan_turn(plan, set(), 0.0, True) is None
+    assert sb._plan_turn(plan, set(), 5.0, True) == (), "a wake that only waits is a look"
+    assert sb._plan_turn(plan, {"history"}, 6.0, True) == ["history"], "a dictation is still its own"
+    assert sb._plan_turn(plan, set(), sb.CADENCE_S + 1.0, True) is None, "the whole pass still comes"
+    assert sb._plan_wait(plan, 0.0, True) == sb.PAIRING_POLL_S
+    assert sb._plan_wait(plan, sb.PAIRING_TTL_S - 1.0, True) == sb.PAIRING_POLL_S
+    assert sb._plan_wait(plan, sb.PAIRING_TTL_S, True) == sb.CADENCE_S, "it never backs off"
+    plan.pop("asked")
+    assert sb._plan_wait(plan, sb.PAIRING_TTL_S, True) == sb.PAIRING_POLL_S, "a press did not wake it"
+    assert sb._plan_wait(plan, 1.0, False) == sb.CADENCE_S and "asked" not in plan
+
+    # what a look costs, on the wire
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "waiting"
+                fake.calls.clear()
+                sb._worker_pass(None, None, ())
+                asked = {c["path"].rsplit("/", 1)[-1] for c in fake.to_project()}
+                assert not asked & {"settings_sync", "vocab_sync", "history", "vault"}, asked
+                assert len(fake.to_project()) <= 3, [c["path"] for c in fake.to_project()]
+                print(f"    (a look at the lock is {len(fake.to_project())} requests)")
+    finally:
+        a.gone()
+        b.gone()
+
+    wizard = types.SimpleNamespace(LINK_POLL_S=3.0, LINK_IDLE_S=60.0, _link_since=time.monotonic())
+    assert firstrun.Wizard._link_wait(wizard) == 3.0
+    wizard._link_since = time.monotonic() - sb.PAIRING_TTL_S - 1.0
+    assert firstrun.Wizard._link_wait(wizard) == 60.0, "the wizard polls an empty room"
+
+
+def test_a_leaving_that_stopped_half_way_is_finished_by_the_next_pass():
+    """The key moves aside before the state is written, and a pass with no
+    key returned at the door, so a crash between them left a forgotten PC with
+    no key, its old id and nothing to finish it: it wrote that row back and
+    asked to join under the id the account had thrown out. Its own list says
+    what it was doing."""
+    import sb
+    import vault
+
+    def stops(uid, **also):
+        raise OSError("the disk said no")
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            mine = sb.device_id()
+            sb._keep_forgotten(_ONE, [{"device": mine, "cert": "", "at": ""}])
+            with _patched(sb, "_new_device_id", stops):
+                try:
+                    sb._forgotten_pass(_ONE)
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("the fixture did not stop it")
+            assert vault.key(_ONE) is None and sb.device_id() == mine, "the fixture is not the case"
+            fake.tables.pop("pairings", None)
+
+            sb.account_pass("test")
+            new = sb.device_id()
+            assert new != mine, "it stayed under the forgotten id"
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert state["account.left"] == mine and mine in state["account.past_devices"][_ONE], state
+            assert all(r["device_id"] == new for r in fake.tables.get("pairings", [])), "it asked as the old id"
+    finally:
+        pc.gone()
+
+
+def test_a_pull_takes_a_whole_batch_that_shares_one_stamp():
+    """A push is one statement and the trigger stamps its whole batch alike.
+    A page that ended inside that stamp asked next for what is later than
+    it, so the rest of the batch was skipped for good, on every other device,
+    with no error. Against a fake that pages as PostgREST does."""
+    import sb
+    import sync as sync_mod
+    import vocab as vocab_mod
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+            with a:
+                for n in range(7):
+                    _says(a, f"line number {n}")
+                words = vocab_mod.Vocab(a.home / "vocab.json")
+                for n in range(5):
+                    words.learn_by_hand(f"heard {n}", f"meant {n}")
+                sb.sync_now(words)
+            stamps = {r["updated_at"] for r in fake.tables["history"]}
+            assert len(stamps) == 1, stamps
+            with b, _patched(sb, "HISTORY_PAGE", 3), _patched(sb, "VOCAB_PAGE", 2):
+                words = vocab_mod.Vocab(b.home / "vocab.json")
+                out = sb.sync_now(words)
+                assert out["history"] == "pulled 7, pushed 0", out
+                kept = sync_mod.remote_history_path().read_text("utf-8")
+                assert all(f"line number {n}" in kept for n in range(7)), kept
+                assert all(kept.count(f"line number {n}") == 1 for n in range(7)), "a row twice"
+                assert len(words.corrections) == 5, words.corrections
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_a_socket_that_held_starts_the_ladder_again_and_one_that_dropped_at_once_climbs_it():
+    """A drop raises, so `tries` was reset only by a clean return, which a
+    socket never has: a laptop that had slept a few times waited five minutes
+    on every reconnect. Then any answered join reset it, and a socket that
+    joins and drops at once was a new one every 5 s for ever. A socket that
+    held for a heartbeat starts the ladder again; one that dropped at once
+    climbs it, like a join that was refused."""
+    import net as net_mod
+    import sb
+
+    class Stop:
+        def __init__(self):
+            self.waits: list = []
+
+        def is_set(self):
+            return len(self.waits) >= 5
+
+        def wait(self, seconds):
+            self.waits.append(seconds)
+            return self.is_set()
+
+    def held(vocab):
+        sb._live_state["joined"] = time.monotonic() - sb.LIVE_HEARTBEAT_S
+        raise sb.AccountError("the live channel dropped")
+
+    def dropped_at_once(vocab):
+        sb._live_state["joined"] = time.monotonic()
+        raise sb.AccountError("the live channel dropped")
+
+    def refused(vocab):
+        raise sb.AccountError("the live channel refused the join")
+
+    made: list = []
+
+    def drops_after(seconds: float):
+        def drop(server):
+            server.joined.wait(5)
+            time.sleep(seconds)
+            server.push({"topic": "x", "event": "phx_close", "payload": {}, "ref": None})
+
+        def connect(host, port, timeout_s):
+            server = _FakeRealtime()
+            made.append(server)
+            threading.Thread(target=drop, args=(server,), daemon=True).start()
+            return server.connect(host, port, timeout_s)
+        return connect
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _sign_in_pc(fake, "desk")
+            with _patched(sb, "_live_once", held), _patched(sb, "_live_stop", Stop()):
+                sb._live_loop(None)
+                assert sb._live_stop.waits == [sb.LIVE_RETRY_S[0]] * 5, sb._live_stop.waits
+            for road in (dropped_at_once, refused):
+                with _patched(sb, "_live_once", road), _patched(sb, "_live_stop", Stop()):
+                    sb._live_loop(None)
+                    assert sb._live_stop.waits == [15.0, 60.0, 300.0, 300.0, 300.0], (road, sb._live_stop.waits)
+
+            # and on a real socket: joined, dropped, and then it waits
+            sb._live_stop.clear()
+            with _patched(net_mod, "_ws_connect", drops_after(0.0)), \
+                    _patched(sb, "LIVE_HEARTBEAT_S", 30.0), _patched(sb, "LIVE_RETRY_S", (0.05, 30.0)):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: made and made[0].joined.is_set()), "no join"
+                time.sleep(0.5)
+                assert len(made) == 1, f"{len(made)} sockets in half a second: a join alone reset the ladder"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+
+            # and one that held comes back at once
+            made.clear()
+            sb._live_stop.clear()
+            with _patched(net_mod, "_ws_connect", drops_after(0.4)), \
+                    _patched(sb, "LIVE_HEARTBEAT_S", 0.2), _patched(sb, "LIVE_RETRY_S", (0.05, 30.0)):
+                thread = threading.Thread(target=sb._live_loop, args=(None,), daemon=True)
+                thread.start()
+                assert _until(lambda: len(made) >= 2), "a socket that held waited out the ladder"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="", asked=False)
+        pc.gone()
+
+
+def _queued_report(rid: str) -> None:
+    """A report in this PC's outbox, as problems.py leaves it."""
+    (paths.OUTBOX_DIR).mkdir(parents=True, exist_ok=True)
+    (paths.OUTBOX_DIR / f"{rid}.json").write_text(json.dumps({
+        "id": rid, "kind": "wrong", "text": "the word came out wrong",
+        "dictation_raw": "said by whoever queued it", "attachments": []}), "utf-8")
+
+
+def test_sign_out_of_every_pc_answers_where_it_was_pressed():
+    """It went off on a thread and the pipe said "signing out" at once, so a
+    failure landed in last_error, which the web Home never draws: with the
+    network down, on the changed lock's row, the person read that it was
+    happening and the stranger stayed in. And with this PC's own session dead
+    the fallback was skipped, sign_out returned, and the desk said "signed out
+    of every PC" with every other device still in. The reply is the answer."""
+    import main as main_mod
+    import sb
+
+    def no_road(*a, **k):
+        raise OSError("no road")
+
+    app = main_mod.App.__new__(main_mod.App)
+    said: list = []
+    app._say = said.append
+    sid = "cccccccc-0000-4000-8000-000000000001"
+    refused = dict(_WEB_STATUS, account={"signed_in": True, "configured": True, "lock": {
+        "state": "changed", "changed": {"server": "a", "mine": "b", "refused": True}}})
+    pc = _pc("A", "DeskIT.test")
+    try:
+        # the gate in this PC's own settings: the desk reads them (privacy.configure)
+        with _fixture_project() as fake, pc, _consented("account"):
+            assert app._account_command("signout_all") == {"ok": False, "error": "no account on this PC"}
+            _sign_in_pc(fake, "desk", sid=sid)
+
+            with _patched(sb, "_auth", no_road):
+                reply = app._account_command("signout_all")
+            assert reply == {"ok": False, "error": sb.NO_ROAD_THERE}, reply
+            assert sb.signed_in() and not said, "nothing ended, and it said so"
+            assert sb.status()["last_error"] == sb.NO_ROAD_THERE
+
+            # what the person reads on Home
+            with _web_desk(refused) as (model, _f, _asked):
+                pipe = model._send
+                model._send = lambda command, timeout_ms=2000, **args: (
+                    app._account_command(args["do"]) if command == "account"
+                    else pipe(command, timeout_ms=timeout_ms, **args))
+                model.act("lock.signout_ask")
+                with _patched(sb, "_auth", no_road):
+                    note = model.act("lock.signout_all")["note"]
+                assert note == sb.NO_ROAD_THERE, note
+
+            # this PC's session is dead, and it was the one road to the others
+            fake.ended.append(sid)
+            fake.calls.clear()
+            reply = app._account_command("signout_all")
+            assert reply == {"ok": False, "error": sb.SESSION_WENT}, reply
+            assert not sb.signed_in() and not said, "it said it signed out the others"
+            assert sb.status()["last_error"] == sb.SESSION_WENT
+            assert not [c for c in fake.calls if c["path"] == "auth/v1/logout"], "no session, no road"
+            assert len(sb.SESSION_WENT) <= 200, "main cuts at 200"
+            locked = dict(_WEB_STATUS, locked=True, account=sb.status())
+            with _web_desk(locked) as (model, _f, _asked):
+                assert model.home()["landing"]["line"] == sb.SESSION_WENT, model.home()["landing"]
+
+            # and when it worked, it says that
+            fake.ended.clear()
+            sb._status["last_error"] = ""
+            _sign_in_pc(fake, "desk", sid=sid)
+            reply = app._account_command("signout_all")
+            assert reply == {"ok": True, "message": "signed out of every PC"}, reply
+            assert not sb.signed_in() and said == ["signed out of every PC"]
+    finally:
+        pc.gone()
+
+
+def test_a_state_file_replaced_in_the_middle_of_a_run_says_somebody_was_here():
+    """The damaged file was set aside before anything was written, and what
+    replaced it went down only with a save that touched state.json. After a
+    settings-only save, or a value that was refused, there was no file at all:
+    a strict read gives {}, and the next person was this PC's first account."""
+    import migrations
+    import sb
+    import version
+
+    for act in ("a settings-only save", "a refused value"):
+        pc = _pc("A", "DeskIT.test")
+        try:
+            with _fixture_project() as fake, _consented("account"), pc:
+                _signs_in(fake, _ONE)
+                sb.sign_out(everywhere=False)
+                paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+                if act == "a settings-only save":
+                    config_mod.save({"vocab.max_terms": 77})
+                else:
+                    try:
+                        config_mod.save({"polish.when": "whenever"})
+                    except config_mod.ConfigError:
+                        pass
+                    else:
+                        raise AssertionError("that value is not one the file takes")
+                state = config_mod.read_state_strict(paths.STATE_FILE)
+                assert state == {sb.LAST_ACCOUNT: sb.SOMEBODY, "config_version": version.CONFIG_VERSION}, (act, state)
+                kept = [p for p in pc.home.iterdir() if p.name.startswith("state.json.broken-")]
+                assert len(kept) == 1 and kept[0].read_text("utf-8") == "{ cut in half", act
+                assert migrations.current() == version.CONFIG_VERSION, "a file with no version runs the steps"
+                _signs_in(fake, _TWO)
+                assert sb._per_account(sb.HELD_BACK).get(_TWO), f"{act}: the next person was this PC's first"
+        finally:
+            pc.gone()
+
+
+def test_a_state_file_that_will_not_read_is_said_and_stops_nothing_it_need_not():
+    """A strict read raised at the top of a worker turn: a debug line, no
+    account pass, and nothing in the person's status, until a save or a
+    restart. The status says it now and the turn goes on, and a report does
+    not go out past a door that could not be asked. A damaged file is mended
+    by the door, and the words go with it."""
+    import sb
+
+    real = Path.read_text
+
+    def held(self, *a, **k):
+        if self == paths.STATE_FILE:
+            raise PermissionError("held")
+        return real(self, *a, **k)
+
+    rid = "aaaaaaaa-bbbb-cccc-dddd-000000000011"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "report_upload"), pc:
+            fake.rls = True
+            fake.tables["problem_reports"] = []
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            _queued_report(rid)
+
+            with _patched(Path, "read_text", held):
+                sb._worker_pass(None, None, None)
+            assert sb.status()["last_error"] == sb.STATE_WORDS, sb.status()["last_error"]
+            assert len(sb.STATE_WORDS) <= 200 and "will not read" in sb.STATE_WORDS
+            assert sb.status()["lock"]["error"] == sb.STATE_WORDS, "no account pass ran"
+            assert not fake.tables["problem_reports"], "a report went past a door nobody could ask"
+            assert sb.queued() == 1
+
+            # the file opens again, and the words go without a sync to clear them
+            sb._worker_pass(None, None, None)
+            assert sb.status()["last_error"] == "", "the words outlived what they said"
+            assert sb.status()["lock"]["error"] == "", "the lock's card went on saying them"
+            assert [r["id"] for r in fake.tables["problem_reports"]] == [rid]
+    finally:
+        pc.gone()
+
+
+def test_what_the_same_person_queued_stays_theirs_past_a_damaged_state_file():
+    """Its record is gone with the file, and "somebody" names nobody to wait
+    for: a report moved under that word never came back, with its own person
+    still signed in. Only that person: a different one who signs in over the
+    damage must not get it, so the door mends the file on the way in and does
+    not leave it to fail, or the new session reads as the one that was here."""
+    import sb
+
+    mine, theirs = "aaaaaaaa-bbbb-cccc-dddd-000000000012", "aaaaaaaa-bbbb-cccc-dddd-000000000013"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "report_upload"), pc:
+            fake.rls = True
+            fake.tables["problem_reports"] = []
+            _signs_in(fake, _ONE)
+            _queued_report(mine)
+            paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+            sb._take_over(_ONE)
+            assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _ONE
+            assert sb.queued() == 1, "it was moved under nobody's name"
+            assert sb.drain_outbox() == {mine: "sent"}, "the same person's report never went"
+
+            _queued_report(theirs)
+            sb.sign_out(everywhere=False)
+            paths.STATE_FILE.write_text("{ cut in half", "utf-8")
+            _signs_in(fake, _TWO)
+            config_mod.save({"vocab.max_terms": 77})
+            assert sb.queued() == 0 and sb.drain_outbox() == {}, "it went out as the next person's"
+            assert [r["user_id"] for r in fake.tables["problem_reports"]] == [_ONE]
+    finally:
+        pc.gone()
+
+
+def test_a_lock_that_comes_back_seals_again_what_the_lock_between_sealed():
+    """What went up is kept past a sign-out with the lock it went up under,
+    and a cursor with no lock on it gets it back. In session the lock can
+    move and move back: the rows were re-sealed under the lock between, and
+    the old mark said they were up, so they stayed sealed under a key the
+    account no longer names, and would not open on any other device."""
+    import sb
+    import sync as sync_mod
+    import vault
+
+    one, two = b"1" * 32, b"2" * 32
+    first, second = vault.fingerprint(one), vault.fingerprint(two)
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            config_mod.save({sb.PUSHED: {_ONE: {"ts": "2026-11-07T10:00:00.000+00:00", "lock": first}}})
+            # back after the sign-out, under that lock: what went up is up
+            cursor: dict = {}
+            sb._cursor_follows_lock(cursor, one, _ONE)
+            assert cursor.get("history_pushed_ts") == "2026-11-07T10:00:00.000+00:00", cursor
+            # under another: everything goes up again
+            sb._cursor_follows_lock(cursor, two, _ONE)
+            assert cursor["lock"] == second and "history_pushed_ts" not in cursor, cursor
+            cursor["history_pushed_ts"] = "2026-11-07T11:00:00.000+00:00"
+            # and back: the rows are under the lock between
+            sb._cursor_follows_lock(cursor, one, _ONE)
+            assert cursor["lock"] == first and "history_pushed_ts" not in cursor, cursor
+            assert sync_mod.read_cursor()["lock"] == first and \
+                "history_pushed_ts" not in sync_mod.read_cursor()
+    finally:
+        pc.gone()
+
+
+def test_a_copy_left_waiting_goes_on_asking_as_the_same_request_and_rings_nobody():
+    """A request lives fifteen minutes, and each new one had a new id, so a
+    copy left waiting was a card and a cue on every other device each time,
+    for as long as it waited, while the card named a code it no longer
+    showed. It is the same request now, in a new row: Home's row stays true
+    on both sides, nobody is rung, the code does not change under a person
+    comparing it and Same code stays pressed. Not now holds for the rest of
+    the request's time. An answer given before the press outlives the time."""
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    rings: list = []
+
+    def lapses() -> None:
+        sb._lock_state["pairing"]["expires"] = 0
+        for row in fake.tables.get("pairings", []):
+            row["expires_at"] = "2026-01-01T00:00:00+00:00"
+
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "PAIRING_HOOKS", [rings.append]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+                lock = sb.status()["lock"]
+                asked = dict(fake.tables["pairings"][0])
+            with a:
+                shown = sb.pending_pairings()
+                assert len(rings) == 1 and shown[0]["code"] == lock["code"], rings
+
+            for _turn in range(3):
+                with b:
+                    lapses()
+                    told = len(fake.broadcasts)
+                    sb._worker_pass(None, None, ())
+                    now = sb.status()["lock"]
+                    assert now["state"] == "waiting" and now["code"] == lock["code"], now
+                    rows = fake.tables["pairings"]
+                    assert [(r["id"], r["applicant"]) for r in rows] == [(asked["id"], asked["applicant"])], rows
+                    assert not rows[0].get("expires_at"), "the old row stayed"
+                    assert len(fake.broadcasts) == told + 1, "the row on the other Home stays stale"
+                with a:
+                    again = sb.pending_pairings()
+                    assert [(r["id"], r["code"]) for r in again] == [(asked["id"], lock["code"])], again
+                    assert len(rings) == 1, f"{len(rings)} knocks for one request"
+
+            # Not now holds for the rest of the request's time, and rings nobody after it
+            with a:
+                sb.decline_pairing(asked["id"])
+            with b:
+                sb._worker_pass(None, None, ())
+                assert not fake.tables["pairings"], "Not now was back at the next look"
+                assert sb.status()["lock"]["code"] == lock["code"]
+                lapses()
+                sb._worker_pass(None, None, ())
+                assert [r["id"] for r in fake.tables["pairings"]] == [asked["id"]]
+            with a:
+                assert [r["id"] for r in sb.pending_pairings()] == [asked["id"]] and len(rings) == 1
+
+            # Same code stays pressed, and an answer outlives the request's time
+            with b:
+                sb.same_code(lock["code"])
+                lapses()
+                sb._worker_pass(None, None, ())
+                assert sb.status()["lock"]["same"] is True, "a press was lost to the clock"
+                sb._lock_state["pairing"]["same"] = False
+            with a:
+                sb.approve_pairing(asked["id"])
+            with b:
+                lapses()
+                sb._worker_pass(None, None, ())
+                assert fake.tables["pairings"][0].get("handed"), "the clock threw the answer away"
+                sb.same_code(lock["code"])
+                sb._worker_pass(None, None, ())
+                assert sb.status()["lock"]["state"] == "have" and vault.key(fake.UID)
+                assert not fake.tables["pairings"]
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_the_privacy_page_says_what_a_second_account_changes_on_the_pc():
+    """It said what the last account left stays in the PC's files. A PC holds
+    one copy of the settings, the words and the keys, and the new account's
+    come down over them, so that was not true, and a promise on this page is
+    the one kind that has to be."""
+    policy = " ".join((REPO / "docs" / "privacy.md").read_text("utf-8").split())
+    assert "They are not removed either" not in policy
+    for words in ("nothing the last one said, learned or set", "the Said page there still shows it",
+                  "one copy of each and not one per person", "the new account's settings replace the last one's",
+                  "a word or key it removed goes", "what never reached it does not"):
+        assert words in policy, words
+
+
+def test_a_damaged_forgotten_list_is_set_aside_and_the_accounts_takes_its_place():
+    """forgotten() answered empty for a file that would not read, and nothing
+    ever repaired it, so the door stood open to every device on it. The bad
+    file is set aside, kept, the worker is called at once, and the next pass
+    writes the account's list in its place. Delete my account takes the
+    kept copy with the rest."""
+    import sb
+
+    gone = "99999999-8888-7777-6666-555555555503"
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), pc:
+            _signs_in(fake, _ONE)
+            sb.account_pass("test")
+            sb._keep_forgotten(_ONE, [{"device": gone, "cert": "ab" * 32, "at": ""}])
+            sb.account_pass("test")
+            assert gone in sb.forgotten()
+            path = sb._forgotten_file(_ONE)
+            path.write_text("{ cut in half", "utf-8")
+            sb._pending.clear()
+            assert sb.forgotten() == set()
+            kept = list(path.parent.glob(path.name + ".broken-*"))
+            assert len(kept) == 1 and kept[0].read_text("utf-8") == "{ cut in half", "the bad file went"
+            assert "*" in sb._pending, "nothing was told to repair it"
+            sb.account_pass("test")
+            assert gone in sb.forgotten(), "the account's list did not come back"
+            sb.delete_account()
+            assert not list(path.parent.glob(path.name + "*")), "Delete left a copy of the list"
+    finally:
+        pc.gone()
+
+
+def test_a_pass_across_a_sign_in_leaves_no_cursor_of_the_last_account():
+    """sync_now wrote its cursor back if somebody was signed in, and a sign-in
+    that lands during a pass is somebody: the last account's cursor, back
+    on disk after the door had wiped it, read by the new one as its own. It
+    goes back only under the account it was read under."""
+    import sb
+    import sync as sync_mod
+
+    real = sb._sync_settings
+
+    def crossing(cursor, push=True):
+        out = real(cursor, push=push)
+        sb.sign_out(everywhere=False)
+        _signs_in(fake, _TWO)
+        return out
+
+    pc = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
+            fake.rls = True
+            _signs_in(fake, _ONE)
+            with _patched(sb, "_sync_settings", crossing):
+                sb.sync_now(only=["settings"])
+            assert (sb.user() or {}).get("id") == _TWO
+            assert "settings_hash" not in sync_mod.read_cursor(), "the last account's cursor came back"
+    finally:
+        pc.gone()
+
+
+def test_forget_ends_a_device_and_a_row_restored_unchanged_gives_nothing_back():
+    """Forget, from any device that holds the key. The list first, then
+    the row and its session (forget_device(), 0007), then the others are
+    told and the hooks run here. A row that opens is not enough: a
+    forgotten phone still holds the account key and the server could put
+    its row back unchanged, since a seal holds no version. So the target's
+    id and certificate go on the sealed `forgotten` row and in a local
+    list that never shrinks. Here the server restores the row and drops
+    the list, and nothing comes back: sb.forgotten() still names both, the
+    pass writes the list back whole, the phone counts as no phone, and
+    what opens under the key says the same on another PC that reads the
+    row for the first time. A refused forget_device() leaves it listed. The
+    row is one more `vault` row: the cloud keys' sync skips it and an old
+    copy's import_keys does too. A device that is not a uuid, this device,
+    and a PC without the key are refused before anything leaves."""
+    import datetime
+    import sb
+    import sync as sync_mod
+    import vault
+
+    a, b, c = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB"), _pc("C", "DeskIT.testC")
+    keys: list[bytes] = []
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), \
+                _patched(sb, "ACCOUNT_HOOKS", [keys.append]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                aad = vault.AAD_DEVICE.format(uid=fake.UID, device_id=_PHONE)
+                link = vault.seal_json(key, {"v": 1, "kind": "phone", "cert": "AAAA", "proto": 1, "backup": True}, aad)
+                phone_row = _a_phone_row(fake, link=link, session_id="aaaaaaaa-0000-4000-8000-000000000009")
+                fake.sessions["aaaaaaaa-0000-4000-8000-000000000009"] = fake.UID
+                sb._device_names["at"] = 0.0
+                assert sb._has_phone()
+                for bad in ("not a uuid", ""):
+                    try:
+                        sb.forget_device(bad, _PHONE_CERT)
+                    except sb.AccountError:
+                        pass
+                    else:
+                        raise AssertionError(f"forgot {bad!r}")
+                try:
+                    sb.forget_device(sb.device_id(), "")
+                except sb.AccountError as e:
+                    assert "sign out" in str(e), str(e)
+                else:
+                    raise AssertionError("a PC forgot itself")
+                assert not fake.tables.get("vault") or not [r for r in fake.tables["vault"] if r["name"] == "forgotten"]
+
+                keys.clear()
+                told = len(fake.broadcasts)
+                sb.forget_device(_PHONE, _PHONE_CERT)
+                assert fake.ended == ["aaaaaaaa-0000-4000-8000-000000000009"], fake.ended
+                assert all(r["id"] != _PHONE for r in fake.tables["devices"]), "the row stayed"
+                # the column is the client's word: a row naming somebody
+                # else's session ends nothing, and another account's row stays
+                theirs = "aaaaaaaa-0000-4000-8000-00000000000a"
+                fake.sessions[theirs] = "99999999-0000-4000-8000-000000000000"
+                liar = _a_phone_row(fake, phone="99999999-8888-7777-6666-555555555504", session_id=theirs)
+                sb.forget_device(liar["id"], "")
+                assert theirs not in fake.ended, "somebody else's session was ended"
+                other_account = _a_phone_row(fake, phone="99999999-8888-7777-6666-555555555505")
+                other_account["user_id"] = "99999999-0000-4000-8000-000000000000"
+                sb.forget_device(other_account["id"], "")
+                assert other_account in fake.tables["devices"], "another account's row went"
+                fake.tables["devices"].remove(other_account)
+                row = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")
+                aad = vault.AAD_VAULT.format(uid=fake.UID, name="forgotten")
+                assert aad == f"vault/{fake.UID}/forgotten" and vault.is_sealed(row["cipher"])
+                inside = vault.open_json(key, row["cipher"], aad)
+                assert set(inside) == {"v"} and (_PHONE, _PHONE_CERT) in \
+                    [(e["device"], e["cert"]) for e in inside["v"]], inside
+                assert datetime.datetime.fromisoformat(inside["v"][0]["at"]).tzinfo is not None
+                assert {_PHONE, _PHONE_CERT} <= sb.forgotten()
+                msg = fake.broadcasts[-1]["messages"][0]
+                assert len(fake.broadcasts) == told + 3 and msg["event"] == "changed"
+                assert msg["payload"]["stores"] == ["devices"]
+                assert keys == [key] * 3, "the door on this PC did not hear of it"
+                sb._device_names["at"] = 0.0
+                assert not sb._has_phone()
+                wire = "\n".join(c["url"] + c["body"].decode("utf-8", "replace") for c in fake.to_project())
+                assert _PHONE_CERT not in wire, "the certificate left in the clear"
+
+                # the cloud keys' sync does not take the row for a key
+                sb.sync_now()
+                slots = sync_mod.read_cursor().get("vault_slots") or {}
+                assert not any("forgotten" in (s.get("digest") or {}) for s in slots.values()), slots
+                assert vault.import_keys(key, fake.UID, {"forgotten": row["cipher"]}) == []
+
+                # the server restores the row, unchanged, and drops the list
+                fake.tables["devices"].append(phone_row)
+                fake.tables["vault"][:] = [r for r in fake.tables["vault"] if r["name"] != "forgotten"]
+                sb._device_names["at"] = 0.0
+                assert {_PHONE, _PHONE_CERT} <= sb.forgotten(), "the local list shrank"
+                assert not sb._has_phone(), "a restored row made a phone of it"
+                rows = {r["id"]: r for r in sb.devices()}
+                assert rows[_PHONE]["link"] == link, "devices() is the rows as stored"
+                sb.account_pass("test")
+                row = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")
+                assert _PHONE in [e["device"] for e in vault.open_json(key, row["cipher"], aad)["v"]], \
+                    "the pass did not write the list back"
+                assert {_PHONE, _PHONE_CERT} <= sb.forgotten()
+                # a row that does not open takes nothing away and adds nothing
+                row["cipher"] = vault.seal_json(os.urandom(32), {"v": [{"device": "x", "cert": "y"}]}, aad)
+                sb.account_pass("test")
+                assert {_PHONE, _PHONE_CERT} <= sb.forgotten() and "x" not in sb.forgotten()
+
+                # a refused forget: listed all the same, never the other way round
+                other = "99999999-8888-7777-6666-555555555502"
+                fake.script["rest/v1/rpc/forget_device"] = [(500, b'{"message":"no"}')]
+                try:
+                    sb.forget_device(other, "ef" * 32)
+                except sb.AccountError as e:
+                    assert "refused" in str(e), str(e)
+                else:
+                    raise AssertionError("a refused forget said nothing")
+                assert other in sb.forgotten() and "ef" * 32 in sb.forgotten()
+                # the file never shrinks, not even signed out; with nobody
+                # signed in there is simply no account to answer for
+                sb.sign_out(everywhere=False)
+                assert sb.forgotten() == set() and sb._forgotten_file(fake.UID).exists()
+                _sign_in_pc(fake, "desk")
+                assert _PHONE in sb.forgotten()
+                sb.account_pass("test")
+
+            # B: holds the key, reads the row for the first time, keeps it
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "waiting"
+                assert sb.forgotten() == set(), "a PC without the key read the list"
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+                assert vault.key(fake.UID) == key
+                sb.account_pass("test")
+                assert {_PHONE, _PHONE_CERT, other} <= sb.forgotten(), sb.forgotten()
+            # a PC without the key is refused before anything leaves
+            with c:
+                _sign_in_pc(fake, "third")
+                calls = len(fake.calls)
+                try:
+                    sb.forget_device(_PHONE, _PHONE_CERT)
+                except sb.AccountError as e:
+                    assert "does not hold" in str(e), str(e)
+                else:
+                    raise AssertionError("forgot without the key")
+                assert len(fake.calls) == calls
+                # a key the account does not name reads, keeps, and never
+                # seals its own list over the account's: not at a sign-in,
+                # before the lock was looked at, and not after
+                vault.keep(fake.UID, os.urandom(32))
+                sb._keep_forgotten(fake.UID, [{"device": "99999999-8888-7777-6666-555555555503",
+                                               "cert": "", "at": ""}])
+                stored = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")["cipher"]
+                sb.ensure_profile(force=True)
+                assert next(r for r in fake.tables["vault"] if r["name"] == "forgotten")["cipher"] == stored
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "changed"
+                assert next(r for r in fake.tables["vault"] if r["name"] == "forgotten")["cipher"] == stored
+    finally:
+        for pc in (a, b, c):
+            pc.gone()
+
+
+def test_a_pc_that_finds_itself_forgotten_leaves_and_asks_as_a_new_device():
+    """A forgotten PC still holds the key, and ensure_profile would bring
+    its row back within a day. So a PC on the list moves its key aside
+    (kept, never deleted), stops writing that row, takes a new device id,
+    tells FORGOTTEN_HOOKS (phone.py's new certificate), and asks to join
+    the same lock like any new device: the request is under the new id, a
+    key for another lock is not taken, the same key is. On the way back
+    what it said under its old id does not come down as another device's
+    lines. A sign-in on a forgotten PC finds out before it writes a row.
+    Its key is set aside for the lock it held, by the key's own fingerprint:
+    a lock the server names as it leaves is asked about, not taken. Delete
+    my account takes the ids it had."""
+    import sb
+    import sync as sync_mod
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    left: list[str] = []
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "FORGOTTEN_HOOKS", [lambda: left.append("left")]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                fp = vault.fingerprint(key)
+            with b:
+                # no session on its row, so only the list can tell it: the
+                # road through the 401 is the next test's but one
+                _sign_in_pc(fake, "laptop")
+                b.log.write_text("2026-11-06 10:00:00,100 | OK | 1.0s | local | 0.4s latency | מהמחשב השני\n", "utf-8")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+                assert vault.key(fake.UID) == key
+                old = sb.device_id()
+                assert any(r["device_id"] == old for r in fake.tables["history"]), "B pushed nothing"
+                # the rows B pushed must look newer than its cursor to matter
+                for r in fake.tables["history"]:
+                    r["updated_at"] = "2099-01-01T00:00:00+00:00"
+            with a:
+                sb.forget_device(old, "cd" * 32)
+
+            with b:
+                sb.account_pass("test")
+                assert vault.key(fake.UID) is None, "a forgotten PC kept its key"
+                assert vault.aside(fake.UID) == [fp], "the key was not kept aside"
+                assert vault.confirmed(fake.UID) == fp
+                assert left == ["left"]
+                new = sb.device_id()
+                assert new != old and old in sb.forgotten()
+                assert all(r["id"] != old for r in fake.tables["devices"]), "its row came back"
+                lock = sb.status()["lock"]
+                assert lock["state"] == "waiting" and lock["code"], lock
+                req = fake.tables["pairings"][0]
+                assert req["device_id"] == new, "it asked under the old id"
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"], fp)
+                # the next pass stays gone, and the new row is written under the new id
+                sb.ensure_profile(force=True)
+                assert all(r["id"] != old for r in fake.tables["devices"])
+                assert any(r["id"] == new for r in fake.tables["devices"])
+                assert left == ["left"], "it left twice"
+                # a key for another lock is refused
+                req["handed"] = vault.hand_over(os.urandom(32), req["applicant"],
+                                                vault.AAD_PAIRING.format(uid=fake.UID, pairing_id=req["id"]))
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.account_pass("test")
+                assert vault.key(fake.UID) is None
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.account_pass("test")
+                assert vault.key(fake.UID) == key and sb.status()["lock"]["state"] == "have"
+                out = sb.sync_now(reason="test")
+                assert out["history"].startswith("pulled 0"), out
+                lines = sync_mod.remote_history_path()
+                assert not lines.exists() or "מהמחשב השני" not in lines.read_text("utf-8"), \
+                    "this PC's own words came down as another device's"
+                assert left == ["left"]
+
+            # a sign-in on a forgotten PC: no row is written before it knows
+            with b:
+                now_mine = sb.device_id()
+            with a:
+                sb.forget_device(now_mine, "")
+            with b:
+                left.clear()
+                sb.sign_out(everywhere=False)
+                _sign_in_pc(fake, "laptop")
+                sb.ensure_profile(force=True)
+                assert left == ["left"], "the sign-in wrote its row before it read the list"
+                assert all(r["id"] != now_mine for r in fake.tables["devices"])
+                assert any(r["id"] == sb.device_id() for r in fake.tables["devices"])
+                assert sorted(sb._past_devices()) == sorted([old, now_mine])
+                # Delete my account takes them, the floor and this account's
+                # list with them; the key's aside file goes too
+                assert sb._forgotten_file(fake.UID).exists()
+                sb.delete_account()
+                assert sb._past_devices() == set()
+                assert not sb._forgotten_file(fake.UID).exists(), "the list outlived the account"
+                state = config_mod.read_state(paths.STATE_FILE)
+                assert not state.get("account.history_floor") and not state.get("account.device_ids"), state
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_the_lock_a_leaving_pc_will_take_is_the_key_it_held_not_the_servers_word():
+    """_leave named the server's lock_id as the one to take a key for, so a
+    server could pick the lock a forgotten PC goes on to accept. It names
+    the fingerprint of the key it holds: a different lock on the profile as
+    it leaves is the changed lock, with its question on Home."""
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                fp = vault.fingerprint(key)
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+                old = sb.device_id()
+            with a:
+                sb.forget_device(old, "")
+            forged = "e" * 16
+            with b:
+                sb._lock_state["at"] = time.monotonic()      # believed: no look at the profile
+                fake.tables["profiles"][0]["lock_id"] = forged
+                assert sb._forgotten_pass(fake.UID) is True
+                assert vault.confirmed(fake.UID) == fp, "the server chose the lock this PC takes"
+                sb._ensure_lock(fake.UID)
+                lock = sb.status()["lock"]
+                assert lock["state"] == "changed" and lock["changed"]["server"] == forged[:8], lock
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_a_forgotten_pc_walks_back_in_with_nothing_doubled():
+    """The real road, not a shortcut through it. Forget ends B's session.
+    B's next request is a 401, the refresh is refused, B is signed out, and
+    with that the cursors are gone (sync.forget_all). B signs in, finds
+    itself on the list, leaves, asks, is approved by A, presses Same code
+    and syncs. Under the new id every line it ever said would be a new row,
+    doubled on every PC: until the review, that is what happened. The floor
+    survives forget_all, so nothing it said before goes up again, nothing
+    of its own comes back down as another device's, and what it says after
+    goes up once."""
+    import sb
+    import sync as sync_mod
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    gone: list[str] = []
+    said = ("2026-11-06 10:00:00,100 | OK | 1.0s | local | 0.4s latency | המילה הראשונה\n"
+            "2026-11-06 10:01:00,100 | OK | 1.0s | local | 0.4s latency | המילה השנייה\n")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "SIGNED_OUT_HOOKS", [lambda: gone.append("locked")]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+            with b:
+                b.log.write_text(said, "utf-8")
+                _sign_in_pc(fake, "laptop", sid="bbbbbbbb-0000-4000-8000-000000000001")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                out = sb.sync_now()
+                assert out["history"] == "pulled 0, pushed 2", out
+                old = sb.device_id()
+            with a:
+                assert sb.sync_now()["history"] == "pulled 2, pushed 0"
+                remote = sync_mod.remote_history_path().read_text("utf-8")
+                assert remote.count("המילה") == 2
+
+                # Forget, from A
+                sb.forget_device(old, "cd" * 32)
+            assert fake.ended == ["bbbbbbbb-0000-4000-8000-000000000001"], fake.ended
+            assert len(fake.tables["history"]) == 2
+
+            with b:
+                # the next request is a 401, the refresh is refused: signed out
+                sb.sync_now()
+                assert not sb.signed_in() and gone == ["locked"], gone
+                assert sb.status()["last_error"] == sb.GONE_ELSEWHERE
+                assert not sync_mod.cursor_path().exists(), "the 401 left the cursors"
+                assert vault.key(fake.UID) == key, "signing out took the key"
+
+                # he signs in again, on the desk: nobody here has the hooks
+                _sign_in_pc(fake, "laptop", sid="bbbbbbbb-0000-4000-8000-000000000002")
+                sb.ensure_profile(force=True)
+                new = sb.device_id()
+                assert new != old and vault.key(fake.UID) is None, "it stayed in"
+                assert config_mod.read_state(paths.STATE_FILE)["account.left"] == old
+                assert all(r["id"] != old for r in fake.tables["devices"]), "its old row came back"
+                sb.account_pass("test")
+                lock = sb.status()["lock"]
+                assert lock["state"] == "waiting" and fake.tables["pairings"][0]["device_id"] == new
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(lock["code"])
+                sb.account_pass("test")
+                assert vault.key(fake.UID) == key and sb.status()["lock"]["state"] == "have"
+                out = sb.sync_now()
+                assert out["history"] == "pulled 0, pushed 0", out
+                assert len(fake.tables["history"]) == 2, "its history went up again under the new id"
+                assert not sync_mod.remote_history_path().exists(), "its own words came back as another's"
+                assert fake.UID in config_mod.read_state(paths.STATE_FILE)["account.history_floor"]
+                # what it says from now on goes up, once
+                with b.log.open("a", encoding="utf-8") as f:
+                    f.write("2026-11-06 12:00:00,100 | OK | 1.0s | local | 0.4s latency | המילה השלישית\n")
+                assert sb.sync_now()["history"] == "pulled 0, pushed 1"
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0"
+                rows = [r for r in fake.tables["history"] if r["device_id"] == new]
+                assert len(rows) == 1 and len(fake.tables["history"]) == 3
+            with a:
+                assert sb.sync_now()["history"] == "pulled 1, pushed 0", "another PC saw it doubled"
+                remote = sync_mod.remote_history_path().read_text("utf-8")
+                assert remote.count("המילה") == 3
+
+            # a second sign-out wipes the cursors again, and the floor holds
+            with b:
+                sb.sign_out(everywhere=False)
+                _sign_in_pc(fake, "laptop", sid="bbbbbbbb-0000-4000-8000-000000000003")
+                sb.sync_now()
+                assert sum(r["device_id"] == new for r in fake.tables["history"]) == 1, \
+                    "what it said after coming back was pushed twice"
+                assert len(fake.tables["history"]) == 3
+            with a:
+                assert sb.sync_now()["history"] == "pulled 0, pushed 0", "the other PC saw it again"
+                assert sync_mod.remote_history_path().read_text("utf-8").count("המילה") == 3
+    finally:
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_a_leaving_noticed_in_the_desk_is_finished_by_the_app():
+    """FORGOTTEN_HOOKS fire only in the process that notices, and a sign-in
+    may happen in the desk or the wizard, where nothing is registered. So
+    leaving writes account.left and settle_left clears it only once hooks
+    have run: the app's worker asks every turn, a hook that trips keeps the
+    mark for the next, and until then write_link refuses, so no row under
+    the new id carries the certificate the list names."""
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    fired: list[str] = []
+
+    def tripping():
+        raise RuntimeError("the key could not be made")
+
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            key = vault.key(fake.UID)
+            mine = sb.device_id()
+            sb._keep_forgotten(fake.UID, [{"device": mine, "cert": "", "at": ""}])
+            sealed = vault.seal_json(key, {"v": 1}, "any")
+
+            # the desk: no hook registered, the mark stays
+            with _patched(sb, "FORGOTTEN_HOOKS", []):
+                assert sb._forgotten_pass(fake.UID) is True
+                assert config_mod.read_state(paths.STATE_FILE)["account.left"] == mine
+                assert sb.settle_left() is False, "a process with no hooks finished it"
+                assert config_mod.read_state(paths.STATE_FILE)["account.left"] == mine
+                try:
+                    sb.write_link(sealed)
+                except sb.AccountError as e:
+                    assert "certificate" in str(e), str(e)
+                else:
+                    raise AssertionError("a row went up before the certificate changed")
+
+            # the app starts: a hook that trips keeps it, the next turn finishes
+            with _patched(sb, "FORGOTTEN_HOOKS", [tripping]):
+                sb._worker_pass(None, None, ["history"])
+                assert config_mod.read_state(paths.STATE_FILE)["account.left"] == mine
+            with _patched(sb, "FORGOTTEN_HOOKS", [lambda: fired.append("rotated")]):
+                sb._worker_pass(None, None, ["history"])
+                assert fired == ["rotated"]
+                assert not config_mod.read_state(paths.STATE_FILE).get("account.left")
+                assert sb.settle_left() is True
+                sb._worker_pass(None, None, ["history"])
+                assert fired == ["rotated"], "the hooks ran twice for one leaving"
+            sb.write_link(sealed)
+    finally:
+        a.gone()
+
+
+def test_the_forgotten_list_is_one_file_per_account():
+    """Two accounts on one PC keep two lists: one account's forgotten device
+    is nothing to the other's door, and Delete my account takes its own
+    list and leaves the other's alone. With nobody signed in the answer is
+    empty, not the union of everyone."""
+    import sb
+
+    second = "22222222-3333-4444-5555-666666666666"
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account"), a:
+            _sign_in_pc(fake, "desk")
+            sb._keep_forgotten(fake.UID, [{"device": "one", "cert": "c1", "at": ""}])
+            assert sb.forgotten() == {"one", "c1"}
+            sb.sign_out(everywhere=False)
+            assert sb.forgotten() == set()
+            fake.UID = second
+            _sign_in_pc(fake, "desk")
+            assert sb.forgotten() == set(), "another account's list reached this one"
+            sb._keep_forgotten(fake.UID, [{"device": "two", "cert": "c2", "at": ""}])
+            assert sb.forgotten() == {"two", "c2"}
+            sb.delete_account()
+            assert not sb._forgotten_file(second).exists()
+            assert sb._forgotten_file(_FakeSupabase.UID).exists(), "another account's list went"
+    finally:
+        a.gone()
+
+
+def test_a_push_broadcasts_under_the_gate_of_what_was_pushed():
+    """_broadcast was hard-wired to `sync`, so a copy with only the history
+    sync on had every push's broadcast refused and its other copies heard
+    at the next pass. A push of history alone goes under `history`, so with
+    the words gate shut it still leaves; a push that holds a store of the
+    words gate goes under `sync`, and what is no store's under `account`."""
+    import net as net_mod
+    import sb
+
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "history_sync"), a:
+            a.log.write_text("2026-11-06 10:00:00,100 | OK | 1.0s | local | 0.4s latency | אחת\n", "utf-8")
+            _sign_in_pc(fake, "desk")
+            sb.account_pass("test")
+            net_mod.ROWS.clear()
+            sent = len(fake.broadcasts)
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 1", out
+            assert len(fake.broadcasts) == sent + 1, "the push's broadcast was refused"
+            assert fake.broadcasts[-1]["messages"][0]["payload"]["stores"] == ["history"]
+            assert net_mod.rows()[-1].purpose == "history", net_mod.rows()[-1]
+            assert not any(r.status == "refused" for r in net_mod.rows())
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), a:
+            with a.log.open("a", encoding="utf-8") as f:
+                f.write("2026-11-06 10:05:00,100 | OK | 1.0s | local | 0.4s latency | שתיים\n")
+            _sign_in_pc(fake, "desk")
+            out = sb.sync_now()
+            assert out["history"].endswith("pushed 1") and out["settings"] == "pushed", out
+            assert net_mod.rows()[-1].purpose == "sync", "a push of both went out under one store's gate"
+            sb.sync_now()
+            net_mod.ROWS.clear()
+            sb._broadcast(event="signed_out")
+            assert net_mod.rows()[0].purpose == "account"
+    finally:
+        a.gone()
+
+
+def test_sign_out_of_every_pc_clears_the_other_devices_links_first():
+    """The door checks a certificate and not a session, so ending sessions
+    alone would leave a phone's door open, and this is Home's answer to a
+    stranger. The PC that presses it deletes every other device's `link`
+    first, its own stays, then does what it did. A sign-out on this PC
+    alone touches none. A server that refuses the rows still ends the
+    sessions: the sign-out is never stopped by it."""
+    import sb
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), a:
+            _sign_in_pc(fake, "desk")
+            sb.sync_now()
+            key = vault.key(fake.UID)
+            sealed = vault.seal_json(key, {"v": 1}, "any")
+            mine = sb.device_id()
+            sb.write_link(sealed)
+            phone = _a_phone_row(fake, link=sealed)
+            other = _a_phone_row(fake, phone="99999999-8888-7777-6666-555555555502",
+                                 platform="windows-10.0.26200", link=sealed)
+            sb.sign_out(everywhere=False)
+            assert phone["link"] == sealed and other["link"] == sealed, "this PC's sign-out touched them"
+
+            _sign_in_pc(fake, "desk")
+            n = len(fake.calls)
+            sb.sign_out(everywhere=True)
+            wire = [(c["method"], c["path"]) for c in fake.calls[n:]
+                    if c["path"] in ("rest/v1/devices", "auth/v1/logout")]
+            assert wire == [("PATCH", "rest/v1/devices"), ("POST", "auth/v1/logout"),
+                            ("POST", "auth/v1/logout")], wire
+            assert phone["link"] is None and other["link"] is None, "a link survived"
+            assert next(r for r in fake.tables["devices"] if r["id"] == mine)["link"] == sealed
+            assert not sb.signed_in()
+
+            # a refusal stops nothing
+            phone["link"] = sealed
+            _sign_in_pc(fake, "desk")
+            fake.script["rest/v1/devices"] = [(500, b'{"message":"no"}')]
+            n = len(fake.calls)
+            sb.sign_out(everywhere=True)
+            scopes = [c["query"].get("scope") for c in fake.calls[n:] if c["path"] == "auth/v1/logout"]
+            assert scopes == ["others", "local"], scopes
+            assert not sb.signed_in()
+    finally:
+        a.gone()
+
+
+def test_a_removed_key_reaches_import_keys_through_an_empty_value():
+    """A key removed on another device arrives as a row like any other, the
+    sealed value {"v": ""}: a phone writes it so, and it has to reach
+    import_keys and empty the slot here. A row with no cipher at all, and
+    a row under a name no slot knows, stay out of it."""
+    import sb
+    import secretstore
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    fixture = "gsk_fixture_remove_" + "r" * 30
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), a:
+            _sign_in_pc(fake, "desk")
+            for n in secretstore.CRED_NAMES:
+                secretstore.delete(n)
+            secretstore.set("groq", fixture)
+            assert sb.sync_now()["vault"] == "pulled 0, pushed 1"
+            key = vault.key(fake.UID)
+            row = next(r for r in fake.tables["vault"] if r["name"] == "groq")
+            # another device removes it, the way a phone writes the row
+            row["cipher"] = vault.seal_json(key, {"v": ""}, vault.AAD_VAULT.format(uid=fake.UID, name="groq"))
+            row["updated_at"] = "2099-01-01T00:00:00+00:00"
+            fake.tables["vault"].append({"user_id": fake.UID, "name": "future_thing", "cipher": row["cipher"],
+                                         "updated_at": "2099-01-01T00:00:01+00:00"})
+            got: list[dict] = []
+            real = vault.import_keys
+            with _patched(vault, "import_keys", lambda k, u, rows: got.append(dict(rows)) or real(k, u, rows)):
+                out = sb.sync_now()
+            assert out["vault"] == "pulled 1, pushed 0", out
+            assert list(got[0]) == ["groq"], "a name no slot knows reached import_keys"
+            assert secretstore.get("groq") is None, "the removal did not reach the slot"
+            assert sb.sync_now()["vault"] == "pulled 0, pushed 0"
+    finally:
+        a.gone()
+
+
+def test_a_waiting_pc_says_a_phone_can_approve_it():
+    """Home's lock rows, in both desks, mean any device now: another
+    device asks, a device approves, and the waiting row adds "or open
+    DeskIT on your phone", because a phone is the only other holder a
+    one-PC person has. Same code is its first button, gone once pressed,
+    and the row then says what is left. Nothing on either row says "Home
+    there": a phone has no Home."""
+    import dashboard
+    import deskweb
+
+    board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    board.running = True
+    board.screen = "Said"
+    lock = {"state": "waiting", "id": "", "code": "H7QM3-K2P9X", "pending": [], "recovery": None,
+            "error": "", "changed": None}
+    board.status = {"account": {"signed_in": True, "lock": lock}}
+    model = deskweb.Model.__new__(deskweb.Model)
+    model.running = True
+    model.status = board.status
+    model._lock_fresh, model._lock_typing, model._lock_asking = "", False, False
+    rows = {"tk": board._waiting_lock(), "web": model._lock_rows()}
+    for desk, got in rows.items():
+        assert len(got) == 1, (desk, got)
+        text, note = got[0]["text"], got[0]["note"]
+        assert "another device of yours" in text and "H7QM3-K2P9X" in text, (desk, text)
+        assert "or open DeskIT on your phone" in note, (desk, note)
+        assert "Home there" not in text and "PC to approve" not in text, (desk, text, note)
+        assert len(note) <= 150, f"{desk}: Home shows two lines of a note: {note}"
+    assert [b[0] for b in rows["tk"][0]["buttons"]] == ["Same code", "Type the recovery key"]
+    assert [b["label"] for b in rows["web"][0]["buttons"]] == ["Same code", "Type the recovery key"]
+    assert "another device of yours" in model._banner()["text"]
+    assert [b["label"] for b in model._banner()["buttons"]] == ["Home"], "the banner hides the press"
+    # pressed: the button goes and the row says what is left
+    lock["same"] = True
+    for got in (board._waiting_lock(), model._lock_rows()):
+        assert got[0]["text"].startswith("You pressed Same code for H7QM3-K2P9X"), got[0]["text"]
+        assert "Approve" in got[0]["note"], got[0]["note"]
+    assert [b[0] for b in board._waiting_lock()[0]["buttons"]] == ["Type the recovery key"]
+    assert [b["label"] for b in model._lock_rows()[0]["buttons"]] == ["Type the recovery key"]
+    assert model._banner()["buttons"] == []
+    lock.pop("same")
+    # the question and the changed lock say device too
+    ask = dict(lock, state="have", code="", pending=[{"id": "p", "name": "", "code": "AAAAA-BBBBB", "created_at": ""}])
+    board.status["account"]["lock"] = ask
+    assert board._waiting_lock()[0]["text"].startswith("Another device asks to join")
+    assert model._lock_rows()[0]["text"].startswith("Another device asks to join")
+    changed = dict(lock, state="changed", changed={"server": "00ff00ff", "mine": "d8de920c", "refused": False})
+    board.status["account"]["lock"] = changed
+    assert "another device of yours" in board._waiting_lock()[0]["note"]
+    assert "another device of yours" in model._lock_rows()[0]["note"]
+
+
+def test_migration_0007_gives_a_device_its_link_and_forget_its_limits():
+    """Static, and the coordinator dry-runs it before it is applied. The
+    columns are under is_sealed() and a type, so no regex bound can hit
+    Postgres' cap of 255 (the trap 0005 records). forget_device() is a
+    definer function with an empty search_path that ends a session only
+    where both the row and the session belong to auth.uid(), granted to
+    authenticated alone."""
+    sql = (REPO / "supabase" / "migrations" / "0007_the_phone_is_a_device.sql").read_text("utf-8")
+    tables = _sql_tables()
+    defs = {d.split()[0]: d for d in tables["devices"]}
+    assert defs["link"] == "link text check (link is null or public.is_sealed(link))", defs["link"]
+    assert defs["session_id"] == "session_id uuid", defs["session_id"]
+    assert not re.search(r"\{\d+,\d{3,}\}", sql), "a repetition bound Postgres refuses"
+    fn = sql[sql.index("create or replace function public.forget_device(target uuid)"):]
+    head, body, _tail = fn.split("$$", 2)
+    assert "security definer" in head and "set search_path = ''" in head and "language plpgsql" in head
+    assert "returns boolean" in head and "returns void" not in head, "whether a session ended"
+    assert "uid uuid := auth.uid();" in body and "if uid is null then" in body
+    assert "ended := found or not exists (select 1 from auth.sessions s where s.id = sid);" in body, body
+    assert body.index("if sid is not null then") < body.index("ended := found"), "a row that named nothing"
+    assert "return ended;" in body and "ended boolean := false;" in body
+    assert re.search(r"delete from public\.devices d\s+where d\.id = target\s+and d\.user_id = uid\s+"
+                     r"returning d\.session_id into sid;", body), body
+    assert re.search(r"delete from auth\.sessions s\s+where s\.id = sid\s+and s\.user_id = uid;", body), body
+    assert "revoke all on function public.forget_device(uuid) from public;" in fn
+    assert "revoke all on function public.forget_device(uuid) from anon;" in fn
+    assert "grant execute on function public.forget_device(uuid) to authenticated;" in fn
+    readme = (REPO / "supabase" / "README.md").read_text("utf-8")
+    assert "0007_the_phone_is_a_device.sql" in readme and "forget_device()" in readme
 
 
 def test_a_history_row_past_the_seal_cap_still_travels_and_frees_its_batch():
@@ -45514,24 +52508,25 @@ def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
     import vault
 
     uid = _FakeSupabase.UID
+    lock_id = "0123456789abcdef"
     pub1, pub2 = vault.applicant("code-1"), vault.applicant("code-2")
     try:
-        c1 = vault.pairing_code(uid, "code-1", pub1)
+        c1 = vault.pairing_code(uid, "code-1", pub1, lock_id)
         assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", c1), c1
         vault._codes.clear()
         t0 = time.perf_counter()
-        assert vault.pairing_code(uid, "code-1", pub1) == c1, "the approver computes another code"
+        assert vault.pairing_code(uid, "code-1", pub1, lock_id) == c1, "the approver computes another code"
         assert time.perf_counter() - t0 < 2.0, "the code's hash is too slow for a poll"
         assert vault.CODE_ROUNDS >= 2 ** 17 and 5 * vault.CODE_CHARS >= 50, "the code got cheap to grind"
-        assert vault.pairing_code(uid, "code-1", pub2) != c1, "another key, the same code"
-        assert vault.pairing_code(uid, "code-2", pub1) != c1, "another request, the same code"
-        assert vault.pairing_code("another-uid", "code-1", pub1) != c1
+        assert vault.pairing_code(uid, "code-1", pub2, lock_id) != c1, "another key, the same code"
+        assert vault.pairing_code(uid, "code-2", pub1, lock_id) != c1, "another request, the same code"
+        assert vault.pairing_code("another-uid", "code-1", pub1, lock_id) != c1
         hint = vault.code_hint(c1)
         assert hint == c1.replace("-", "")[:8] and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{8}", hint), hint
         sql = (REPO / "supabase" / "migrations" / "0004_account_lock.sql").read_text("utf-8")
         assert "code ~ '^[0-9A-HJKMNP-TV-Z]{8}$'" in sql, "the column's check moved: the hint must follow it"
         try:
-            vault.pairing_code(uid, "code-3", "p1.AAAA")
+            vault.pairing_code(uid, "code-3", "p1.AAAA", lock_id)
         except vault.VaultError:
             pass
         else:
@@ -45614,6 +52609,7 @@ def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
                 row["applicant"] = real["applicant"]
                 assert sb.approve_pairing(real["id"]) == f"laptop · {sb.copy_name()}"
             with b:
+                sb.same_code(b_code)
                 sb.sync_now()
                 assert sb.status()["lock"]["state"] == "have", sb.status()["lock"]
     finally:
@@ -45947,10 +52943,13 @@ def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him(
             assert vault.confirmed(uid) == vault.fingerprint(other)
             lock = sb.status()["lock"]
             req = fake.tables["pairings"][-1]
-            assert lock["state"] == "waiting" and lock["code"] == vault.pairing_code(uid, req["id"], req["applicant"]), lock
-            # a key handed over for ANOTHER lock than the one he confirmed: refused
+            assert lock["state"] == "waiting" and lock["code"] == vault.pairing_code(
+                uid, req["id"], req["applicant"], vault.fingerprint(other)), lock
+            # a key handed over for ANOTHER lock than the one he confirmed:
+            # refused even after the press
             req["handed"] = vault.hand_over(attacker, req["applicant"],
                                             vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"]))
+            sb.same_code(lock["code"])
             sb.sync_now()
             assert vault.key(uid) is None and sb.status()["lock"]["state"] == "waiting"
             assert all(r["id"] != req["id"] for r in fake.tables["pairings"]), "the refused hand-over stayed"
@@ -45958,6 +52957,7 @@ def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him(
             req = fake.tables["pairings"][-1]
             req["handed"] = vault.hand_over(other, req["applicant"],
                                             vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"]))
+            sb.same_code(sb.status()["lock"]["code"])
             sb.sync_now()
             assert vault.key(uid) == other and sb.status()["lock"]["state"] == "have"
             assert vault.aside(uid) == [fp], "the old key did not stay set aside"
@@ -46212,10 +53212,11 @@ def test_the_sync_follows_the_account():
         assert privacy.consent("history_sync") is None, "granted with no settings sync"
         privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
         migrations._history_follows_the_sync()
-        row = privacy.consent("history_sync")
-        assert row is not None and row["text_version"] == cc.card_for("history_sync")["text_version"], row
+        row = {r["kind"]: r for r in privacy.rows()}["history_sync"]
+        assert row["text_version"] == migrations.SYNC_WORDS, row
+        assert "history_sync" in privacy.stale(), "a step's row claimed the card's later words"
         migrations._history_follows_the_sync()                   # a row there: untouched
-        assert privacy.consent("history_sync")["when"] == row["when"]
+        assert {r["kind"]: r for r in privacy.rows()}["history_sync"]["when"] == row["when"]
         # ...and step 4, the lock (2026-09-21): a row given under the
         # 2026-09-19 words — which promised MORE than the new ones (the
         # admin could technically read a row) — becomes a row of the new
@@ -46235,13 +53236,16 @@ def test_the_sync_follows_the_account():
                      for kind in privacy.SYNC_KINDS}
         assert privacy.consent("history_sync") is None and not privacy.allowed("history_sync"), "the old row is not stale"
         migrations._the_lock_asks_nothing_new()
+        carried = {r["kind"]: r for r in privacy.rows()}
         for kind in privacy.SYNC_KINDS:
-            row = privacy.consent(kind)
-            assert row is not None and row["text_version"] == privacy.TEXT_VERSIONS[kind], (kind, row)
+            row = carried[kind]
+            assert row["text_version"] == migrations.SYNC_WORDS, (kind, row)
             assert row["carried_from"] == old and row["when"] == given[kind], row
-            assert privacy.allowed(kind), kind
-        migrations._the_lock_asks_nothing_new()                  # already current: untouched
-        assert privacy.consent("history_sync")["when"] == given["history_sync"]
+        # the step's own words and no further: the card's 2026-11-07 words
+        # name more holders of the key, and a row must not claim them unasked
+        assert privacy.allowed("settings_sync") and not privacy.allowed("history_sync")
+        migrations._the_lock_asks_nothing_new()                  # already carried: untouched
+        assert {r["kind"]: r for r in privacy.rows()}["history_sync"]["when"] == given["history_sync"]
         privacy.withdraw("history_sync")
         migrations._the_lock_asks_nothing_new()                  # no row: nothing
         assert privacy.consent("history_sync") is None
@@ -46301,7 +53305,7 @@ def test_the_account_words_say_what_the_sign_in_press_turns_on():
         assert "never stored" not in low and "stays off" not in low, (where, words)
         assert "only your voice never leaves this pc" in low, (where, words)
         for must in ("what you said", "cloud keys", "learned words", "settings",
-                     "locked with a key only your own pcs hold"):
+                     "locked with a key only your own devices hold"):
             assert must in low, (where, must)
         assert "turns this off" in low or "turn this off" in low, (where, words)
     card = " ".join(t for _l, t in cc.card_for("account")["blocks"]).lower()
@@ -46313,7 +53317,7 @@ def test_the_account_words_say_what_the_sign_in_press_turns_on():
     for name in secretstore.KEY_HOSTS:
         sentence = secretstore.storage_sentence(name)
         assert "never sent to the developer" not in sentence, sentence
-        assert "your account" in sentence and "only your own PCs hold" in sentence, sentence
+        assert "your account" in sentence and "only your own devices hold" in sentence, sentence
         assert f"as it is only to {secretstore.KEY_HOSTS[name]}" in sentence, sentence
     page = (REPO / "NETWORK.md").read_text("utf-8")
     assert "no column that could hold a" not in page
@@ -46331,14 +53335,21 @@ def test_the_account_words_say_what_the_sign_in_press_turns_on():
             given = privacy.consent("account")["when"]
         assert privacy.consent("account") is None, "the old row is not stale"
         migrations._the_account_words_ask_nothing_new()
-        row = privacy.consent("account")
-        assert row is not None and row["carried_from"] == old and row["when"] == given, row
+        # to the words that step said nothing new about and no further: the
+        # card's 2026-11-06 words do name something new, and ask again
+        row = next(r for r in privacy.rows() if r.get("kind") == "account")
+        assert row["text_version"] == "deskit-terms-0+en-2026-09-23", row
+        assert row["carried_from"] == old and row["when"] == given, row
+        assert privacy.consent("account") is None, "a row claimed words nobody saw"
+        assert privacy.TEXT_VERSIONS["account"] == "deskit-terms-0+en-2026-11-06"
+        assert "account" not in privacy.CARRIED_FORWARD or \
+            privacy.TEXT_VERSIONS["account"] not in privacy.CARRIED_FORWARD["account"]
         assert (5, migrations._the_account_words_ask_nothing_new) in migrations.STEPS
         privacy.withdraw("account")
         with _patched(privacy, "TEXT_VERSIONS", {**privacy.TEXT_VERSIONS, "account": old}):
             privacy.grant("account", old)
         migrations._sync_follows_the_account()
-        assert privacy.consent("account") is not None
+        assert any(r.get("kind") == "account" for r in privacy.rows())
         assert privacy.consent("settings_sync") is not None, "step 2 read the old row as signed out"
     finally:
         for kind in all_three:
@@ -46373,7 +53384,7 @@ def test_migration_has_no_key_column():
         and not vault.is_sealed("v1." + "A" * 15 + "_") and not vault.is_sealed("gsk_" + "A" * 30) \
         and vault.is_sealed("v1." + "A" * 7600) and not vault.is_sealed("v1." + "A" * 7601)
     sealed_columns = {("vault", "cipher"), ("history", "cipher"), ("recovery", "wrapped"),
-                      ("pairings", "applicant"), ("pairings", "handed")}
+                      ("pairings", "applicant"), ("pairings", "handed"), ("devices", "link")}
     for table, defs in tables.items():
         for d in defs:
             name, typ = d.split()[0], d.split()[1]
@@ -46900,6 +53911,7 @@ def test_sb_refuses_when_gate_shut():
         assert sb.sync_now(None) == {}
         assert sb.drain_outbox() == {}
         assert len(fake.calls) == n, fake.calls[n:]
+        assert sb.account_pass() == {} and len(fake.calls) == n, "a pass with its gate shut"
         # the net gate is the second lock: a call made anyway is refused
         # before a socket, and the refusal is a row that names the purpose
         import net as net_mod
@@ -48255,6 +55267,11 @@ def test_the_lock_over_the_pipe_and_the_join_notification():
         note = received[0]
         assert note["source"] == "account" and note["kind"] == "input"
         assert note["title"] == "laptop asks to join your account" and "H7QM-3K2P" in note["body"]
+        # a name that would turn the line around stays out of the one-line title
+        app._pairing_asked({**request, "id": "req-10", "name": "ה-Yoav של S26 Ultra"})
+        assert received[-1]["title"] == "A device asks to join your account", received[-1]
+        assert "H7QM-3K2P" in received[-1]["body"]
+        del received[1:]
         assert note["link"] == notify_mod.DESK_LINK == "deskit://home", note
         assert notify_mod.label_for("account") == "Your account"
         assert not hasattr(cc, "pairing_card") and not hasattr(cc, "PAIRING")
@@ -48314,10 +55331,15 @@ def test_the_wizard_waits_for_the_other_pcs_approval_and_offers_the_recovery_key
     lock = {"state": "waiting", "id": "", "code": "H7QM-3K2P", "pending": [], "recovery": None, "error": ""}
     polls: list[int] = []
     recovered: list[str] = []
+    pressed: list[str] = []
 
     def poll_lock():
         polls.append(1)
         return dict(lock)
+
+    def same_code(code):
+        pressed.append(code)
+        lock["same"] = True
 
     def recover(text):
         recovered.append(text)
@@ -48326,7 +55348,7 @@ def test_the_wizard_waits_for_the_other_pcs_approval_and_offers_the_recovery_key
         lock["state"] = "have"
 
     def settle(w, seconds=1.5, until=None):
-        deadline = time.monotonic() + seconds
+        deadline = time.monotonic() + (seconds if until is None else 10.0)
         while time.monotonic() < deadline:
             w.root.update()
             w._drain()
@@ -48365,7 +55387,7 @@ def test_the_wizard_waits_for_the_other_pcs_approval_and_offers_the_recovery_key
             _patched(sb, "has_synced_settings", lambda: True), \
             _patched(sb, "sync_now", lambda vocab=None, reason="": {"settings": "pulled", "history": "waiting for the lock"}), \
             _patched(sb, "lock_status", lambda: dict(lock)), _patched(sb, "poll_lock", poll_lock), \
-            _patched(sb, "recover", recover):
+            _patched(sb, "recover", recover), _patched(sb, "same_code", same_code):
         for _k in privacy.SYNC_KINDS:
             privacy.withdraw(_k)
         try:
@@ -48381,6 +55403,14 @@ def test_the_wizard_waits_for_the_other_pcs_approval_and_offers_the_recovery_key
             assert not w.result.saved
             settle(w, until=lambda: len(polls) >= 2)
             assert len(polls) >= 2, "the page did not poll"
+            # the page's own press, for the code it shows
+            assert firstrun.WORDS["account.link.same"] in words or w.same_button is not None
+            w._link_same()
+            assert pressed == ["H7QM-3K2P"], pressed
+            assert w.link_line.cget("text") == firstrun.WORDS["account.link.same.done"]
+            settle(w, seconds=0.5)
+            assert w.link_line.cget("text") == firstrun.WORDS["account.link.same.done"], \
+                "the poll took the line back"
             lock["state"] = "have"
             settle(w, until=lambda: w.result.saved)
             assert w.result.saved and w.result.open_desk, "the approval did not open the desk"
@@ -48388,6 +55418,7 @@ def test_the_wizard_waits_for_the_other_pcs_approval_and_offers_the_recovery_key
 
             # 2. the recovery key: wrong, then right
             lock["state"] = "waiting"
+            lock.pop("same", None)
             polls.clear()
             t.unlink(missing_ok=True)
             w = wizard()
@@ -48470,9 +55501,16 @@ def test_the_lock_card_on_the_privacy_tab():
             # waiting: the code, and the recovery field
             account["lock"] = {"state": "waiting", "id": "", "code": "H7QM-3K2P", "pending": [], "recovery": None, "error": ""}
             board._paint_lock()
-            assert "Waiting for your other PC" in line.cget("text") and code.cget("text") == "H7QM-3K2P"
-            assert labels() == ["Type the recovery key"]
+            assert "Waiting for another device of yours" in line.cget("text") and code.cget("text") == "H7QM-3K2P"
+            assert labels() == ["Same code", "Type the recovery key"]
             board.parts["lock_strip"].winfo_children()[0]._command()
+            assert sent[-1][0] == "account" and sent[-1][1] == {"do": "same_code", "kind": "H7QM-3K2P"}, sent[-1]
+            account["lock"]["same"] = True
+            board._paint_lock()
+            assert labels() == ["Type the recovery key"] and "You pressed Same code" in line.cget("text")
+            account["lock"].pop("same")
+            board._paint_lock()
+            board.parts["lock_strip"].winfo_children()[1]._command()
             board.root.update_idletasks()
             assert labels() == ["Open", "Cancel"] and board.parts["lock_field"].winfo_ismapped()
             field = board.parts["lock_field"]
@@ -48483,7 +55521,7 @@ def test_the_lock_card_on_the_privacy_tab():
             field.set("hc6m fw54 3d62 50dr 69st eyqq")
             board.parts["lock_strip"].winfo_children()[0]._command()      # Open
             assert sent[-1][1] == {"do": "recover", "kind": "hc6m fw54 3d62 50dr 69st eyqq"}, sent[-1]
-            assert field.get() == "" and labels() == ["Type the recovery key"]
+            assert field.get() == "" and labels() == ["Same code", "Type the recovery key"]
             # another PC asks
             account["lock"] = {"state": "have", "id": "d8de920c", "code": "", "recovery": True, "error": "",
                                "pending": [{"id": "req-9", "name": "laptop", "code": "H7QM-3K2P", "created_at": ""}]}
@@ -48544,12 +55582,17 @@ def test_the_lock_card_on_the_privacy_tab():
             assert board._waiting_lock() == [], "a made recovery key still asks"
             account["lock"] = {"state": "waiting", "id": "", "code": "H7QM-3K2P", "pending": [], "recovery": None, "error": ""}
             rows = board._waiting_lock()
-            assert len(rows) == 1 and "H7QM-3K2P" in rows[0]["text"] and rows[0]["buttons"][0][0] == "Type the recovery key"
+            assert len(rows) == 1 and "H7QM-3K2P" in rows[0]["text"]
+            assert [b[0] for b in rows[0]["buttons"]] == ["Same code", "Type the recovery key"], rows
+            rows[0]["buttons"][0][2]()
+            assert sent[-1][1] == {"do": "same_code", "kind": "H7QM-3K2P"}, sent[-1]
+            rows = board._waiting_lock()
             board._show("Said")
             board._lock_tick()
             words = [w.cget("text") for w in board._lock_banner_card.body.winfo_children()
                      if w.winfo_class() == "Label"]
-            assert any("Waiting for your other PC" in t and "H7QM-3K2P" in t for t in words), words
+            assert any("Waiting for another device of yours" in t and "H7QM-3K2P" in t
+                       for t in words), words
             account["lock"]["state"] = "have"
             board._lock_tick()
             assert board._lock_banner_card is None, "the banner stayed after the approval"
@@ -51227,12 +58270,11 @@ def test_webdesk_imports_nothing_of_webview_and_guards_its_doors():
 
     def fake_send(command, timeout_ms=2000, **args):
         asked.append(command)
-        return {"ok": True, "state": "idle", "phone": {"url": "http://x/?t=secret"}}
+        return {"ok": True, "state": "idle", "phone": {"on": False, "phones": []}}
 
     with _patched(control, "send", fake_send):
         api = webdesk.Api(allow={"status"})
-        assert "phone" not in api.status()
-        assert "phone" not in api.send("status")
+        assert api.status()["state"] == "idle" and api.send("status")["ok"]
         refused = api.send("quit")
         assert refused["ok"] is False and "quit" in refused["error"], refused
         assert asked == ["status", "status"], asked
@@ -51280,7 +58322,10 @@ def _web_desk(status):
 
 
 _WEB_STATUS = {"ok": True, "stage": "running", "activity": "ready", "model": "on",
-               "uptime_s": 3700, "paused": False, "phone": "http://x/?t=secret",
+               "uptime_s": 3700, "paused": False,
+               "phone": {"on": True, "port": 8801, "addrs": [], "error": "", "pcs": [],
+                         # a keyboard of stage 2b: its row says where its cloud switch stands
+                         "phones": [{"id": "p", "name": "A phone", "cert": "c", "backup": True}]},
                "awake": {"held": True},
                "keys": {"dismiss_hotkey": "ctrl+alt+m", "hotkey": "right ctrl"}}
 
@@ -51872,7 +58917,14 @@ def test_the_web_desk_home_answers_the_lock_on_its_rows():
     logging.getLogger("app").addHandler(handler)
     try:
         with _web_desk(status({"state": "waiting", "code": "K7PM-3QXD"})) as (model, _f, asked):
-            assert model.home()["pile"][0]["buttons"][0]["act"] == "lock.type"
+            assert [b["act"] for b in model.home()["pile"][0]["buttons"]] == ["lock.same", "lock.type"]
+            # Same code: for the code this row shows and no other
+            for bad in ("", None, "XXXXX-XXXXX", ["K7PM-3QXD"]):
+                assert "changed" in model.act("lock.same", bad)["note"], bad
+            assert not [c for c, _a in asked if c == "account"], asked
+            model.act("lock.same", "K7PM-3QXD")
+            assert ("account", {"do": "same_code", "kind": "K7PM-3QXD"}) in asked, asked
+            asked.clear()
             model.act("lock.type")
             row = model.home()["pile"][0]
             assert row.get("field") == "recovery" and \
@@ -53415,8 +60467,8 @@ def test_web_desk_settings_draws_the_tk_desks_layout_and_words():
     general = {s["id"]: s for s in answer["pages"]["general"]}
     assert general["dot"]["row"]["path"] == "dot.corner"
     assert general["updates"]["row"]["path"] == "privacy.update_check"
-    phone = {s["id"]: s for s in answer["pages"]["phone"]}["phone"]
-    assert phone["url"] == "http://x/?t=" + "•" * 12, phone
+    phone = {s["id"]: s for s in answer["pages"]["phone"]}
+    assert {"devices", "keyboard", "trouble"} <= set(phone), list(phone)
 
 
 def test_web_desk_settings_refuses_what_the_page_may_not_ask():
@@ -53498,9 +60550,6 @@ def test_web_desk_settings_writes_where_the_tk_desk_writes():
         assert place.act("account.do", "delete")["ok"] is False, "the question is asked once per press"
         place.act("quit", None)
         assert ("quit",) in doors and ("quit", {}) not in asked
-        place.act("phone.copy", None)
-        # the link carries its token: kept out of the clipboard's history
-        assert ("secret clipboard", signed_in["phone"]) in doors
         place.act("cue.play", "ready")
         assert ("cue", "ready") in doors
     with _web_settings(running=False) as (place, asked, doors, (s, t)):

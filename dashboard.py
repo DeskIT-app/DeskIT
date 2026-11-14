@@ -1699,7 +1699,7 @@ class Dashboard:
                 files.append(None)
         status = self.status or {}
         return (tuple(files), self.running, status.get("model"),
-                status.get("phone"), repr(status.get("downloads")))
+                repr(status.get("phone")), repr(status.get("downloads")))
 
     @staticmethod
     def _vocab_cap():
@@ -2986,6 +2986,7 @@ class Dashboard:
         items: list[dict] = []
         items += self._waiting_consent()
         items += self._waiting_lock()
+        items += self._waiting_phone()
         items += self._waiting_update()
         items += self._waiting_keys()
         items += self._waiting_hardware()
@@ -4131,7 +4132,7 @@ class Dashboard:
 
         bits = []
         phone = (self.status or {}).get("phone")
-        bits.append("phone live" if phone else "phone off")
+        bits.append("phone live" if isinstance(phone, dict) and phone.get("on") else "phone off")
         bits.append(f"DeskIT {paths.DEV_TAG} {version.VERSION}".replace("  ", " "))
         if getattr(self, "branch", ""):
             bits.append(f"running {self.branch}")
@@ -6793,7 +6794,7 @@ class Dashboard:
                               "voice"),
         settings_mod.MESSAGES: ("MESSAGES FROM OTHER PROGRAMS", "claude",
                                 "sounds"),
-        settings_mod.PHONE: ("phone", "DICTATING FROM THE PHONE"),
+        settings_mod.PHONE: ("THE PHONE", "devices", "backup", "keyboard", "trouble"),
         settings_mod.ACCOUNT: ("account", "WHAT THE ACCOUNT MAY DO", "lock"),
         settings_mod.PRIVACY: ("keys", "WHAT MAY LEAVE THIS PC",
                                "connections", "said_file", "KEPT ON THIS PC"),
@@ -7496,34 +7497,161 @@ class Dashboard:
         else:
             self._note("the dot did not move")
 
-    def _phone_block(self, scroller) -> None:
-        """The endpoint the Android keyboard talks to. 39 dictations and
-        228 notification relays came through it in ten days, announced at
-        every startup, with no screen of its own until now."""
-        card = ui.Card(scroller.inner, CW, 132, bg=ui.BG, pad=18)
+    def _devices_block(self, scroller) -> None:
+        """Your devices (desk_settings.device_rows, the web desk's words):
+        Forget asks in its own row."""
+        import desk_settings
+
+        rows = desk_settings.device_rows(self.status, getattr(self, "_phone_asking", ""))
+        error = str(desk_settings.phone_info(self.status).get("error") or "")
+        if len(rows) < 2 and not error:
+            return
+        card = ui.Card(scroller.inner, CW, 36 + 46 * len(rows) + (44 if error else 0), bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
-        tk.Label(body, text="T H E   P H O N E", bg=ui.CARD, fg=ui.FAINT,
+        tk.Label(body, text="Y O U R   D E V I C E S", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).place(x=0, y=0)
-        url = (self.status or {}).get("phone", "")
-        self.parts["phone_url"] = tk.Label(
-            body, text=url or "DeskIT is not running, or the switch below "
-                              "is off",
-            bg=ui.CARD, fg=ui.FG if url else ui.DIM,
-            font=(ui.UI, 12 if url else 10))
-        self.parts["phone_url"].place(x=0, y=24)
-        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=CW - 200, justify="left",
-                 text="Put the DeskIT keyboard on your phone, give it this "
-                      "address once, and the phone dictates into this "
-                      "computer over your own private network. It is also "
-                      "how a message from another program reaches this "
-                      "desk."
-                 ).place(x=0, y=54)
-        ui.Button(body, "Copy link", self._copy_phone, h=32, quiet=True,
-                  w=widgets.button_width("Copy link", icon=True),
-                  icon=ui.ICON["link"]).place(x=CW - 36, y=20, anchor="ne")
+        for i, row in enumerate(rows):
+            y = 24 + i * 46
+            tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                     text=f"Forget {row['name']}?" if row["asking"] else row["name"]
+                     ).place(x=0, y=y)
+            tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     text=desk_settings.FORGET_ASK if row["asking"] else row["meta"]
+                     ).place(x=0, y=y + 20)
+            if row["asking"]:
+                ui.Button(body, "Keep", self._phone_keep, h=32, quiet=True,
+                          w=widgets.button_width("Keep")).place(x=CW - 36, y=y, anchor="ne")
+                ui.Button(body, "Forget", lambda i=row["id"]: self._phone_forget(i), h=32,
+                          w=widgets.button_width("Forget")).place(x=CW - 120, y=y, anchor="ne")
+            elif row["forget"]:
+                ui.Button(body, "Forget", lambda i=row["id"]: self._phone_ask(i), h=32,
+                          quiet=True, w=widgets.button_width("Forget")
+                          ).place(x=CW - 36, y=y, anchor="ne")
+        if error:
+            tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), justify="left",
+                     wraplength=CW - 60, text=error).place(x=0, y=24 + 46 * len(rows))
         scroller.bind_wheel(card)
+
+    def _phone_ask(self, ident: str) -> None:
+        self._phone_asking = ident
+        self._fill_settings()
+
+    def _phone_keep(self) -> None:
+        self._phone_asking = ""
+        self._fill_settings()
+
+    def _phone_forget(self, ident: str) -> None:
+        self._phone_asking = ""
+        self._ask("phone", then=lambda r: self._announce(r, "forgetting"), do="forget", id=ident)
+        self._fill_settings()
+
+    def _backup_block(self, scroller) -> None:
+        """The phone's cloud backup, read from its row (desk_settings.backup_card,
+        the web desk's words): read-only, with Add a key when there is none."""
+        import desk_settings
+
+        said = desk_settings.backup_card(self.status)
+        if said is None:
+            return
+        buttons = said.get("buttons") or []
+        card = ui.Card(scroller.inner, CW, 96 + (44 if buttons else 0), bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), wraplength=CW - 80,
+                 justify="left", text=said["line"]).place(x=0, y=0)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 80,
+                 justify="left", text=said.get("small") or "").place(x=0, y=26)
+        if buttons:
+            ui.Button(body, "Add a key", lambda: self._settings_go(settings_mod.PRIVACY), h=32,
+                      w=widgets.button_width("Add a key")).place(x=0, y=84)
+        scroller.bind_wheel(card)
+
+    def _keyboard_block(self, scroller) -> None:
+        """The QR of the keyboard's download, or, on an anonymous account,
+        Sign in with Google first (desk_settings.keyboard_card)."""
+        import desk_settings
+        import phone as phone_mod
+
+        said = desk_settings.keyboard_card(self.status)
+        card = ui.Card(scroller.inner, CW, 150, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        x = 0
+        if said["kind"] == "keyboard" and said["n"]:
+            photo = self._qr_photo(body, phone_mod.qr_rows(phone_mod.download_url()))
+            if photo is not None:
+                self.parts["phone_qr"] = photo
+                tk.Label(body, image=photo, bg=ui.CARD, bd=0).place(x=0, y=0)
+                x = photo.width() + 20
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), wraplength=CW - 80 - x,
+                 justify="left", text=said["line"]).place(x=x, y=4)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 80 - x,
+                 justify="left", text=said.get("said") or said.get("small") or ""
+                 ).place(x=x, y=30)
+        if said["kind"] == "line":
+            ui.Button(body, "Sign in with Google", lambda: self._account_do("google", "opening the browser"), h=32,
+                      w=widgets.button_width("Sign in with Google")).place(x=0, y=74)
+        scroller.bind_wheel(card)
+
+    @staticmethod
+    def _qr_photo(master, rows):
+        """A QR as a picture on this window's own interpreter (master=, the
+        PhotoImage trap in AGENTS.md)."""
+        if not rows:
+            return None
+        from PIL import Image, ImageTk
+
+        n = len(rows)
+        margin = 3
+        img = Image.new("L", (n + 2 * margin, n + 2 * margin), 255)
+        for y, row in enumerate(rows):
+            for x, dark in enumerate(row):
+                if dark:
+                    img.putpixel((x + margin, y + margin), 0)
+        side = img.width * 3
+        return ImageTk.PhotoImage(img.resize((side, side), Image.NEAREST), master=master)
+
+    def _trouble_block(self, scroller) -> None:
+        """The phone can't connect? (desk_settings.trouble_card)."""
+        import desk_settings
+
+        said = desk_settings.trouble_card(self.status)
+        if said is None:
+            return
+        card = ui.Card(scroller.inner, CW, 104 + 22 * len(said["details"]), bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), text=said["line"]).place(x=0, y=0)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 240,
+                 justify="left", text=said["said"]).place(x=0, y=24)
+        if said["button"]:
+            ui.Button(body, said["button"], self._phone_firewall, h=32, quiet=True,
+                      w=widgets.button_width(said["button"])).place(x=CW - 36, y=0, anchor="ne")
+        lines = "\n".join(f"{d['k']}:  {d['v']}" for d in said["details"])
+        more = tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), justify="left",
+                        wraplength=CW - 80, text=lines)
+
+        def flip() -> None:
+            if more.winfo_ismapped():
+                more.place_forget()
+            else:
+                more.place(x=0, y=76)
+        ui.Button(body, "Details", flip, h=26, quiet=True,
+                  w=widgets.button_width("Details")).place(x=0, y=46)
+        scroller.bind_wheel(card)
+
+    def _phone_firewall(self) -> None:
+        """Waits for the person's answer to Windows, so on a thread of its
+        own, and the sentence comes back to this one."""
+        import desk_settings
+
+        status = self.status
+
+        def work() -> None:
+            said = desk_settings.let_it_through(status)
+            self._events.put(lambda: self._note(said))
+        threading.Thread(target=work, daemon=True, name="phone-firewall").start()
 
     # --------------------------------------------------- your cloud keys
 
@@ -7791,7 +7919,7 @@ class Dashboard:
         return dict(((self.status.get("account") or {}).get("lock") or {}))
 
     def _lock_asks(self) -> bool:
-        """Does the pile carry a lock row that asks — another PC waiting
+        """Does the pile carry a lock row that asks — another device waiting
         to join, or the lock changed somewhere else? Those are the two
         questions the app also knocks for (source "account")."""
         lock = self._lock_info()
@@ -7842,58 +7970,77 @@ class Dashboard:
 
         rows: list[dict] = []
         now = time.time()
-        for kind in self._consent_stale():
-            words = cc.TEXTS.get(kind) or {}
-            blocks = dict(words.get("blocks") or ())
-            what = str(blocks.get(cc.WHAT, "")).rstrip(".")
-            # The receiver alone ("Groq and/or Google"), not the list of
-            # features after the dash: a note is one line.
-            whom = str(blocks.get(cc.WHOM, "")).split(" — ")[0].rstrip(".")
-            off = str(blocks.get(cc.OFF, "")).rstrip(".")
-            changed = str(words.get("changed") or "")
+        for asked in cc.asked_again(self._consent_stale()):
+            kinds = tuple(asked["kinds"])
             rows.append({
                 "at": now + 3, "kind": "consent", "mark": "globe",
                 "mark_colour": ui.AMBER,
-                "eyebrow": f"{words.get('title', kind)}   ·   the words changed",
+                "eyebrow": f"{asked['title']}   ·   the words changed",
                 "eyebrow_right": False,
-                "text": f"Say yes again? {changed}" if changed
-                        else f"Say yes again? What leaves: {what}.",
-                "note": f"To {whom}, on your own key. Off again: {off}.",
+                "text": asked["text"],
+                "note": asked["note"],
                 "buttons": [("Turn on", "gold",
-                             lambda k=kind: self._consent_do(k, True)),
+                             lambda k=kinds: self._consent_do(k, True)),
                             ("Not now", "quiet",
-                             lambda k=kind: self._consent_do(k, False))],
+                             lambda k=kinds: self._consent_do(k, False))],
             })
         return rows
 
-    def _consent_do(self, kind: str, yes: bool) -> None:
-        """Turn on writes the row (privacy.grant: the consent file and
+    def _consent_do(self, kinds, yes: bool) -> None:
+        """Turn on writes the rows (privacy.grant: the consent file and
         the settings mirror — the running app sees the file's mtime on
         its next gate check, no pipe message needed); Not now keeps the
-        row off this desk until it opens again."""
+        row off this desk until it opens again. One Home row may answer
+        for more than one gate (consent_card.ASK_TOGETHER)."""
         import privacy
 
+        kinds = (kinds,) if isinstance(kinds, str) else tuple(kinds)
         if yes:
             try:
-                privacy.grant(kind)
+                for kind in kinds:
+                    privacy.grant(kind)
             except Exception as e:        # noqa: BLE001
                 logging.getLogger("app").warning(
-                    "could not record the consent for %s: %s", kind, e)
+                    "could not record the consent for %s: %s", kinds, e)
                 return
         else:
             later = getattr(self, "_consent_later", None)
             if later is None:
                 later = self._consent_later = set()
-            later.add(kind)
+            later.update(kinds)
         self._redraw_pile()
+
+    def _waiting_phone(self) -> list[dict]:
+        """A further PC of the account: "Your phone can use this PC too", and
+        the door binds on Allow, so Windows' dialog follows a press. A row
+        on Home and not a card, the owner's rule for every question."""
+        info = (self.status or {}).get("phone")
+        if not isinstance(info, dict) or not info.get("ask"):
+            return []
+        name = (info.get("phones") or [{}])[0].get("name") or "Your phone"
+
+        def press(verb: str) -> None:
+            self._busy_until = time.monotonic() + 2
+            self._ask("phone", then=lambda r: self._announce(r, ""), do=verb)
+
+        return [{"at": time.time() + 1, "kind": "phone", "mark": "keys", "mark_colour": ui.AMBER,
+                 "eyebrow": name, "eyebrow_right": False,
+                 "text": "Your phone can use this PC too",
+                 "note": "It joined your account on your other PC. Allow it, and at home it "
+                         "dictates straight to this PC. Windows will ask you once.",
+                 "buttons": [("Allow", "gold", lambda: press("allow")),
+                             ("Not now", "quiet", lambda: press("notnow"))]}]
 
     def _waiting_lock(self) -> list[dict]:
         """The lock on the pile (the owner, 2026-09-21, meeting the
         approve card beside the dot: "not outside DeskIT — inside, on
-        Home"): another PC asking to join, with its code and Approve /
-        Not now; this PC waiting for its other PC, with the code it
-        shows; a fresh recovery key, until Done; and — while the account
-        has none — the one thing worth doing before a PC is lost."""
+        Home"): another device asking to join, with its code and Approve /
+        Not now; this PC waiting for another device of the account, with
+        the code it shows and Same code, the joining side's own press; a
+        fresh recovery key, until Done; and — while
+        the account has none, and once a sync is on or the account has a
+        phone (a lock held with both syncs off asks nothing: ``quiet``) —
+        the one thing worth doing before a PC is lost."""
         lock = self._lock_info()
         if not lock or not (self.status.get("account") or {}).get("signed_in"):
             return []
@@ -7904,13 +8051,13 @@ class Dashboard:
                 "at": now + 2, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your recovery key", "eyebrow_right": False,
                 "text": f"{self._lock_fresh}  —  keep it somewhere safe, it is shown once",
-                "note": "With it, a PC with no other PC of yours at hand can open your "
+                "note": "With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.",
                 "buttons": [("Copy", "gold", self._lock_copy), ("Done", "quiet", self._lock_done)],
             })
         rows += self._lock_changed_rows(lock, now)
         for ask in lock.get("pending") or []:
-            name = ask.get("name") or "Another PC"
+            name = ask.get("name") or "Another device"
             if ask.get("twins"):
                 # two open requests from one PC: one of them is somebody
                 # else's copy (the audit's A74) — nothing to approve
@@ -7918,7 +8065,7 @@ class Dashboard:
                     "at": now + 1, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
                     "eyebrow": "Your account", "eyebrow_right": False,
                     "text": f"Two requests say they are {name} — neither can be approved",
-                    "note": f"One of them is not your PC. On {name}, sign out and sign in again to "
+                    "note": f"One of them is not yours. On {name}, sign out and sign in again to "
                             "ask afresh. Nobody of yours asking right now? Settings > Account > "
                             "Sign out of every PC — it ends every session of your account, "
                             "anyone else's too.",
@@ -7940,26 +8087,38 @@ class Dashboard:
                              lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))],
             })
         if lock.get("state") == "waiting":
+            code = lock.get("code") or "…"
+            same = bool(lock.get("same"))
+            buttons = [("Type the recovery key", "quiet", self._lock_go_type)]
+            if not same:
+                buttons.insert(0, ("Same code", "gold",
+                                   lambda c=lock.get("code"): self._lock_do("same_code", "noted", kind=c)))
             rows.append({
                 "at": now, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your account", "eyebrow_right": False,
-                "text": f"Waiting for your other PC to approve this one — Home there "
-                        f"must show {lock.get('code') or '…'}",
-                "note": "Open the desk on your other PC and press Approve. Until then this PC "
-                        "has your words and settings; what you said and your cloud keys stay "
-                        "locked. No other PC at hand? Type the recovery key DeskIT made for you.",
-                "buttons": [("Type the recovery key", "quiet", self._lock_go_type)],
+                "text": (f"You pressed Same code for {code} — waiting for your other device to "
+                         "approve this PC" if same else
+                         f"Waiting for another device of yours to approve this PC — its "
+                         f"screen must show {code}"),
+                "note": ("Now press Approve there: the desk on your other PC, or DeskIT on your "
+                         "phone. Until then what you said and your cloud keys stay locked."
+                         if same else
+                         "Open the desk on your other PC, or open DeskIT on your phone. If it "
+                         "shows this code, press Approve there and Same code here, in either "
+                         "order."),
+                "buttons": buttons,
             })
         elif lock.get("state") == "have" and lock.get("recovery") is False \
-                and getattr(self, "_lock_mode", "") != "shown":
+                and getattr(self, "_lock_mode", "") != "shown" and not lock.get("quiet"):
             rows.append({
                 "at": 0.0, "kind": "lock", "mark": "keys", "mark_colour": ui.ACCENT,
                 "eyebrow": "Your account", "eyebrow_right": False,
                 "text": "Make a recovery key — so a new PC of yours can open your account "
                         "when this one is gone",
                 "note": "DeskIT makes it (24 characters) and shows it once; you keep it. What "
-                        "you said and your cloud keys are locked with a key only your PCs "
-                        "hold — without another PC or the recovery key, a new PC cannot open them.",
+                        "you said and your cloud keys are locked with a key only your devices "
+                        "hold — without another device or the recovery key, a new PC cannot "
+                        "open them.",
                 "buttons": [("Make a recovery key", "gold", self._lock_new_recovery)],
             })
         return rows
@@ -7985,8 +8144,8 @@ class Dashboard:
                 "text": "The lock of your account changed — not on this PC. Was it you?",
                 "note": "Until you answer, what you said and your cloud keys stop syncing, both "
                         "ways; this PC keeps its key. It was you: this PC asks to join the new "
-                        "lock — approve it from your other PC or type the recovery key. It "
-                        "wasn't: nothing here changes.",
+                        "lock — approve it from another device of yours or type the recovery "
+                        "key. It wasn't: nothing here changes.",
                 "buttons": [("It wasn't me", "gold",
                              lambda: self._lock_do("lock_answer", "kept", kind="no")),
                             ("It was me", "quiet",
@@ -8042,7 +8201,7 @@ class Dashboard:
     def _lock_banner(self, lock: dict) -> None:
         """One line at the top of every screen while the lock needs the
         person (the owner, 2026-09-21: "something on every screen, up
-        top"): another PC asking, with Approve / Not now; this PC waiting,
+        top"): another device asking, with Approve / Not now; this PC waiting,
         with its code. On the pane, above the sheet, like the toast —
         gone the moment nothing waits."""
         # kept on self, not in parts: _show() replaces the parts dict on
@@ -8059,22 +8218,22 @@ class Dashboard:
             key = ("changed", (lock.get("changed") or {}).get("server"))
         elif pending and pending[0].get("twins"):
             ask = pending[0]
-            text = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            text = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     f"neither can be approved. See Home.")
             buttons = [("Home", lambda: self._show("Home"))]
             key = ("twins", ask.get("id"))
         elif pending:
             ask = pending[0]
-            text = (f"{ask.get('name') or 'Another PC'} asks to join your account — "
+            text = (f"{ask.get('name') or 'Another device'} asks to join your account — "
                     f"its screen must show  {ask.get('code') or '?'}")
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                        ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
             key = ("pending", ask.get("id"), ask.get("code"))
         elif waiting:
-            text = (f"Waiting for your other PC to approve this one — Home there must "
-                    f"show  {lock.get('code') or '…'}")
-            buttons = []
-            key = ("waiting", lock.get("code"))
+            text = (f"Waiting for another device of yours to approve this PC — its screen "
+                    f"must show  {lock.get('code') or '…'}")
+            buttons = [] if lock.get("same") else [("Home", lambda: self._show("Home"))]
+            key = ("waiting", lock.get("code"), bool(lock.get("same")))
         else:
             text, buttons, key = "", [], None
         if key == getattr(self, "_lock_banner_key", None):
@@ -8106,7 +8265,7 @@ class Dashboard:
 
     def _lock_block(self, scroller) -> None:
         """THE LOCK under the account card: one key per account, held by
-        its own PCs, never by the server (vault.py, sb.py's lock). The
+        its own devices, never by the server (vault.py, sb.py's lock). The
         card says where this PC stands — it holds the key; it waits for
         another PC to approve it and shows the code that PC must see;
         another PC asks to join and this one can approve it — and
@@ -8184,7 +8343,7 @@ class Dashboard:
         elif self._lock_mode == "shown":
             said = "Your recovery key. Keep it somewhere safe — it is shown once."
             said_code = self._lock_fresh
-            said_sub = ("With it, a PC with no other PC of yours at hand can open your "
+            said_sub = ("With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.")
             colour = ui.AMBER
             buttons = [("Copy", self._lock_copy), ("Done", self._lock_done)]
@@ -8208,15 +8367,15 @@ class Dashboard:
                 said_sub += f"  ·  on the server: lock {ch['server']}, here: lock {ch.get('mine') or '—'}"
         elif lock.get("pending") and lock["pending"][0].get("twins"):
             ask = lock["pending"][0]
-            said = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            said = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     "neither can be approved.")
-            said_sub = (f"One of them is not your PC. On {ask.get('name') or 'that PC'}, sign out "
-                        "and sign in again to ask afresh.")
+            said_sub = (f"One of them is not yours. On {ask.get('name') or 'that device'}, sign "
+                        "out and sign in again to ask afresh.")
             colour = ui.RED
             buttons = [("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
         elif lock.get("pending"):
             ask = lock["pending"][0]
-            said = f"{ask.get('name') or 'Another PC'} signed in to your account and asks to join."
+            said = f"{ask.get('name') or 'Another device'} signed in to your account and asks to join."
             said_code = str(ask.get("code") or "")
             said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
                         "It then gets your account's key: your cloud keys and what you "
@@ -8224,17 +8383,23 @@ class Dashboard:
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                        ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
         elif lock.get("state") == "waiting":
-            said = "Waiting for your other PC to approve this one."
+            said = "Waiting for another device of yours to approve this PC."
             said_code = str(lock.get("code") or "")
             typing = self._lock_mode == "typing"
             if typing:
                 said_sub = "Your recovery key — 24 letters and digits in six groups:"
                 buttons = [("Open", self._lock_recover), ("Cancel", self._lock_done)]
             else:
-                said_sub = ("Open the desk on your other PC: Home there shows this code — press "
-                            "Approve. Until then this PC has your words and settings; "
-                            "what you said and your cloud keys stay locked.")
+                said_sub = ("Open the desk on your other PC, or DeskIT on your phone. If it "
+                            "shows this code, press Approve there and Same code here. Until "
+                            "then this PC has your words and settings; what you said and your "
+                            "cloud keys stay locked.")
                 buttons = [("Type the recovery key", self._lock_type)]
+                if lock.get("same"):
+                    said = "You pressed Same code — waiting for your other device to approve this PC."
+                else:
+                    buttons.insert(0, ("Same code", lambda c=lock.get("code"):
+                                       self._lock_do("same_code", "noted", kind=c)))
             if lock.get("error"):
                 said_sub = f"{lock['error']}  ·  {said_sub}"
         elif lock.get("state") == "have":
@@ -9462,16 +9627,6 @@ class Dashboard:
         # holding, which is the only copy that exists if the write failed.
         self._ask("copy_last", then=lambda r: self._announce(r, "copied"))
 
-    def _copy_phone(self) -> None:
-        url = (self.status or {}).get("phone", "")
-        if not url:
-            self._note("no phone link — [server] enabled = false, or it is "
-                       "not running")
-            return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(url)
-        self._note("phone link copied to the clipboard")
-
     # ------------------------------------------------------ rebinding keys
 
     def _capture(self, field: str, label: str) -> None:
@@ -9830,7 +9985,7 @@ class Dashboard:
                       "Windows'. The server is DeskIT's own (Supabase, Frankfurt). "
                       "Only your voice never leaves this PC: your learned words and "
                       "settings are kept in your account, and so are what you said "
-                      "and your cloud keys, locked with a key only your own PCs hold. "
+                      "and your cloud keys, locked with a key only your own devices hold. "
                       "Settings > Privacy > Withdraw turns this off.")
 
     def _locked_now(self, reply: dict | None) -> bool:
@@ -9963,7 +10118,7 @@ class Dashboard:
         as they are, without "Not signed in:" in front."""
         try:
             import sb
-            return (sb.GONE_ELSEWHERE, sb.GONE_WORDS)
+            return (sb.GONE_ELSEWHERE, sb.GONE_WORDS, sb.SESSION_WENT)
         except Exception:                                    # noqa: BLE001
             return ()
 
