@@ -294,15 +294,48 @@ def beep(kind: str) -> None:
     cues.play(kind)
 
 
-def stage_line(**spans: float | None) -> str:
+def stage_line(*, notes: dict | None = None,
+               **spans: float | None) -> str:
     """The tail of the "pasted" line in app.log: each stage of the wait
     from the release to the chord, in seconds and in the order given,
     leaving out what this dictation did not have (no release to start a
-    clock from, no rolling, a backend with no language check). Numbers
-    and stage names only, never a word of what was said (D8)."""
+    clock from, no rolling, a backend with no language check). `notes`
+    puts a few words in brackets after a stage — what its seconds went
+    on (decoder_note). Numbers and stage names only, never a word of
+    what was said (D8)."""
+    notes = notes or {}
     parts = [f"{name.replace('_', ' ')} {value:.2f}"
+             + (f" ({notes[name]})" if notes.get(name) else "")
              for name, value in spans.items() if value is not None]
     return f"stages (s): {', '.join(parts)}" if parts else ""
+
+
+def decoder_note(timing: dict) -> str | None:
+    """What the decoder's seconds went on, when it was more than one
+    plain pass (local_whisper._decoder_tally): how many passes
+    faster-whisper made, the empty ones and their seconds ("stopped":
+    [local] stop_empty_passes ended the loop at the first), and the loop
+    retry's rungs and seconds. The 127 s dictation of 2026-11-27 22:17
+    waited 5.98 s in the decoder and the line could not say why; it
+    would have read "decoder 5.98 (28 passes, 26 empty 4.31 s)"."""
+    parts: list[str] = []
+    try:
+        passes = int(timing.get("passes") or 0)
+        empty = int(timing.get("empty") or 0)
+        retries = int(timing.get("retries") or 0)
+        if passes > 1:
+            parts.append(f"{passes} passes")
+        if empty:
+            parts.append(f"{empty} empty "
+                         f"{float(timing.get('empty_s') or 0.0):.2f} s"
+                         + (", stopped" if timing.get("stopped") else ""))
+        if retries:
+            parts.append(f"loop retry {retries} "
+                         f"rung{'s' if retries > 1 else ''} "
+                         f"{float(timing.get('retry_s') or 0.0):.2f} s")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return ", ".join(parts) or None
 
 
 def language_label(language: str | None, shout: bool = False) -> str:
@@ -7624,6 +7657,7 @@ class App:
         # the language check and the decoder were timed on every dictation
         # in last_timing and written nowhere). Numbers only (D8).
         stages = stage_line(
+            notes={"decoder": decoder_note(timing)},
             queue=None if released is None else started - released,
             rolling_wait=head_wait,
             language_check=timing.get("detect_s"),

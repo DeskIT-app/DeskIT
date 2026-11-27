@@ -3348,6 +3348,168 @@ def test_a_word_loop_is_retried_with_the_penalty_the_first_decode_dropped() -> N
     assert "ותעביר מסר אופטימי" in out and out.count("זהו") == 1, out
     assert asked == [(5, 1.0), (5, 1.15)], asked
     assert t.last_warning is None, asked
+    # ...and the pasted line can say the retry is where the seconds went
+    assert t.last_timing["retries"] == 1 and t.last_timing["retry_s"] >= 0, \
+        t.last_timing
+    import main as main_mod
+    note = main_mod.decoder_note(t.last_timing)
+    assert note.startswith("loop retry 1 rung "), note
+
+
+def _crawling_model(tokens_per_pass):
+    """faster-whisper's REAL seek loop (WhisperModel.generate_segments and
+    _split_segments_by_timestamps, the installed version) over a stand-in
+    whose passes answer `tokens_per_pass(offset)` — the encoder, the
+    prompt, the beam search and the alignment are the stand-in's, the
+    loop is the library's. -> (model, passes) where passes lists each
+    pass's offset in seconds."""
+    import logging as logging_mod
+    import numpy as np
+    from faster_whisper import WhisperModel
+    from faster_whisper.transcribe import TranscriptionOptions
+
+    tb = 50365                      # <|0.00|> in Whisper's vocabulary
+    passes: list[float] = []
+
+    class Tok:
+        timestamp_begin = tb
+
+        def decode(self, tokens):
+            return "".join(" מילה" for t in tokens if t < tb)
+
+    class Result:
+        def __init__(self, ids):
+            self.sequences_ids, self.no_speech_prob = [ids], 0.0
+
+    m = WhisperModel.__new__(WhisperModel)
+    m.feature_extractor = type("FE", (), {"time_per_frame": 0.01,
+                                          "nb_max_frames": 3000})()
+    m.frames_per_second, m.time_precision, m.input_stride = 100, 0.02, 2
+    m.logger = logging_mod.getLogger("faster_whisper")
+    m.get_prompt = lambda *a, **k: [1, 2, 3]
+
+    def encode(segment):
+        # every frame of the stand-in's features holds its own index + 1,
+        # so the window a pass encodes says where it starts
+        passes.append(round((float(segment[0, 0]) - 1) / 100, 2))
+        return "encoded"
+
+    def generate(encoder_output, prompt, tokenizer, options):
+        return Result(tokens_per_pass(passes[-1])), -0.4, 0.0, 1.0
+
+    def align(segments, *a, **k):
+        for seg in segments[0]:
+            texts = [t for t in seg["tokens"] if t < tb]
+            seg["words"] = ([dict(word=" מילה", start=seg["start"],
+                                  end=seg["start"] + 0.4, probability=0.9)]
+                            if texts else [])
+
+    m.encode, m.generate_with_fallback, m.add_word_timestamps = \
+        encode, generate, align
+    guards = {k: v for k, v in
+              __import__("transcribers.local_whisper", fromlist=["x"])
+              .hallucination_guards(True).items()}
+    options = TranscriptionOptions(
+        beam_size=5, best_of=5, patience=1.0, length_penalty=1.0,
+        repetition_penalty=1.0, no_repeat_ngram_size=0,
+        log_prob_threshold=guards["log_prob_threshold"],
+        no_speech_threshold=guards["no_speech_threshold"],
+        compression_ratio_threshold=guards["compression_ratio_threshold"],
+        condition_on_previous_text=False, prompt_reset_on_temperature=0.5,
+        temperatures=[0.0], initial_prompt=None, prefix=None,
+        suppress_blank=True, suppress_tokens=[-1], without_timestamps=False,
+        max_initial_timestamp=1.0, word_timestamps=True,
+        prepend_punctuations="", append_punctuations="", multilingual=False,
+        max_new_tokens=None, clip_timestamps="0",
+        hallucination_silence_threshold=guards[
+            "hallucination_silence_threshold"],
+        hotwords=None)
+
+    def transcribe(audio, **kw):
+        features = np.tile(np.arange(1, 302, dtype=np.float32),
+                           (80, 1))                         # 3.0 s
+        return m.generate_segments(features, Tok(), options, False), None
+
+    m.transcribe = transcribe
+    return m, passes, tb
+
+
+def test_an_empty_last_pass_ends_the_decode_instead_of_crawling():
+    """The 127 s dictation of 2026-11-27 22:17 waited 6.7 s for its paste,
+    5.98 s of it in the decoder on a 19.3 s tail. Replayed on the real
+    model: 28 passes, 26 of them EMPTY — one timestamp token, no text —
+    0.1 s apart over the tail's last 2.6 s of quiet, each a whole 30 s
+    encode. faster-whisper's own loop does that with word timestamps on;
+    [local] stop_empty_passes ends it at the first empty pass that reached
+    the end of the clip, which has already looked at everything left. On
+    the library's real loop: off, an empty clip is crawled a tenth of a
+    second at a time; on, one pass; a pass with words in it, or one whose
+    window does not reach the end, is never ended early; and the pasted
+    line says how many passes there were and what the empty ones cost."""
+    from transcribers import local_whisper as lw
+    import main as main_mod
+
+    lone = lambda offset: [50365 + 5]          # <|0.10|> and nothing else
+    model, passes, tb = _crawling_model(lone)
+    t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+    t._model, t._english = model, None
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = None
+    t._guards, t._boilerplate = lw.hallucination_guards(True), ()
+    t._hotwords = None
+    t._no_crawl(model)
+
+    t.stop_empty_passes = False
+    assert t.transcribe(RIFF, language="he") == ""
+    assert len(passes) == 30 and passes[:3] == [0.0, 0.1, 0.2], passes
+    assert t.last_timing["passes"] == 30 and t.last_timing["empty"] == 30, \
+        t.last_timing
+    assert "stopped" not in t.last_timing
+    assert main_mod.decoder_note(t.last_timing).startswith(
+        "30 passes, 30 empty "), main_mod.decoder_note(t.last_timing)
+
+    passes.clear()
+    t.stop_empty_passes = True
+    assert t.transcribe(RIFF, language="he") == ""
+    assert passes == [0.0], passes
+    assert t.last_timing["passes"] == 1 and t.last_timing["stopped"], \
+        t.last_timing
+    note = main_mod.decoder_note(t.last_timing)
+    assert note.startswith("1 empty ") and note.endswith(", stopped"), note
+
+    # words, then an empty pass over the rest: the words stay, the crawl
+    # after them does not happen
+    spoken = lambda offset: ([tb, 100, 101] if offset == 0.0
+                             else [tb + 5])
+    model, passes, tb = _crawling_model(spoken)
+    t._model = model
+    t._no_crawl(model)
+    out = t.transcribe(RIFF, language="he")
+    assert out.split() == ["מילה", "מילה"], out
+    assert passes == [0.0, 0.4], passes
+    t.stop_empty_passes = False
+    assert t.transcribe(RIFF, language="he") == out, "the same words"
+    assert len(passes) > 20, passes
+
+    # a pass with text is never the one that ends it, and the line stays
+    # quiet for a plain one-pass decode
+    split = lw._without_empty_crawl(
+        lambda **kw: ([], kw["seek"] + kw["segment_size"], False),
+        lambda: True)
+    tok = type("T", (), {"timestamp_begin": tb})()
+    assert split(tokenizer=tok, tokens=[tb, 7], segment_size=300,
+                 seek=0)[2] is False
+    assert split(tokenizer=tok, tokens=[tb + 5], segment_size=3000,
+                 seek=0)[2] is False, "a window that does not reach the end"
+    assert split(tokenizer=tok, tokens=[tb + 5], segment_size=300,
+                 seek=0)[2] is True
+    assert main_mod.decoder_note({"passes": 1, "decode_s": 0.4}) is None
+    assert main_mod.stage_line(
+        notes={"decoder": "28 passes, 26 empty 4.31 s"}, queue=0.02,
+        decoder=5.98, paste=0.09) == (
+        "stages (s): queue 0.02, decoder 5.98 (28 passes, 26 empty 4.31 s),"
+        " paste 0.09")
 
 
 def test_www_survives_what_a_decoder_loop_does_not() -> None:

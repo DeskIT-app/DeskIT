@@ -373,6 +373,70 @@ def _at_real_length(encode):
 REAL_LENGTH_MODES = ("off", "cpu", "always")
 
 
+# --- the empty-pass crawl (2026-11-28) ---------------------------------------
+# faster-whisper's seek loop, with word timestamps on, moves the next pass to
+# the end of the last word unless a pass ends on a lone timestamp — and a pass
+# that decodes NOTHING (one timestamp token, no text) is not that case, so the
+# next pass starts 0.1 s on, and each pass is a whole 30 s encode. Measured
+# 2026-11-28 on the 127.4 s dictation of 2026-11-27 22:17, the one that waited
+# 6.7 s for its paste: its 19.3 s tail ended in 2.6 s of quiet with one breath
+# in it, and with the hotwords in the prompt every pass over that quiet came
+# back as one timestamp — 26 empty passes 0.1 s apart, 5.45 s for the tail,
+# where the same tail without hotwords was one pass, 0.54 s, and the same
+# words. A pass that reached the end of the clip and decoded no text has
+# already looked at everything left, so here it ends the loop the way a pass
+# ending on a lone timestamp always did. [local] stop_empty_passes.
+
+_tally = threading.local()
+
+
+def _without_empty_crawl(split, on):
+    """WhisperModel._split_segments_by_timestamps, which also counts each
+    pass of the decode in progress (_decode's tally) and, while `on()`,
+    ends the loop at a pass that reached the clip's end with no text in
+    it. Anything it does not recognise goes through untouched."""
+    def split_without_crawl(*args, **kw):
+        segments, seek, single = split(*args, **kw)
+        try:
+            stats = getattr(_tally, "now", None)
+            now = time.perf_counter()
+            if stats is not None:
+                spent = now - stats.get("mark", now)
+                stats["mark"] = now
+                stats["passes"] = stats.get("passes", 0) + 1
+            tokens = kw["tokens"]
+            empty = bool(tokens) and all(
+                t >= kw["tokenizer"].timestamp_begin for t in tokens)
+            if not args and not single and empty \
+                    and kw["segment_size"] < FULL_FRAMES:
+                if stats is not None:
+                    stats["empty"] = stats.get("empty", 0) + 1
+                    stats["empty_s"] = stats.get("empty_s", 0.0) + spent
+                if on():
+                    if stats is not None:
+                        stats["stopped"] = True
+                    return segments, seek, True
+        except Exception:
+            pass
+        return segments, seek, single
+    return split_without_crawl
+
+
+def _decoder_tally() -> dict:
+    """What the last _decode on this thread did, for last_timing: passes
+    (how many times faster-whisper encoded and decoded), empty (passes
+    that found no text) and their seconds, whether the crawl was stopped,
+    and the loop retry's rungs and seconds. Numbers only. Read once: a
+    second read, or one after a call that decoded nothing, is {}."""
+    stats = dict(getattr(_tally, "last", None) or {})
+    _tally.last = None
+    stats.pop("mark", None)
+    for key in ("empty_s", "retry_s"):
+        if key in stats:
+            stats[key] = round(stats[key], 3)
+    return stats
+
+
 def real_length_on(mode: str, device: str) -> bool:
     """Whether a model on `device` is decoded at the real length: "cpu"
     only on the processor (the CPU tier), "always" on a card too."""
@@ -400,6 +464,9 @@ class LocalWhisperTranscriber:
     #: (real_length_on). The English detector never is: it was not
     #: trained for it.
     at_real_length = False
+    #: [local] stop_empty_passes (_without_empty_crawl): set by the
+    #: builder (transcribers._local), asked at every pass.
+    stop_empty_passes = False
     #: Where the seconds went, for the log and the wizard: the ivrit
     #: load, its warm-up, the English load and ITS warm-up — each alone,
     #: so a slow start can be read instead of guessed at.
@@ -427,8 +494,18 @@ class LocalWhisperTranscriber:
             ("float16" if self.device == "cuda" else "int8")
         log.info("loading English model %s on %s (%s)...", model_name,
                  self.device, compute)
-        return WhisperModel(source, device=self.device,
-                            compute_type=compute)
+        return self._no_crawl(WhisperModel(source, device=self.device,
+                                           compute_type=compute))
+
+    def _no_crawl(self, model):
+        """`model` with the empty-pass crawl stopped while
+        stop_empty_passes is on (_without_empty_crawl). A model without
+        the method (another faster-whisper) is left as it is."""
+        split = getattr(model, "_split_segments_by_timestamps", None)
+        if callable(split):
+            model._split_segments_by_timestamps = _without_empty_crawl(
+                split, lambda: bool(self.stop_empty_passes))
+        return model
 
     def _load_english(self) -> None:
         """The detector, loaded and warmed, into self._english — on the
@@ -688,6 +765,7 @@ class LocalWhisperTranscriber:
             try:
                 candidate = WhisperModel(source, device=dev,
                                          compute_type=compute, **threads)
+                self._no_crawl(candidate)
                 shorter = real_length_on(real_length, dev)
                 if shorter:
                     # before the warm-up, so the probe runs the encode
@@ -943,8 +1021,22 @@ class LocalWhisperTranscriber:
             got = list(segments)
             return got, " ".join(s.text.strip() for s in got).strip()
 
+        # What this decode did, pass by pass (_without_empty_crawl), for
+        # the stages line: read back by _decoder_tally on this thread.
+        stats = {"mark": time.perf_counter()}
+        _tally.now = stats
+        try:
+            segs, text = self._decode_and_retry(decode, stats)
+        finally:
+            _tally.now = None
+            _tally.last = stats
+        return segs, text
+
+    def _decode_and_retry(self, decode, stats: dict):
+        """_decode's body: the decode, and the loop retry after it."""
         segs, text = decode()
         if _looped(text):
+            began = time.perf_counter()
             # The words a loop swallows are NOT gone — this file used
             # to say they were, and it was wrong. Measured 2026-09-05
             # on the 57 s clip whose 73-character "Xxxxx…" ate 29 s:
@@ -975,6 +1067,8 @@ class LocalWhisperTranscriber:
                          dict(pen, temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
                                                 1.0])):
                 retry_segs, retry = decode(**rung)
+                stats["retries"] = stats.get("retries", 0) + 1
+                stats["retry_s"] = time.perf_counter() - began
                 if retry and not _looped(retry):
                     log.warning("decoder loop — recovered with %s "
                                 "(%d words for %d)",
@@ -1057,6 +1151,7 @@ class LocalWhisperTranscriber:
             segs, text = self._decode(model, chosen, wav_bytes)
             self.last_timing["decode_s"] = round(
                 time.perf_counter() - started, 3)
+            self.last_timing.update(_decoder_tally())
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         window = self._settle(self._words_of(segs), text)
@@ -1163,6 +1258,7 @@ class LocalWhisperTranscriber:
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         self.last_timing["decode_s"] = round(time.perf_counter() - began, 3)
+        self.last_timing.update(_decoder_tally())
         self.last_words = [(word, round(begin + w.start_s, 2),
                             round(end + w.start_s, 2), p)
                            for w in windows
