@@ -4476,6 +4476,14 @@ class App:
                 self.recorder.chunks_since, self.recorder.sample_rate,
                 decode, local.rolling_window_s, frames_to_wav,
                 overlap=bool(getattr(backend, "can_overlap", False)))
+            if getattr(local, "early_language", False) \
+                    and hasattr(backend, "early_language"):
+                # the release's language decision, made while he speaks
+                # once it can be (LocalWhisperTranscriber.early_language)
+                def decide(wav: bytes):
+                    with self._model_lock:
+                        return backend.early_language(wav)
+                roller.decide = decide
             roller.start()
             return roller
         except Exception:
@@ -7657,7 +7665,9 @@ class App:
         # the language check and the decoder were timed on every dictation
         # in last_timing and written nowhere). Numbers only (D8).
         stages = stage_line(
-            notes={"decoder": decoder_note(timing)},
+            notes={"decoder": decoder_note(timing),
+                   "language_check": "decided while speaking"
+                   if timing.get("early_language") else None},
             queue=None if released is None else started - released,
             rolling_wait=head_wait,
             language_check=timing.get("detect_s"),

@@ -2031,6 +2031,21 @@ rolling_window_s = 25.0          # how much settled audio a stretch waits for
 stop_empty_passes = true         # end the decode at an empty last pass;
                                  # false = faster-whisper's loop as it was
 #
+# THE LANGUAGE, DECIDED WHILE YOU SPEAK (2026-11-28). The release asks the
+# English detector about the whole recording, 0.2-0.4 s on every dictation
+# (p50 0.21 s, a quarter of the wait), and the detector reads only the first
+# 30 s of SPEECH of it. So a dictation that holds 30 s of speech, and 3 s of
+# audio after that, already has its answer while the key is still held: the
+# rolling thread asks then, and the release skips the check. Measured on 479
+# recordings (the 50 kept ones, the corpus's 28 English and 301 mixed clips,
+# 100 Hebrew ones): it answered early on 78 and agreed with the release on all
+# 78 (4 English, 67 mixed), saving 0.29 s each at the median; deciding on the
+# first 5-20 s, the first stretch or everything but the tail got English and
+# mixed clips wrong both ways. It helps only dictations of about 35 s or more
+# (11% of them); a shorter one is decided at the release, as before.
+early_language = true            # decide the language while the key is held,
+                                 # once it can be exact; false = at the release
+#
 # WARM AGAIN ON THE WAY BACK (wake.py, 2026-10-20). An idle model does not stay
 # where it was loaded: the night's training took 15.1 of the card's 15.9 GB and
 # Windows moved these models off it; they stayed off all day (the card read 2.6

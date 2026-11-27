@@ -381,6 +381,13 @@ class LocalConfig:
     # 19.3 s tail of a 127 s dictation took 5.45 s in 28 passes, 26 of them
     # empty, over its last 2.6 s of quiet. False = the loop as it was.
     stop_empty_passes: bool = True
+    # Make the release's language decision while the key is still held,
+    # once 30 s of speech exist (LocalWhisperTranscriber.early_language):
+    # the release then skips its 0.2-0.4 s language check. Exact, because
+    # the release's own decision reads only those 30 s; it answered early
+    # on 78 of 479 recordings and agreed on all 78 (2026-11-28). False =
+    # decided at the release, always.
+    early_language: bool = True
     # Warm the models again when the person comes back after this many
     # minutes with no key or mouse (wake.py): Windows pushes an idle model
     # out of memory, and the first dictation then paid 7-12 s to bring it
@@ -1972,6 +1979,8 @@ def build(data: dict) -> Config:
                 "rolling_window_s", LocalConfig.rolling_window_s)),
             stop_empty_passes=bool(local.get(
                 "stop_empty_passes", LocalConfig.stop_empty_passes)),
+            early_language=bool(local.get(
+                "early_language", LocalConfig.early_language)),
             warm_after_away_min=float(local.get(
                 "warm_after_away_min", LocalConfig.warm_after_away_min)),
         ),

@@ -104,6 +104,8 @@ def _register_cuda_dlls() -> None:
 
 
 DETECT_RATE = 16000        # what detect_language's mel front-end expects
+EARLY_SPEECH_S = 30.0      # what detect_language reads (early_language)
+EARLY_MARGIN_S = 3.0       # ...and the audio after it VAD needs to agree
 
 
 def _decode_pcm(wav_bytes: bytes):
@@ -993,6 +995,43 @@ class LocalWhisperTranscriber:
         self.last_timing = {"detect_s": round(detect_s, 3), "decode_s": 0.0}
         return model, chosen
 
+    def early_language(self, wav_bytes: bytes) -> str | None:
+        """The release's language decision, made while the key is still
+        held -> "en" / "he", or None when it cannot be made yet.
+
+        The release asks the detector about the WHOLE recording, and
+        faster-whisper's detect_language reads only the first 30 s of the
+        speech its VAD keeps (language_detection_segments = 1). So once
+        the recording so far holds EARLY_SPEECH_S of speech, and
+        EARLY_MARGIN_S of audio after the point where it got there (VAD
+        closes a stretch of speech only after 2 s of quiet and pads it by
+        0.4 s, so a prefix decides that 30 s exactly as the whole
+        recording does), the answer is already the release's — and the
+        release need not spend 0.2-0.4 s asking. Measured 2026-11-28 on
+        479 recordings (the 50 in recent\\, the corpus's 28 English and
+        301 mixed clips, 100 Hebrew ones), replayed through the Roller as
+        they arrived: it answered early on 78 and agreed with the release
+        on all 78, the 4 English and 67 mixed among them, while every
+        shorter prefix (the first 5/10/15/20 s, the first rolling window,
+        everything before the tail) got English and mixed clips wrong,
+        both ways. [local] early_language."""
+        if self._detector() is None:
+            return None
+        audio = _decode_pcm(wav_bytes)
+        if audio is None:
+            return None
+        from faster_whisper.vad import get_speech_timestamps
+        need, total = EARLY_SPEECH_S * DETECT_RATE, 0
+        for chunk in get_speech_timestamps(audio):   # detect_language's own
+            length = chunk["end"] - chunk["start"]
+            if total + length >= need:
+                there = chunk["start"] + (need - total)
+                if len(audio) < there + EARLY_MARGIN_S * DETECT_RATE:
+                    return None
+                return self._pick_language(audio)
+            total += length
+        return None
+
     def _decode(self, model, chosen: str, wav_bytes: bytes):
         """One decode with the live settings, and the retry after a loop
         -> (segments, text). Raises whatever faster-whisper raises."""
@@ -1232,8 +1271,11 @@ class LocalWhisperTranscriber:
         before it, which is decoded again in its place.
         """
         from rolling import LEAD_S, MIN_TAIL_S
+        early = None if language else getattr(head, "language", None)
         try:
-            model, chosen = self._choose(wav_bytes, language)
+            model, chosen = self._choose(wav_bytes, language or early)
+            if early:
+                self.last_timing["early_language"] = early
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         if model is not self._model or chosen != self._language:

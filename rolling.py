@@ -102,6 +102,12 @@ MIN_TAIL_S = 2.0       # a tail shorter than this is decoded with the
 # recording would have shown it at that point.
 LEAD_S = 1.0
 EXT_S = 0.8
+# The early language check (Roller.decide): first asked once this much of
+# the recording exists — the release's decision reads 30 s of SPEECH, so
+# nothing shorter can answer — and again every DECIDE_EVERY_S of audio
+# until it does.
+DECIDE_FROM_S = 33.0
+DECIDE_EVERY_S = 5.0
 
 
 @dataclass
@@ -133,6 +139,9 @@ class Head:
     order, and how far into the recording the last one reaches."""
     windows: list[Window]
     end_s: float
+    # The language, decided while the key was held (Roller.decide), or
+    # None: then the release decides on the whole recording, as always.
+    language: str | None = None
 
 
 def loud_level(peaks: Sequence[float]) -> float:
@@ -281,6 +290,15 @@ class Roller:
         self.windows: list[Window] = []
         self.decodes = 0
         self.busy_s = 0.0           # decoder time spent while recording
+        # The release's language decision made early: `decide(wav of the
+        # recording so far)` -> "he" / "en" / None (not enough speech yet),
+        # set by the owner after construction and asked from DECIDE_FROM_S
+        # of audio every DECIDE_EVERY_S until it answers ([local]
+        # early_language; LocalWhisperTranscriber.early_language says why
+        # the answer is the release's own).
+        self.decide: Callable[[bytes], str | None] | None = None
+        self.language: str | None = None
+        self._decide_at = DECIDE_FROM_S
         self._stop = threading.Event()
         self._invalid = False
         self._thread = threading.Thread(target=self._run, daemon=True,
@@ -325,7 +343,7 @@ class Roller:
                 self._invalid = True
         if self._invalid or not self.windows:
             return None
-        return Head(list(self.windows), self.done_s)
+        return Head(list(self.windows), self.done_s, self.language)
 
     # -- the thread --
 
@@ -345,6 +363,17 @@ class Roller:
         chunks = self._chunks_since(self._cursor)
         if not chunks:
             return
+        if self.decide is not None and self.language is None:
+            heard = self._offset + sum(len(c) for c in chunks)
+            if heard >= self._decide_at * self._rate:
+                self._decide_at = heard / self._rate + DECIDE_EVERY_S
+                try:
+                    self.language = self.decide(self._to_wav(
+                        self._chunks_since(0), self._rate))
+                except Exception:
+                    log.debug("rolling: the early language check failed — "
+                              "the release decides", exc_info=True)
+                    self.decide = None
         for chunk in chunks[len(self._peaks):]:
             self._peaks.append(_peak(chunk))
             self._sizes.append(len(chunk))

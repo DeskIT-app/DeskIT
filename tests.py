@@ -38974,6 +38974,145 @@ def test_the_press_starts_a_roller_and_the_release_hands_it_to_the_worker():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_language_is_decided_while_he_speaks_once_it_can_be_exact():
+    """[local] early_language (2026-11-28). The release's language check
+    costs 0.2-0.4 s on every dictation, and the detector it asks reads only
+    the first 30 s of the SPEECH in the recording. So once 30 s of speech
+    and 3 s after it exist, the rolling thread can ask the same question
+    and get the release's own answer: measured on 479 recordings, it
+    answered early on 78 and agreed on all 78, while the first 5-20 s, the
+    first rolling window and everything but the tail got English and mixed
+    clips wrong. Here: the Roller asks from 33 s every 5 s until answered
+    and hands the answer on in the Head; a check that raises is dropped;
+    early_language answers only past 30 s of speech + 3 s; the release uses
+    the answer and asks the detector nothing, unless a key named a
+    language; the app hands the Roller the check only with the switch on."""
+    import dataclasses as _dc
+    import rolling
+    import faster_whisper.vad as fw_vad
+    import main as main_mod
+    from transcribers import local_whisper as lw
+    from recorder import frames_to_wav
+
+    rate = 16000
+    loud, quiet = np.full(160, 8000, dtype=np.int16), np.zeros(160, dtype=np.int16)
+    # 60 s of "speech" with a 0.6 s pause every 10 s, at 10 ms chunks
+    chunks = [quiet if (i % 1000) >= 940 else loud for i in range(6000)]
+
+    def run(decide):
+        clock = {"t": 0.0}
+        roller = rolling.Roller(
+            lambda mark: chunks[mark:int(clock["t"] * rate) // 160], rate,
+            lambda wav, lead, keep: rolling.Window(0.0, 0.0, "x"), 25.0,
+            frames_to_wav, overlap=False)
+        roller.decide = decide
+        while clock["t"] < 60:
+            clock["t"] += rolling.POLL_S
+            roller._step()
+        return roller
+
+    asked: list[int] = []
+
+    def decide(wav):
+        seconds = (len(wav) - 44) / 2 / rate
+        asked.append(round(seconds))
+        return "he" if seconds >= 42 else None
+
+    roller = run(decide)
+    assert asked == [33, 38, 43], asked
+    assert roller.finish().language == "he"
+
+    def broken(wav):
+        raise RuntimeError("no detector today")
+
+    roller = run(broken)
+    assert roller.decide is None and roller.windows, "the windows go on"
+    assert roller.finish().language is None
+    assert run(None).finish().language is None
+
+    # early_language: only once 30 s of speech and 3 s after it exist
+    class Det:
+        calls = 0
+
+        def detect_language(self, audio=None, vad_filter=False):
+            Det.calls += 1
+            return "en", 0.97, []
+
+        def transcribe(self, audio, **kw):
+            return iter(()), None
+
+    t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+    t._english, t._language, t._english_threshold = Det(), "he", 0.8
+    wav = lambda s: frames_to_wav([np.zeros(int(s * rate), dtype=np.int16)], rate)
+    speech = [{"start": 0, "end": 20 * rate}, {"start": 22 * rate, "end": 40 * rate}]
+    with _patched(fw_vad, "get_speech_timestamps", lambda audio, *a, **k: speech):
+        assert t.early_language(wav(34.9)) is None, "30 s of speech at 32 s, + 3"
+        assert t.early_language(wav(35.1)) == "en"
+    with _patched(fw_vad, "get_speech_timestamps",
+                  lambda audio, *a, **k: speech[:1]):
+        assert t.early_language(wav(60)) is None, "20 s of speech is not enough"
+    t._english = None
+    assert t.early_language(wav(60)) is None, "no detector, no early answer"
+
+    # the release takes the answer and asks the detector nothing
+    class Model:
+        def transcribe(self, audio, **kw):
+            return iter(()), None
+
+    t._english, t._model = Det(), Model()
+    t._cleanup, t._fillers, t._initial_prompt = False, (), None
+    t._guards, t._boilerplate, t._hotwords = {}, (), None
+    head = rolling.Head([rolling.Window(0.0, 35.0, "שלום",
+                                        [("שלום", 0.1, 0.5, 0.9)])], 35.0, "he")
+    Det.calls = 0
+    assert t.transcribe_with_head(wav(40), head) == "שלום"
+    assert Det.calls == 0 and t.last_timing["detect_s"] == 0.0, t.last_timing
+    assert t.last_timing["early_language"] == "he"
+    head.language = None
+    t.transcribe_with_head(wav(40), head)
+    assert Det.calls == 1 and "early_language" not in t.last_timing
+    head.language = "en"                     # a key that named Hebrew wins
+    t.transcribe_with_head(wav(40), head, language="he")
+    assert Det.calls == 1 and "early_language" not in t.last_timing
+    assert main_mod.stage_line(
+        notes={"language_check": "decided while speaking"},
+        language_check=0.0) == \
+        "stages (s): language check 0.00 (decided while speaking)"
+
+    # the switch: on by default, and the app hands the check over only then
+    assert config_mod.LocalConfig().early_language is True
+    assert config_mod.defaults_flat()["local.early_language"] is True
+    assert config_mod.build(
+        {"local": {"early_language": False}}).local.early_language is False
+    tmp = Path(tempfile.mkdtemp(prefix="early-language-"))
+    try:
+        app = _worker_app(_Flaky(fail_times=0), tmp)
+
+        class Rec:
+            sample_rate = 16000
+
+            def chunks_since(self, mark):
+                return []
+
+        app.recorder = Rec()
+        app.transcriber.decode_window = lambda *_a: rolling.Window(0.0, 0.0, "x")
+        app.transcriber.can_overlap = False
+        app.transcriber.early_language = lambda wav: "en"
+        for on in (True, False):
+            app.cfg = _dc.replace(app.cfg, local=_dc.replace(
+                app.cfg.local, rolling=True, early_language=on))
+            roller = app._start_roller(polish=False)
+            assert (roller.decide is not None) is on, on
+            if on:
+                assert roller.decide(b"RIFF") == "en"
+            roller.invalidate()
+            roller.finish()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    src = Path(__file__).resolve().parent.joinpath("main.py").read_text("utf-8")
+    assert '"decided while speaking"' in src and 'timing.get("early_language")' in src
+
+
 def test_the_rolling_knobs_parse_and_are_bounded():
     """[local] rolling and rolling_window_s: on by default at 25 s (the
     measured size — see rolling.py), read from the file, and a window
