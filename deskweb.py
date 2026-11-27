@@ -748,6 +748,16 @@ class Model:
             return []
         row = {"id": "update", "kind": "update", "at": self._stamp(), "tone": "q",
                "glyph": "download", "title": "A newer version", "meta": "", "rtl": False}
+        if not getattr(rel, "checked", False) and not s.get("winget_command"):
+            # the feed's signature did not verify (updates.py): news, never
+            # a download — the website is the way to it
+            import updates
+            row.update(tone="warn",
+                       text=f"DeskIT {rel.version} is out. {updates.UNCHECKED_WORDS}",
+                       note="Your copy keeps working as it is.",
+                       buttons=[{"label": "Open the website", "tone": "primary",
+                                 "act": "update.site"}])
+            return [row]
         if self._too_old_for(rel):
             row.update(tone="warn",
                        text=f"DeskIT {rel.version} is available, but this copy's settings are "
@@ -1779,6 +1789,11 @@ class Model:
             import webbrowser
             webbrowser.open(url)
             return ""
+        if do == "update.site":
+            import updates
+            import webbrowser
+            webbrowser.open(updates.WEBSITE)
+            return ""
         if do == "update.winget":
             command = str(s.get("winget_command") or "")
             if not command:
@@ -2056,7 +2071,7 @@ class Model:
                   "lock.signout_ask", "lock.signout_keep", "lock.signout_all",
                   "lock.recovery_new"):
             return self._lock_do(do, arg)
-        if do in ("update.notes", "update.winget", "update.install"):
+        if do in ("update.notes", "update.winget", "update.install", "update.site"):
             return self._update_do(do)
         if do == "landing.signin":
             return self._landing_sign_in()

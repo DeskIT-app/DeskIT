@@ -46928,7 +46928,7 @@ def test_a_newer_version_is_a_row_on_the_home_pile():
     import updates
 
     feed = _feed_for(b"x" * 7)
-    rel = updates.Release.parse(feed)
+    rel = _checked(updates.Release.parse(feed))
     with _window() as board:
         if board is None:
             return
@@ -46956,6 +46956,26 @@ def test_a_newer_version_is_a_row_on_the_home_pile():
             assert "Download and install" not in labels, "the checkout pulls, it does not install"
         with _patched(updates, "_last", {"release": rel}), _patched(paths, "CHANNEL", "store"):
             assert board._waiting_update() == []
+        # A release whose feed did not verify (no .sig, a wrong one, no key
+        # pinned): news on Home in plain words with the website as the way,
+        # never Download and install — in the checkout too. winget's own
+        # road (its manifest, its hash) is left as it was.
+        import webbrowser
+        unchecked = updates.Release.parse(feed)
+        opened: list = []
+        for developer in (False, True):
+            with _patched(updates, "_last", {"release": unchecked}), \
+                    _patched(paths, "DEVELOPER", developer), _patched(paths, "CHANNEL", "github"), \
+                    _patched(webbrowser, "open", lambda url, *a, **k: opened.append(url) or True):
+                rows = board._waiting_update()
+                assert len(rows) == 1 and "DeskIT 9.9.9 is out" in rows[0]["text"], rows
+                assert updates.UNCHECKED_WORDS in rows[0]["text"], rows[0]["text"]
+                assert [b[0] for b in rows[0]["buttons"]] == ["Open the website"], rows[0]["buttons"]
+                rows[0]["buttons"][0][2]()
+        assert opened == [updates.WEBSITE] * 2 and updates.WEBSITE == paths.PAGES_URL + "/", opened
+        with _patched(updates, "_last", {"release": unchecked}), _patched(paths, "DEVELOPER", False), \
+                _patched(paths, "CHANNEL", "winget"):
+            assert board._waiting_update()[0]["buttons"][0][0] == "Copy the winget command"
         assert not hasattr(updates, "skip") and not hasattr(board, "_update_skip"), \
             "a version can be skipped again"
 
@@ -47118,25 +47138,68 @@ def _feed_for(payload: bytes, **over) -> dict:
     return d
 
 
-def _github(feed: dict, installer: bytes = b"MZ-not-really"):
+_UPDATE_TEST_KEY: list = []
+
+
+def _update_test_key() -> tuple[bytes, str]:
+    """A throwaway ECDSA P-256 pair for the feed's signature, made once per
+    run through CNG (update_sig.new_pair) — never the owner's key, which
+    only dev\\sign_release.py on his PC reads."""
+    import update_sig
+    if not _UPDATE_TEST_KEY:
+        _UPDATE_TEST_KEY.append(update_sig.new_pair())
+    return _UPDATE_TEST_KEY[0]
+
+
+def _pin_test_key():
+    """update_key.PUBLIC_KEY pinned to the throwaway key for a block."""
+    import update_key
+    return _patched(update_key, "PUBLIC_KEY", _update_test_key()[1])
+
+
+def _checked(rel):
+    """A Release as from_feed gives it when the signature verified."""
+    import dataclasses
+    return dataclasses.replace(rel, checked=True)
+
+
+def _github(feed: dict, installer: bytes = b"MZ-not-really", sig=None):
     """A fake wire: the API's latest release, the feed behind one redirect,
-    the installer behind one redirect — every request written down."""
+    the installer behind one redirect — every request written down. `sig`
+    True serves latest.json.sig signed with the throwaway key over the
+    exact bytes served (pin it with _pin_test_key); bytes serve those
+    bytes as the .sig; None lists no .sig at all; an int is the HTTP
+    status the listed .sig answers with."""
+    import update_sig
     api = "https://api.github.com/repos/DeskIT-app/DeskIT/releases/latest"
     feed_url = "https://github.com/DeskIT-app/DeskIT/releases/download/v9.9.9/latest.json"
     feed_cdn = "https://objects.githubusercontent.com/x/latest.json"
+    sig_url = feed_url + ".sig"
+    sig_cdn = feed_cdn + ".sig"
     exe_cdn = "https://objects.githubusercontent.com/x/DeskIT-Setup-9.9.9.exe"
     seen: list[tuple[str, str, dict]] = []
+    served = json.dumps(feed).encode()
+    sig_body = update_sig.sign(_update_test_key()[0], served).encode() if sig is True else sig
 
     def connect(method, url, headers, body, timeout_s):
         seen.append((method, url, dict(headers)))
         if url == api:
-            return _FakeRaw(json.dumps({"tag_name": "v9.9.9", "prerelease": False, "assets": [
-                {"name": "DeskIT-Setup-9.9.9.exe", "browser_download_url": feed["url"]},
-                {"name": "latest.json", "browser_download_url": feed_url}]}).encode())
+            assets = [{"name": "DeskIT-Setup-9.9.9.exe", "browser_download_url": feed["url"]},
+                      {"name": "latest.json", "browser_download_url": feed_url}]
+            if sig is not None:
+                assets.append({"name": "latest.json.sig", "browser_download_url": sig_url})
+            return _FakeRaw(json.dumps({"tag_name": "v9.9.9", "prerelease": False,
+                                        "assets": assets}).encode())
         if url == feed_url:
             return _FakeRaw(b"", 302, {"Location": feed_cdn})
         if url == feed_cdn:
-            return _FakeRaw(json.dumps(feed).encode())
+            return _FakeRaw(served)
+        if url == sig_url and sig is not None:
+            return _FakeRaw(b"", 302, {"Location": sig_cdn})
+        if url == sig_cdn and isinstance(sig_body, bytes):
+            return _FakeRaw(sig_body)
+        if url == sig_cdn and isinstance(sig, int) and sig is not True:
+            return _FakeRaw(b"gone", sig)
         if url == feed["url"]:
             return _FakeRaw(b"", 302, {"Location": exe_cdn})
         if url == exe_cdn:
@@ -47237,33 +47300,39 @@ def test_update_check_respects_gate():
 
 
 def test_update_check_request_shape():
-    """Two GETs through net.py — the API with the GitHub Accept header and
-    no query string, then the feed behind its redirect — both rows with
-    the update-check purpose and no secret; the newer release is
-    remembered, the state stamped, the row says so; a cached release
-    that is not newer than the running copy — the one just installed —
-    is dropped, and the first start after an update forgets it."""
+    """GETs through net.py — the API with the GitHub Accept header and
+    no query string, then the feed and its signature, each behind its
+    redirect — every row with the update-check purpose and no secret; the
+    newer release is remembered checked, the state stamped, the row says
+    so; a cached release that is not newer than the running copy — the
+    one just installed — is dropped, and the first start after an update
+    forgets it."""
     import net as net_mod
     import updates
 
     feed = _feed_for(b"x" * 100)
-    connect, seen = _github(feed)
+    connect, seen = _github(feed, sig=True)
     stamps: dict = {}
     with _patched(net_mod, "_connect", connect), _patched(updates, "_last", {}), \
             _patched(updates, "_state", lambda: dict(stamps)), \
             _patched(updates, "_record", lambda **v: stamps.update(v)), \
-            _patched(updates, "_settings", lambda: config_mod.UpdatesConfig()):
+            _patched(updates, "_settings", lambda: config_mod.UpdatesConfig()), \
+            _pin_test_key():
         rel = updates.check(force=True)
         assert rel is not None and rel.version == "9.9.9", rel
+        assert rel.checked, "a feed signed with the pinned key did not verify"
         urls = [u for _m, u, _h in seen]
         assert urls == ["https://api.github.com/repos/DeskIT-app/DeskIT/releases/latest",
                         "https://github.com/DeskIT-app/DeskIT/releases/download/v9.9.9/latest.json",
-                        "https://objects.githubusercontent.com/x/latest.json"], urls
+                        "https://objects.githubusercontent.com/x/latest.json",
+                        "https://github.com/DeskIT-app/DeskIT/releases/download/v9.9.9/latest.json.sig",
+                        "https://objects.githubusercontent.com/x/latest.json.sig"], urls
         assert seen[0][2].get("Accept") == "application/vnd.github+json"
         assert all("?" not in u for u in urls)
         assert not any(k.lower() in ("authorization", "cookie") for _m, _u, h in seen for k in h)
-        rows = [r for r in net_mod.rows() if r.purpose == "update-check"][-3:]
-        assert [r.host for r in rows] == ["api.github.com", "github.com", "objects.githubusercontent.com"]
+        rows = [r for r in net_mod.rows() if r.purpose == "update-check"][-5:]
+        assert [r.host for r in rows] == ["api.github.com", "github.com", "objects.githubusercontent.com",
+                                          "github.com", "objects.githubusercontent.com"]
         assert all(r.secret == "-" for r in rows)
         assert stamps["updates.latest_seen"] == "9.9.9" and stamps["updates.last_check"]
         assert updates.available() is rel
@@ -47281,6 +47350,16 @@ def test_update_check_request_shape():
             assert cache is not None and cache.exists(), "the feed was not cached"
             updates._last.clear()
             assert updates.available() == rel, "the cache does not come back"
+            assert updates.available().checked, "the cached feed was not checked again"
+            # a cache from a build before signed feeds (the parsed fields)
+            # is dropped, never shown as an update that could not be checked
+            updates._last.clear()
+            old_kind = {k: v for k, v in updates.Release.parse(feed).__dict__.items()
+                        if k not in ("checked", "feed", "sig")}
+            cache.write_text(json.dumps(old_kind), "utf-8")
+            assert updates.available() is None and not cache.exists()
+            updates._last.clear()
+            updates._remember(rel)
             updates._last.clear()
             with _patched(version_mod, "VERSION", "9.9.9"):
                 assert updates.available() is None and not cache.exists()
@@ -47318,7 +47397,7 @@ def test_update_download_sha_match_runs_inno():
     connect, seen = _github(feed, installer=payload)
     import net as net_mod
     with tempfile.TemporaryDirectory() as d, _patched(net_mod, "_connect", connect):
-        rel = updates.Release.parse(feed)
+        rel = _checked(updates.Release.parse(feed))
         progress: list = []
         got = updates.download(rel, on_progress=lambda a, b: progress.append((a, b)),
                                dest_dir=Path(d))
@@ -47387,7 +47466,7 @@ def test_update_download_sha_mismatch_discards():
     spawned: list = []
     with tempfile.TemporaryDirectory() as d, _patched(net_mod, "_connect", connect), \
             _patched(sp, "Popen", lambda *a, **k: spawned.append(a)):
-        rel = updates.Release.parse(feed)
+        rel = _checked(updates.Release.parse(feed))
         import logging
         lines: list[str] = []
 
@@ -47412,6 +47491,280 @@ def test_update_download_sha_mismatch_discards():
         assert not list(Path(d).glob("*")), list(Path(d).glob("*"))
         assert any(rel.sha256 in ln and "discarded" in ln for ln in lines), lines
         assert spawned == []
+
+
+# ------------------------------------- the signed feed (security-local 3)
+#
+# The owner's go, 2026-11-27: whoever takes over the GitHub account or the
+# release job must not be able to push a working update to every copy.
+# latest.json is signed on his PC (dev\sign_release.py --sign) with a key
+# that never touches GitHub; a copy checks it against update_key.py's pin
+# before it offers or installs anything (update_sig.py).
+
+def test_a_signed_feed_verifies_and_a_tampered_one_does_not():
+    """The round trip through CNG with a throwaway key: what sign() writes
+    is one line of base64 (64 bytes, r || s) that verify() accepts over
+    exactly those bytes, as text or as bytes. One byte changed in the
+    feed, a signature from another key, or the feed checked against
+    another pinned key: refused. The placeholder update_key.py ships with
+    until the owner makes his key verifies nothing at all."""
+    import base64
+
+    import update_key
+    import update_sig
+
+    private, public = _update_test_key()
+    assert public.startswith(update_sig.SCHEME)
+    assert update_sig.public_of(private) == public
+    assert update_sig.pinned_problem(public) == ""
+    feed = json.dumps(_feed_for(b"x" * 9), indent=2).encode("utf-8")
+    sig = update_sig.sign(private, feed)
+    assert sig.endswith("\n") and sig.count("\n") == 1 and len(sig) == 89, sig
+    assert len(base64.b64decode(sig.strip(), validate=True)) == 64
+    update_sig.verify(feed, sig, public)
+    update_sig.verify(feed, sig.encode("ascii"), public)
+    update_sig.verify(feed, sig.strip().encode("ascii") + b"\r\n", public)
+    with _pin_test_key():
+        update_sig.verify(feed, sig)                       # the pinned key by default
+    other_private, other_public = update_sig.new_pair()
+    tampered = bytearray(feed)
+    tampered[feed.index(b"9.9.9")] = ord("8")
+    for data, s, pub, what in ((bytes(tampered), sig, public, "one byte of the feed"),
+                               (feed + b"\n", sig, public, "a line added"),
+                               (feed, update_sig.sign(other_private, feed), public, "another key's"),
+                               (feed, sig, other_public, "another pinned key")):
+        try:
+            update_sig.verify(data, s, pub)
+        except update_sig.FeedSignatureError as e:
+            assert "does not match" in str(e), (what, e)
+        else:
+            raise AssertionError(f"verified with {what} changed")
+    # the shipped placeholder, and anything that is not a P-256 point
+    assert update_sig.PLACEHOLDER in update_key.PUBLIC_KEY or update_sig.pinned_problem() == ""
+    for bad in (update_sig.SCHEME + "PLACEHOLDER-no-key-yet", "", "ecdsa-p384:AAAA",
+                update_sig.SCHEME + "not base64!", update_sig.SCHEME + base64.b64encode(b"x" * 63).decode(),
+                update_sig.SCHEME + base64.b64encode(bytes(64)).decode()):
+        assert update_sig.pinned_problem(bad), bad
+        try:
+            update_sig.verify(feed, sig, bad)
+        except update_sig.FeedSignatureError:
+            pass
+        else:
+            raise AssertionError(f"verified against {bad!r}")
+    with _patched(update_key, "PUBLIC_KEY", update_sig.SCHEME + "PLACEHOLDER-no-key-yet"):
+        try:
+            update_sig.verify(feed, sig)
+        except update_sig.FeedSignatureError as e:
+            assert "pins no update key" in str(e), e
+        else:
+            raise AssertionError("the placeholder verified a feed")
+
+
+def test_a_missing_or_malformed_feed_signature_is_refused():
+    """verify() refuses every .sig that is not exactly one line of base64
+    of 64 bytes, before CNG sees it. Through the wire, a feed with no .sig,
+    a malformed one or a wrong one is still news — the version is
+    remembered and the log says why once — but it comes back unchecked,
+    and download() and install() refuse it before a byte is asked for; a
+    .sig the release lists that will not come down fails the look
+    quietly instead, keeping what was known. The cache keeps the feed and
+    its signature and checks them again: a file that says "checked" on
+    its own is not believed."""
+    import base64
+    import logging
+    import subprocess as sp
+
+    import net as net_mod
+    import update_sig
+    import updates
+
+    private, public = _update_test_key()
+    data = b'{"version": "9.9.9"}'
+    good = update_sig.sign(private, data)
+    for bad in (None, b"", b"   \r\n", "", b"not a signature", good[:40].encode(),
+                base64.b64encode(bytes(63)) + b"\n", base64.b64encode(bytes(65)) + b"\n",
+                good.strip().encode() + b"\n" + good.strip().encode(),
+                b"0D" + bytes(70), b"A" * 5000, "א" * 88,
+                base64.urlsafe_b64encode(bytes([0xfb]) * 64)):
+        try:
+            update_sig.verify(data, bad, public)
+        except update_sig.FeedSignatureError:
+            pass
+        else:
+            raise AssertionError(f"accepted {bad!r}")
+
+    feed = _feed_for(b"MZ" * 50)
+    lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+    catcher = _Catch()
+    app_log = logging.getLogger("app")
+    level = app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catcher)
+    stamps: dict = {}
+    spawned: list = []
+    try:
+        with _patched(updates, "_state", lambda: dict(stamps)), \
+                _patched(updates, "_record", lambda **v: stamps.update(v)), \
+                _patched(updates, "_settings", lambda: config_mod.UpdatesConfig()), \
+                _patched(sp, "Popen", lambda *a, **k: spawned.append(a)), _pin_test_key(), \
+                tempfile.TemporaryDirectory() as cache_dir, _patched(paths, "CACHE_DIR", Path(cache_dir)):
+            for sig, why in ((None, "no latest.json.sig"), (b"garbage\n", "not one line of base64"),
+                             (update_sig.sign(update_sig.new_pair()[0], b"other").encode(),
+                              "does not match")):
+                connect, seen = _github(feed, installer=b"MZ" * 50, sig=sig)
+                lines.clear()
+                with _patched(net_mod, "_connect", connect), _patched(updates, "_last", {}):
+                    rel = updates.check(force=True)
+                    assert rel is not None and rel.version == "9.9.9" and not rel.checked, (why, rel)
+                    assert updates.available() is rel
+                    assert any("did not verify" in ln and why in ln for ln in lines), (why, lines)
+                    asked = len(seen)
+                    with tempfile.TemporaryDirectory() as d:
+                        try:
+                            updates.download(rel, dest_dir=Path(d))
+                        except updates.UpdateError as e:
+                            assert str(e) == updates.UNCHECKED_WORDS, e
+                        else:
+                            raise AssertionError(f"downloaded an unchecked release ({why})")
+                        assert len(seen) == asked, "the unchecked download went to the wire"
+                        assert not list(Path(d).glob("*"))
+                        exe = Path(d) / "DeskIT-Setup-9.9.9.exe"
+                        exe.write_bytes(b"MZ" * 50)
+                        with _patched(paths, "DEVELOPER", False), _patched(paths, "STRANGER", False):
+                            try:
+                                updates.install(exe, rel)
+                            except updates.UpdateError as e:
+                                assert str(e) == updates.UNCHECKED_WORDS, e
+                            else:
+                                raise AssertionError("installed an unchecked release")
+            assert spawned == [], spawned
+            # the listed .sig will not come down: a quiet failed look that
+            # keeps what it knew (the last unchecked one, from the cache)
+            connect, _seen = _github(feed, sig=404)
+            stamps.clear()
+            with _patched(net_mod, "_connect", connect), _patched(updates, "_last", {}):
+                kept = updates.check(force=True)
+                assert kept is not None and not kept.checked, kept
+                assert "updates.last_check" not in stamps, "a failed look was stamped"
+                updates._remember(None)
+                updates._last.clear()
+                assert updates.check(force=True) is None
+            # the cache cannot say "checked" on its own
+            connect, _seen = _github(feed, sig=True)
+            with _patched(net_mod, "_connect", connect), _patched(updates, "_last", {}):
+                rel = updates.check(force=True)
+                assert rel is not None and rel.checked
+                cache = updates._cache_path()
+                kept = json.loads(cache.read_text("utf-8"))
+                assert set(kept) == {"feed", "sig"}, kept
+                updates._last.clear()
+                assert updates.available() == rel and updates.available().checked
+                forged = dict(kept, sig="", checked=True)
+                cache.write_text(json.dumps(forged), "utf-8")
+                updates._last.clear()
+                assert updates.available() is not None and not updates.available().checked
+                changed = dict(kept, feed=kept["feed"].replace(feed["sha256"], "0" * 64))
+                cache.write_text(json.dumps(changed), "utf-8")
+                updates._last.clear()
+                assert not updates.available().checked, "a changed feed in the cache verified"
+                updates._last.clear()
+    finally:
+        app_log.removeHandler(catcher)
+        app_log.setLevel(level)
+    # parse() never says checked, whatever the feed carries
+    assert not updates.Release.parse(dict(feed, checked=True)).checked
+
+
+def test_an_unchecked_update_says_so_on_the_web_desk():
+    """The web desk's Home row and its Settings > General card for a
+    release whose feed did not verify: the version, the plain words that
+    it could not be checked, and Open the website — never Download and
+    install, which is refused if the page presses it anyway. A checked
+    one keeps its Download and install."""
+    import dataclasses
+    import webbrowser
+
+    import desk_settings
+    import updates as updates_mod
+
+    rel = updates_mod.Release.parse(_feed_for(b"x" * 7))
+    opened: list = []
+    for checked in (False, True):
+        r = dataclasses.replace(rel, checked=checked)
+        status = {"available": r, "mode": "github", "running": "1.0.6", "winget_command": ""}
+        with _web_desk(_WEB_STATUS) as (model, _f, _asked), _patched(paths, "DEVELOPER", False), \
+                _patched(updates_mod, "status", lambda s=status: dict(s)), \
+                _patched(updates_mod, "download", lambda *a, **k: opened.append("DOWNLOADED")), \
+                _patched(webbrowser, "open", lambda url, *a, **k: opened.append(url) or True):
+            rows = model._update_rows()
+            assert len(rows) == 1, rows
+            acts = [b["act"] for b in rows[0]["buttons"]]
+            place = desk_settings.Place.__new__(desk_settings.Place)
+            card = [b["do"] for b in place._update_buttons()]
+            if checked:
+                assert acts == ["update.install"], acts
+                assert card == ["update.check", "update.install"], card
+                continue
+            assert "DeskIT 9.9.9 is out" in rows[0]["text"], rows[0]
+            assert updates_mod.UNCHECKED_WORDS in rows[0]["text"], rows[0]["text"]
+            assert rows[0]["tone"] == "warn" and acts == ["update.site"], rows[0]
+            assert card == ["update.check", "update.site"], card
+            assert "update.site" in desk_settings.ACTS
+            assert model.act("update.install")["note"] == "this copy does not install releases"
+            model.act("update.site")
+            place._do_update_site(None)
+    assert opened == [updates_mod.WEBSITE] * 2, opened
+
+
+def test_the_release_signer_is_the_owners_alone():
+    """dev\\sign_release.py is the owner's: no product module imports it
+    (DEV_MODULES blocks the name, so the import test holds it too) and
+    none calls update_sig's signing half; under DESKIT_SUITE it refuses
+    --new-key and --sign before it touches Credential Manager or gh. The
+    release build refuses the placeholder key: release.yml runs
+    --check-pinned before it builds anything and throws on a tag, and
+    --check-pinned's answer is update_sig.pinned_problem()'s. AGENTS.md
+    rule 9 says the draft is signed before it is published."""
+    import update_sig
+
+    assert "sign_release" in DEV_MODULES
+    for name in product_modules():
+        py = REPO / (name.replace(".", "/") + ".py")
+        if not py.exists():
+            py = REPO / name.replace(".", "/") / "__init__.py"
+        src = py.read_text("utf-8")
+        assert not re.search(r"^\s*(?:import|from)\s+(?:dev\.)?sign_release\b", src, re.M), name
+        assert not re.search(r"""["'][^"'\s]*sign_release(?:\.py)?["']""", src), name
+        if name != "update_sig":
+            assert not re.search(r"\bupdate_sig\.(sign|new_pair)\(", src), name
+            assert "release-signing-key" not in src, name
+    tool = REPO / "dev" / "sign_release.py"
+    env = dict(os.environ, DESKIT_SUITE="1")
+    for args in (["--new-key"], ["--sign", "v9.9.9"]):
+        proc = subprocess.run([sys.executable, str(tool), *args], cwd=str(REPO), env=env,
+                              capture_output=True, text=True, timeout=60,
+                              creationflags=0x08000000)
+        assert proc.returncode == 2 and "DESKIT_SUITE" in proc.stderr, (args, proc.stdout, proc.stderr)
+    proc = subprocess.run([sys.executable, str(tool), "--check-pinned"], cwd=str(REPO), env=env,
+                          capture_output=True, text=True, timeout=60, creationflags=0x08000000)
+    assert proc.returncode == (1 if update_sig.pinned_problem() else 0), (proc.stdout, proc.stderr)
+    src = tool.read_text("utf-8")
+    assert src.index("_not_under_the_suite(\"--new-key\")") < src.index("_read_private()", src.index("def new_key"))
+    assert "isDraft" in src and "already published" in src
+    yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    gate = yml.index("python dev/sign_release.py --check-pinned")
+    assert gate < yml.index("- name: Wheelhouse") < yml.index("- name: Installer"), \
+        "the release builds before it checks the update key"
+    step = yml[gate:yml.index("- name:", gate)]
+    assert 'github.ref_type }}" -eq "tag") { throw' in step, step
+    assert "latest.json.sig" not in yml and "--sign" not in yml, \
+        "the release job must not sign: the key is not on GitHub"
+    agents = (REPO / "AGENTS.md").read_text("utf-8")
+    assert "dev\\sign_release.py --sign" in agents
 
 
 def test_inno_script_never_names_data_dir():
@@ -47448,7 +47801,7 @@ def test_the_app_tab_carries_the_updates_row():
     import updates
 
     feed = _feed_for(b"x" * 7)
-    rel = updates.Release.parse(feed)
+    rel = _checked(updates.Release.parse(feed))
     with _window() as board:
         if board is None:
             return
@@ -47474,6 +47827,13 @@ def test_the_app_tab_carries_the_updates_row():
                 _patched(paths, "CHANNEL", "winget"):
             line, buttons = drawn()
         assert buttons == ["Check now", "Copy the winget command"], buttons
+        # a feed that did not verify: the line says so, the website instead
+        # of the installer
+        with _patched(updates, "_last", {"release": updates.Release.parse(feed)}), \
+                _patched(paths, "DEVELOPER", False), _patched(paths, "CHANNEL", "github"):
+            line, buttons = drawn()
+        assert "9.9.9 is out" in line and "could not be checked" in line and "website" in line, line
+        assert buttons == ["Check now", "Open the website"], buttons
         # Check now finds nothing newer: the line says so AND the card is
         # redrawn without the button — before, only the line changed.
         shown: list = []
@@ -49375,7 +49735,9 @@ def test_install_hook_names_an_interpreter_that_exists():
 #: the tree and nothing reaches for them — and the list stays, because
 #: it is what the import test blocks.
 DEV_MODULES = ("nightly", "questions", "tests_quiet", "tests_ops", "inbox",
-               "weekly_review", "dev_git", "answer_card", "versions")
+               "weekly_review", "dev_git", "answer_card", "versions",
+               # dev\sign_release.py: the owner's release key (update_sig.py)
+               "sign_release")
 #: The tree's files that are not product modules. (versions.py is gone
 #: since PR 9 — version.py, which reads VERSION, is the product's.)
 DEV_FILES = frozenset({"tests.py", "tests_quiet.py", "nightly.py",
@@ -61542,6 +61904,7 @@ def test_the_web_desk_home_rows_carry_their_own_buttons():
     class Rel:
         version, size, published = "9.9.9", 59 * 1_048_576, "2026-10-20T10:00:00Z"
         notes_url, min_config_version = "https://github.com/x/releases/tag/v9.9.9", 1
+        checked = True
 
     did, opened, copied = [], [], []
     status = dict(_WEB_STATUS, needs_key={"translate": time.time() - 60})
