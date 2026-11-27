@@ -229,6 +229,16 @@ class StreamDoorPc(fd.Pc):
         self.routes = server_mod.Routes(self._stand_in, self._translate, punctuate=self._punctuate,
                                         lookup=self._lookup, review_scope="phone",
                                         stream_begin=model.begin if stream else None)
+        #: How often the door's /stream was asked. The stand-in's log cannot say: a
+        #: stream to a PC that rolls nothing is answered like a whole recording, and
+        #: the first old_pc check passed with the keyboard streaming to it (2026-11-28).
+        self.streams_asked = 0
+        begun = self.routes.stream
+
+        def counted(phone):
+            self.streams_asked += 1
+            return begun(phone)
+        self.routes.stream = counted
         self.door = server_mod.PhoneDoor(self.cfg, self.routes)
         #: The door behind a link like mobile data (SlowLink): the row names its port.
         self.slow_wanted, self.slow = slow, None
@@ -497,19 +507,67 @@ def flow_lands_relay():
 
 
 def flow_old_pc():
-    """A PC whose row names no /stream (a PC from before stage 2): the recording goes whole
-    at the release, as it always did, on both roads."""
+    """A PC whose row names no /stream (a PC from before stage 2, or one with [server]
+    stream off): at home the recording goes whole at the release, as it always did. The
+    door's /stream is never asked: a PC from before stage 2 has none, and would answer a
+    stream with a 404 the keyboard takes for the dictation's answer."""
     acct = fa.fresh()
     model = StandInPc()
     try:
-        join_with(acct, StreamDoorPc(acct, model, stream=False))
+        pc = StreamDoorPc(acct, model, stream=False)
+        join_with(acct, pc)
         fd.field()
         voice()
         hold(8.0)
         check("the text lands", until(lambda: len(model.log) == 1, 30), fd.in_field()[:200])
         check("whole, and nothing streamed", model.log and not model.log[0]["streamed"], str(model.log[:1]))
         check("the same text as ever", landed_as_whole(model, 0))
+        check("the door's /stream was never asked, and the keyboard began no stream",
+              pc.streams_asked == 0 and "stream: the door" not in fa.log_so_far(),
+              f"asked {pc.streams_asked}; " + "; ".join(re.findall(r"stream: .*", fa.log_so_far()))[:200])
     finally:
+        acct._door_pc.down()
+        acct.stop()
+
+
+def flow_old_pc_away():
+    """The same PC away from home: its row names no /stream, so nothing of the recording
+    crosses the account while it is spoken. The pieces go up at the release, whole, as
+    stage 3 sends them, and the text lands through the account."""
+    import flow_backup as fb
+    acct = fa.fresh(backup="off")
+    model = StandInPc()
+    pc = None
+    try:
+        join_with(acct, StreamDoorPc(acct, model, stream=False))
+        fb.away(acct._door_pc)
+        pc = stream_relay_pc(acct, model, stream=False).up()
+        fd.field()
+        until(lambda: "reachable=true" in fd.status(), 20)
+        voice()
+        quiet = acct.realtime["largest"]
+        finger = threading.Thread(target=hold, args=(10.0,))
+        finger.start()
+        time.sleep(8.5)
+        # a ping and its pong are a few hundred bytes; an audio piece is about 128 KB
+        spoken = acct.realtime["largest"]
+        finger.join()
+        check("the text lands, through the account",
+              until(lambda: len(model.log) == 1 and model.log[0]["text"] in fd.in_field(), 40), fd.in_field()[:200])
+        check("no audio crossed the account while it was spoken", quiet < 20000 and spoken < 20000,
+              f"largest message before the hold {quiet}, 8.5 s into it {spoken}")
+        log = fa.log_so_far()
+        check("the pieces went up at the release, whole: the keyboard began no stream",
+              "relay: streamed" not in log and re.search(r"relay: \d+ pieces up", log) is not None,
+              "; ".join(re.findall(r"relay: .*", log))[-300:])
+        e = model.log[0] if model.log else {}
+        check("whole on the PC, and the same text as ever", e and not e["streamed"] and landed_as_whole(model, 0),
+              str(e.get("streamed")))
+        check("the line says through the account", fd.says(r"local via your account", 10), fd.status())
+    finally:
+        if pc is not None:
+            pc.down()
+        fb.home_again()
         acct._door_pc.down()
         acct.stop()
 
@@ -713,6 +771,10 @@ def main() -> None:
     try:
         for name in names:
             print(f"--- {name}", flush=True)
+            # each flow reads its own lines: log_so_far() keeps everything since the
+            # last forget, and a check like "the stream was cancelled" was satisfied
+            # by the flow before it when several ran in one process
+            fa.log_forget()
             try:
                 FLOWS[name]()
             except (AssertionError, subprocess.TimeoutExpired) as e:
