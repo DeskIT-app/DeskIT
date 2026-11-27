@@ -1217,9 +1217,16 @@ class ReviewConfig:
     max_clip_seconds: float = 120.0
     # Language-model readings a day, from the polish pass's Groq bucket.
     llm_per_day: int = 200
+    # Which proposals go up as a card beside the dot; the rest wait in
+    # the pile on Home and Corrections (review.carded). The measurement
+    # is beside the key in defaults.toml.
+    card_families: tuple = ("term",)
 
 
 REVIEW_CORNERS = HINT_CORNERS + ("right", "left")
+# What [review] card_families may name — review.FAMILIES, spelled out here
+# so config.py loads without review.py (the reason NOTIFY_WATCH gives).
+REVIEW_FAMILIES = ("term", "context", "tail", "repair")
 # Which edge of the notification column stays put as it grows, and how
 # tall the column may get. The ceiling is a number, not notify_card's
 # own STACK_MAX, because config.py must load on a checkout that has no
@@ -1773,6 +1780,16 @@ def load(path: Path) -> Config:
 _TOML_CACHE: dict[str, tuple[bytes, dict]] = {}
 
 
+def _families(value) -> tuple:
+    """[review] card_families as a tuple of lower-case words. A bare
+    string is one family (the file may say "term" instead of ["term"]);
+    the check is build()'s, so a misspelling is a ConfigError that
+    names the key rather than a card that quietly never shows."""
+    if isinstance(value, str):
+        value = [value]
+    return tuple(str(f).strip().lower() for f in (value or ()))
+
+
 def _read_toml(path: Path) -> dict:
     """One TOML file as a mapping — parsed once per version of the file.
 
@@ -2064,6 +2081,8 @@ def build(data: dict) -> Config:
                 "max_clip_seconds", ReviewConfig.max_clip_seconds)),
             llm_per_day=int(review.get("llm_per_day",
                                        ReviewConfig.llm_per_day)),
+            card_families=_families(review.get(
+                "card_families", ReviewConfig.card_families)),
         ),
         server=ServerConfig(
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
@@ -2607,6 +2626,10 @@ def build(data: dict) -> Config:
             f"{HINT_SCALE_MAX}, got {cfg.review.scale!r}")
     if cfg.review.card_seconds < 0:
         raise ConfigError("review.card_seconds must be >= 0")
+    for family in cfg.review.card_families:
+        if family not in REVIEW_FAMILIES:
+            raise ConfigError(f"review.card_families may name only "
+                              f"{REVIEW_FAMILIES}, got {family!r}")
     # [notify]. After review's on purpose: a bad corner in a file that
     # has both must still name review.corner first (a test holds it).
     if not (0 <= cfg.notify.card_seconds <= 600):

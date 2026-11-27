@@ -33,10 +33,22 @@ images laid out from the right edge leftwards: what is read BEFORE the
 change sits to its RIGHT, what is read after it to its LEFT. That is
 the HEBREW row. An English dictation reads the other way, and the same
 three pieces are laid out from the left edge rightwards, each rendered
-LTR — review.snippet decides per sentence (`rtl`), the card's own
-chrome (title, buttons, the note line) stays Hebrew and right-to-left
-whatever the row says. Before this, "you can" corrected at the START
-of an English sentence was drawn at its END (report 20260907-230149).
+LTR — review.snippet decides per sentence (`rtl`). Before this, "you
+can" corrected at the START of an English sentence was drawn at its END
+(report 20260907-230149). The note line under a row is the REASON and
+stays Hebrew and right-to-left whatever the row says, as the desk shows
+it; the card's own chrome — title, count, buttons, "+N more" — is
+English since 2026-11-27, in the same words the shelf and the desk use.
+
+ONE DECISION, ONE WORDING, ONE ORDER (2026-11-27). The same answer to a
+proposal was "נכון / לא / אחר כך" here, "Keep / No" on the shelf and
+"Yes / No" on the desk, with Yes on the right here and on the shelf and
+on the LEFT on the desk (reports\\2026-11-09\\design-ux.md, finding 2).
+Now it is Yes / No on all three, with Yes the right-hand one of the
+pair on each — where this card has always had it and where most of
+his answers were given (220 of 300 decided items in review.json were
+answered by the card or the shelf's row, 63 on the desk). Later is
+this card's alone: it is the only surface with a clock.
 The context is trimmed word by word from the far ends until the three fit
 the card, so a long dictation never wraps or clips — a row is always one
 line, and the card never grows past three rows (the rest is counted).
@@ -102,9 +114,9 @@ RED = (255, 110, 126)        # RED          6.08:1
 RED_SOFT = (72, 46, 68)      # the danger red at card weight
 CARD = (26, 30, 53)          # CARD
 
-TITLE = "קריאה שנייה"
-LABELS = {ACCEPT: "נכון", REJECT: "לא", LATER: "אחר כך"}
-MORE = "ועוד {n} בדשבורד"
+TITLE = "Second reading"                 # the desk's slip and the shelf's word
+LABELS = {ACCEPT: "Yes", REJECT: "No", LATER: "Later"}   # the desk's and the shelf's
+MORE = "+{n} more on the desk"            # the shelf's own line
 NOTE_INSTEAD = "במקום: {was}"   # unused since 2026-09-21: the row shows the heard word
 NOTE_DROP = "למחוק"
 NOTE_HEARD_ONE = "גם פענוח נוסף שמע כך"
@@ -131,7 +143,7 @@ def card_for(suggestion: dict, *, seconds: float,
     rows = [review_mod.snippet(text, c) for c in changes[:max_rows]]
     more = max(0, len(changes) - len(rows))
     n = len(changes)
-    sub = "הצעה אחת" if n == 1 else f"{n} הצעות"
+    sub = "One change" if n == 1 else f"{n} changes"
     return {"id": suggestion.get("id", ""),
             "title": TITLE, "sub": sub, "rows": rows, "more": more,
             "seconds": float(seconds),
@@ -393,17 +405,19 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     y = pad
 
     # -- head: the pencil's mark, the title and the count on the right —
-    # the desk's "Second reading" slip (B+, 2026-10-23), in this card's
-    # Hebrew
+    # the desk's "Second reading" slip (B+, 2026-10-23), in its words
+    # since 2026-11-27 (English, shaped left to right)
     mr = 15 * s
     look.mark(img, right - mr, y + mr, mr, "iris_text")
     pen = look.glyph("pencil", mr * 1.05, "iris_text", 1.5)
     img.alpha_composite(pen, (int(right - mr - pen.width / 2),
                               int(y + mr - pen.height / 2)))
     head_right = right - 2 * mr - 12 * s
-    title = _text(cache, card.get("title", TITLE), 12.5 * s, weight=400)
+    title = _text(cache, card.get("title", TITLE), 12.5 * s, weight=400,
+                  rtl=False)
     img.alpha_composite(title, (int(head_right - title.width), int(y)))
-    sub = _text(cache, card.get("sub", ""), 9.0 * s, colour=INK_MUTED)
+    sub = _text(cache, card.get("sub", ""), 9.0 * s, colour=INK_MUTED,
+                rtl=False)
     img.alpha_composite(sub, (int(head_right - sub.width), int(y + 21 * s)))
     # -- others are waiting behind this card (overlay.ReviewCard's line,
     # 2026-11-10): the count on one small pill of frost at the head's far
@@ -518,7 +532,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
         y += ROW_H * s
     if card.get("more"):
         more = _text(cache, MORE.format(n=card["more"]), 8.5 * s,
-                     colour=INK_MUTED)
+                     colour=INK_MUTED, rtl=False)
         img.alpha_composite(more, (int(right - more.width), int(y)))
         y += MORE_H * s
 
@@ -541,7 +555,8 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
         label = LABELS[name]
         key = keys.get(name, "")
         text = f"{label}  {key}" if key else label
-        lab = _text(cache, text, 9.5 * s, colour=colour, weight=600)
+        lab = _text(cache, text, 9.5 * s, colour=colour, weight=600,
+                    rtl=False)
         img.alpha_composite(lab, (int((bx0 + bx1) / 2 - lab.width / 2),
                                   int((by0 + by1) / 2 - lab.height / 2)))
     return img

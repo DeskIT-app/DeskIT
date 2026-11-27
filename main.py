@@ -4992,7 +4992,11 @@ class App:
                                     or item.get("text") or ""),
                         "at": str(item.get("when") or ""),
                         "pill": str(piece.get("word") or ""),
-                        "answers": [("review.accept", "Keep"),
+                        # The card's and the desk's words, Yes the
+                        # right-hand one of the pair as on both
+                        # (review_card's ONE DECISION, 2026-11-27):
+                        # the first answer is drawn to the right.
+                        "answers": [("review.accept", "Yes"),
                                     ("review.reject", "No")]})
             except Exception:                    # noqa: BLE001
                 log.debug("shelf: could not read the second reading",

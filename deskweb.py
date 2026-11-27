@@ -560,10 +560,13 @@ class Model:
             row = {"id": f"review:{sid}", "kind": "review", "at": at,
                    "tone": "q", "glyph": "edit", "title": "Second reading",
                    "rtl": is_rtl(heard_text or proposed),
-                   "buttons": [{"label": "Yes", "tone": "primary",
-                                "act": "review.accepted", "arg": sid},
-                               {"label": "No", "tone": "quiet",
-                                "act": "review.rejected", "arg": sid}]}
+                   # No, then Yes: Yes is the right-hand one, as on the
+                   # card and the shelf (review_card's ONE DECISION,
+                   # 2026-11-27)
+                   "buttons": [{"label": "No", "tone": "quiet",
+                                "act": "review.rejected", "arg": sid},
+                               {"label": "Yes", "tone": "primary",
+                                "act": "review.accepted", "arg": sid}]}
             count = (f"{count_word(len(changes)).lower()} word"
                      f"{'' if len(changes) == 1 else 's'}")
             first = changes[0] if changes else {}

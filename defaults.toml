@@ -2050,6 +2050,28 @@ card_seconds = 20             # how long the card stays on screen before it
                               # dashboard. The bar under the title is this
                               # clock, and it pauses while the mouse is on
                               # the card. 0 = never show a card, list only
+card_families = ["term"]      # which proposals pop up as that card; the rest
+                              # go straight to the pile on Home and
+                              # Corrections, as a card left to run out
+                              # does, and are answered there the same way.
+                              # A proposal is carded when ANY of its changes
+                              # is of a family named here: "term" (a side has
+                              # Latin letters or digits), "context" (Hebrew
+                              # for Hebrew, the model's reading of the
+                              # sentence), "tail" and "repair" (dropped
+                              # words). Counted 2026-11-27 off the REVIEW
+                              # lines in transcripts.log, 2026-09-17..11-27,
+                              # 374 answers on 49 days (phone ones apart):
+                              # with a term in them 128, Yes on 81 (63%);
+                              # without 246, Yes on 107 (43%). So "term"
+                              # takes 5.0 of 7.6 cards a day off the screen
+                              # and 139 of 186 No's; the price is that 107
+                              # of 188 Yes's are answered on the desk, and
+                              # a late Yes teaches without fixing the field
+                              # (12 of the 20 field fixes were Hebrew ones).
+                              # Confidence (support, agree) does NOT split
+                              # his answers; the family is the only signal
+                              # that did (reports\2026-11-09\design-ux.md)
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge

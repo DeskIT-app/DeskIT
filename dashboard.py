@@ -3313,10 +3313,13 @@ class Dashboard:
         rows = []
         for item in pending:
             sid = str(item.get("id", ""))
-            buttons = [("Yes", "gold",
-                        lambda s=sid: self._review_decide(s, "accepted")),
-                       ("No", "quiet",
-                        lambda s=sid: self._review_decide(s, "rejected"))]
+            # No, then Yes: PileRow packs them left to right, so Yes is
+            # the right-hand one, as on the card, the shelf and the web
+            # desk (review_card's ONE DECISION, 2026-11-27)
+            buttons = [("No", "quiet",
+                        lambda s=sid: self._review_decide(s, "rejected")),
+                       ("Yes", "gold",
+                        lambda s=sid: self._review_decide(s, "accepted"))]
             said = self._change_bands(item, self._row_room(buttons))
             rows.append({
                 "at": self._stamp_of(item.get("when", ""),
