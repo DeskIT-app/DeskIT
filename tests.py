@@ -47607,7 +47607,8 @@ class _FakeSupabase:
     #: lookup sealed past the cap was refused live for three days with
     #: every test green.
     SEALED = {"history": ("cipher",), "vault": ("cipher",), "recovery": ("wrapped",),
-              "pairings": ("applicant", "handed"), "devices": ("link",)}
+              "pairings": ("applicant", "handed"), "devices": ("link",),
+              "vocab_sealed": ("cipher",)}
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -47712,7 +47713,7 @@ class _FakeSupabase:
             stamp = f"2026-09-18T12:{self.clock // 60:02d}:{self.clock % 60:02d}+00:00"
             if method in ("GET", "PATCH", "DELETE"):
                 # PostgREST's filters, the ones the client uses: eq, neq,
-                # gt, is.null — a PATCH and a DELETE act on what matches
+                # gt, lt, is.null — a PATCH and a DELETE act on what matches
                 hit = list(rows)
                 if self.rls:
                     # row-level security, for a test that walks two accounts
@@ -47728,6 +47729,8 @@ class _FakeSupabase:
                         hit = [r for r in hit if str(r.get(k)) != val]
                     elif op == "gt":
                         hit = [r for r in hit if str(r.get(k, "")) > val]
+                    elif op == "lt":
+                        hit = [r for r in hit if str(r.get(k, "")) < val]
                     elif op == "is" and val == "null":
                         hit = [r for r in hit if r.get(k) is None]
                 if method == "GET":
@@ -50202,21 +50205,32 @@ def test_a_copy_from_before_the_record_counts_the_way_the_evidence_does():
 
 def test_one_accounts_words_stay_out_of_anothers_account():
     """vocab.json is one file too, and vocab_changed sends every row on a
-    first sync, in the clear: a person's names on another's account. A pair
-    left here stays out of the rows and out of the snapshot, so its heard
-    form cannot leave as a tombstone either, and a tombstone cannot take the
-    account's own meaning of the same heard form. A pair the account holds
-    too is its own from then on. Dictation here still has every word."""
+    first sync: a person's names on another's account, sealed under the
+    other's key. A pair left here stays out of the rows and out of the
+    snapshot, so its heard form cannot leave as a tombstone either, and a
+    tombstone cannot take the account's own meaning of the same heard form.
+    A pair the account holds too is its own from then on. Dictation here
+    still has every word. Each account's rows are sealed under its own key
+    (migration 0010), and the line between them holds on them as it did on
+    the rows in the clear."""
     import sb
+    import vault
     import vocab as vocab_mod
 
     pc = _pc("A", "DeskIT.test")
+    keys: dict = {}
     try:
         with _fixture_project() as fake, _consented("account", "settings_sync"), pc:
             fake.rls = True
 
             def rows(uid):
-                return {r["heard"]: r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == uid}
+                out = {}
+                for r in fake.tables.get("vocab_sealed", []):
+                    if r["user_id"] == uid:
+                        word = sb._open_word(keys[uid], uid, r)
+                        assert word is not None, "a row of the account does not open under its key"
+                        out[word["heard"]] = word
+                return out
 
             v = vocab_mod.Vocab(paths.VOCAB_FILE)
             for heard, meant in (("grandma heard", "grandma meant"), ("grandpa heard", "grandpa meant"),
@@ -50224,16 +50238,21 @@ def test_one_accounts_words_stay_out_of_anothers_account():
                 v.learn_by_hand(heard, meant)
             _signs_in(fake, _ONE)
             sb.sync_now(v)
+            keys[_ONE] = vault.key(_ONE)
             assert len(rows(_ONE)) == 4, rows(_ONE)
             sb.sign_out(everywhere=False)
 
             stamp = "2026-09-18T11:00:00+00:00"
-            fake.tables["vocab_sync"] += [
-                {"user_id": _TWO, "heard": "both heard", "meant": "both meant", "hits": 1,
-                 "last_used": None, "deleted": False, "updated_at": stamp},
-                {"user_id": _TWO, "heard": "clash heard", "meant": "meaning of two", "hits": 1,
-                 "last_used": None, "deleted": False, "updated_at": stamp}]
             _signs_in(fake, _TWO)
+            keys[_TWO] = sb._ensure_lock(_TWO)              # the second account's own lock
+            assert keys[_TWO] is not None and keys[_TWO] != keys[_ONE]
+            fake.tables["vocab_sealed"] += [
+                dict(sb._seal_word(keys[_TWO], _TWO, {"heard": "both heard", "meant": "both meant",
+                                                      "hits": 1, "last_used": None, "deleted": False}),
+                     updated_at=stamp),
+                dict(sb._seal_word(keys[_TWO], _TWO, {"heard": "clash heard", "meant": "meaning of two",
+                                                      "hits": 1, "last_used": None, "deleted": False}),
+                     updated_at=stamp)]
             assert sb.sync_now(v)["vocab"].endswith("pushed 0")
             assert set(rows(_TWO)) == {"both heard", "clash heard"}, rows(_TWO)
             assert v.find("grandma heard"), "the words here went"
@@ -50253,6 +50272,10 @@ def test_one_accounts_words_stay_out_of_anothers_account():
             v.forget("both heard")
             sb.sync_now(v)
             assert rows(_TWO)["both heard"]["deleted"], "a pair the account holds is its own"
+            # one account's sealed row is no word to the other: not under its
+            # key, and not at its id either
+            mine = next(r for r in fake.tables["vocab_sealed"] if r["user_id"] == _ONE)
+            assert sb._open_word(keys[_TWO], _TWO, mine) is None
             sb.sign_out(everywhere=False)
 
             _signs_in(fake, _ONE)
@@ -50261,6 +50284,7 @@ def test_one_accounts_words_stay_out_of_anothers_account():
             assert v.find("grandpa heard"), "the first account's word did not come back"
             v.learn_by_hand("heard by one", "meant by one")
             assert sb.sync_now(v)["vocab"].endswith("pushed 1")
+            assert not fake.tables.get("vocab_sync"), "a word went up in the clear"
     finally:
         pc.gone()
 
@@ -50289,6 +50313,7 @@ def test_a_word_list_that_will_not_read_is_still_what_the_last_account_left():
             sb.sync_now(v)
             assert not v.broken
             sb.sync_now(v)
+            assert not [r for r in fake.tables.get("vocab_sealed", []) if r["user_id"] == _TWO]
             assert not [r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == _TWO]
     finally:
         pc.gone()
@@ -50563,6 +50588,7 @@ def test_a_damaged_state_file_leaves_somebody_behind_and_nothing_goes_up():
             assert out["settings"] == "same" and out["vocab"].endswith("pushed 0"), out
             assert not [r for r in fake.tables.get("history", []) if r["user_id"] == _TWO]
             assert not [r for r in fake.tables.get("vocab_sync", []) if r["user_id"] == _TWO]
+            assert not [r for r in fake.tables.get("vocab_sealed", []) if r["user_id"] == _TWO]
             assert not [r for r in fake.tables.get("settings_sync", []) if r["user_id"] == _TWO]
             assert not [r for r in fake.tables.get("vault", []) if r["user_id"] == _TWO and r["name"] == "groq"]
             assert config_mod.read_state(paths.STATE_FILE)[sb.LAST_ACCOUNT] == _TWO
@@ -53368,7 +53394,7 @@ def test_migration_has_no_key_column():
     tables = _sql_tables()
     assert set(tables) == {"profiles", "devices", "settings_sync", "vocab_sync", "history",
                            "problem_reports", "deletion_requests",
-                           "vault", "recovery", "pairings"}, set(tables)
+                           "vault", "recovery", "pairings", "vocab_sealed"}, set(tables)
     # D12 lock 3 since 0004: "no column the server can READ holds a key".
     # A column under is_sealed() is opaque text — a version tag and
     # standard base64 — and the app's own check is the same expression.
@@ -53384,7 +53410,8 @@ def test_migration_has_no_key_column():
         and not vault.is_sealed("v1." + "A" * 15 + "_") and not vault.is_sealed("gsk_" + "A" * 30) \
         and vault.is_sealed("v1." + "A" * 7600) and not vault.is_sealed("v1." + "A" * 7601)
     sealed_columns = {("vault", "cipher"), ("history", "cipher"), ("recovery", "wrapped"),
-                      ("pairings", "applicant"), ("pairings", "handed"), ("devices", "link")}
+                      ("pairings", "applicant"), ("pairings", "handed"), ("devices", "link"),
+                      ("vocab_sealed", "cipher")}
     for table, defs in tables.items():
         for d in defs:
             name, typ = d.split()[0], d.split()[1]
@@ -53402,12 +53429,19 @@ def test_migration_has_no_key_column():
                     or re.search(r"~ '\^", d) or typ == "text[]", f"{table}.{name} has no length cap"
     assert {"text", "raw"}.isdisjoint(d.split()[0] for d in tables["history"]), \
         "history still has a plaintext column"
+    # 0010: the words sealed — a hash and a seal, nothing of a word beside them
+    assert [d.split()[0] for d in tables["vocab_sealed"]] == ["user_id", "id", "cipher", "updated_at"]
+    assert "references auth.users (id) on delete cascade" in tables["vocab_sealed"][0]
+    assert "id ~ '^[0-9a-f]{32}$'" in tables["vocab_sealed"][1]
+    assert "grant select, insert, update, delete on public.vocab_sealed to authenticated;" in text
+    assert "revoke all on public.vocab_sealed from authenticated;" in text
+    assert "drop table public.vocab_sync" not in text, "a copy from before reads and writes it"
     for table in tables:
         assert re.search(rf"alter table public\.{table} +enable row level security;", text), table
         if table != "deletion_requests":
             assert f"on public.{table} for select to authenticated" in text, table
     policies = re.findall(r"create policy \w+ on ([\w.]+) for (\w+)(.*?)\n", text)
-    assert len(policies) >= 36, len(policies)
+    assert len(policies) >= 40, len(policies)
     for target, verb, rest in policies:
         assert "to authenticated" in rest, (target, verb, rest)
         assert "to anon" not in rest
@@ -53428,7 +53462,7 @@ def test_migration_has_no_key_column():
     fn = whole[whole.rindex("create or replace function public.delete_me()"):]
     assert "security definer" in fn.split("$$")[0] and "auth.uid()" in fn
     assert "delete from auth.users             where id = uid;" in fn
-    for table in ("vault", "recovery", "pairings", "history"):
+    for table in ("vault", "recovery", "pairings", "history", "vocab_sealed", "vocab_sync"):
         assert re.search(rf"delete from public\.{table}\s+where user_id = uid;", fn), table
     # only the wrapped key and the approval may change on a request
     assert "create trigger pairings_guard before update on public.pairings" in whole
@@ -53602,8 +53636,9 @@ def test_payload_columns_are_whitelist():
                 table = c["path"][len("rest/v1/"):]
                 data = json.loads(c["body"])
                 posted.setdefault(table, []).extend(data if isinstance(data, list) else [data])
-        assert {"profiles", "devices", "settings_sync", "vocab_sync", "history",
+        assert {"profiles", "devices", "settings_sync", "vocab_sealed", "history",
                 "problem_reports"} <= set(posted), set(posted)
+        assert "vocab_sync" not in posted, "a word went up in the clear"
         for table, rows in posted.items():
             for row in rows:
                 stray = set(row) - set(columns[table])
@@ -53706,16 +53741,29 @@ def test_the_sync_deletes_only_the_words_this_pc_forgot():
     forget on this PC holds those tombstones back and pulls everything
     on the next pass, which puts the words back; and words this PC's
     forget() took out still leave, however many, and their record ends
-    once the account has them."""
+    once the account has them. The rows are the sealed ones of migration
+    0010 (``vocab_sealed``): the guard is the same on them."""
     import sb
     import sync as sync_mod
 
-    server: dict[str, dict] = {}
+    key = os.urandom(32)
+    server: dict[str, dict] = {}                     # id -> the row as the server holds it
     calls: list[tuple] = []
+    plain: list[str] = []
     clock = [0]
 
     def fake_rest(method, table, *, purpose, query="", payload=None, prefer=""):
-        assert table == "vocab_sync" and purpose == "sync"
+        assert purpose == "sync"
+        if table == "vocab_sync":
+            # the sweep of the words in the clear, and the last pass of them
+            # on a copy that synced there — answered as a table a later file
+            # dropped (PostgREST's 404)
+            plain.append(method)
+            if method == "GET":
+                return 404, b'{"code":"PGRST205","message":"Could not find the table"}'
+            assert method == "DELETE" and "updated_at=lt." in query, (method, query)
+            return 204, None
+        assert table == "vocab_sealed", table
         calls.append((method, query, payload))
         if method == "GET":
             m = re.search(r"updated_at=gt\.([^&]+)", query)
@@ -53728,25 +53776,31 @@ def test_the_sync_deletes_only_the_words_this_pc_forgot():
             clock[0] += 1
             stored = dict(row, updated_at=f"2026-09-23T00:00:{clock[0]:02d}+00:00")
             stored.pop("user_id", None)
-            server[row["heard"]] = stored
+            server[row["id"]] = stored
             out.append(stored)
         return 201, out
+
+    def held():
+        """What the server holds, opened: heard -> the row."""
+        return {w["heard"]: w for w in (sb._open_word(key, "u", r) for r in server.values())}
 
     words = [{"heard": f"garble{i}", "meant": f"Word{i}", "hits": 2,
               "last": "2026-09-20 10:00:00"} for i in range(5)]
     for i, e in enumerate(words):
-        server[e["heard"]] = {"heard": e["heard"], "meant": e["meant"], "hits": 2,
-                              "last_used": "2026-09-20T07:00:00+00:00", "deleted": False,
-                              "updated_at": f"2026-09-20T00:00:0{i}+00:00"}
+        row = sb._seal_word(key, "u", {"heard": e["heard"], "meant": e["meant"], "hits": 2,
+                                       "last_used": "2026-09-20T07:00:00+00:00", "deleted": False})
+        server[row["id"]] = {"id": row["id"], "cipher": row["cipher"],
+                             "updated_at": f"2026-09-20T00:00:0{i}+00:00"}
 
     def synced_cursor():
-        return {"vocab_pulled_at": "2026-09-20T00:00:04+00:00",
-                "vocab_snapshot": sync_mod.vocab_snapshot(words)}
+        return {sb.WORDS_PULLED: "2026-09-20T00:00:04+00:00",
+                sb.WORDS_SNAPSHOT: sync_mod.vocab_snapshot(words)}
 
     d = Path(tempfile.mkdtemp(prefix="deskit-vocab-guard-"))
     try:
         with _patched(sb, "_rest", fake_rest), \
-                _patched(sb, "_fresh", lambda: {"user": {"id": "u"}}):
+                _patched(sb, "_fresh", lambda: {"user": {"id": "u"}}), \
+                _patched(sb, "_lock_key", lambda uid: key):
             # 1. unreadable at start, no copy: the whole list comes back
             (d / "vocab.json").write_text('{"version": 1, "corrections": [{"he', "utf-8")
             v = vocab_mod.Vocab(d / "vocab.json")
@@ -53757,7 +53811,7 @@ def test_the_sync_deletes_only_the_words_this_pc_forgot():
             assert "updated_at=gt." not in calls[0][1], "the pull did not start from the beginning"
             assert out == "pulled 5, pushed 0", out
             assert sorted(c["heard"] for c in v.corrections) == [e["heard"] for e in words]
-            assert v.broken is None and all(not r["deleted"] for r in server.values())
+            assert v.broken is None and all(not r["deleted"] for r in held().values())
             assert len(json.loads((d / "vocab.json").read_text("utf-8"))["corrections"]) == 5
 
             # 2. a list that lost most words with no forget here (a file an
@@ -53770,10 +53824,11 @@ def test_the_sync_deletes_only_the_words_this_pc_forgot():
             cursor = synced_cursor()
             out = sb._sync_vocab(cursor, v2)
             assert out.endswith("held back 4"), out
-            assert not any(r.get("deleted") for m, _q, p in calls if m == "POST" for r in p), \
+            assert not any(sb._open_word(key, "u", dict(r, updated_at=""))["deleted"]
+                           for m, _q, p in calls if m == "POST" for r in p), \
                 "a word nobody forgot was deleted from the account"
-            assert all(not r["deleted"] for r in server.values())
-            assert cursor["vocab_pulled_at"] == "", "the next pass does not pull everything"
+            assert all(not r["deleted"] for r in held().values())
+            assert cursor[sb.WORDS_PULLED] == "", "the next pass does not pull everything"
             sb._sync_vocab(cursor, v2)
             assert sorted(c["heard"] for c in v2.corrections) == [e["heard"] for e in words], \
                 "the held words did not come back"
@@ -53788,7 +53843,7 @@ def test_the_sync_deletes_only_the_words_this_pc_forgot():
             cursor = synced_cursor()
             out = sb._sync_vocab(cursor, v3)
             assert out == "pulled 0, pushed 3", out
-            assert sorted(k for k, r in server.items() if r["deleted"]) == \
+            assert sorted(h for h, r in held().items() if r["deleted"]) == \
                 ["garble0", "garble1", "garble2"]
             assert v3.forgotten_keys() == set(), "the record outlived the push"
 
@@ -53798,8 +53853,313 @@ def test_the_sync_deletes_only_the_words_this_pc_forgot():
             assert "held back" not in out, out
             assert sorted(c["heard"] for c in v2.corrections) == ["garble3", "garble4"]
             assert not any(m == "POST" for m, _q, _p in calls), calls
+
+            # 5. a copy that synced in the clear, after a later file dropped that
+            #    table: its last pass of it reads nothing and is made all the same
+            plain.clear()
+            (d / "five.json").write_text(json.dumps(
+                {"version": 1, "corrections": [dict(e) for e in words]}), "utf-8")
+            v5 = vocab_mod.Vocab(d / "five.json")
+            cursor = {"vocab_pulled_at": "2026-09-20T00:00:04+00:00",
+                      "vocab_snapshot": sync_mod.vocab_snapshot(words)}
+            out = sb._sync_vocab(cursor, v5)
+            assert out == "pulled 3, pushed 2", out
+            assert plain == ["GET", "DELETE"], plain
+            assert not {"vocab_pulled_at", "vocab_snapshot"} & set(cursor), cursor
+            assert sorted(c["heard"] for c in v5.corrections) == ["garble3", "garble4"]
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _two_pcs_of_one_account(fake, a, b) -> None:
+    """A makes the account's lock, B asks to join, A approves, B presses
+    Same code: both hold the one key (the road every second PC takes)."""
+    import sb
+    with a:
+        _sign_in_pc(fake, "desk")
+        sb.sync_now()
+    with b:
+        _sign_in_pc(fake, "laptop")
+        sb.sync_now()
+    with a:
+        sb.approve_pairing(sb.pending_pairings()[0]["id"])
+    with b:
+        sb.same_code(sb.status()["lock"]["code"])
+        sb.sync_now()
+        assert sb.status()["lock"]["state"] == "have", sb.status()["lock"]
+
+
+def _a_pass_of_1_0_6(vocab, cursor: dict) -> str:
+    """What a copy on 1.0.6 — the Store copy on the owner's PC the day the
+    words were sealed — does with the words at every pass, its
+    _sync_vocab read off the v1.0.6 tag and cut to the road a test walks:
+    pull vocab_sync after its cursor, merge (sync.merge_vocab, unchanged
+    since), push what changed since its snapshot, in the clear. It never
+    asks for the key."""
+    import sb
+    import sync as sync_mod
+    since = str(cursor.get("vocab_pulled_at") or "")
+    query = "select=heard,meant,hits,last_used,deleted,updated_at&order=updated_at.asc&limit=2000"
+    if since:
+        query += "&updated_at=gt." + urllib_parse.quote(since)
+    status, rows = sb._rest("GET", "vocab_sync", purpose="sync", query=query)
+    assert status == 200, (status, rows)
+    snapshot = dict(cursor.get("vocab_snapshot") or {})
+    pulled = 0
+    if rows:
+        merged, pulled = sync_mod.merge_vocab(vocab.corrections, rows)
+        if pulled:
+            vocab.corrections[:] = merged
+            vocab.save()
+        for entry in vocab.corrections:
+            heard = str(entry.get("heard") or "").strip()
+            if any(str(r.get("heard") or "").strip().lower() == heard.lower() for r in rows):
+                snapshot[heard] = {"hits": int(entry.get("hits", 1) or 0),
+                                   "meant": str(entry.get("meant") or "").strip()}
+        gone = {str(r.get("heard") or "").strip().lower() for r in rows if r.get("deleted")}
+        for key in [k for k in snapshot if k.strip().lower() in gone]:
+            snapshot.pop(key, None)
+        cursor["vocab_pulled_at"] = str(rows[-1].get("updated_at") or since)
+    corrections = [dict(c) for c in vocab.corrections]
+    to_push = sync_mod.vocab_changed(sync_mod.vocab_rows(corrections, snapshot), snapshot)
+    if to_push:
+        uid = sb._fresh()["user"]["id"]
+        status, data = sb._rest("POST", "vocab_sync", purpose="sync", query="on_conflict=user_id,heard",
+                                payload=[dict(r, user_id=uid) for r in to_push],
+                                prefer="resolution=merge-duplicates,return=representation")
+        assert status in (200, 201), (status, data)
+        cursor["vocab_pulled_at"] = max([cursor.get("vocab_pulled_at") or ""] +
+                                        [str(r.get("updated_at") or "") for r in data])
+    cursor["vocab_snapshot"] = sync_mod.vocab_snapshot(corrections)
+    return f"pulled {pulled}, pushed {len(to_push)}"
+
+
+def test_the_words_travel_sealed_and_a_forged_or_moved_row_does_not_open():
+    """The 2026-11-09 audit, security-server F1: vocab_sync held every
+    learned pair in the clear and every PC took what it pulled, so the
+    server, or a stolen session, could read the list and write a common
+    word -> another word at hits 1,000,000 that every PC then pasted.
+    Since migration 0010 a word leaves sealed under the account key, named
+    by a keyed hash: nothing of a word is on the wire or in a row, two PCs
+    of one account merge as before, and a row the server makes up, moves
+    to another word, edits, takes from another account or seals over
+    another word's id is no word on the PC that pulls it."""
+    import sb
+    import vault
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"):
+            _two_pcs_of_one_account(fake, a, b)
+            with a:
+                key = vault.key(fake.UID)
+                words_a = vocab_mod.Vocab(a.home / "vocab.json")
+                words_a.learn_by_hand("alpha heard", "alpha meant")
+                words_a.learn_by_hand("beta heard", "beta meant")
+                assert sb.sync_now(words_a)["vocab"] == "pulled 0, pushed 2"
+            held = fake.tables["vocab_sealed"]
+            assert len(held) == 2 and all(set(r) == {"user_id", "id", "cipher", "updated_at"} for r in held)
+            assert {r["id"] for r in held} == {vault.word_id(key, "alpha heard"), vault.word_id(key, "beta heard")}
+            assert all(re.fullmatch(r"[0-9a-f]{32}", r["id"]) and vault.is_sealed(r["cipher"]) for r in held)
+            assert vault.word_id(key, "Alpha Heard ") == vault.word_id(key, "alpha heard"), \
+                "the id is not the merge's own key (lower case, trimmed)"
+            assert vault.word_id(os.urandom(32), "alpha heard") != vault.word_id(key, "alpha heard")
+            wire = b"".join(c["body"] for c in fake.to_project()) + \
+                "".join(c["url"] for c in fake.to_project()).encode()
+            for said in ("alpha heard", "alpha meant", "beta heard", "beta meant"):
+                assert said.encode() not in wire, f"{said!r} went to the server readable"
+            assert not fake.tables.get("vocab_sync"), "a word went up in the clear"
+
+            with b:
+                words_b = vocab_mod.Vocab(b.home / "vocab.json")
+                assert sb.sync_now(words_b)["vocab"] == "pulled 2, pushed 0"
+                assert {c["heard"]: c["meant"] for c in words_b.corrections} == \
+                    {"alpha heard": "alpha meant", "beta heard": "beta meant"}
+
+            # what a server, or whoever holds a session of the account, can write
+            alpha = next(r for r in held if r["id"] == vault.word_id(key, "alpha heard"))
+            beta = next(r for r in held if r["id"] == vault.word_id(key, "beta heard"))
+            other = os.urandom(32)
+            forged = sb._seal_word(other, fake.UID, {"heard": "the", "meant": "FORGED", "hits": 1_000_000,
+                                                     "last_used": None, "deleted": False})
+            moved = {"id": vault.word_id(key, "the"), "cipher": alpha["cipher"]}
+            flipped = beta["cipher"][:20] + ("A" if beta["cipher"][20] != "A" else "B") + beta["cipher"][21:]
+            elsewhere = sb._seal_word(key, "99999999-0000-0000-0000-000000000000",
+                                      {"heard": "gamma heard", "meant": "gamma meant", "hits": 9,
+                                       "last_used": None, "deleted": False})
+            # sealed with the account key at the right place, over another word's id:
+            # only one of the account's own devices could write it, and it is still refused
+            liar = {"id": vault.word_id(key, "delta heard"),
+                    "cipher": vault.seal_json(key, {"heard": "the", "meant": "FORGED", "hits": 5,
+                                                    "last_used": None, "deleted": False},
+                                              vault.AAD_VOCAB.format(uid=fake.UID,
+                                                                     row_id=vault.word_id(key, "delta heard")))}
+            beta["cipher"], beta["updated_at"] = flipped, "2026-09-18T13:00:01+00:00"
+            for n, row in enumerate((forged, moved, elsewhere, liar), start=2):
+                held.append({"user_id": fake.UID, "id": row["id"], "cipher": row["cipher"],
+                             "updated_at": f"2026-09-18T13:00:0{n}+00:00"})
+            fake.tables["vocab_sync"] = [{"user_id": fake.UID, "heard": "alpha heard", "meant": "FORGED",
+                                          "hits": 1_000_000, "last_used": None, "deleted": False,
+                                          "updated_at": "2026-09-18T13:00:09+00:00"}]
+            with b:
+                out = sb.sync_now(words_b)["vocab"]
+                assert out == "pulled 0, pushed 0, 5 not opened", out
+                assert {c["heard"]: c["meant"] for c in words_b.corrections} == \
+                    {"alpha heard": "alpha meant", "beta heard": "beta meant"}, words_b.corrections
+                assert not words_b.find("the") and not words_b.find("gamma heard")
+                assert not [c for c in fake.to_project() if c["path"] == "rest/v1/vocab_sync"
+                            and c["method"] == "GET"], "a copy on this build read the words in the clear"
+                # and B's own word still reaches A
+                words_b.learn_by_hand("epsilon heard", "epsilon meant")
+                assert sb.sync_now(words_b)["vocab"] == "pulled 0, pushed 1"
+            with a:
+                out = sb.sync_now(words_a)["vocab"]
+                assert out.startswith("pulled 1, pushed 0"), out
+                assert words_a.find("epsilon heard") and not words_a.find("the")
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_an_older_copys_words_in_the_clear_are_sealed_once_and_swept():
+    """The road from vocab_sync to vocab_sealed (migration 0010), with a
+    copy on 1.0.6 beside it the whole way (the owner's Store copy was on
+    it the day this was written). A copy that synced words in the clear
+    makes ONE last pass of them, from where its own cursor stood, sends
+    every word it holds sealed and forgets the old cursor; after that a
+    row in the clear is no word to it, whatever it says. It sweeps the
+    rows in the clear that are a day old, at most once a day, and the
+    1.0.6 copy loses nothing to that: a row that went is not a tombstone
+    to it. The 1.0.6 copy's words reach the sealed store the day it is
+    updated, and no word is lost on the way."""
+    import sb
+    import sync as sync_mod
+    import vault
+    from datetime import datetime, timedelta, timezone
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"):
+            _two_pcs_of_one_account(fake, a, b)
+            old_a, old_b = {}, {}                          # the 1.0.6 cursors
+            with a:
+                key = vault.key(fake.UID)
+                words_a = vocab_mod.Vocab(a.home / "vocab.json")
+                words_a.learn_by_hand("one heard", "one meant")
+                words_a.learn_by_hand("two heard", "two meant")
+                assert _a_pass_of_1_0_6(words_a, old_a) == "pulled 0, pushed 2"
+            with b:
+                words_b = vocab_mod.Vocab(b.home / "vocab.json")
+                words_b.learn_by_hand("three heard", "three meant")
+                assert _a_pass_of_1_0_6(words_b, old_b) == "pulled 2, pushed 1"
+            with a:
+                assert _a_pass_of_1_0_6(words_a, old_a) == "pulled 1, pushed 0"
+            with b:
+                # a word B learns while A is not looking, a moment old on the server
+                words_b.learn_by_hand("four heard", "four meant")
+                assert _a_pass_of_1_0_6(words_b, old_b) == "pulled 0, pushed 1"
+                four = next(r for r in fake.tables["vocab_sync"] if r["heard"] == "four heard")
+                four["updated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(
+                    timespec="seconds")
+            everything = {"one heard", "two heard", "three heard", "four heard"}
+
+            # A is updated: its cursor is the one 1.0.6 left
+            with a:
+                cursor = sync_mod.read_cursor()
+                cursor.update(old_a)
+                sync_mod.write_cursor(cursor)
+                out = sb.sync_now(words_a)["vocab"]
+                assert out == "pulled 1, pushed 4", out
+                assert {c["heard"] for c in words_a.corrections} == everything
+                cursor = sync_mod.read_cursor()
+                assert not {"vocab_pulled_at", "vocab_snapshot"} & set(cursor), "the last pass of the clear came back"
+                assert cursor.get(sb.PLAIN_SWEPT), "the words in the clear were not swept"
+                sealed = {sb._open_word(key, fake.UID, r)["heard"] for r in fake.tables["vocab_sealed"]}
+                assert sealed == everything, sealed
+                # swept: the rows a day old went; the moment-old one waits for B
+                assert [r["heard"] for r in fake.tables["vocab_sync"]] == ["four heard"]
+                calls = len(fake.calls)
+                assert sb.sync_now(words_a)["vocab"] == "pulled 0, pushed 0"
+                assert not [c for c in fake.calls[calls:] if c["path"] == "rest/v1/vocab_sync"], \
+                    "the clear was read or swept again the same day"
+
+            # B on 1.0.6 meets the sweep: it keeps every word and deletes none
+            with b:
+                assert _a_pass_of_1_0_6(words_b, old_b) == "pulled 0, pushed 0"
+                assert {c["heard"] for c in words_b.corrections} == everything
+                words_b.learn_by_hand("five heard", "five meant")
+                assert _a_pass_of_1_0_6(words_b, old_b) == "pulled 0, pushed 1"
+                assert not [r for r in fake.tables["vocab_sync"] if r["deleted"]], \
+                    "a 1.0.6 copy read the sweep as words forgotten"
+            everything.add("five heard")
+
+            # a row in the clear, from the server or a stolen session: no word to A any more
+            fake.tables["vocab_sync"] += [
+                {"user_id": fake.UID, "heard": "one heard", "meant": "FORGED", "hits": 1_000_000,
+                 "last_used": None, "deleted": False, "updated_at": "2026-09-18T14:00:00+00:00"},
+                {"user_id": fake.UID, "heard": "two heard", "meant": "", "hits": 0,
+                 "last_used": None, "deleted": True, "updated_at": "2026-09-18T14:00:01+00:00"}]
+            with a:
+                calls = len(fake.calls)
+                sb.sync_now(words_a)
+                assert {c["heard"]: c["meant"] for c in words_a.corrections}["one heard"] == "one meant"
+                assert words_a.find("two heard"), "a tombstone in the clear took a word"
+                assert not [c for c in fake.calls[calls:] if c["path"] == "rest/v1/vocab_sync"]
+            fake.tables["vocab_sync"] = [r for r in fake.tables["vocab_sync"] if r["updated_at"]
+                                         not in ("2026-09-18T14:00:00+00:00", "2026-09-18T14:00:01+00:00")]
+
+            # B is updated: its 1.0.6 cursor, its last pass of the clear, every word sealed
+            with b:
+                cursor = sync_mod.read_cursor()
+                cursor.update(old_b)
+                sync_mod.write_cursor(cursor)
+                out = sb.sync_now(words_b)["vocab"]
+                assert out.endswith("pushed 5"), out
+                assert {c["heard"] for c in words_b.corrections} == everything
+            with a:
+                out = sb.sync_now(words_a)["vocab"]
+                assert {c["heard"] for c in words_a.corrections} == everything, "a word was lost on the way"
+            sealed = {}
+            for r in fake.tables["vocab_sealed"]:
+                word = sb._open_word(key, fake.UID, r)
+                sealed[word["heard"]] = word
+            assert set(sealed) == everything and not any(w["deleted"] for w in sealed.values()), sealed
+            assert sealed["one heard"]["meant"] == "one meant"
+            # and a day later nothing of the account is left in the clear
+            with b, _patched(sb, "PLAIN_VOCAB_GRACE_S", 0):
+                sb.sync_now(words_b)
+            assert not [r for r in fake.tables["vocab_sync"] if r["user_id"] == fake.UID], \
+                fake.tables["vocab_sync"]
+    finally:
+        a.gone()
+        b.gone()
+
+
+def test_a_sealed_word_row_fits_the_servers_cap_whatever_the_word():
+    """migration 0010 caps vocab_sealed.cipher at 4,096 characters and
+    refuses a whole batch for one row over it (the history lesson of
+    2026-10-23: one row past the cap held 135 behind it for three days).
+    The app sends a word and its meaning at 200 characters each
+    (sync.vocab_rows); sealed, the worst of them is 3,367 characters,
+    and the server's check is in the file."""
+    import sb
+    import sync as sync_mod
+    import vault
+
+    key = os.urandom(32)
+    sql = (REPO / "supabase" / "migrations" / "0010_words_travel_sealed.sql").read_text("utf-8")
+    assert "check (public.is_sealed(cipher) and char_length(cipher) <= 4096)" in sql
+    worst = 0
+    for ch in ("\x01", "\U0001F600", '"', "\\", "ש", "a"):
+        rows = sync_mod.vocab_rows([{"heard": ch * 900, "meant": ch * 900, "hits": 10 ** 9,
+                                     "last": "2026-09-20 10:00:00"}])
+        sealed = sb._seal_word(key, "11111111-2222-3333-4444-555555555555", rows[0])
+        assert vault.is_sealed(sealed["cipher"]), ch
+        worst = max(worst, len(sealed["cipher"]))
+        word = sb._open_word(key, "11111111-2222-3333-4444-555555555555", sealed)
+        assert word is not None and word["heard"] == ch * 200 and word["hits"] == 1_000_000, ch
+    assert worst <= 4096, worst
+    assert worst == 3367, f"the cap's arithmetic in 0010's header moved: {worst}"
 
 
 def test_sync_history_rows_and_remote_lines_round_trip():
@@ -54465,7 +54825,9 @@ def test_first_sync_on_a_fresh_pc_pulls_and_does_not_echo():
     and what it just pulled is not pushed straight back. Measured live
     2026-09-18 before the fix: the second PC's empty blob overwrote the
     first PC's settings on its first pass, and the two pulled words went
-    up again."""
+    up again. The words come sealed (migration 0010), and a PC that never
+    synced words in the clear never reads the old table: a row written
+    there, by a server or a stolen session, is not a word to it."""
     import sb
 
     d = Path(tempfile.mkdtemp(prefix="deskit-fresh-pc-"))
@@ -54474,24 +54836,34 @@ def test_first_sync_on_a_fresh_pc_pulls_and_does_not_echo():
         with _fixture_project() as fake, _consented("account", "settings_sync"):
             fake.tables["settings_sync"] = [{"user_id": fake.UID, "json": {"polish.when": "never"},
                                             "updated_at": "2026-09-18T10:00:00+00:00"}]
-            fake.tables["vocab_sync"] = [{"user_id": fake.UID, "heard": "xpogo", "meant": "Expo Go",
-                                          "hits": 3, "last_used": None, "deleted": False,
-                                          "updated_at": "2026-09-18T10:00:01+00:00"}]
             sb.sign_in_anonymous()
+            key = sb._ensure_lock(fake.UID)           # this PC holds the account's key
+            assert key is not None
+            fake.tables["vocab_sealed"] = [dict(sb._seal_word(key, fake.UID, {
+                "heard": "xpogo", "meant": "Expo Go", "hits": 3, "last_used": None,
+                "deleted": False}), updated_at="2026-09-18T10:00:01+00:00")]
+            fake.tables["vocab_sync"] = [{"user_id": fake.UID, "heard": "the", "meant": "FORGED",
+                                          "hits": 1000000, "last_used": None, "deleted": False,
+                                          "updated_at": "2026-09-18T10:00:02+00:00"}]
             config_mod.save({"punctuate.auto": True})          # this PC touched its file just now
             out = sb.sync_now(vocab)
             assert out["settings"] == "pulled" and out["vocab"] == "pulled 1, pushed 0", out
             assert config_mod.read_settings(paths.SETTINGS_FILE).get("polish.when") == "never"
             assert "punctuate.auto" not in config_mod.read_settings(paths.SETTINGS_FILE),                 "last writer wins on the whole blob: the account's set replaced this PC's"
             assert [(c["heard"], c["hits"]) for c in vocab.corrections] == [("xpogo", 3)]
+            assert not [c for c in fake.to_project() if c["path"] == "rest/v1/vocab_sync"
+                        and c["method"] == "GET"], "a new PC read the words in the clear"
             posts = [c for c in fake.to_project() if c["method"] == "POST"
-                     and c["path"] in ("rest/v1/settings_sync", "rest/v1/vocab_sync")]
+                     and c["path"] in ("rest/v1/settings_sync", "rest/v1/vocab_sealed",
+                                       "rest/v1/vocab_sync")]
             assert posts == [], [c["path"] for c in posts]
             # the next pass: a local change goes up, nothing comes back down
             vocab.learn("brinth", "--branch")
             out = sb.sync_now(vocab)
             assert out["vocab"] == "pulled 0, pushed 1", out
             assert out["settings"] == "same", out
+            assert not [c for c in fake.to_project() if c["path"] == "rest/v1/vocab_sync"
+                        and c["method"] in ("POST", "PATCH")], "a word went up in the clear"
     finally:
         config_mod.save({"punctuate.auto": config_mod.defaults_flat()["punctuate.auto"]})
         shutil.rmtree(d, ignore_errors=True)

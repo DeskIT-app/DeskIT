@@ -8392,8 +8392,8 @@ class Dashboard:
             else:
                 said_sub = ("Open the desk on your other PC, or DeskIT on your phone. If it "
                             "shows this code, press Approve there and Same code here. Until "
-                            "then this PC has your words and settings; what you said and your "
-                            "cloud keys stay locked.")
+                            "then this PC has your settings; your learned words, what you said "
+                            "and your cloud keys stay locked.")
                 buttons = [("Type the recovery key", self._lock_type)]
                 if lock.get("same"):
                     said = "You pressed Same code — waiting for your other device to approve this PC."

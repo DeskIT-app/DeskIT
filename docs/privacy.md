@@ -99,10 +99,12 @@ said": the text of what you dictated, translated, punctuated and looked
 up, one row per event, so the Said page is the same on every PC you
 sign into. Never audio, screenshots or clips. **Plain statement: what
 you said, and your cloud keys, leave the PC locked with a key that only
-your own devices hold (the account lock, since 1.0.1). The rows sit in the
-developer's database sealed; its security rules separate users from
-each other, and the lock keeps the project's administrator from reading
-what you said or your keys.** The time and kind of each row stay
+your own devices hold (the account lock, since 1.0.1), and so do the
+words the app learned (since 1.0.7; a copy older than that still sends
+them unlocked until it is updated). The rows sit in the developer's
+database sealed; its security rules separate users from each other, and
+the lock keeps the project's administrator from reading what you said,
+your learned words or your keys.** The time and kind of each row stay
 readable so the syncs can order them. A new device gets the key when a
 device already signed in approves it (a code compared on both screens,
 and a press on each), or when you type the recovery key the app made for

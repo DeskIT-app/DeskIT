@@ -80,14 +80,16 @@ never in the clear), and for its own person to say the two codes are the
 same (``same_code``: it opens nothing before that, or a dishonest server
 could write the answer itself, under a lock it named), or for the person
 to type the recovery key
-(``recover``). ``history.cipher`` and the ``vault`` rows (the cloud
-keys, one per name) are sealed under the account key and opened only
-here; ``ts``, ``kind`` and ``engine`` stay readable for the ordering.
-Until the key is here those two stores say "waiting for the lock" and
-their cursors do not move; the words and settings sync as before.
+(``recover``). ``history.cipher``, the ``vault`` rows (the cloud
+keys, one per name) and, since migration 0010, the ``vocab_sealed``
+rows (the learned words, one per word, named by a keyed hash) are
+sealed under the account key and opened only here; ``ts``, ``kind``
+and ``engine`` stay readable for the ordering. Until the key is here
+those three stores say "waiting for the lock" and their cursors do not
+move; the settings sync as before.
 A PC that holds a key never gives it up because the profile names
 another lock (2026-09-23, the audit's A15): the lock is "changed", those
-two stores say "paused — the lock changed" in both directions, and Home
+stores say "paused — the lock changed" in both directions, and Home
 asks the person whether it was him (``lock_answer``, ``restore_lock``).
 
 Failure is a log line and a later retry, never a dialog (8.8): a paused
@@ -111,7 +113,7 @@ import threading
 import time
 import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config import LAST_ACCOUNT, SOMEBODY
 import net
@@ -1474,29 +1476,166 @@ def _remote_is_newer(remote_at: str) -> bool:
     return when is not None and when.timestamp() >= mtime
 
 
+#: The learned words' store on the server since migration 0010: one row per
+#: word, named by ``vault.word_id`` and sealed under the account key at
+#: ``vault.AAD_VOCAB`` (the 2026-11-09 audit, security-server F1: the words
+#: were in the clear and trusted, so the server, or anyone with a stolen
+#: session, could read every learned pair and write one that every PC then
+#: pasted and gave the decoder). ``PLAIN_VOCAB`` is 0001's table, which only
+#: a copy from before 0010 still writes: read once more by a copy that
+#: synced words in it (``_sync_vocab``), never written, swept.
+VOCAB_TABLE = "vocab_sealed"
+PLAIN_VOCAB = "vocab_sync"
+#: The cursor's names for the sealed store: where the pull stands and the
+#: snapshot that turns a word gone from vocab.json into a tombstone. The
+#: plaintext store's were ``vocab_pulled_at`` and ``vocab_snapshot``: a
+#: cursor that still has them belongs to a copy that synced words in the
+#: clear and has not made its last pass of that store yet (``_PLAIN_ERA``).
+WORDS_PULLED = "words_pulled_at"
+WORDS_SNAPSHOT = "words_snapshot"
+_PLAIN_ERA: tuple[str, ...] = ("vocab_pulled_at", "vocab_snapshot")
+#: When this copy last swept the account's plaintext words.
+PLAIN_SWEPT = "words_plain_swept_at"
+#: A word a copy from before 0010 wrote in the clear stays this long, so the
+#: account's other copies from before — which pull every 15 minutes while
+#: they run — can still take it; a copy on this build then deletes it, and
+#: looks at most this often. None is left a day or two after the last copy
+#: from before is updated.
+PLAIN_VOCAB_GRACE_S = 24 * 3600
+#: One push's rows. A sealed row is about 200 characters for a short word
+#: and 3,367 at the very most (two 200-character fields of control
+#: characters; migration 0010 caps it at 4,096), and the last pass of the
+#: clear sends the whole list: 202 words on the busiest account, 2026-11-27.
+VOCAB_BATCH = 500
+
+
+def _seal_word(key: bytes, uid: str, row: dict) -> dict:
+    """One row of sync.vocab_rows as it leaves: the word's id and its
+    value sealed at that id. Nothing of the word is beside the seal."""
+    rid = vault.word_id(key, str(row.get("heard") or ""))
+    inside = {"heard": str(row.get("heard") or ""), "meant": str(row.get("meant") or ""),
+              "hits": int(row.get("hits") or 0), "last_used": row.get("last_used"),
+              "deleted": bool(row.get("deleted"))}
+    return {"user_id": uid, "id": rid,
+            "cipher": vault.seal_json(key, inside, vault.AAD_VOCAB.format(uid=uid, row_id=rid))}
+
+
+def _open_word(key: bytes, uid: str, row: dict) -> dict | None:
+    """A pulled row back in sync.merge_vocab's shape, or None for one that
+    does not open under this key at its own id, or whose word does not hash
+    to that id, or whose fields are not a word's (each logged, never the
+    word): the server can name rows and hand them back, and cannot make one."""
+    rid = str(row.get("id") or "")
+    try:
+        inside = vault.open_json(key, str(row.get("cipher") or ""),
+                                 vault.AAD_VOCAB.format(uid=uid, row_id=rid))
+    except vault.VaultError as e:
+        log.info("vocabulary: a row did not open (%s)", e)
+        return None
+    heard = inside.get("heard") if isinstance(inside, dict) else None
+    meant = inside.get("meant") if isinstance(inside, dict) else None
+    hits = inside.get("hits") if isinstance(inside, dict) else None
+    if not isinstance(heard, str) or not heard.strip() or len(heard) > 200 \
+            or not isinstance(meant, str) or len(meant) > 200 \
+            or not isinstance(hits, int) or isinstance(hits, bool) or not 0 <= hits <= 1_000_000:
+        log.info("vocabulary: a row that opened is not a word")
+        return None
+    if vault.word_id(key, heard) != rid:
+        log.info("vocabulary: a row is under another word's id")
+        return None
+    last = inside.get("last_used")
+    return {"heard": heard, "meant": meant, "hits": hits,
+            "last_used": last if isinstance(last, str) else None,
+            "deleted": inside.get("deleted") is True, "updated_at": row.get("updated_at")}
+
+
+def _sweep_plain_words(cursor: dict, uid: str) -> None:
+    """The account's words in the clear (``PLAIN_VOCAB``) that are older
+    than ``PLAIN_VOCAB_GRACE_S``, deleted — at most once in that time. A
+    copy from before 0010 takes a row that went for nothing (only a row
+    marked ``deleted`` takes a word off its list, 1.0.6 read 2026-11-27),
+    and every word it holds stays in its file and goes up sealed the day
+    it is updated. Never stops a pass: a sweep that fails is a log line
+    and the next pass tries again."""
+    now = datetime.now(timezone.utc)
+    last = sync._parse_iso(str(cursor.get(PLAIN_SWEPT) or ""))
+    if last is not None and (now - last).total_seconds() < PLAIN_VOCAB_GRACE_S:
+        return
+    before = (now - timedelta(seconds=PLAIN_VOCAB_GRACE_S)).isoformat(timespec="seconds")
+    # the filter on user_id is what Supabase's safeupdate asks of a DELETE;
+    # row-level security already holds it to this account's rows
+    status, data = _rest("DELETE", PLAIN_VOCAB, purpose="sync",
+                         query=f"user_id=eq.{uid}&updated_at=lt.{urllib.parse.quote(before)}",
+                         prefer="return=minimal")
+    if status in (200, 204):
+        cursor[PLAIN_SWEPT] = now.isoformat(timespec="seconds")
+    else:
+        log.info("vocabulary: the words in the clear were not swept (%s)", _server_said(status, data))
+
+
 def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
     """Pull the other PCs' rows into the live vocabulary, push what
-    changed here. ``vocab`` is the app's Vocab (or None to skip);
-    ``push=False`` is a live pass, the pull alone. A pair another account
-    left in the file (``_take_over``) is not this account's to send or to
-    forget: it stays out of the rows and out of the snapshot, so its heard
-    form cannot leave as a tombstone either, until the account turns out
-    to hold that very pair."""
+    changed here, each row sealed under the account key on the way up
+    and opened on the way down (migration 0010); ``vocab`` is the app's
+    Vocab (or None to skip); ``push=False`` is a live pass, the pull
+    alone. Without the key on this PC nothing moves and the cursors stay:
+    the words wait for the approval, as what was said and the keys do.
+
+    The merge is the one it always was (sync.merge_vocab). What changed is
+    whom it trusts: a row that does not open is not a word. The plaintext
+    table of 0001 (``PLAIN_VOCAB``) is never written. A copy that synced
+    words in it makes ONE last pass of it (``_PLAIN_ERA`` in its cursor):
+    from where its own cursor stood, the pull its old code would have made
+    next, then every word it holds goes up sealed, a tombstone with each
+    word its old snapshot remembers and its file lost, and the old cursor
+    goes — so a server that writes a row in the clear reaches no copy on
+    this build after that pass, and a copy that never synced in the clear
+    (a new PC, a sign-out since) never reads one at all. Then the clear
+    rows a day old are swept (``_sweep_plain_words``).
+
+    A pair another account left in the file (``_take_over``) is not this
+    account's to send or to forget: it stays out of the rows and out of
+    the snapshot, so its heard form cannot leave as a tombstone either,
+    until the account turns out to hold that very pair."""
     if vocab is None:
         return "skipped"
     uid = _fresh()["user"]["id"]
+    key = _lock_key(uid)
+    if key is None:
+        return _lock_wait_word()
     left = set(_held_back(uid, "vocab"))
     # A word list that could not be read at start (vocab.Vocab.broken)
     # tells the account nothing: every word it lacks would go out as a
     # tombstone and come off every PC. It pulls the whole list back
     # down instead, from the start of time (audit 2026-09-23, A7).
     broken = bool(getattr(vocab, "broken", None))
-    since = "" if broken else str(cursor.get("vocab_pulled_at") or "")
-    rows = _rows_after("vocab_sync", word="vocabulary", purpose="sync",
-                       select="heard,meant,hits,last_used,deleted,updated_at",
-                       ties="heard.asc", since=since, page=VOCAB_PAGE)
+    last_plain = push and any(k in cursor for k in _PLAIN_ERA)
+    rows: list[dict] = []
+    if last_plain:
+        try:
+            rows += _rows_after(PLAIN_VOCAB, word="vocabulary", purpose="sync",
+                                select="heard,meant,hits,last_used,deleted,updated_at",
+                                ties="heard.asc", page=VOCAB_PAGE,
+                                since="" if broken else str(cursor.get("vocab_pulled_at") or ""))
+        except AccountError as e:
+            # PostgREST's 404 is a table that is not there (a later file drops
+            # vocab_sync): it holds nothing to read, and the pass goes on.
+            # Anything else is tried again at the next pass, the old cursor kept
+            if "HTTP 404" not in str(e):
+                raise
+    since = "" if broken else str(cursor.get(WORDS_PULLED) or "")
+    sealed = _rows_after(VOCAB_TABLE, word="vocabulary", purpose="sync",
+                         select="id,cipher,updated_at", ties="id.asc", since=since,
+                         page=VOCAB_PAGE)
+    opened = [_open_word(key, uid, r) for r in sealed]
+    unopened = sum(1 for r in opened if r is None)
+    # the clear rows first and the sealed ones over them: a word the account
+    # holds sealed is never taken off by the last pass of the clear
+    rows += [r for r in opened if r is not None]
     pulled = 0
-    snapshot = dict(cursor.get("vocab_snapshot") or {})
+    snapshot = dict(cursor.get(WORDS_SNAPSHOT) or {})
+    if last_plain:
+        snapshot = {**dict(cursor.get("vocab_snapshot") or {}), **snapshot}
     if rows:
         with vocab._write_lock:
             merged, pulled = sync.merge_vocab(vocab.corrections, rows)
@@ -1516,29 +1655,36 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
             # ...and a tombstone that came down is not echoed back up as
             # one of this PC's own (nor counted by the guard below)
             gone = {str(r.get("heard") or "").strip().lower() for r in rows if r.get("deleted")}
-            for key in [k for k in snapshot if k.strip().lower() in gone]:
-                snapshot.pop(key, None)
+            for key_ in [k for k in snapshot if k.strip().lower() in gone]:
+                snapshot.pop(key_, None)
         if theirs:
             _let_go(uid, "vocab", theirs)
-        cursor["vocab_pulled_at"] = str(rows[-1].get("updated_at") or since)
+    if sealed:
+        cursor[WORDS_PULLED] = str(sealed[-1].get("updated_at") or since)
+    tail = f", {unopened} not opened" if unopened else ""
     if broken:
-        cursor["vocab_snapshot"] = snapshot
+        cursor[WORDS_SNAPSHOT] = snapshot
         mended = vocab.mend() if hasattr(vocab, "mend") else False
         log.warning("vocabulary sync: the word list could not be read at "
                     "start; %d word(s) came back from the account, nothing "
                     "was sent%s", pulled,
                     "" if mended else " (the unreadable file is still in the way)")
-        return f"pulled {pulled}, pushed 0"
+        return f"pulled {pulled}, pushed 0{tail}"
     with vocab._write_lock:
         corrections = [dict(c) for c in vocab.corrections if sync.word_mark(c) not in left]
-    to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot) if push else []
-    pushed = 0
     if not push:
         # the snapshot is not moved: what changed here since the last
         # full pass is still to push, and the next nudge pushes it
         if rows:
-            cursor["vocab_snapshot"] = snapshot
-        return f"pulled {pulled}, pushed 0"
+            cursor[WORDS_SNAPSHOT] = snapshot
+        return f"pulled {pulled}, pushed 0{tail}"
+    if last_plain:
+        # the sealed store holds none of this copy's words yet: every one
+        # goes up, and a tombstone for each word the old snapshot remembers
+        to_push = sync.vocab_rows(corrections, snapshot)
+    else:
+        to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot)
+    pushed = 0
     # The guard: a push that would delete MOST of what the account holds
     # from here is sent only for the words this PC was told to forget
     # (vocab.forget / a renamed edit, recorded in the file). The rest is
@@ -1556,29 +1702,34 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
         log.warning("vocabulary sync: %d of %d word(s) are missing here and "
                     "were never forgotten on this PC — not deleted from the "
                     "account; the next pass brings them back", held, len(snapshot))
-    if to_push:
-        for row in to_push:
-            row["user_id"] = uid
-        status, data = _rest("POST", "vocab_sync", purpose="sync",
-                             query="on_conflict=user_id,heard",
-                             payload=to_push,
+    for start in range(0, len(to_push), VOCAB_BATCH):
+        batch = to_push[start:start + VOCAB_BATCH]
+        status, data = _rest("POST", VOCAB_TABLE, purpose="sync",
+                             query="on_conflict=user_id,id&select=updated_at",
+                             payload=[_seal_word(key, uid, r) for r in batch],
                              prefer="resolution=merge-duplicates,return=representation")
         if status not in (200, 201):
             raise AccountError(f"vocabulary: {_server_said(status, data)}")
-        pushed = len(to_push)
+        pushed += len(batch)
         stamps = [str(r.get("updated_at") or "") for r in (data or []) if isinstance(r, dict)]
         if stamps:
-            cursor["vocab_pulled_at"] = max([cursor.get("vocab_pulled_at") or ""] + stamps)
-        told = [r["heard"] for r in to_push if r.get("deleted")]
-        if told and hasattr(vocab, "told"):
-            vocab.told(told)
-    cursor["vocab_snapshot"] = sync.vocab_snapshot(corrections)
+            cursor[WORDS_PULLED] = max([cursor.get(WORDS_PULLED) or ""] + stamps)
+    told = [r["heard"] for r in to_push if r.get("deleted")]
+    if told and hasattr(vocab, "told"):
+        vocab.told(told)
+    cursor[WORDS_SNAPSHOT] = sync.vocab_snapshot(corrections)
+    if last_plain:
+        for name in _PLAIN_ERA:
+            cursor.pop(name, None)
+        log.info("vocabulary: the last pass of the words in the clear is made; "
+                 "%d word(s) went up sealed", pushed)
+    _sweep_plain_words(cursor, uid)
     if held:
         # the held words are out of the snapshot now (never tombstoned
         # later) and a pull from the start brings them back down
-        cursor["vocab_pulled_at"] = ""
-        return f"pulled {pulled}, pushed {pushed}, held back {held}"
-    return f"pulled {pulled}, pushed {pushed}"
+        cursor[WORDS_PULLED] = ""
+        return f"pulled {pulled}, pushed {pushed}, held back {held}{tail}"
+    return f"pulled {pulled}, pushed {pushed}{tail}"
 
 
 #: One page of a pull (``_rows_after``). No larger than the most rows the
@@ -2810,9 +2961,10 @@ def _lock_changed(uid: str, mine: str, remote: str) -> None:
 
 def _cursor_follows_lock(cursor: dict, key: bytes, uid: str) -> None:
     """A lock the cursor has not seen — the first pass under one, or a
-    key that changed: what was said and the keys sync again from the
-    start (the rows on the server are sealed under the new key, the
-    other PCs' lines on this PC came under the old one). The first pass
+    key that changed: what was said, the keys and the learned words sync
+    again from the start (the rows on the server are sealed under the new
+    key, and a word's id is a hash under it too; the other PCs' lines on
+    this PC came under the old one). The first pass
     after a sign-out is one of those, and under the same lock what went
     up then is still up (``_keep_what_went_up``). Only then: a cursor with
     a lock on it is a lock that moved in session, and one that came back
@@ -2824,7 +2976,8 @@ def _cursor_follows_lock(cursor: dict, key: bytes, uid: str) -> None:
         return
     if had:
         log.info("lock: the account's key changed — what was said syncs again from the start")
-    for name in ("history_pulled_at", "history_pushed_ts", "vault_slots") + _VAULT_FLAT:
+    for name in ("history_pulled_at", "history_pushed_ts", "vault_slots",
+                 WORDS_PULLED, WORDS_SNAPSHOT) + _VAULT_FLAT:
         cursor.pop(name, None)
     sync.forget_remote()
     cursor["lock"] = fp

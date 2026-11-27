@@ -1845,8 +1845,9 @@ class Wizard:
                 note.configure(text=WORDS["account.bring_failed"], fg=ui.AMBER)
         if (lock or {}).get("state") == "waiting":
             # the account's key is on another PC (the lock, 2026-09-21):
-            # the words and settings came; what was said and the cloud
-            # keys wait for that PC's approval — asked for here, now,
+            # the settings came; the learned words (sealed since
+            # migration 0010), what was said and the cloud keys wait for
+            # that PC's approval — asked for here, now,
             # with the way to do it later
             self._link_open()
             return

@@ -76,6 +76,16 @@ one Realtime topic per account that carries nothing but "go and pull".
   wrote its session, so it loses its row and stays signed in, and the app
   says so. Who was forgotten is one more sealed `vault` row, named
   `forgotten`, so there is no new table.
+- `migrations/0010_words_travel_sealed.sql` — the learned words travel
+  sealed, like what was said. `vocab_sealed` holds one row per word: an
+  `id` that is an HMAC of the heard form under a key derived from the
+  account key, and a `cipher` sealed under the account key with the row's
+  own id as the associated data, so a row this server makes up, moves or
+  edits does not open. `vocab_sync`, where the words were in the clear,
+  stays for the copies that are older than this file; the newer ones never
+  write it, read it once (from where their own cursor stood) and delete
+  its rows a day after they were written. `delete_me()` sweeps the new
+  table.
 
 ## How to read it in ten minutes
 
@@ -106,7 +116,12 @@ one Realtime topic per account that carries nothing but "go and pull".
    of your changed settings minus everything machine-bound (`sync.py`
    drops the keys page's fields, hotkeys, devices, folders, ports,
    positions and the privacy gates before it leaves your PC — a test
-   holds the list). `vocab_sync` is one row per learned word.
+   holds the list). `vocab_sealed` is one row per learned word, sealed
+   since 0010: the row's name is a keyed hash of the word and its value
+   opens only under the account key, so the admin can neither read a
+   word nor write one a PC would take. `vocab_sync`, its plaintext
+   predecessor, is read and written only by copies older than 0010 and
+   swept by the newer ones.
    `history` holds what you dictated only if you turned the history
    sync on — sealed, since 0004: RLS separates users from each other,
    and the lock keeps the project admin from reading a row (only `ts`,

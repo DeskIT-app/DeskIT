@@ -1182,8 +1182,8 @@ class Place:
             else:
                 said_sub = ("Open the desk on your other PC, or DeskIT on your phone. If it "
                             "shows this code, press Approve there and Same code here. Until "
-                            "then this PC has your words and settings; what you said and your "
-                            "cloud keys stay locked.")
+                            "then this PC has your settings; your learned words, what you said "
+                            "and your cloud keys stay locked.")
                 buttons = [{"label": "Type the recovery key", "do": "lock.type"}]
                 if lock.get("same"):
                     said = "You pressed Same code — waiting for your other device to approve this PC."
