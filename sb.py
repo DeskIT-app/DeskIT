@@ -80,14 +80,16 @@ never in the clear), and for its own person to say the two codes are the
 same (``same_code``: it opens nothing before that, or a dishonest server
 could write the answer itself, under a lock it named), or for the person
 to type the recovery key
-(``recover``). ``history.cipher`` and the ``vault`` rows (the cloud
-keys, one per name) are sealed under the account key and opened only
-here; ``ts``, ``kind`` and ``engine`` stay readable for the ordering.
-Until the key is here those two stores say "waiting for the lock" and
-their cursors do not move; the words and settings sync as before.
+(``recover``). ``history.cipher``, the ``vault`` rows (the cloud
+keys, one per name) and, since migration 0010, the ``vocab_sealed``
+rows (the learned words, one per word, named by a keyed hash) are
+sealed under the account key and opened only here; ``ts``, ``kind``
+and ``engine`` stay readable for the ordering. Until the key is here
+those three stores say "waiting for the lock" and their cursors do not
+move; the settings sync as before.
 A PC that holds a key never gives it up because the profile names
 another lock (2026-09-23, the audit's A15): the lock is "changed", those
-two stores say "paused — the lock changed" in both directions, and Home
+stores say "paused — the lock changed" in both directions, and Home
 asks the person whether it was him (``lock_answer``, ``restore_lock``).
 
 Failure is a log line and a later retry, never a dialog (8.8): a paused
@@ -111,7 +113,7 @@ import threading
 import time
 import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config import LAST_ACCOUNT, SOMEBODY
 import net
@@ -395,6 +397,113 @@ def _server_said(status: int, body: bytes) -> str:
                 return f"HTTP {status}: {str(data[key])[:160]}"
     text = body.decode("utf-8", "replace")[:160].strip()
     return f"HTTP {status}" + (f": {text}" if text else "")
+
+
+# ------------------------------------------------- an account that is full
+
+#: The server's word that one table of this account has reached its ceiling
+#: (supabase/migrations/0009): SQLSTATE PT507, which PostgREST sends as HTTP
+#: 507, and the message "account full: <table>". A 5xx on purpose: every
+#: client older than this one keeps what a 5xx refused and tries again later
+#: (the phone drops a history row a 4xx refused, Backup.flush).
+FULL_CODE = "PT507"
+FULL_PREFIX = "account full: "
+#: How long a table the server called full is not sent again from here. Six
+#: hours, so a full table costs four requests a day and not one a dictation,
+#: and a ceiling raised later (a migration) is met without a restart.
+FULL_RETRY_S = 6 * 3600.0
+#: Each table as the Account card names it.
+FULL_WHAT: dict[str, str] = {
+    "history": "what you said", "vocab_sync": "your learned words", "vocab_sealed": "your learned words",
+    "settings_sync": "your settings", "vault": "your cloud keys",
+    "devices": "your devices", "pairings": "requests to join",
+    "problem_reports": "problem reports"}
+FULL_START = "Your account has no more room"
+_full: dict[tuple[str, str], float] = {}      # (account, table) -> when it was refused
+
+
+class AccountFull(AccountError):
+    """The server's ceiling for one table of this account (0009). Nothing
+    was written there and nothing here is marked sent; ``str(e)`` is the
+    sentence the Account card shows."""
+
+    def __init__(self, table: str):
+        self.table = table
+        super().__init__(full_words([table]))
+
+
+def full_words(tables) -> str:
+    """The Account card's sentence for the tables the server called full."""
+    names = [FULL_WHAT.get(t, t) for t in dict.fromkeys(tables)]
+    if not names:
+        return ""
+    joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    words = (f"{FULL_START} on the server for {joined}. "
+             "Nothing on this PC is lost, and DeskIT tries again in a few hours.")
+    if (user() or {}).get("is_anonymous"):
+        words += " Sign in with Google for more room."
+    return words
+
+
+def _uid_now() -> str:
+    return str((user() or {}).get("id") or "")
+
+
+def full_tables() -> list[str]:
+    """The tables of the signed-in account the server called full, until a
+    write to them goes through again."""
+    uid = _uid_now()
+    return sorted(t for (who, t) in list(_full) if who == uid)
+
+
+def full_now(table: str) -> bool:
+    """Is ``table`` one not to send to now: refused as full in the last
+    FULL_RETRY_S."""
+    at = _full.get((_uid_now(), table))
+    return at is not None and time.monotonic() - at < FULL_RETRY_S
+
+
+def _says_full(status: int, data) -> bool:
+    """Is this answer the server's ceiling: its code, or its message."""
+    if status < 400:
+        return False
+    parsed = data if isinstance(data, dict) else _json(status, data or b"")
+    if not isinstance(parsed, dict):
+        return False
+    return (str(parsed.get("code") or "") == FULL_CODE
+            or str(parsed.get("message") or "").startswith(FULL_PREFIX))
+
+
+def _refused_full(status: int, data, table: str) -> None:
+    """Raise AccountFull when the answer to a write to ``table`` is the
+    server's ceiling. The first refusal of a table logs one line, counts
+    and names only (the server's detail is read for its four numbers and
+    nothing else), and the Account card says so; the same table refused
+    again logs nothing."""
+    if not _says_full(status, data):
+        return
+    key = (_uid_now(), table)
+    first = key not in _full
+    _full[key] = time.monotonic()
+    if first:
+        parsed = data if isinstance(data, dict) else _json(status, data or b"")
+        detail = str((parsed or {}).get("details") or "") if isinstance(parsed, dict) else ""
+        numbers = re.findall(r"\d+", detail)[:4]
+        counts = (" (%s rows of %s, %s bytes of %s)" % tuple(numbers)) if len(numbers) == 4 else ""
+        log.warning("account: the server has no more room for %s on this account%s — "
+                    "kept on this PC, not sent again for %d h", table, counts,
+                    int(FULL_RETRY_S // 3600))
+    _status["last_error"] = full_words(full_tables())
+    raise AccountFull(table)
+
+
+def _has_room(table: str) -> None:
+    """A write to ``table`` went through: it is not full any more, and the
+    Account card's line says only what still is."""
+    if _full.pop((_uid_now(), table), None) is not None:
+        log.info("account: the server takes %s again", table)
+        if str(_status.get("last_error") or "").startswith(FULL_START):
+            _status["last_error"] = full_words(full_tables())
 
 
 def _auth(path: str, payload: dict | None, *, query: str = "",
@@ -945,7 +1054,9 @@ def ensure_profile(force: bool = False) -> None:
         status, data = _rest("POST", "devices", purpose="account", query="on_conflict=id",
                              payload=row, prefer="resolution=merge-duplicates,return=minimal")
     if status not in (200, 201, 204):
+        _refused_full(status, data, "devices")
         raise AccountError(f"the device row was refused ({_server_said(status, data)})")
+    _has_room("devices")
     config.save({"account.device_seen_at": time.time(), "account.device_session": sid or None})
 
 
@@ -1509,12 +1620,16 @@ def _sync_settings(cursor: dict, push: bool = True) -> str:
     if left and not payload and not remote:
         return "same"
     if push and (local_changed or not remote):
+        if full_now("settings_sync"):
+            return "full"                # the cursor stays: it goes up at the next try
         status, data = _rest("POST", "settings_sync", purpose="sync",
                              query="on_conflict=user_id",
                              payload={"user_id": uid, "json": payload},
                              prefer="resolution=merge-duplicates,return=representation")
         if status not in (200, 201):
+            _refused_full(status, data, "settings_sync")
             raise AccountError(f"settings: {_server_said(status, data)}")
+        _has_room("settings_sync")
         row = (data or [{}])[0] if isinstance(data, list) else (data or {})
         cursor["settings_updated_at"] = str(row.get("updated_at") or _now_iso())
         cursor["settings_hash"] = local_hash
@@ -1531,29 +1646,166 @@ def _remote_is_newer(remote_at: str) -> bool:
     return when is not None and when.timestamp() >= mtime
 
 
+#: The learned words' store on the server since migration 0010: one row per
+#: word, named by ``vault.word_id`` and sealed under the account key at
+#: ``vault.AAD_VOCAB`` (the 2026-11-09 audit, security-server F1: the words
+#: were in the clear and trusted, so the server, or anyone with a stolen
+#: session, could read every learned pair and write one that every PC then
+#: pasted and gave the decoder). ``PLAIN_VOCAB`` is 0001's table, which only
+#: a copy from before 0010 still writes: read once more by a copy that
+#: synced words in it (``_sync_vocab``), never written, swept.
+VOCAB_TABLE = "vocab_sealed"
+PLAIN_VOCAB = "vocab_sync"
+#: The cursor's names for the sealed store: where the pull stands and the
+#: snapshot that turns a word gone from vocab.json into a tombstone. The
+#: plaintext store's were ``vocab_pulled_at`` and ``vocab_snapshot``: a
+#: cursor that still has them belongs to a copy that synced words in the
+#: clear and has not made its last pass of that store yet (``_PLAIN_ERA``).
+WORDS_PULLED = "words_pulled_at"
+WORDS_SNAPSHOT = "words_snapshot"
+_PLAIN_ERA: tuple[str, ...] = ("vocab_pulled_at", "vocab_snapshot")
+#: When this copy last swept the account's plaintext words.
+PLAIN_SWEPT = "words_plain_swept_at"
+#: A word a copy from before 0010 wrote in the clear stays this long, so the
+#: account's other copies from before — which pull every 15 minutes while
+#: they run — can still take it; a copy on this build then deletes it, and
+#: looks at most this often. None is left a day or two after the last copy
+#: from before is updated.
+PLAIN_VOCAB_GRACE_S = 24 * 3600
+#: One push's rows. A sealed row is about 200 characters for a short word
+#: and 3,367 at the very most (two 200-character fields of control
+#: characters; migration 0010 caps it at 4,096), and the last pass of the
+#: clear sends the whole list: 202 words on the busiest account, 2026-11-27.
+VOCAB_BATCH = 500
+
+
+def _seal_word(key: bytes, uid: str, row: dict) -> dict:
+    """One row of sync.vocab_rows as it leaves: the word's id and its
+    value sealed at that id. Nothing of the word is beside the seal."""
+    rid = vault.word_id(key, str(row.get("heard") or ""))
+    inside = {"heard": str(row.get("heard") or ""), "meant": str(row.get("meant") or ""),
+              "hits": int(row.get("hits") or 0), "last_used": row.get("last_used"),
+              "deleted": bool(row.get("deleted"))}
+    return {"user_id": uid, "id": rid,
+            "cipher": vault.seal_json(key, inside, vault.AAD_VOCAB.format(uid=uid, row_id=rid))}
+
+
+def _open_word(key: bytes, uid: str, row: dict) -> dict | None:
+    """A pulled row back in sync.merge_vocab's shape, or None for one that
+    does not open under this key at its own id, or whose word does not hash
+    to that id, or whose fields are not a word's (each logged, never the
+    word): the server can name rows and hand them back, and cannot make one."""
+    rid = str(row.get("id") or "")
+    try:
+        inside = vault.open_json(key, str(row.get("cipher") or ""),
+                                 vault.AAD_VOCAB.format(uid=uid, row_id=rid))
+    except vault.VaultError as e:
+        log.info("vocabulary: a row did not open (%s)", e)
+        return None
+    heard = inside.get("heard") if isinstance(inside, dict) else None
+    meant = inside.get("meant") if isinstance(inside, dict) else None
+    hits = inside.get("hits") if isinstance(inside, dict) else None
+    if not isinstance(heard, str) or not heard.strip() or len(heard) > 200 \
+            or not isinstance(meant, str) or len(meant) > 200 \
+            or not isinstance(hits, int) or isinstance(hits, bool) or not 0 <= hits <= 1_000_000:
+        log.info("vocabulary: a row that opened is not a word")
+        return None
+    if vault.word_id(key, heard) != rid:
+        log.info("vocabulary: a row is under another word's id")
+        return None
+    last = inside.get("last_used")
+    return {"heard": heard, "meant": meant, "hits": hits,
+            "last_used": last if isinstance(last, str) else None,
+            "deleted": inside.get("deleted") is True, "updated_at": row.get("updated_at")}
+
+
+def _sweep_plain_words(cursor: dict, uid: str) -> None:
+    """The account's words in the clear (``PLAIN_VOCAB``) that are older
+    than ``PLAIN_VOCAB_GRACE_S``, deleted — at most once in that time. A
+    copy from before 0010 takes a row that went for nothing (only a row
+    marked ``deleted`` takes a word off its list, 1.0.6 read 2026-11-27),
+    and every word it holds stays in its file and goes up sealed the day
+    it is updated. Never stops a pass: a sweep that fails is a log line
+    and the next pass tries again."""
+    now = datetime.now(timezone.utc)
+    last = sync._parse_iso(str(cursor.get(PLAIN_SWEPT) or ""))
+    if last is not None and (now - last).total_seconds() < PLAIN_VOCAB_GRACE_S:
+        return
+    before = (now - timedelta(seconds=PLAIN_VOCAB_GRACE_S)).isoformat(timespec="seconds")
+    # the filter on user_id is what Supabase's safeupdate asks of a DELETE;
+    # row-level security already holds it to this account's rows
+    status, data = _rest("DELETE", PLAIN_VOCAB, purpose="sync",
+                         query=f"user_id=eq.{uid}&updated_at=lt.{urllib.parse.quote(before)}",
+                         prefer="return=minimal")
+    if status in (200, 204):
+        cursor[PLAIN_SWEPT] = now.isoformat(timespec="seconds")
+    else:
+        log.info("vocabulary: the words in the clear were not swept (%s)", _server_said(status, data))
+
+
 def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
     """Pull the other PCs' rows into the live vocabulary, push what
-    changed here. ``vocab`` is the app's Vocab (or None to skip);
-    ``push=False`` is a live pass, the pull alone. A pair another account
-    left in the file (``_take_over``) is not this account's to send or to
-    forget: it stays out of the rows and out of the snapshot, so its heard
-    form cannot leave as a tombstone either, until the account turns out
-    to hold that very pair."""
+    changed here, each row sealed under the account key on the way up
+    and opened on the way down (migration 0010); ``vocab`` is the app's
+    Vocab (or None to skip); ``push=False`` is a live pass, the pull
+    alone. Without the key on this PC nothing moves and the cursors stay:
+    the words wait for the approval, as what was said and the keys do.
+
+    The merge is the one it always was (sync.merge_vocab). What changed is
+    whom it trusts: a row that does not open is not a word. The plaintext
+    table of 0001 (``PLAIN_VOCAB``) is never written. A copy that synced
+    words in it makes ONE last pass of it (``_PLAIN_ERA`` in its cursor):
+    from where its own cursor stood, the pull its old code would have made
+    next, then every word it holds goes up sealed, a tombstone with each
+    word its old snapshot remembers and its file lost, and the old cursor
+    goes — so a server that writes a row in the clear reaches no copy on
+    this build after that pass, and a copy that never synced in the clear
+    (a new PC, a sign-out since) never reads one at all. Then the clear
+    rows a day old are swept (``_sweep_plain_words``).
+
+    A pair another account left in the file (``_take_over``) is not this
+    account's to send or to forget: it stays out of the rows and out of
+    the snapshot, so its heard form cannot leave as a tombstone either,
+    until the account turns out to hold that very pair."""
     if vocab is None:
         return "skipped"
     uid = _fresh()["user"]["id"]
+    key = _lock_key(uid)
+    if key is None:
+        return _lock_wait_word()
     left = set(_held_back(uid, "vocab"))
     # A word list that could not be read at start (vocab.Vocab.broken)
     # tells the account nothing: every word it lacks would go out as a
     # tombstone and come off every PC. It pulls the whole list back
     # down instead, from the start of time (audit 2026-09-23, A7).
     broken = bool(getattr(vocab, "broken", None))
-    since = "" if broken else str(cursor.get("vocab_pulled_at") or "")
-    rows = _rows_after("vocab_sync", word="vocabulary", purpose="sync",
-                       select="heard,meant,hits,last_used,deleted,updated_at",
-                       ties="heard.asc", since=since, page=VOCAB_PAGE)
+    last_plain = push and any(k in cursor for k in _PLAIN_ERA)
+    rows: list[dict] = []
+    if last_plain:
+        try:
+            rows += _rows_after(PLAIN_VOCAB, word="vocabulary", purpose="sync",
+                                select="heard,meant,hits,last_used,deleted,updated_at",
+                                ties="heard.asc", page=VOCAB_PAGE,
+                                since="" if broken else str(cursor.get("vocab_pulled_at") or ""))
+        except AccountError as e:
+            # PostgREST's 404 is a table that is not there (a later file drops
+            # vocab_sync): it holds nothing to read, and the pass goes on.
+            # Anything else is tried again at the next pass, the old cursor kept
+            if "HTTP 404" not in str(e):
+                raise
+    since = "" if broken else str(cursor.get(WORDS_PULLED) or "")
+    sealed = _rows_after(VOCAB_TABLE, word="vocabulary", purpose="sync",
+                         select="id,cipher,updated_at", ties="id.asc", since=since,
+                         page=VOCAB_PAGE)
+    opened = [_open_word(key, uid, r) for r in sealed]
+    unopened = sum(1 for r in opened if r is None)
+    # the clear rows first and the sealed ones over them: a word the account
+    # holds sealed is never taken off by the last pass of the clear
+    rows += [r for r in opened if r is not None]
     pulled = 0
-    snapshot = dict(cursor.get("vocab_snapshot") or {})
+    snapshot = dict(cursor.get(WORDS_SNAPSHOT) or {})
+    if last_plain:
+        snapshot = {**dict(cursor.get("vocab_snapshot") or {}), **snapshot}
     if rows:
         with vocab._write_lock:
             merged, pulled = sync.merge_vocab(vocab.corrections, rows)
@@ -1573,29 +1825,38 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
             # ...and a tombstone that came down is not echoed back up as
             # one of this PC's own (nor counted by the guard below)
             gone = {str(r.get("heard") or "").strip().lower() for r in rows if r.get("deleted")}
-            for key in [k for k in snapshot if k.strip().lower() in gone]:
-                snapshot.pop(key, None)
+            for key_ in [k for k in snapshot if k.strip().lower() in gone]:
+                snapshot.pop(key_, None)
         if theirs:
             _let_go(uid, "vocab", theirs)
-        cursor["vocab_pulled_at"] = str(rows[-1].get("updated_at") or since)
+    if sealed:
+        cursor[WORDS_PULLED] = str(sealed[-1].get("updated_at") or since)
+    tail = f", {unopened} not opened" if unopened else ""
     if broken:
-        cursor["vocab_snapshot"] = snapshot
+        cursor[WORDS_SNAPSHOT] = snapshot
         mended = vocab.mend() if hasattr(vocab, "mend") else False
         log.warning("vocabulary sync: the word list could not be read at "
                     "start; %d word(s) came back from the account, nothing "
                     "was sent%s", pulled,
                     "" if mended else " (the unreadable file is still in the way)")
-        return f"pulled {pulled}, pushed 0"
+        return f"pulled {pulled}, pushed 0{tail}"
     with vocab._write_lock:
         corrections = [dict(c) for c in vocab.corrections if sync.word_mark(c) not in left]
-    to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot) if push else []
-    pushed = 0
-    if not push:
+    full = push and full_now(VOCAB_TABLE)
+    if not push or full:
         # the snapshot is not moved: what changed here since the last
-        # full pass is still to push, and the next nudge pushes it
+        # full pass is still to push, and the next nudge pushes it (with
+        # the account full, the next try FULL_RETRY_S after the refusal)
         if rows:
-            cursor["vocab_snapshot"] = snapshot
-        return f"pulled {pulled}, pushed 0"
+            cursor[WORDS_SNAPSHOT] = snapshot
+        return f"pulled {pulled}, pushed 0{tail}" + (", full" if full else "")
+    if last_plain:
+        # the sealed store holds none of this copy's words yet: every one
+        # goes up, and a tombstone for each word the old snapshot remembers
+        to_push = sync.vocab_rows(corrections, snapshot)
+    else:
+        to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot)
+    pushed = 0
     # The guard: a push that would delete MOST of what the account holds
     # from here is sent only for the words this PC was told to forget
     # (vocab.forget / a renamed edit, recorded in the file). The rest is
@@ -1613,29 +1874,38 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
         log.warning("vocabulary sync: %d of %d word(s) are missing here and "
                     "were never forgotten on this PC — not deleted from the "
                     "account; the next pass brings them back", held, len(snapshot))
-    if to_push:
-        for row in to_push:
-            row["user_id"] = uid
-        status, data = _rest("POST", "vocab_sync", purpose="sync",
-                             query="on_conflict=user_id,heard",
-                             payload=to_push,
+    for start in range(0, len(to_push), VOCAB_BATCH):
+        batch = to_push[start:start + VOCAB_BATCH]
+        status, data = _rest("POST", VOCAB_TABLE, purpose="sync",
+                             query="on_conflict=user_id,id&select=updated_at",
+                             payload=[_seal_word(key, uid, r) for r in batch],
                              prefer="resolution=merge-duplicates,return=representation")
         if status not in (200, 201):
+            if rows and _says_full(status, data):
+                cursor[WORDS_SNAPSHOT] = snapshot  # what came down is seen; the rest waits
+            _refused_full(status, data, VOCAB_TABLE)
             raise AccountError(f"vocabulary: {_server_said(status, data)}")
-        pushed = len(to_push)
+        _has_room(VOCAB_TABLE)
+        pushed += len(batch)
         stamps = [str(r.get("updated_at") or "") for r in (data or []) if isinstance(r, dict)]
         if stamps:
-            cursor["vocab_pulled_at"] = max([cursor.get("vocab_pulled_at") or ""] + stamps)
-        told = [r["heard"] for r in to_push if r.get("deleted")]
-        if told and hasattr(vocab, "told"):
-            vocab.told(told)
-    cursor["vocab_snapshot"] = sync.vocab_snapshot(corrections)
+            cursor[WORDS_PULLED] = max([cursor.get(WORDS_PULLED) or ""] + stamps)
+    told = [r["heard"] for r in to_push if r.get("deleted")]
+    if told and hasattr(vocab, "told"):
+        vocab.told(told)
+    cursor[WORDS_SNAPSHOT] = sync.vocab_snapshot(corrections)
+    if last_plain:
+        for name in _PLAIN_ERA:
+            cursor.pop(name, None)
+        log.info("vocabulary: the last pass of the words in the clear is made; "
+                 "%d word(s) went up sealed", pushed)
+    _sweep_plain_words(cursor, uid)
     if held:
         # the held words are out of the snapshot now (never tombstoned
         # later) and a pull from the start brings them back down
-        cursor["vocab_pulled_at"] = ""
-        return f"pulled {pulled}, pushed {pushed}, held back {held}"
-    return f"pulled {pulled}, pushed {pushed}"
+        cursor[WORDS_PULLED] = ""
+        return f"pulled {pulled}, pushed {pushed}, held back {held}{tail}"
+    return f"pulled {pulled}, pushed {pushed}{tail}"
 
 
 #: One page of a pull (``_rows_after``). No larger than the most rows the
@@ -1804,8 +2074,10 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
         _write_cursor(cursor, uid)
         if len(rows) < HISTORY_PAGE:
             break
-    # up
-    events = history.all_events() if push else []
+    # up: with the account full nothing is read or sent, and the cursor
+    # stays where the last row the server took left it
+    full = push and full_now("history")
+    events = history.all_events() if push and not full else []
     floor = _per_account("account.history_floor").get(uid)
     pushed = 0
     for _round in range(10):
@@ -1820,14 +2092,16 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
                              payload=batch,
                              prefer="resolution=merge-duplicates,return=minimal")
         if status not in (200, 201, 204):
+            _refused_full(status, data, "history")
             raise AccountError(f"history: {_server_said(status, data)}")
+        _has_room("history")
         pushed += len(batch)
         cursor["history_pushed_ts"] = batch[-1]["ts"]
         _write_cursor(cursor, uid)
         if len(batch) < sync.HISTORY_BATCH:
             break
     word = f"pulled {pulled}, pushed {pushed}"
-    return word + (f", {unopened} not opened" if unopened else "")
+    return word + (f", {unopened} not opened" if unopened else "") + (", full" if full else "")
 
 
 #: The keys' cursor as it was before each slot kept its own record —
@@ -1928,7 +2202,8 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     slots[secretstore.TARGET_PREFIX] = mine
     # up
     pushed = 0
-    if push:
+    full = push and full_now("vault")
+    if push and not full:
         digests, present = vault.digest_keys(key)
         stays = _keys_left_here(uid)
         to_push = [n for n, d in digests.items()
@@ -1940,7 +2215,9 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
                                  query="on_conflict=user_id,name", payload=payload,
                                  prefer="resolution=merge-duplicates,return=representation")
             if status not in (200, 201):
+                _refused_full(status, data, "vault")
                 raise AccountError(f"keys: {_server_said(status, data)}")
+            _has_room("vault")
             pushed = len(payload)
             stamps = [str(r.get("updated_at") or "") for r in (data or []) if isinstance(r, dict)]
             if stamps:
@@ -1951,7 +2228,7 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
                 known[n] = digests[n]
             mine["digest"] = known
             slots[secretstore.TARGET_PREFIX] = mine
-    return f"pulled {len(changed)}, pushed {pushed}"
+    return f"pulled {len(changed)}, pushed {pushed}" + (", full" if full else "")
 
 
 def has_synced_settings() -> bool:
@@ -2104,6 +2381,10 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
                     out[name] = fn()
                     if _pushed(name, out[name]):
                         changed.append(name)
+                except AccountFull:
+                    # nothing was written and nothing here moved: the words
+                    # are the Account card's (below), the line was the log's
+                    out[name] = "full"
                 except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
                     out[name] = f"error: {e}"
                 if not signed_in():
@@ -2120,13 +2401,16 @@ def sync_now(vocab=None, reason: str = "", only=None, push: bool = True,
             # said why in plain words, and the stores' errors are its
             # echo — the log's, not the sign-in card's
             gone = not signed_in()
+            # a table the server called full is said until a write to it
+            # goes through again, whatever else this pass did
+            full = full_words(full_tables())
             if errors:
                 if not gone:
-                    _status["last_error"] = "; ".join(errors)[:200]
+                    _status["last_error"] = full or "; ".join(errors)[:200]
                 log.info("sync%s: %s", f" ({reason})" if reason else "", "; ".join(errors))
             else:
                 if not gone:
-                    _status["last_error"] = ""
+                    _status["last_error"] = full
                 _status["last_sync"] = _now_iso()
                 log.info("sync%s: %s", f" ({reason})" if reason else "",
                          ", ".join(f"{k} {v}" for k, v in out.items()) or "nothing to do")
@@ -2178,6 +2462,8 @@ def drain_outbox(on_sent=None) -> dict:
     except Exception as e:                                   # noqa: BLE001
         log.info("report: the outbox waits (%s)", e)
         return out
+    if full_now("problem_reports"):
+        return out                     # they wait, files and all, for the next try
     try:
         files = sorted(paths.OUTBOX_DIR.glob("*.json"))
     except OSError:
@@ -2194,6 +2480,9 @@ def drain_outbox(on_sent=None) -> dict:
             continue
         try:
             out[rid] = _send_report(path, report)
+        except AccountFull as e:
+            out[rid] = f"queued: {e}"            # its one line was _refused_full's
+            break
         except (net.EgressRefused, net.NetError, AccountError, OSError) as e:
             out[rid] = f"queued: {e}"
             log.info("report %s: waiting to send (%s)", rid, e)
@@ -2258,11 +2547,14 @@ def _send_report(path, report: dict) -> str:
     status, data = _rest("POST", "problem_reports", purpose="report", payload=row,
                          prefer="return=minimal")
     if status in (200, 201, 204):
+        _has_room("problem_reports")
         log.info("report %s: sent", rid)
         return "sent"
     if status == 409:                                        # already there
         log.info("report %s: was already on the server", rid)
         return "sent"
+    # a full account is no poison report: it stays queued, not .failed
+    _refused_full(status, data, "problem_reports")
     if 400 <= status < 500:
         why = _server_said(status, data)
         _mark_failed(path, why)
@@ -2904,9 +3196,10 @@ def _lock_changed(uid: str, mine: str, remote: str) -> None:
 
 def _cursor_follows_lock(cursor: dict, key: bytes, uid: str) -> None:
     """A lock the cursor has not seen — the first pass under one, or a
-    key that changed: what was said and the keys sync again from the
-    start (the rows on the server are sealed under the new key, the
-    other PCs' lines on this PC came under the old one). The first pass
+    key that changed: what was said, the keys and the learned words sync
+    again from the start (the rows on the server are sealed under the new
+    key, and a word's id is a hash under it too; the other PCs' lines on
+    this PC came under the old one). The first pass
     after a sign-out is one of those, and under the same lock what went
     up then is still up (``_keep_what_went_up``). Only then: a cursor with
     a lock on it is a lock that moved in session, and one that came back
@@ -2918,7 +3211,8 @@ def _cursor_follows_lock(cursor: dict, key: bytes, uid: str) -> None:
         return
     if had:
         log.info("lock: the account's key changed — what was said syncs again from the start")
-    for name in ("history_pulled_at", "history_pushed_ts", "vault_slots") + _VAULT_FLAT:
+    for name in ("history_pulled_at", "history_pushed_ts", "vault_slots",
+                 WORDS_PULLED, WORDS_SNAPSHOT) + _VAULT_FLAT:
         cursor.pop(name, None)
     sync.forget_remote()
     cursor["lock"] = fp
@@ -2992,6 +3286,8 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
                     return key
     new = req is None
     if new or (not handed and req["expires"] <= now):
+        if full_now("pairings"):
+            raise AccountFull("pairings")    # no request until the next try
         # this PC's earlier requests go first — the wizard's, say, whose
         # private half died with its process — so the other PC's card
         # never shows a code this PC no longer does
@@ -3017,7 +3313,9 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         if status not in (200, 201, 204):
             if new:
                 vault.drop(req["id"])
+            _refused_full(status, data, "pairings")
             raise AccountError(f"lock: the request to join was refused ({_server_said(status, data)})")
+        _has_room("pairings")
         req["expires"] = now + PAIRING_TTL_S
         log.info("lock: another PC holds the account's key — this PC %s to join (code %s)",
                  "asks" if new else "goes on asking", req["code"])
@@ -3446,7 +3744,9 @@ def write_link(sealed: str) -> None:
                                   "platform": _platform(), "link": text},
                          prefer="resolution=merge-duplicates,return=minimal")
     if status not in (200, 201, 204):
+        _refused_full(status, data, "devices")
         raise AccountError(f"the device row was refused ({_server_said(status, data)})")
+    _has_room("devices")
     _broadcast(["devices"])
 
 
@@ -3609,7 +3909,9 @@ def _write_forgotten(uid: str, key: bytes, rows: list[dict], theirs: list[dict])
                          payload={"user_id": uid, "name": vault.FORGOTTEN_NAME, "cipher": cipher},
                          prefer="resolution=merge-duplicates,return=minimal")
     if status not in (200, 201, 204):
+        _refused_full(status, data, "vault")
         raise AccountError(f"the list of forgotten devices was refused ({_server_said(status, data)})")
+    _has_room("vault")
 
 
 def _forgotten_pass(uid: str) -> bool:
@@ -3846,4 +4148,5 @@ __all__ = [
     "approve_pairing", "decline_pairing", "make_recovery", "recover",
     "lock_answer", "restore_lock", "same_code", "account_pass", "ACCOUNT_HOOKS",
     "FORGOTTEN_HOOKS", "settle_left", "devices", "write_link", "forget_device", "forgotten",
+    "AccountFull", "full_words", "full_tables", "full_now",
 ]

@@ -172,6 +172,13 @@ AAD_RECOVERY = "recovery/{uid}"
 #: addresses, what it speaks. A row that does not open under the account
 #: key is ignored, which is why the server cannot add a device.
 AAD_DEVICE = "device/{uid}/{device_id}"
+#: A learned word's row (migration 0010, ``vocab_sealed``): its value
+#: sealed at its own ``id`` (``word_id``), so a row the server makes up
+#: does not open, nor one moved to another word or another account.
+AAD_VOCAB = "vocab/{uid}/{row_id}"
+#: What ``word_id`` hashes under: a key DERIVED from the account key, so
+#: the one key is never both an AES key and an HMAC key as it is.
+WORD_ID_LABEL = b"deskit vocab row id v1"
 #: The ``vault`` row that names the forgotten devices, under AAD_VAULT.
 #: Not a cloud key: ``import_keys`` skips a name it does not know, and an
 #: older copy pulling this row skips it the same way.
@@ -412,6 +419,18 @@ def open_json(key: bytes, sealed: str, aad: str):
         return json.loads(open_(key, sealed, aad).decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as e:
         raise VaultError("a sealed value that is not JSON") from e
+
+
+def word_id(account_key: bytes, heard: str) -> str:
+    """A learned word's name on the server (migration 0010): 32 hex
+    characters of an HMAC of the heard form, lower case — the key the
+    merge goes by (sync.merge_vocab) — under a key derived from the
+    account key. The server upserts one row per word without reading the
+    word, two PCs of one account name the same word alike, and another
+    account's rows name it otherwise."""
+    sub = _hkdf(account_key, WORD_ID_LABEL)
+    return hmac.new(sub, str(heard or "").strip().lower().encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:32]
 
 
 # ------------------------------------------------------- the account key
@@ -879,5 +898,5 @@ __all__ = [
     "applicant", "drop", "hand_over", "take", "wrap_recovery", "unwrap_recovery",
     "export_keys", "digest_keys", "import_keys",
     "AAD_HISTORY", "AAD_VAULT", "AAD_PAIRING", "AAD_RECOVERY", "AAD_DEVICE",
-    "FORGOTTEN_NAME",
+    "AAD_VOCAB", "word_id", "FORGOTTEN_NAME",
 ]

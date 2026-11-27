@@ -61,7 +61,10 @@ def _rows(url: str, key: str) -> list[Row]:
     devices = _count(url, key, "devices", "platform=like.windows*")
     seen = _newest(url, key, "devices", "last_seen", "platform=like.windows*")
     said = _count(url, key, "history")
-    words = _count(url, key, "vocab_sync")
+    words = _count(url, key, "vocab_sealed")
+    # 0001's table, in the clear, that only a copy from before 0010 still
+    # writes; the copies on that build sweep it (sb._sweep_plain_words)
+    plain = _count(url, key, "vocab_sync")
     settings = _count(url, key, "settings_sync")
     reports = _count(url, key, "problem_reports")
     vaults = _count(url, key, "vault")
@@ -97,8 +100,11 @@ def _rows(url: str, key: str) -> list[Row]:
             "the server cannot read a word",
             said, "dictations", glyph="mic", Table="history"),
         row("server:kept:words", "Words their copies learned",
-            "the vocabulary that travels between a person's PCs — sealed",
-            words, "words", glyph="doc", Table="vocab_sync"),
+            line("the vocabulary that travels between a person's PCs — sealed",
+                 f"{plain} more still in the clear, from copies older than 0010"
+                 if plain else ""),
+            words, "words", glyph="doc", Table="vocab_sealed",
+            **{"In the clear (vocab_sync)": plain}),
         row("server:kept:settings", "Settings kept for them",
             "one for each account, so a new PC comes up as the old one",
             settings, "accounts", glyph="doc", Table="settings_sync"),

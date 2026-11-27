@@ -19,7 +19,12 @@ Three stores, three shapes:
     rule and ``test_sync_serializer_drops_sync_false`` holds it. Last
     writer wins by the server's ``updated_at``.
 
-``vocab.json`` -> ``vocab_sync`` (one row per learned correction).
+``vocab.json`` -> ``vocab_sealed`` (one row per learned correction).
+    Each row sealed under the account key by sb.py (migration 0010: the
+    server holds a keyed hash of the heard form and a sealed value, and
+    can neither read a word nor make one up; 0001's ``vocab_sync`` held
+    them in the clear and is only read once more, by a copy that synced
+    in it). The rows here are the words themselves, as before.
     Merged as a union keyed by what was heard: the higher ``hits`` wins,
     the newer ``meant`` wins a tie. A word forgotten here since the last
     sync (in the snapshot ``cursor.json`` keeps, gone from the file) is
