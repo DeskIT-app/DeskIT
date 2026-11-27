@@ -19314,6 +19314,7 @@ cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl.warm_for_question = lambda: None   # never load his real Ollama
 
 answering = threading.Event()
 release = threading.Event()
@@ -19608,6 +19609,7 @@ cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl.warm_for_question = lambda: None   # never load his real Ollama
 ctrl._ask = lambda *a, **k: ("ארבעים ושתיים", "test")
 
 assert ctrl.begin_selection()
@@ -19667,6 +19669,7 @@ cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg, recording_now=lambda: True)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl.warm_for_question = lambda: None   # never load his real Ollama
 ctrl._ask = lambda *a, **k: ("ארבעים ושתיים", "test")
 
 for round_no in (1, 2):
@@ -41072,6 +41075,52 @@ def test_the_vision_warm_up_waits_for_room_in_memory() -> None:
         with _patched(hardware_mod, "free_mb", lambda: (20_000, 40_000)):
             vq.Controller(lambda: cfg).warm()
         assert any("11434" in url for url in tried), tried
+
+
+def test_the_vision_model_is_warmed_at_the_key_press_when_ollama_answers_first(
+        ) -> None:
+    """screen-tools.md 1 (2026-11-09 audit): the first screen question of
+    a sitting paid the whole load (26.5, 27.7, 26.8 s), because the
+    start-up warm-up is skipped on a full machine and Ollama lets the
+    model go after five minutes. `[visual_qa] warm_on_press`: the key
+    press starts the same one-token load beside the drag — on a thread of
+    its own, the config read there and not on the hook — only when this
+    PC's Ollama is first in the chain, never a cloud backend, never with
+    the switch off, and a refusal raises nothing."""
+    import dataclasses
+
+    import net as net_mod
+    import visual_qa as vq
+
+    tried: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        tried.append(url)
+        raise net_mod.NetError("refused") from ConnectionRefusedError(10061, "refused")
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.visual_qa.warm_on_press is True and cfg.visual_qa.prefer == "ollama"
+    off = dataclasses.replace(cfg, visual_qa=dataclasses.replace(
+        cfg.visual_qa, warm_on_press=False))
+    with _patched(net_mod, "_connect", fake_connect):
+        vq.Controller(lambda: cfg).warm_for_question()        # refused: no raise
+        assert any("11434" in url for url in tried), tried
+        tried.clear()
+        vq.Controller(lambda: off).warm_for_question()
+        assert tried == [], "the switch is off"
+        built = []
+        cloud_first = [("groq", lambda: built.append("groq")),
+                       ("ollama", lambda: built.append("ollama"))]
+        with _patched(vq.Chain, "_builders", lambda self: cloud_first):
+            vq.Controller(lambda: cfg).warm_for_question()
+        assert built == [] and tried == [], "a cloud backend is never warmed"
+
+    ctrl = vq.Controller(lambda: cfg)
+    warmed, flowed = threading.Event(), threading.Event()
+    ctrl._flow = flowed.set
+    ctrl.warm_for_question = warmed.set
+    assert ctrl.begin_selection()
+    assert warmed.wait(3) and flowed.wait(3), "the press starts both"
 
 
 def test_net_offline_refuses_all_but_loopback():

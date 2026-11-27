@@ -822,6 +822,14 @@ warmup = true                  # one dummy-image, num_predict=1 call at
                                # startup, in the background, so the first
                                # real question costs ~4 s instead of the
                                # 22.6 s projector load
+warm_on_press = true           # true = the same load is ALSO asked for at the
+                               # key press, when this PC's Ollama answers
+                               # first, so it runs while you draw and speak:
+                               # the start-up one is skipped on a full machine
+                               # and Ollama lets the model go after five
+                               # minutes, and the first questions paid 26.5,
+                               # 27.7 and 26.8 s (3 of 3, 2026-11-09 audit,
+                               # screen-tools.md 1). false = start-up only
 ollama_timeout_s = 120         # generous on purpose: a COLD local model can
                                # spend minutes loading ([translate]
                                # measures 76 s for a text-only load), and

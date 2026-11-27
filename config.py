@@ -602,6 +602,9 @@ class VisualQAConfig:
     # the card goes fully opaque while the pointer is over it anyway.
     window_alpha: float = 0.93
     warmup: bool = True
+    # Load the local vision model at the key press, beside the drag
+    # (2026-11-27). False = only the start-up warm-up, the old way.
+    warm_on_press: bool = True
     ollama_timeout_s: int = 120
     cloud_timeout_s: int = 30
 
@@ -2205,6 +2208,8 @@ def build(data: dict) -> Config:
                 "window_alpha", VisualQAConfig.window_alpha)),
             warmup=bool(visual_qa.get("warmup",
                                       VisualQAConfig.warmup)),
+            warm_on_press=bool(visual_qa.get("warm_on_press",
+                                             VisualQAConfig.warm_on_press)),
             ollama_timeout_s=int(visual_qa.get(
                 "ollama_timeout_s", VisualQAConfig.ollama_timeout_s)),
             cloud_timeout_s=int(visual_qa.get(

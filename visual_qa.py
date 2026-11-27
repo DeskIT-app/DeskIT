@@ -4272,7 +4272,37 @@ class Controller:
         self._cancel.clear()
         threading.Thread(target=self._flow, daemon=True,
                          name="visual-qa").start()
+        # the config is read on that thread, not here: this may be the
+        # keyboard hook's
+        threading.Thread(target=self.warm_for_question, daemon=True,
+                         name="visual-qa-warm").start()
         return True
+
+    def warm_for_question(self) -> None:
+        """A question is coming: load the local vision model NOW, beside
+        the drag and the spoken question (`[visual_qa] warm_on_press`).
+
+        The start-up warm-up is skipped on a full machine and Ollama lets
+        a model go after five minutes anyway, so the first question of a
+        sitting paid the whole load: 26.5, 27.7 and 26.8 s for 3 of 3
+        (transcripts.log, reports\\2026-11-09\\screen-tools.md 1) against
+        3.9 s warm. Asked at the key press, the load runs while the
+        rectangle is drawn and the question said. Only when this PC's
+        Ollama is FIRST in the chain — never a cloud backend, and never
+        a load the question would not use. Never raises."""
+        try:
+            cfg = self._cfg_of()
+            if not getattr(getattr(cfg, "visual_qa", None),
+                           "warm_on_press", False):
+                return
+            ranked = Chain(cfg)._builders()
+            if not ranked or ranked[0][0] != "ollama":
+                return
+            seconds = ranked[0][1]().warm()
+            log.info("vision warmed at the key press in %.1fs", seconds)
+        except Exception as e:                   # noqa: BLE001
+            log.info("vision warm at the key press skipped (%s)",
+                     type(e).__name__)
 
     def _grab_selection(self):
         """Freeze the screen, let the user draw on it, hand back the crop.
