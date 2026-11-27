@@ -779,6 +779,31 @@ exactly what classic did.
   answered: the witnesses decode with the same `_guards`, so a drop all
   four decodes share cannot show in that census, and the stock-threshold
   re-decode above is still unrun.
+- **A silent tail with the hotwords on made the decoder crawl: 28 passes,
+  each a whole 30 s encode, 0.1 s apart.** faster-whisper decodes a clip in
+  passes, and with `word_timestamps` on (ours always is) a pass that decodes
+  NO text, only one timestamp token, moves the next pass to that timestamp
+  instead of to the end of the clip. On 2026-11-27 at 22:17 a 127.4 s
+  dictation waited 6.7 s for its paste, 5.98 s of it in the decoder on a
+  19.3 s tail. The tail ended in 2.6 s of quiet with one breath in it (he let
+  go of the key late), and with the hotwords in the prompt every pass over
+  that quiet came back empty. Replayed on the hidden desktop with the live
+  model and the Roller's own cuts, it was 28 passes, 26 of them empty, 5.45 s;
+  with the hotwords off, one pass, 0.54 s, the same words. app.log showed ONE
+  "Processing audio" line, so it was not the loop retry: the crawl happens
+  inside a single `model.transcribe` and logs nothing at INFO.
+  `[local] stop_empty_passes` (on; `local_whisper._without_empty_crawl`, a
+  wrapper on `_split_segments_by_timestamps`) ends the loop at the first
+  empty pass whose window reaches the end of the clip. Replayed over the 50
+  recordings in `recent\`: 5.44 -> 1.30 s on that one, 1.58 -> 0.55 s on a
+  27 s one from the same evening, the other 48 unchanged, and the text and
+  word times identical on all 50. The pasted line now says
+  `decoder 5.98 (28 passes, 26 empty 4.31 s)`, so read that before
+  guessing at a slow decode. Two things not to do. Do not drop the hotwords
+  to fix this: they carry the names he taught. And do not remove the
+  hallucination-silence discard to win back the ~0.5 s it still costs on
+  such a tail (it throws pass 1 away there): measured the same night, that
+  changed 8 words on the one recording where it fired.
 - **There is no unbiased accuracy number on this machine, and the tools
   that look like one are not.** Checked 2026-10-02. `--benchmark` scores
   only the `recent\` clips with a typed correction (`meta["corrected"]`)
