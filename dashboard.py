@@ -6786,7 +6786,7 @@ class Dashboard:
     LAYOUT: dict[str, tuple[str, ...]] = {
         settings_mod.GENERAL: ("dot", "ON THE SCREEN", "THIS COMPUTER",
                                "WHERE FILES ARE SAVED", "updates", "awake"),
-        settings_mod.DICTATION: ("WHERE YOUR SPEECH BECOMES WORDS", "model",
+        settings_mod.DICTATION: ("model",
                                  "WHEN YOU DICTATE", "WORDS IT LEARNS",
                                  "THE TRANSLATE KEY"),
         settings_mod.SCREEN: ("recording", "SCREENSHOTS AND RECORDINGS",
@@ -7053,7 +7053,14 @@ class Dashboard:
             row = next(s for s in privacy.status() if s["kind"] == kind)
         except Exception:
             row = {"open": False, "stale": False, "when": "", "gate": False}
-        if row["open"]:
+        # A retired gate (privacy.RETIRED, cloud_audio since 2026-11-27):
+        # nothing on this PC asks it, so no Turn on of any kind — only the
+        # record, and Withdraw while a yes from before is on file.
+        retired = kind in privacy.RETIRED
+        if retired:
+            text, colour = ((settings_mod.RETIRED_GATE_WORDS[1] if row.get("when")
+                             else settings_mod.RETIRED_GATE_WORDS[0]), ui.FAINT)
+        elif row["open"]:
             when = str(row.get("when", ""))[:10]
             text, colour = f"On since {when}", ui.FG
         elif row.get("stale"):
@@ -7063,21 +7070,21 @@ class Dashboard:
         else:
             text, colour = "Off — its card opens on first use", ui.FAINT
         x = right
-        if row["open"]:
+        if row["open"] or (retired and row.get("when")):
             button = ui.Button(card, "Withdraw",
                                lambda k=kind, s=setting: self._withdraw(k, s),
                                w=widgets.button_width("Withdraw"), h=30,
                                quiet=True)
             card.create_window(right, y - 2, window=button, anchor="ne")
             x = right - widgets.button_width("Withdraw") - 12
-        elif kind in privacy.SYNC_KINDS:
+        elif kind in privacy.SYNC_KINDS and not retired:
             button = ui.Button(card, "Turn on",
                                lambda k=kind: self._account_do("sync", "asking", kind=k),
                                w=widgets.button_width("Turn on"), h=30,
                                quiet=True)
             card.create_window(right, y - 2, window=button, anchor="ne")
             x = right - widgets.button_width("Turn on") - 12
-        elif row.get("stale"):
+        elif row.get("stale") and not retired:
             # The same yes Home's row gives (_consent_do), here too.
             button = ui.Button(card, "Turn on",
                                lambda k=kind, s=setting: self._turn_on(k, s),
@@ -7113,7 +7120,9 @@ class Dashboard:
             self._note(str(e))
             return
         self.parts["values"][setting.path] = False
-        self._note(f"{kind}: withdrawn — the local path answers from the "
+        self._note(f"{kind}: withdrawn — the old yes is gone"
+                   if kind in privacy.RETIRED else
+                   f"{kind}: withdrawn — the local path answers from the "
                    f"next press; the card will ask again when a feature "
                    f"needs the cloud")
         self._draw_settings()
@@ -7657,9 +7666,9 @@ class Dashboard:
 
     KEY_PROVIDERS = (("groq", "Groq", "https://console.groq.com",
                       "recommended first: one key unlocks the repair pass, punctuation, "
-                      "lookup, translation and, without an NVIDIA card, cloud transcription"),
+                      "lookup and translation"),
                      ("gemini", "Gemini", "https://aistudio.google.com",
-                      "for translation and ask-the-screen"))
+                      "for translation when Groq cannot answer, and ask-the-screen"))
 
     def _keys_block(self, scroller) -> None:
         """YOUR CLOUD KEYS on Settings > Privacy (chapter 9 screen 3, D10-

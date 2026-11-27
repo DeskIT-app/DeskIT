@@ -2,7 +2,7 @@
 
 DISTRIBUTION_PLAN.md chapter 5.1-5.3, decisions D7 and D11. Every cloud
 feature — the repair pass, punctuation, translation, lookup, the second
-reading, a cloud transcriber, ask-the-screen, the account, its syncs —
+reading, ask-the-screen, the account, its syncs —
 is behind one of seven KINDS, and a kind is open only when three things
 are true at once:
 
@@ -70,6 +70,18 @@ KINDS: tuple[str, ...] = ("cloud_text", "cloud_audio", "cloud_screenshots",
                           "account", "report_upload", "settings_sync",
                           "history_sync")
 
+#: A gate nothing on this PC asks any more. ``cloud_audio`` was the
+#: recording going to Google for transcription (the "In Google's cloud"
+#: engine, transcribers/gemini.py); the engine left on 2026-11-27 (house
+#: rule 2: the PC never sends audio anywhere) and net.py has no purpose
+#: that could carry a recording to a provider. The kind stays in KINDS so
+#: a row given before is still on record and Settings > Privacy can
+#: Withdraw it; it never opens (``allowed``), never asks (``request``,
+#: ``stale``) and is never granted again (``grant``). The phone's own
+#: cloud backup is the phone's gate (PHONE_LINK_PLAN.md stage 2b) and
+#: never reaches this one.
+RETIRED: frozenset[str] = frozenset({"cloud_audio"})
+
 #: Plain switches under [privacy]: no card, no consent row.
 SWITCHES: tuple[str, ...] = ("update_check", "offline")
 
@@ -129,7 +141,6 @@ PURPOSE_KINDS: dict[str, str] = {
     "translate": "cloud_text", "lookup": "cloud_text",
     "review": "cloud_text", "study": "cloud_text", "reading": "cloud_text",
     "summary": "cloud_text",
-    "transcribe": "cloud_audio",
     "ask-screen": "cloud_screenshots",
     "account": "account", "report": "report_upload", "sync": "settings_sync",
     "history": "history_sync",
@@ -273,7 +284,8 @@ def stale() -> list[str]:
         return []
     have = {r.get("kind") for r in rows()}
     return [k for k in KINDS
-            if k in have and _gates[k] and consent(k) is None]
+            if k in have and _gates[k] and consent(k) is None
+            and k not in RETIRED]
 
 
 def tag(kind: str) -> str | None:
@@ -289,7 +301,7 @@ def allowed(kind: str) -> bool:
         return bool(_gates[kind]) if kind == "update_check" else False
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
-    if _gates["offline"] or not _gates[kind]:
+    if kind in RETIRED or _gates["offline"] or not _gates[kind]:
         return False
     return consent(kind) is not None
 
@@ -303,7 +315,7 @@ def granted(kind: str) -> bool:
     (``stale``), and words that moved are not a person's no."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
-    if not _gates[kind]:
+    if kind in RETIRED or not _gates[kind]:
         return False
     if consent(kind) is not None:
         return True
@@ -319,6 +331,8 @@ def require(kind: str) -> str:
         raise ConsentRequired(kind, "switched off")
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
+    if kind in RETIRED:
+        raise ConsentRequired(kind, "nothing on this PC sends that any more")
     if _gates["offline"]:
         raise ConsentRequired(kind, "offline mode is on")
     row = consent(kind)
@@ -390,7 +404,7 @@ def request(kind: str) -> bool:
     gate is already open or no card exists in this process."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
-    if allowed(kind) or _asker is None:
+    if kind in RETIRED or allowed(kind) or _asker is None:
         return False
     with _lock:
         _asked.add(kind)
@@ -468,6 +482,9 @@ def grant(kind: str, text_version: str | None = None, *, from_a_step: bool = Fal
     card's, and then Home asks about the rest like any stale row."""
     if kind not in KINDS:
         raise ValueError(f"unknown consent kind {kind!r}")
+    if kind in RETIRED:
+        raise ValueError(f"{kind}: nothing on this PC sends that any more, "
+                         f"so there is nothing to turn on")
     version_ = text_version or TEXT_VERSIONS[kind]
     if version_ != TEXT_VERSIONS[kind] and not from_a_step:
         raise ValueError(f"{kind}: the card shown was {version_}, the "
@@ -584,6 +601,8 @@ def status() -> list[dict]:
             "text_version": (row or {}).get("text_version", ""),
             "current_version": TEXT_VERSIONS[kind],
             "stale": bool(row) and row.get("text_version") != TEXT_VERSIONS[kind],
+            # nothing asks it: the desks show the record and Withdraw only
+            "retired": kind in RETIRED,
         })
     return out
 
@@ -595,7 +614,10 @@ def cli_list(out=print) -> int:
     out(f"offline: {'on' if _gates['offline'] else 'off'}   "
         f"update check: {'on' if _gates['update_check'] else 'off'}")
     for s in status():
-        if s["open"]:
+        if s["retired"]:
+            state = ("retired — nothing on this PC sends it"
+                     + (f"; a yes from {s['when']} is on record" if s["when"] else ""))
+        elif s["open"]:
             state = f"open since {s['when']} ({s['text_version']})"
         elif s["stale"]:
             state = (f"STALE — granted {s['when']} for {s['text_version']}, "
@@ -611,6 +633,10 @@ def cli_list(out=print) -> int:
 def cli_grant(kind: str, out=print) -> int:
     if kind not in KINDS:
         out(f"no such consent kind: {kind} (one of {', '.join(KINDS)})")
+        return 2
+    if kind in RETIRED:
+        out(f"{kind}: nothing on this PC sends that any more, so there is "
+            f"nothing to turn on (main.py --withdraw {kind} clears an old yes)")
         return 2
     row = grant(kind)
     out(f"{kind}: granted {row['when']} ({row['text_version']}); the "

@@ -5,15 +5,14 @@ no way to render it as English. Translating what was already dictated (or
 typed) therefore needs a language model, which is a different kind of
 backend from the transcribers.
 
-Gemini goes first: it keeps embedded English technical terms in Latin
-script and preserves register, which matters because these messages are
-usually prompts for a coding assistant. When the free-tier daily cap is
-spent — or there is no Gemini key — Groq answers, and a local Ollama
-model after both: the same cloud-first, local-when-spent shape the
-dictation path already uses, so translation never becomes another thing
-that stops working at 20 requests. Groq earned its place by measurement
-(2026-10-03, `[translate] prefer` in defaults.toml): it keeps the English
-terms as well as Gemini, so one free key of either kind translates.
+Groq goes first (since 2026-11-27, `[translate] prefer` in defaults.toml,
+on the measurement of 2026-10-03 written there: it kept the English
+technical terms in Latin script as well as Gemini, in half a second, where
+Gemini took 4 s and failed 7 of 16), which matters because these messages
+are usually prompts for a coding assistant. When Groq cannot answer — or
+there is no Groq key — Gemini answers, and a local Ollama model after
+both, so translation never becomes another thing that stops working when
+one free tier is spent, and one free key of either kind translates.
 
 Ollama is reached over plain HTTP: no new pip dependency, and nothing is
 loaded into VRAM until the fallback actually fires.
@@ -409,8 +408,8 @@ class CerebrasTranslator:
 
     PRIVACY, stated plainly because the README states Gemini's: these send
     TEXT — the transcript of what you said — to the provider under their
-    terms. Your AUDIO never leaves this machine; that stays true of every
-    path here except the Gemini dictation backend you already opt into.
+    terms. Your AUDIO never leaves this machine: no path on this PC sends
+    it (the Gemini dictation backend, the one exception, left 2026-11-27).
     If even transcript-text-in-the-cloud is unacceptable,
     [polish] prefer = "ollama" puts everything back where classic had it.
     """
@@ -598,8 +597,9 @@ class GroqTranslator(CerebrasTranslator):
 # prefer` puts first. Gemini was the only cloud here until 2026-10-03; Groq
 # joined after the measurement written at `prefer` in defaults.toml (it
 # keeps English terms in Latin script as well as Gemini did, 8x faster), so
-# one free key of EITHER kind translates.
-ORDER = ("gemini", "groq", "ollama")
+# one free key of EITHER kind translates, and it is ahead of Gemini here
+# too since 2026-11-27.
+ORDER = ("groq", "gemini", "ollama")
 
 
 class Translator:
@@ -651,7 +651,7 @@ class Translator:
         return self._local
 
     def _ranked(self) -> list[str]:
-        prefer = getattr(self._cfg.translate, "prefer", "gemini")
+        prefer = getattr(self._cfg.translate, "prefer", "groq")
         return [prefer] + [n for n in ORDER if n != prefer]
 
     @staticmethod

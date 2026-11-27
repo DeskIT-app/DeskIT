@@ -73,7 +73,7 @@ SLUGS: dict[str, str] = {
 LAYOUT: dict[str, tuple[str, ...]] = {
     settings_mod.GENERAL: ("dot", "ON THE SCREEN", "THIS COMPUTER",
                            "WHERE FILES ARE SAVED", "updates", "awake"),
-    settings_mod.DICTATION: ("WHERE YOUR SPEECH BECOMES WORDS", "model",
+    settings_mod.DICTATION: ("model",
                              "WHEN YOU DICTATE", "WORDS IT LEARNS",
                              "THE TRANSLATE KEY"),
     settings_mod.SCREEN: ("recording", "SCREENSHOTS AND RECORDINGS",
@@ -117,7 +117,7 @@ BLOCK_TITLES: dict[str, tuple[str, str]] = {
 }
 GROUP_GLYPHS: dict[str, str] = {
     "ON THE SCREEN": "eye", "THIS COMPUTER": "laptop",
-    "WHERE FILES ARE SAVED": "folder", "WHERE YOUR SPEECH BECOMES WORDS": "mic",
+    "WHERE FILES ARE SAVED": "folder",
     "WHEN YOU DICTATE": "mic", "WORDS IT LEARNS": "book",
     "THE TRANSLATE KEY": "globe", "SCREENSHOTS AND RECORDINGS": "camera",
     "THE CAMERA": "camera", "ASK ABOUT THE SCREEN": "help",
@@ -673,6 +673,15 @@ class Place:
         except Exception:                                    # noqa: BLE001
             row = {"open": False, "stale": False, "when": "", "gate": False}
         button = None
+        if kind in privacy.RETIRED:
+            # nothing asks it (cloud_audio since 2026-11-27): the record,
+            # and Withdraw while a yes from before is on file
+            if row.get("when"):
+                return {"text": settings_mod.RETIRED_GATE_WORDS[1], "tone": "faint",
+                        "button": {"label": "Withdraw", "do": "consent.withdraw",
+                                   "arg": kind}}
+            return {"text": settings_mod.RETIRED_GATE_WORDS[0], "tone": "faint",
+                    "button": None}
         if row["open"]:
             text, tone = f"On since {str(row.get('when', ''))[:10]}", "on"
             button = {"label": "Withdraw", "do": "consent.withdraw", "arg": kind}
@@ -1964,6 +1973,8 @@ class Place:
         except Exception as e:                               # noqa: BLE001
             return f"could not withdraw that ({type(e).__name__})"
         self._sections_kept = None
+        if kind in privacy.RETIRED:
+            return f"{kind}: withdrawn — the old yes is gone"
         return (f"{kind}: withdrawn — the local path answers from the "
                 f"next press; the card will ask again when a feature "
                 f"needs the cloud")

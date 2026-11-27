@@ -140,10 +140,13 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 #: to the door at home, ``serve_tls``) and ``link`` (the sealed relay
 #: through the account, relay.py: a PC's answer to a phone away from home,
 #: sealed under the account key, as a broadcast on the account's own
-#: topic), which the plan's list predates.
+#: topic), which the plan's list predates. No ``transcribe`` since
+#: 2026-11-27: nothing on this PC sends a recording to a provider any more
+#: (house rule 2; the Gemini speech engine left), so a request that names
+#: it is a ValueError before any socket.
 PURPOSES: frozenset[str] = frozenset({
     "polish", "punctuate", "translate", "lookup", "review", "study",
-    "reading", "ask-screen", "transcribe", "key-test", "catalog", "ollama",
+    "reading", "ask-screen", "key-test", "catalog", "ollama",
     "notify", "summary", "model-download", "pack-install", "update-check",
     "update-download", "account", "report", "sync", "history", "room",
     "phone", "link",

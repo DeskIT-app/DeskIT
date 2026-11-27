@@ -99,6 +99,14 @@ CONSENT_GATES: frozenset[str] = frozenset({
 })
 
 
+#: A retired gate's row on Settings > Privacy (privacy.RETIRED, spelled
+#: here for the same reason as CONSENT_GATES): without a yes on file, and
+#: with one, when Withdraw stands beside it. Both desks say these words.
+RETIRED_GATE_WORDS: tuple[str, str] = (
+    "Off — nothing on this PC sends it",
+    "Not used any more — Withdraw clears the yes on file")
+
+
 @dataclass(frozen=True)
 class Section:
     name: str
@@ -379,8 +387,6 @@ ACCOUNT = "Account"       # who is signed in, what follows them, the lock
 PRIVACY = "Privacy"       # keys, what may leave, what is kept
 ABOUT = "About"           # version, licence, the app's own files
 
-_ENGINES = (("local", "On this computer"),
-            ("gemini", "In Google's cloud"))
 _REPAIR = (("cloud", "Before the paste with a key, as a card without one"),
            ("always", "Always before the paste"),
            ("known", "Only taught words"),
@@ -497,12 +503,10 @@ TABS: tuple[Tab, ...] = (
                      "unless you pick another."),
         )),
     )),
+    # No engine menu since 2026-11-27: the one other choice, "In
+    # Google's cloud", sent the recording to Google, and the PC never sends
+    # audio anywhere (house rule 2). `backend` is the developer's now.
     Tab(DICTATION, (
-        Group("WHERE YOUR SPEECH BECOMES WORDS", (
-            Friendly("backend", "Where your speech is turned into words",
-                     "On this computer is faster and better at Hebrew, and "
-                     "nothing leaves the machine.", _ENGINES),
-        )),
         Group("WHEN YOU DICTATE", (
             Friendly("auto_language", "Also understand English",
                      "The app decides for each recording; off, everything "
@@ -649,8 +653,10 @@ TABS: tuple[Tab, ...] = (
                      "reading. Opens only through its card, the first time "
                      "a feature needs it."),
             Friendly("privacy.cloud_audio", "Recordings to the cloud",
-                     "What you said, as audio, may go to Google or Groq "
-                     "for transcription. Opens only through its card."),
+                     "Nothing on this PC sends a recording anywhere: your "
+                     "speech becomes words on this computer. The line "
+                     "stays so a yes given to an earlier version can be "
+                     "withdrawn."),
             Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
                      "The part of the screen you asked about may go to "
                      "Groq or Google. Opens only through its card."),

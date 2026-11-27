@@ -64,30 +64,18 @@ def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
 def get_transcriber(cfg, hotwords=None, *,
                     english_later: bool = False) -> Transcriber:
     """Build the backend selected in config. Imports lazily so the fake
-    backend works without google-genai and the local stub without
-    faster-whisper.
+    backend works without faster-whisper.
+
+    Every backend here runs on this PC. The one that did not — "gemini",
+    which sent the recording to Google — was taken out on 2026-11-27
+    (house rule 2: the PC never sends audio anywhere); config.build reads
+    a file that still names it as "local" (config.RETIRED_BACKENDS).
 
     `english_later` (the live app): the local backend returns as soon
     as the Hebrew model is ready and loads the English detector on a
     thread of its own — see LocalWhisperTranscriber. The default loads
     both before returning, which is what the wizard's timed sentence,
     --benchmark and --drain want."""
-    if cfg.backend == "gemini":
-        from .gemini import ConsentRequired, GeminiTranscriber
-        try:
-            return GeminiTranscriber(list(cfg.gemini.models),
-                                     cfg.gemini.timeout_s)
-        except ConsentRequired as e:
-            # The cloud_audio gate is shut (privacy.py): a shut gate must
-            # never keep the app from starting — the person dictates on
-            # this PC until the card is answered (plan 5.2). A MISSING key
-            # still raises, as it always did: that is a setup error the
-            # log should shout about.
-            import logging
-            logging.getLogger("app").warning(
-                "backend = \"gemini\" but %s — transcribing on this PC "
-                "instead until it is granted", e)
-            return _local(cfg, hotwords, english_later)
     if cfg.backend == "fake":
         from .fake import FakeTranscriber
         return FakeTranscriber()

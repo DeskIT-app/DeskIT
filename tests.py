@@ -878,7 +878,7 @@ def test_erase_units_counts_utf16() -> None:
 
 def test_parse_429_reads_per_day_cap() -> None:
     import gemini_pool
-    from transcribers.gemini import _parse_429
+    from gemini_pool import parse_429 as _parse_429
 
     msg = ("You exceeded your current quota. * Quota exceeded for metric: "
            "generate_content_free_tier_requests, limit: 20, model: "
@@ -913,28 +913,29 @@ def test_rate_limit_error_carries_retry_hint() -> None:
 
 def test_gemini_rotates_past_an_exhausted_model() -> None:
     """The whole point of the model list: model 1 out of quota must not end
-    the dictation — model 2 answers it."""
-    from transcribers.base import RateLimitError
-    from transcribers.gemini import GeminiTranscriber
+    the press — model 2 answers it, and the next press skips the resting
+    one. It drove the Gemini speech engine until that left on 2026-11-27;
+    gemini_pool.rotate is what translation, punctuation, lookup and the
+    screen question still spend through."""
+    import gemini_pool
 
-    t = GeminiTranscriber.__new__(GeminiTranscriber)   # no API key needed
-    t._models = ["dead", "alive"]
-    t._cooldown, t._strikes, t._thinking = {}, {}, {}
+    cooldown: dict = {}
+    strikes: dict = {}
     calls: list[str] = []
 
-    def fake_one(model, wav, language=None):
+    def attempt(model):
         calls.append(model)
         if model == "dead":
             raise _fake_429()
+        strikes[model] = 0
         return "טקסט"
 
-    t._one = fake_one
-    assert t.transcribe(b"wav") == "טקסט"
+    assert gemini_pool.rotate(["dead", "alive"], cooldown, strikes, attempt) == "טקסט"
     assert calls == ["dead", "alive"], calls
-    assert t._cooldown["dead"] > 0
+    assert cooldown["dead"] > 0
     # second call skips the resting model entirely
     calls.clear()
-    assert t.transcribe(b"wav") == "טקסט"
+    assert gemini_pool.rotate(["dead", "alive"], cooldown, strikes, attempt) == "טקסט"
     assert calls == ["alive"], calls
 
 
@@ -984,16 +985,12 @@ def test_gemini_passes_over_a_retired_or_busy_model() -> None:
 
 
 def test_gemini_reports_when_every_model_is_spent() -> None:
+    import gemini_pool
     from transcribers.base import RateLimitError
-    from transcribers.gemini import GeminiTranscriber
 
-    t = GeminiTranscriber.__new__(GeminiTranscriber)
-    t._models = ["a", "b"]
-    t._cooldown, t._strikes, t._thinking = {}, {}, {}
-    t._one = lambda model, wav, language=None: (
-        _ for _ in ()).throw(_fake_429())
     try:
-        t.transcribe(b"wav")
+        gemini_pool.rotate(["a", "b"], {}, {}, lambda model: (
+            _ for _ in ()).throw(_fake_429()))
     except RateLimitError as e:
         assert e.per_day is True
         assert "out of free-tier quota" in str(e), e
@@ -1067,13 +1064,13 @@ def test_config_accepts_model_list_and_legacy_single_model() -> None:
 
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "c.toml"
-        p.write_text('backend = "gemini"\n[gemini]\n'
+        p.write_text('[gemini]\n'
                      'models = ["one", "two"]\n', "utf-8")
         cfg = config_mod.load(p)
         assert cfg.gemini.models == ("one", "two"), cfg.gemini.models
         assert cfg.gemini.model == "one"          # first is the primary
 
-        p.write_text('backend = "gemini"\n[gemini]\nmodel = "solo"\n', "utf-8")
+        p.write_text('[gemini]\nmodel = "solo"\n', "utf-8")
         assert config_mod.load(p).gemini.models == ("solo",)
 
         # an empty placeholder would mean "erase nothing" -> stray marker
@@ -8796,7 +8793,15 @@ def test_translator_asks_groq_when_gemini_cannot_answer() -> None:
     assert first.calls == 0, "prefer = groq still asked Gemini first"
     assert chain("gemini", None, None).translate("שלום") == ("via ollama", "ollama")
     assert chain("ollama", Leg("gemini"), Leg("groq")).translate("שלום") == ("via ollama", "ollama")
-    assert translate_mod.ORDER == ("gemini", "groq", "ollama")
+    assert translate_mod.ORDER == ("groq", "gemini", "ollama")
+    # and what ships (2026-11-27): Groq first, Gemini next, Ollama last —
+    # the measurement written at [translate] prefer in defaults.toml
+    shipped = config_mod.load(REPO / "defaults.toml")
+    assert shipped.translate.prefer == "groq", shipped.translate.prefer
+    t = translate_mod.Translator.__new__(translate_mod.Translator)
+    t._cfg = shipped
+    assert t._ranked() == ["groq", "gemini", "ollama"], t._ranked()
+    assert config_mod.Config().translate.prefer == "groq"
 
 
 def test_translator_names_the_missing_keys_without_holding_them() -> None:
@@ -27173,7 +27178,6 @@ def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
             ("hint.corner", ("dot", "top-right", "top-left", "bottom-right",
                              "bottom-left")),
             ("dot.corner", ("bottom-right", "top-right")),
-            ("backend", ("gemini", "local")),
             ("polish.when", ("never", "known", "cloud", "always")),
             ("local.device", ("auto", "cuda", "cpu"))):
         setting = find(path)
@@ -27291,7 +27295,7 @@ def test_the_screen_draws_the_short_list_and_the_file_keeps_the_rest() -> None:
     assert len(drawn) * 3 < len(_config_paths()), \
         "the screen draws more than a third of the file again"
     # the person's decisions, as examples of the kind that is drawn
-    for path in ("backend", "audio.device", "auto_language",
+    for path in ("audio.device", "auto_language",
                  "punctuate.auto", "vocab.enabled", "capture.folder",
                  "capture.enabled", "camera.enabled", "server.enabled",
                  "privacy.offline", "setup.autostart", "awake.hold",
@@ -27307,7 +27311,7 @@ def test_the_screen_draws_the_short_list_and_the_file_keeps_the_rest() -> None:
                  "vocab.max_terms", "vocab.replace_after_hits", "polish.groq_model",
                  "polish.max_wait_s", "polish.prefer", "punctuate.prefer",
                  "study.idle_minutes", "updates.channel",
-                 "setup.done", "setup.tour", "splash", "gemini.timeout_s",
+                 "setup.done", "setup.tour", "splash", "translate.timeout_s",
                  "notify.stack_max", "notify.corner", "review.corner",
                  "review.scale", "camera.timer", "capture.fps",
                  "awake.pin_timeouts", "awake.vitals_minutes",
@@ -27427,7 +27431,9 @@ def test_the_two_screens_draw_the_short_list_between_them() -> None:
         assert drawn["privacy.update_check"] == settings_mod.GENERAL
         assert drawn["awake.hold"] == settings_mod.GENERAL
         assert drawn["setup.autostart"] == settings_mod.GENERAL
-        assert drawn["backend"] == settings_mod.DICTATION
+        # no engine menu since 2026-11-27: the only other engine sent
+        # the recording to Google; the line is the developer's now
+        assert "backend" not in drawn
         assert drawn["punctuate.auto"] == settings_mod.DICTATION
         assert drawn["capture.quality"] == settings_mod.SCREEN
         assert drawn["notify.cue"] == settings_mod.MESSAGES
@@ -38605,7 +38611,6 @@ def test_privacy_gate_refuses_every_cloud_constructor():
 
     import privacy
     import translate as translate_mod
-    import transcribers.gemini as tg
     import visual_qa as vq
 
     import secretstore
@@ -38621,8 +38626,7 @@ def test_privacy_gate_refuses_every_cloud_constructor():
                 (lambda: translate_mod.GroqTranslator("m", 5), translate_mod.TranslationError, "cloud_text"),
                 (lambda: translate_mod.GeminiTranslator(["m"], 5), translate_mod.TranslationError, "cloud_text"),
                 (lambda: vq.GroqVision("m", 5, 10), vq.QAError, "cloud_screenshots"),
-                (lambda: vq.GeminiVision(["m"], 5), vq.QAError, "cloud_screenshots"),
-                (lambda: tg.GeminiTranscriber(["m"], 5), tg.TranscriptionError, "cloud_audio")):
+                (lambda: vq.GeminiVision(["m"], 5), vq.QAError, "cloud_screenshots")):
             try:
                 build()
             except error as e:
@@ -38631,10 +38635,9 @@ def test_privacy_gate_refuses_every_cloud_constructor():
             else:
                 raise AssertionError(f"{kind}: built with the gate shut")
         assert looked == [], "a key was looked up before the gate was asked"
-        with _consented("cloud_text", "cloud_screenshots", "cloud_audio"):
+        with _consented("cloud_text", "cloud_screenshots"):
             assert translate_mod.GroqTranslator("m", 5).key_source == "test"
             assert vq.GroqVision("m", 5, 10).key_source == "test"
-            assert tg.GeminiTranscriber(["m"], 5).key_source == "test"
         assert looked, "the open gate never reached the key"
         # A row whose words are older than the card: shut, and says so.
         stale = {"consents": [{"kind": "cloud_text", "text_version": "groq-2020-01-01",
@@ -38665,6 +38668,137 @@ def test_privacy_gate_refuses_every_cloud_constructor():
         finally:
             privacy.withdraw("cloud_text")
         assert privacy.stale() == [], "no row, nothing to ask again"
+
+
+def test_the_pc_has_no_road_for_a_recording_to_the_cloud():
+    """House rule 2, held in code (2026-11-27, the owner's go): the "In
+    Google's cloud" speech engine is gone — the module, the menu, the
+    purpose that carried the recording and every door to its gate.
+
+    A settings file that still says backend = "gemini" loads, as the
+    model on this computer, with ONE line in app.log however often it is
+    read. net.py refuses a request named "transcribe" before any socket.
+    The cloud_audio gate keeps its record — a row from before is still
+    listed, and Withdraw still takes it away — but it never opens, never
+    asks, is never stale on Home and is never granted again."""
+    import importlib.util
+    import json as json_mod
+    import logging
+    import tempfile
+
+    import net as net_mod
+    import privacy
+    import settings as settings_mod
+
+    assert importlib.util.find_spec("transcribers.gemini") is None
+    assert not (REPO / "transcribers" / "gemini.py").exists()
+    assert config_mod.VALID_BACKENDS == ("local", "fake")
+    assert config_mod.Config().backend == "local"
+
+    # an old settings file: read as local, one log line, no ConfigError
+    lines: list[str] = []
+
+    class Catch(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    catch = Catch()
+    app_log = logging.getLogger("app")
+    level = app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catch)
+    was = set(config_mod._said_retired)
+    config_mod._said_retired.clear()
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.toml"
+            p.write_text('backend = "gemini"\n', "utf-8")
+            assert config_mod.load(p).backend == "local"
+            p.write_text('backend = "Gemini "\nhotkey = "right ctrl"\n', "utf-8")
+            assert config_mod.load(p).backend == "local"
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+        config_mod._said_retired.clear()
+        config_mod._said_retired.update(was)
+    said = [m for m in lines if "taken out of DeskIT" in m]
+    assert len(said) == 1 and "gemini" in said[0], lines
+
+    # no screen offers it
+    drawn = set(settings_mod.friendly_paths())
+    assert "backend" not in drawn
+    assert not hasattr(settings_mod, "_ENGINES"), "the engine menu is back"
+    assert not any(v == "gemini" for tab in settings_mod.TABS for g in tab.groups
+                   for row in g.rows for v, _name in row.names)
+    groups = [g.title for tab in settings_mod.TABS for g in tab.groups]
+    assert "WHERE YOUR SPEECH BECOMES WORDS" not in groups
+
+    # no purpose can carry it, and a request that names one never connects
+    assert "transcribe" not in net_mod.PURPOSES
+    assert "cloud_audio" not in privacy.PURPOSE_KINDS.values()
+    sockets: list = []
+    with _patched(net_mod, "_connect", lambda *a, **k: sockets.append(a)):
+        try:
+            net_mod.request("POST", "https://generativelanguage.googleapis.com/x",
+                            "transcribe", secret="gemini", body=b"RIFF")
+        except ValueError as e:
+            assert "transcribe" in str(e), e
+        else:
+            raise AssertionError("a transcribe request was let through")
+    assert sockets == []
+    # no product module builds an audio part for a provider: the one audio
+    # MIME type left is a problem report's attachment, ticked on its preview
+    audio = re.compile(r"""["']audio/(?:wav|x-wav|mpeg|ogg|webm|flac)["']""")
+    carriers = sorted(str(f.relative_to(REPO)) for f in
+                      list(REPO.glob("*.py")) + list((REPO / "transcribers").glob("*.py"))
+                      if f.name != "tests.py" and audio.search(f.read_text("utf-8")))
+    assert carriers == ["sb.py"], carriers
+
+    # the gate: a yes from before stays on record and opens nothing
+    assert privacy.RETIRED == frozenset({"cloud_audio"})
+    row = {"kind": "cloud_audio", "text_version": privacy.TEXT_VERSIONS["cloud_audio"],
+           "when": "2026-10-01T10:00:00", "app_version": "dev"}
+    paths.CONSENT_FILE.write_text(json_mod.dumps({"consents": [row]}), "utf-8")
+    privacy._rows_cache.update(mtime=None, rows=[])
+    privacy._gates["cloud_audio"] = True
+    asked: list[str] = []
+    try:
+        assert privacy.consent("cloud_audio") is not None, "the record was not read"
+        assert privacy.allowed("cloud_audio") is False
+        assert privacy.granted("cloud_audio") is False
+        try:
+            privacy.require("cloud_audio")
+        except privacy.ConsentRequired as e:
+            assert e.kind == "cloud_audio" and "any more" in str(e), e
+        else:
+            raise AssertionError("a retired gate let a request through")
+        with _patched(privacy, "_asker", asked.append), privacy.pressed():
+            assert privacy.request("cloud_audio") is False
+            try:
+                privacy.require("cloud_audio")
+            except privacy.ConsentRequired:
+                pass
+        assert asked == [], "a card was asked for a retired gate"
+        assert "cloud_audio" not in privacy.stale()
+        state = next(s for s in privacy.status() if s["kind"] == "cloud_audio")
+        assert state["retired"] and not state["open"] and state["when"], state
+        try:
+            privacy.grant("cloud_audio")
+        except ValueError as e:
+            assert "nothing to turn on" in str(e), e
+        else:
+            raise AssertionError("a retired gate was granted")
+        out: list[str] = []
+        assert privacy.cli_grant("cloud_audio", out.append) == 2 and out, out
+        listed: list[str] = []
+        privacy.cli_list(listed.append)
+        assert any("cloud_audio" in s and "retired" in s for s in listed), listed
+        assert privacy.withdraw("cloud_audio") is True
+        assert privacy.consent("cloud_audio") is None
+    finally:
+        privacy.withdraw("cloud_audio")
+        privacy._gates["cloud_audio"] = False
+    assert next(s for s in privacy.status() if s["kind"] == "cloud_audio")["when"] == ""
 
 
 def test_consent_round_trip_and_withdraw_teardown():
@@ -41025,7 +41159,7 @@ def test_models_window_offers_downloads_and_closes():
             cfg = dataclasses.replace(config_mod.Config(), backend="local")
             cfg = dataclasses.replace(cfg, local=dataclasses.replace(cfg.local, model=e.repo))
             assert models.wanted(cfg)
-            assert not models.wanted(dataclasses.replace(cfg, backend="gemini"))
+            assert not models.wanted(dataclasses.replace(cfg, backend="fake"))
             e.folder.mkdir(parents=True, exist_ok=True)
             (e.folder / models.COMPLETE).write_text(json.dumps({"revision": e.revision}), "utf-8")
             assert not models.wanted(cfg)
@@ -42435,7 +42569,7 @@ def test_the_background_downloads_want_what_this_copy_lacks():
             cpu = {"tier": "cpu", "cuda_devices": 0}
             out = downloads.wanted(cfg, cpu)
             assert "pack" not in out and "detector" not in out and "model" in out
-            cloud = dataclasses.replace(cfg, backend="gemini")
+            cloud = dataclasses.replace(cfg, backend="fake")
             assert "model" not in downloads.wanted(cloud, gpu)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -45527,16 +45661,15 @@ def _gemini_reply(text: str, finish: str = "STOP") -> bytes:
 
 
 def test_gemini_rest_request_shape():
-    """The transcribe request is one POST to models/<model>:generateContent
-    on the allowlisted host, JSON with the system instruction, an
-    inlineData part of audio/wav, a text part, and a thinkingConfig that
-    matches gemini_pool.thinking_style for the model; the key rides in
-    x-goog-api-key and nowhere else; the row in network.log names the
-    secret and the purpose. The translator and the screen question use
-    the same client with their own parts."""
+    """A Gemini request is one POST to models/<model>:generateContent on
+    the allowlisted host, JSON with the system instruction, the parts, and
+    a thinkingConfig that matches gemini_pool.thinking_style for the
+    model; the key rides in x-goog-api-key and nowhere else; the row in
+    network.log names the secret and the purpose. (It was the speech
+    engine's request until that left on 2026-11-27; the translator and
+    the screen question use the same client with their own parts.)"""
     import gemini_pool
     import net as net_mod
-    from transcribers.gemini import GeminiTranscriber
 
     gem_fixture = "AIza_fixture_rest_" + "g" * 20
     seen: list[tuple[str, str, dict, dict]] = []
@@ -45545,13 +45678,15 @@ def test_gemini_rest_request_shape():
         seen.append((method, url, dict(headers), json.loads(body)))
         return _FakeRaw(_gemini_reply("שלום עולם"))
 
-    with _test_cred_prefix() as store, _consented("cloud_audio", "cloud_text"), \
+    with _test_cred_prefix() as store, _consented("cloud_text"), \
             _patched(net_mod, "_connect", fake_connect):
         store.set("gemini", gem_fixture)
-        t = GeminiTranscriber(["gemini-2.5-flash", "gemini-flash-latest"], 30)
-        assert not hasattr(t, "_api_key") and "AIza" not in repr(vars(t))
-        wav = b"RIFF" + bytes(2000)
-        assert t.transcribe(wav) == "שלום עולם"
+        client = gemini_pool.Client("translate", 30)
+        assert "AIza" not in repr(vars(client))
+        thinking: dict = {}
+        reply = client.generate("gemini-2.5-flash", [gemini_pool.text_part("בוקר")],
+                                system="SYSTEM", temperature=0.2, thinking=thinking)
+        assert gemini_pool.text_of(reply) == "שלום עולם"
         method, url, headers, payload = seen[-1]
         assert method == "POST"
         assert url == ("https://generativelanguage.googleapis.com/v1beta/models/"
@@ -45559,24 +45694,19 @@ def test_gemini_rest_request_shape():
         assert "?" not in url
         assert headers.get("x-goog-api-key") == gem_fixture
         assert "Authorization" not in headers
-        from transcribers.gemini import _SYSTEM_PROMPT
-        assert payload["systemInstruction"] == {"parts": [{"text": _SYSTEM_PROMPT}]}
-        parts = payload["contents"][0]["parts"]
+        assert payload["systemInstruction"] == {"parts": [{"text": "SYSTEM"}]}
         assert payload["contents"][0]["role"] == "user"
-        assert parts[0]["inlineData"]["mimeType"] == "audio/wav"
-        import base64
-        assert base64.b64decode(parts[0]["inlineData"]["data"]) == wav
-        assert parts[1] == {"text": "Transcribe this recording following the system rules."}
+        assert payload["contents"][0]["parts"] == [{"text": "בוקר"}]
         assert payload["generationConfig"]["temperature"] == 0.2
         assert payload["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
         assert gemini_pool.thinking_style("gemini-2.5-flash", {}) == "budget"
         row = net_mod.rows()[-1]
         assert row.host == "generativelanguage.googleapis.com"
-        assert row.purpose == "transcribe" and row.secret == "gemini"
+        assert row.purpose == "translate" and row.secret == "gemini"
         assert gem_fixture not in net_mod.format_row(row)
         # the -latest alias takes the level knob
-        t2 = GeminiTranscriber("gemini-flash-latest", 30)
-        t2.transcribe(wav)
+        client.generate("gemini-flash-latest", [gemini_pool.text_part("x")],
+                        thinking=thinking)
         assert seen[-1][3]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
         # a 400 on the knob: retried once without it, remembered
         answers = iter([_FakeRaw(json.dumps({"error": {"code": 400, "message":
@@ -45587,9 +45717,11 @@ def test_gemini_rest_request_shape():
             seen.append((method, url, dict(headers), json.loads(body)))
             return next(answers)
         with _patched(net_mod, "_connect", flaky):
-            assert t.transcribe(wav) == "שוב"
+            assert gemini_pool.text_of(client.generate(
+                "gemini-2.5-flash", [gemini_pool.text_part("x")],
+                thinking=thinking)) == "שוב"
         assert "thinkingConfig" not in seen[-1][3].get("generationConfig", {})
-        assert t._thinking["gemini-2.5-flash"] == "none"
+        assert thinking["gemini-2.5-flash"] == "none"
         # the translator: a text part, the translate purpose
         import translate as translate_mod
         tr = translate_mod.GeminiTranslator("gemini-2.5-flash", 30, target="English")
@@ -45602,41 +45734,9 @@ def test_gemini_rest_request_shape():
                 {"models": [{"name": "models/gemini-2.5-flash"}, {"name": "models/x"}]}).encode())):
             assert gemini_pool.Client("catalog", 5).list_models() == ["gemini-2.5-flash", "x"]
     assert "google.genai" not in (REPO / "gemini_pool.py").read_text("utf-8")
-    for name in ("transcribers/gemini.py", "translate.py", "visual_qa.py", "net.py"):
+    for name in ("gemini_pool.py", "translate.py", "visual_qa.py", "net.py"):
         src = (REPO / name).read_text("utf-8")
         assert "from google" not in src and "import genai" not in src, name
-
-
-def test_gemini_inline_limit_refused_before_send():
-    """A WAV over the inline cap makes zero requests: TooLongForCloud is
-    raised before the wire, the app decodes it locally and says so."""
-    import gemini_pool
-    import net as net_mod
-    from transcribers.base import TooLongForCloud
-    from transcribers.gemini import GeminiTranscriber
-
-    calls: list = []
-    with _test_cred_prefix() as store, _consented("cloud_audio"), \
-            _patched(net_mod, "_connect", lambda *a, **k: calls.append(1) or _FakeRaw(_gemini_reply("x"))):
-        store.set("gemini", "AIza_fixture_cap_" + "g" * 20)
-        t = GeminiTranscriber("gemini-2.5-flash", 30)
-        big = bytes(gemini_pool.INLINE_CAP_BYTES)     # base64 makes it a third bigger
-        try:
-            t.transcribe(big)
-        except TooLongForCloud as e:
-            assert "too long for the cloud pass" in str(e), e
-        else:
-            raise AssertionError("a recording over the cap was sent")
-        assert calls == [], "a request left for the wire"
-        assert gemini_pool.inline_size(b"abc") == 4 and gemini_pool.inline_size(b"ab") == 4
-        assert gemini_pool.inline_size(bytes(3000)) == 4000
-    # main.py: the same except that rests a spent cloud decodes this one here
-    import inspect
-
-    import main as main_mod
-    src = inspect.getsource(main_mod.App._transcribe)
-    assert "except (RateLimitError, TooLongForCloud)" in src, "main.py does not fall back"
-    assert "self._say(str(e))" in src, "the card is not told"
 
 
 def test_gemini_429_parsed_from_json_body():
@@ -60610,20 +60710,36 @@ def test_web_desk_settings_gates_open_and_close_only_through_their_doors():
         assert withdrawn == ["cloud_audio"]
         place.act("consent.sync", "history_sync")
         assert ("account", {"do": "sync", "kind": "history_sync"}) in asked
-        status = [{"kind": k, "open": k == "cloud_text", "stale": k == "cloud_audio",
-                   "when": "2026-10-01T10:00:00" if k in ("cloud_text", "cloud_audio") else "",
+        dated = ("cloud_text", "cloud_screenshots", "cloud_audio")
+        status = [{"kind": k, "open": k == "cloud_text",
+                   "stale": k in ("cloud_screenshots", "cloud_audio"),
+                   "when": "2026-10-01T10:00:00" if k in dated else "",
                    "gate": False} for k in privacy.KINDS]
         with _patched(privacy, "status", lambda: status):
             rows = {r["path"]: r["consent"] for sec in place.read()["pages"]["privacy"]
                     if sec["kind"] == "rows" for r in sec["rows"] if r["ctl"] == "consent"}
             account = {r["path"]: r["consent"] for sec in place.read()["pages"]["account"]
                        if sec["kind"] == "rows" for r in sec["rows"] if r["ctl"] == "consent"}
+        bare = [dict(s, when="", stale=False) if s["kind"] == "cloud_audio" else s
+                for s in status]
+        with _patched(privacy, "status", lambda: bare):
+            place._sections_kept = None
+            rows_bare = {r["path"]: r["consent"] for sec in place.read()["pages"]["privacy"]
+                         if sec["kind"] == "rows" for r in sec["rows"] if r["ctl"] == "consent"}
     assert rows["privacy.cloud_text"]["text"] == "On since 2026-10-01"
     assert rows["privacy.cloud_text"]["button"]["do"] == "consent.withdraw"
-    assert rows["privacy.cloud_audio"]["text"] == "Its words changed — Home asks again"
-    assert rows["privacy.cloud_audio"]["button"]["do"] == "consent.on"
-    assert rows["privacy.cloud_screenshots"] == {"text": "Off — its card opens on first use",
-                                                 "tone": "faint", "button": None}
+    assert rows["privacy.cloud_screenshots"]["text"] == "Its words changed — Home asks again"
+    assert rows["privacy.cloud_screenshots"]["button"]["do"] == "consent.on"
+    assert rows["privacy.report_upload"] == {"text": "Off — its card opens on first use",
+                                             "tone": "faint", "button": None}
+    # a retired gate (cloud_audio since 2026-11-27): never Turn on, even
+    # under older words — the record and Withdraw while a yes is on file
+    import settings as settings_mod
+    assert rows["privacy.cloud_audio"] == {
+        "text": settings_mod.RETIRED_GATE_WORDS[1], "tone": "faint",
+        "button": {"label": "Withdraw", "do": "consent.withdraw", "arg": "cloud_audio"}}
+    assert rows_bare["privacy.cloud_audio"] == {
+        "text": settings_mod.RETIRED_GATE_WORDS[0], "tone": "faint", "button": None}
     assert account["privacy.settings_sync"]["button"]["do"] == "consent.sync"
 
 
