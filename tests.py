@@ -47622,6 +47622,7 @@ class _FakeSupabase:
         self.ended: list = []              # the sessions forget_device() ended
         self.sessions: dict = {}           # session id -> the account that owns it
         self.rls = False                   # each account reads its own rows (see _answer)
+        self.full: set[str] = set()        # tables at their ceiling (0009): a write is 507
 
     def session(self, email: str = "", token: str | None = None) -> dict:
         return {"access_token": token or self.TOKEN, "token_type": "bearer",
@@ -47706,6 +47707,13 @@ class _FakeSupabase:
             return _FakeRaw(b"true" if named and not left else b"false", 200)
         if path.startswith("rest/v1/"):
             table = path[len("rest/v1/"):]
+            if method in ("POST", "PATCH") and table in self.full:
+                # 0009's refusal, as PostgREST words a PT507: the whole
+                # statement, nothing written
+                return _FakeRaw(json.dumps({
+                    "code": "PT507", "details": "2001 rows of 2000, 616308 bytes of 1000000",
+                    "hint": "nothing was written: remove what is no longer needed to make room",
+                    "message": f"account full: {table}"}).encode(), 507)
             rows = self.tables.setdefault(table, [])
             prefer = str(headers.get("Prefer", ""))
             self.clock += 1
@@ -52409,6 +52417,241 @@ def test_migration_0007_gives_a_device_its_link_and_forget_its_limits():
     assert "grant execute on function public.forget_device(uuid) to authenticated;" in fn
     readme = (REPO / "supabase" / "README.md").read_text("utf-8")
     assert "0007_the_phone_is_a_device.sql" in readme and "forget_device()" in readme
+
+
+def test_migration_0009_gives_every_account_a_ceiling():
+    """Static, and run whole on a scratch PostgreSQL 17 before it was handed
+    over (A20, 2026-11-27): one account, above all a throwaway anonymous
+    one, must not fill the shared 500 MB. Seven tables are counted per
+    account by statement-level triggers (three a table: a transition table
+    names one event), in rows and in bytes, each table's bytes by ONE
+    expression that names every column the client fills with text; the
+    CEILINGS block in the header is the function's table, the anonymous
+    ceiling is lower everywhere, the worst cases the header states are the
+    sums, and the rows are at least twenty times the busiest account of the
+    day. The refusal is PT507 'account full: <table>' (sb knows both), only
+    on growth; the trigger reads no public table (no count(*) over the
+    account); the counter grants nothing; the 0008 rules hold."""
+    import sb
+    sql = (REPO / "supabase" / "migrations" / "0009_every_account_has_a_ceiling.sql").read_text("utf-8")
+    seven = ["history", "vocab_sync", "settings_sync", "vault", "devices", "pairings", "problem_reports"]
+    # the header's table and the function's are one table
+    block = sql[sql.index("-- BEGIN CEILINGS"):sql.index("-- END CEILINGS")].splitlines()[2:]
+    header = {}
+    for line in block:
+        t, r, b, ar, ab = line[3:].split()[:5]
+        header[(t, False)] = (int(r), int(b))
+        header[(t, True)] = (int(ar), int(ab))
+    fn = sql[sql.index("create or replace function private.account_ceiling"):]
+    fn = fn[:fn.index("$$;")]
+    values = {(t, a == "true"): (int(r), int(b)) for t, a, r, b in
+              re.findall(r"\('(\w+)',\s+(false|true),\s+(\d+),\s+(\d+)\)", fn)}
+    assert values == header and len(values) == 14, (values, header)
+    assert {t for t, _a in values} == set(seven)
+    for t in seven:
+        (r, b), (ar, ab) = values[(t, False)], values[(t, True)]
+        assert ab < b and (ar < r or r == 1), (t, values[(t, False)], values[(t, True)])
+    # what 0001 lets a settings blob be, the signed-in ceiling lets it be
+    assert values[("settings_sync", False)][1] >= 200 + 65536
+    # at least 20x the busiest account on 2026-11-27, where it had rows
+    assert values[("history", False)][0] >= 20 * 2490 and values[("vocab_sync", False)][0] >= 20 * 202
+    assert values[("devices", False)][0] >= 20 * 18
+    # the worst cases the header states are the sums, and a small share
+    regular = sum(values[(t, False)][1] for t in seven)
+    anonymous = sum(values[(t, True)][1] for t in seven)
+    assert f"= {regular:,} bytes" in sql and f"= {anonymous:,}\n" in sql.replace("\r\n", "\n"), \
+        (regular, anonymous)
+    assert regular <= 0.07 * 500_000_000 and anonymous <= 0.005 * 500_000_000, (regular, anonymous)
+    # one expression a table, and it names every column a client fills with text
+    counted = sql[sql.index("create or replace function private.usage_bytes"):]
+    counted = dict(re.findall(r"when '(\w+)'\s+then '(.*?)'\n", counted[:counted.index("$$;")]))
+    assert set(counted) == set(seven), counted
+    tables = _sql_tables()
+    # every table a client writes rows to is counted: profiles and recovery
+    # are one row an account by their keys, deletion_requests delete_me()'s
+    assert set(tables) - {"profiles", "recovery", "deletion_requests"} == set(seven), set(tables)
+    for t in seven:
+        for d in tables[t]:
+            name, typ = d.split()[0], d.split()[1]
+            if typ in ("text", "jsonb", "text[]") and not re.search(r"\bin \(", d):
+                assert re.search(rf"\b{name}\b", counted[t]), (t, name, counted[t])
+        assert counted[t].startswith("200 + "), counted[t]
+    assert "'" not in "".join(counted.values()), "a quote in an expression format() splices in"
+    # the triggers: three a table, each made idempotently, one statement each
+    for t in seven:
+        for op, ref in (("insert", "referencing new table as new_rows"),
+                        ("update", "referencing old table as old_rows new table as new_rows"),
+                        ("delete", "referencing old table as old_rows")):
+            made = (f"drop trigger if exists {t}_usage_{op} on public.{t};\n"
+                    f"create trigger {t}_usage_{op} after {op} on public.{t}\n"
+                    f"  {ref}\n  for each statement execute function private.usage_counted();")
+            assert made in sql.replace("\r\n", "\n"), made
+    # the trigger function: definer with an empty path, the refusal, only on growth
+    trig = sql[sql.index("create or replace function private.usage_counted()"):]
+    head, body, _tail = trig.split("$$", 2)
+    assert "security definer" in head and "set search_path = ''" in head and "returns trigger" in head
+    assert "public." not in body, "the trigger reads a public table: a count over the account"
+    assert "errcode = 'PT507'" in body and "message = 'account full: ' || tg_table_name" in body
+    assert sb.FULL_CODE == "PT507" and sb.FULL_PREFIX == "account full: "
+    assert "continue when tg_op = 'DELETE' or (ns[i] <= 0 and bs[i] <= 0);" in body
+    assert "claims jsonb := auth.jwt();" in head + body
+    assert "coalesce((claims ->> 'is_anonymous')::boolean, false)" in body
+    assert "coalesce(claims ->> 'sub' = uids[i]::text, false)" in body
+    for name in ("usage_bytes", "account_ceiling"):
+        part = sql[sql.index(f"create or replace function private.{name}"):]
+        part = part[:part.index("as $$")]
+        assert "set search_path = ''" in part and "security definer" not in part, name
+    # the 0008 rules: EXECUTE from PUBLIC and anon, to authenticated and service_role
+    for sig in ("private.usage_bytes(text)", "private.account_ceiling(text, boolean)",
+                "private.usage_counted()"):
+        assert f"revoke execute on function {sig} from public, anon;" in sql, sig
+        assert f"grant execute on function {sig} to authenticated, service_role;" in sql, sig
+    assert not re.search(r"\bto (public|anon)\b", sql.replace("from public, anon", ""))
+    # the counter: nobody's but the triggers'
+    assert "create table if not exists private.account_usage (" in sql
+    assert "user_id uuid not null references auth.users (id) on delete cascade," in sql
+    assert "alter table private.account_usage enable row level security;" in sql
+    assert "revoke all on private.account_usage from public, anon, authenticated;" in sql
+    assert not re.search(r"grant [\w, ]+ on (table )?private\.account_usage", sql)
+    assert "create table public." not in sql and "alter table public." not in sql
+    # the counts made again from the rows, by the same expression, all seven
+    recount = sql[sql.index("do $$"):]
+    assert "delete from private.account_usage;" in recount and "private.usage_bytes(t)" in recount
+    assert all(f"'{t}'" in recount for t in seven)
+    assert not re.search(r"\{\d+,\d{3,}\}", sql), "a repetition bound Postgres refuses"
+    readme = (REPO / "supabase" / "README.md").read_text("utf-8")
+    assert "0009_every_account_has_a_ceiling.sql" in readme and "account full" in readme
+
+
+def test_a_full_account_keeps_what_it_could_not_send_and_says_so():
+    """The client's half of 0009 (A20, 2026-11-27). The server answers a
+    write past an account's ceiling with HTTP 507, PT507, "account full:
+    <table>": nothing was written. Here nothing is lost or marked sent (the
+    history cursor stays, a learned word stays to push, a report stays
+    queued and is NOT .failed, which a 4xx would have made it), that table
+    is not sent again for FULL_RETRY_S (a nudge after every dictation sends
+    nothing), app.log gets ONE line, counts and names only, the Account
+    card's line says it in plain words, and an anonymous account is told
+    how to get more room. When the room is there again, all that waited
+    goes up and the words go."""
+    import history as history_mod
+    import sb
+    import secretstore
+    import sync as sync_mod
+    import vocab as vocab_mod
+
+    # the refusal is read by its code or its message, and a CHECK is not one
+    assert sb._says_full(507, b'{"code":"PT507","message":"account full: vault"}')
+    assert sb._says_full(507, b'{"message":"account full: vault"}')
+    assert not sb._says_full(400, b'{"code":"23514","message":"violates check constraint"}')
+    assert not sb._says_full(507, b"<html>gateway</html>") and not sb._says_full(201, b"")
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-full-"))
+    log_path = d / "transcripts.log"
+    log_path.write_text("2026-11-27 10:00:00,100 | OK | 1.0s | local | 0.4s latency | מכאן\n", "utf-8")
+    sync_dir = d / "sync"
+    outbox = d / "outbox"
+    outbox.mkdir()
+    lines: list[str] = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    keep = Keep()
+    app_log = logging.getLogger("app")
+    level = app_log.level
+    app_log.addHandler(keep)
+    app_log.setLevel(logging.INFO)
+    said_room = lambda: [ln for ln in lines if "no more room" in ln]   # noqa: E731
+    try:
+        with _fixture_project() as fake, \
+                _consented("account", "settings_sync", "history_sync", "report_upload"), \
+                _patched(history_mod, "LOG", log_path), _patched(paths, "SYNC_DIR", sync_dir), \
+                _patched(paths, "OUTBOX_DIR", outbox):
+            secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+            sb.forget_cache()
+            sb._full.clear()
+            vocab = vocab_mod.Vocab(d / "vocab.json")
+            posts = lambda table: [c for c in fake.calls if c["method"] == "POST"   # noqa: E731
+                                   and c["path"] == f"rest/v1/{table}"]
+
+            # 1. what was said: refused, kept, said once
+            fake.full = {"history"}
+            out = sb.sync_now(vocab, reason="test")
+            assert out["history"] == "full", out
+            assert not out.get("lock", "").startswith("error"), out
+            assert not fake.tables.get("history"), "a refused batch was written"
+            assert sync_mod.read_cursor().get("history_pushed_ts") is None, "marked as sent"
+            assert sb.full_tables() == ["history"] and sb.full_now("history")
+            words = sb.status()["last_error"]
+            assert words == sb.full_words(["history"]) and "what you said" in words, words
+            assert "Nothing on this PC is lost" in words and "Google" not in words, words
+            assert len(said_room()) == 1, lines
+            assert "history" in said_room()[0] and "2001 rows of 2000" in said_room()[0]
+            assert "מכאן" not in "\n".join(lines), "dictated text in app.log"
+            # the nudge after a dictation sends nothing and logs nothing new
+            n = len(posts("history"))
+            out = sb.sync_now(vocab, reason="nudge", only=["history"])
+            assert out["history"] == "pulled 0, pushed 0, full", out
+            assert len(posts("history")) == n and len(said_room()) == 1
+            assert sb.status()["last_error"] == words, "the words went while it was still full"
+
+            # 2. a learned word: refused, still to push afterwards
+            fake.full = {"history", "vocab_sync"}
+            vocab.learn("xpogo", "Expo Go")
+            out = sb.sync_now(vocab, reason="nudge", only=["vocab"])
+            assert out["vocab"] == "full" and not fake.tables.get("vocab_sync"), out
+            n = len(posts("vocab_sync"))
+            out = sb.sync_now(vocab, reason="nudge", only=["vocab"])
+            assert out["vocab"] == "pulled 0, pushed 0, full" and len(posts("vocab_sync")) == n
+            assert sb.status()["last_error"] == sb.full_words(["history", "vocab_sync"])
+            assert "what you said and your learned words" in sb.status()["last_error"]
+            assert len(said_room()) == 2
+
+            # 3. a report: queued, not .failed, and no request while full
+            rid = "aaaaaaaa-0000-0000-0000-0000000000f1"
+            (outbox / f"{rid}.json").write_text(json.dumps(
+                {"id": rid, "kind": "broken", "text": "it broke", "env": {}}), "utf-8")
+            fake.full.add("problem_reports")
+            got = sb.drain_outbox()
+            assert got[rid].startswith("queued: Your account has no more room"), got
+            assert (outbox / f"{rid}.json").exists() and not (outbox / f"{rid}.failed").exists()
+            assert sb.queued() == 1
+            calls = len(fake.calls)
+            assert sb.drain_outbox() == {} and len(fake.calls) == calls, "a full table was asked again"
+            assert len(said_room()) == 3
+
+            # 4. six hours on, with room made: everything that waited goes up
+            fake.full = set()
+            with _patched(sb, "FULL_RETRY_S", 0.0):
+                out = sb.sync_now(vocab, reason="worker")
+                got = sb.drain_outbox()
+            assert out["history"] == "pulled 0, pushed 1" and len(fake.tables["history"]) == 1, out
+            assert out["vocab"].endswith("pushed 1"), out
+            assert [r["heard"] for r in fake.tables["vocab_sync"]] == ["xpogo"]
+            assert got == {rid: "sent"} and sb.queued() == 0
+            assert sb.full_tables() == [] and sb.status()["last_error"] == "", sb.status()["last_error"]
+            assert sum("takes history again" in ln for ln in lines) == 1
+            assert len(said_room()) == 3, "a line per try"
+
+            # 5. an anonymous account is told how to get more room
+            sb.sign_out(everywhere=False)
+            sb.sign_in_anonymous()
+            assert sb.user()["is_anonymous"]
+            rid2 = "aaaaaaaa-0000-0000-0000-0000000000f2"
+            (outbox / f"{rid2}.json").write_text(json.dumps(
+                {"id": rid2, "kind": "idea", "text": "more room", "env": {}}), "utf-8")
+            fake.full = {"problem_reports"}
+            got = sb.drain_outbox()
+            assert got[rid2].endswith("Sign in with Google for more room."), got
+            assert sb.status()["last_error"] == got[rid2][len("queued: "):]
+            assert sb.full_tables() == ["problem_reports"] and sb.queued() == 1
+    finally:
+        app_log.removeHandler(keep)
+        app_log.setLevel(level)
+        sb._full.clear()
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_a_history_row_past_the_seal_cap_still_travels_and_frees_its_batch():

@@ -76,6 +76,16 @@ one Realtime topic per account that carries nothing but "go and pull".
   wrote its session, so it loses its row and stays signed in, and the app
   says so. Who was forgotten is one more sealed `vault` row, named
   `forgotten`, so there is no new table.
+- `migrations/0009_every_account_has_a_ceiling.sql` — no one account can
+  fill the shared free database. Seven tables are counted per account, in
+  rows and in bytes, by triggers that look once at each statement's own
+  rows (about half a millisecond a statement, measured, however much the
+  account holds); a write that would take an account past its ceiling is
+  refused whole with `account full: <table>` and the app keeps what it
+  could not send. A signed-in account at every ceiling holds at most about
+  31 MB of the plan's 500, an anonymous one about 1.5 MB; the table of
+  ceilings is at the top of the file. The counts live in
+  `private.account_usage`, which no client can read or write.
 
 ## How to read it in ten minutes
 
