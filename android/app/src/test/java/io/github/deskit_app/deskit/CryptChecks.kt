@@ -244,6 +244,7 @@ fun main() {
     backupChecks(::check)
     relayChecks(::check)
     keepChecks(::check)
+    streamChecks(::check)
     noAnswerChecks()
     val aad = Crypt.aadPairing(Vectors.UID, Vectors.PAIRING)
     val account = ByteArray(32) { it.toByte() }

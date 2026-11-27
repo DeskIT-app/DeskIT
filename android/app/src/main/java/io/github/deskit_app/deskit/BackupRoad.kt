@@ -113,6 +113,11 @@ object Road {
         val relayQuietMs: Long = 0,
         /** The relay's own answer, once it set out. */
         val relayPc: Pc = Pc.PENDING,
+        /**
+         * The relay has carried this very recording while it was spoken (stage 2): it set
+         * out only after the door's second, so the release owes the door no moment more.
+         */
+        val relayStreaming: Boolean = false,
     )
 
     /**
@@ -129,7 +134,9 @@ object Road {
             m.relayQuietMs >= (if (m.run == Run.SENDING) RELAY_QUIET_MS else SILENT_MS)
         val relayMayGo = m.relay == Relay.READY && m.run == Run.IDLE && m.door != Door.ANSWERED
         val second = m.askedMs >= ASK_MS && m.roadMs >= ROAD_MS
-        val lanGaveUp = m.pc == Pc.UNREACHED || (m.door == Door.NOT_YET && second)
+        // a relay that streamed it: the door had its second while it was spoken
+        val streamed = m.relayStreaming && m.askedMs >= ASK_MS
+        val lanGaveUp = m.pc == Pc.UNREACHED || (m.door == Door.NOT_YET && (second || streamed))
         val relayBusy = m.relayPc == Pc.BUSY || (m.relay == Relay.BUSY && m.run == Run.IDLE)
         return when {
             m.pc == Pc.OK -> Step.LAND_PC

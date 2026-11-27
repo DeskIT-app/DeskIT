@@ -108,6 +108,14 @@ object Link {
         abstract fun open(path: String): HttpURLConnection
         /** What this road says about who is asking. */
         open fun prove(conn: HttpURLConnection) {}
+        /**
+         * Which door this is, whenever it was found: a recording streamed to one
+         * ([LiveStream]) is finished on the same, and sent whole anywhere else.
+         * "" for a road that takes no stream.
+         */
+        open val key: String = ""
+        /** The PC behind it reads `/stream` (its row says so, stage 2). */
+        open val streams: Boolean = false
     }
 
     /** The pasted address and token: the road beside the door until stage 6. */
@@ -122,10 +130,10 @@ object Link {
             conn.setRequestProperty("Authorization", "Bearer $token")
     }
 
-    /** A PC of the account, its row opened. */
+    /** A PC of the account, its row opened. [stream]: its door reads `/stream` (stage 2). */
     class Pc(val id: String, val pin: String, val addrs: List<String>, val port: Int,
-             val wordsSync: Boolean) {
-        val sig: String get() = "$id|$pin|$port|$addrs"
+             val wordsSync: Boolean, val stream: Boolean = false) {
+        val sig: String get() = "$id|$pin|$port|$addrs|$stream"
     }
 
     /** A network a connection can be bound to. [handle] null: the phone's default road. */
@@ -139,6 +147,9 @@ object Link {
 
         /** Who this is, wherever it was made: the same PC, address, port and network. */
         val mark: String get() = "${net.key}|${pc.id}|$addr|${pc.port}|${pc.pin}"
+
+        override val key: String get() = mark
+        override val streams: Boolean get() = pc.stream
 
         fun quickly(ms: Int, fresh: Boolean = false) = Door(pc, addr, net, ssl, ms, unreached, fresh)
 
@@ -195,8 +206,12 @@ object Link {
         val list = (0 until (addrs?.length() ?: 0))
             .mapNotNull { addrs?.optString(it) }
             .filter { IP.matches(it) }
-        return Pc(d.id, d.cert, list, link.optInt("port", 0), link.optBoolean("words_sync", false))
+        return Pc(d.id, d.cert, list, link.optInt("port", 0), link.optBoolean("words_sync", false),
+                  link.optInt("stream", 0) >= LiveStream.PROTO)
     }
+
+    /** The PC [id]'s row says its door reads `/stream` (stage 2). No network. */
+    fun streamsTo(c: Context, id: String): Boolean = pcs(c).any { it.id == id && it.stream }
 
     /** The account's PCs, from the rows on this phone. No network. */
     fun pcs(c: Context): List<Pc> = try {
@@ -368,6 +383,24 @@ object Link {
         if (it) heard(door)
     }
 
+    /**
+     * The door that answered a moment ago, as [find] would hand it over, or null: no
+     * knock and no network, so a recording can set out on it while it is spoken
+     * ([LiveStream]). Null for a door this phone has not heard in [FRESH_MS].
+     */
+    fun freshDoor(c: Context): Road? {
+        val last = answered ?: return null
+        if (SystemClock.elapsedRealtime() - last.second >= FRESH_MS) return null
+        return try {
+            remembered(c, doors(c, pcs(c), nets(c)))?.takeIf { it.mark == last.first }
+                ?.quickly(QUICK_MS, fresh = true)
+        } catch (e: Sealed.NotNow) {
+            null
+        } catch (e: RuntimeException) {
+            null
+        }
+    }
+
     /** Everything at once, and the first that answers. */
     private fun race(doors: List<Door>): Door? {
         val runners = doors.take(MOST_KNOCKS)
@@ -530,15 +563,27 @@ object Link {
         return done ?: best ?: Transcriber.Result.Err(unreached(c), Transcriber.Why.UNREACHED)
     }
 
-    /** One recording, to whichever PC takes it. */
-    fun dictate(c: Context, item: SpoolFiles.Item): Transcriber.Result {
+    /**
+     * One recording, to whichever PC takes it: on the door [stream] carried it to while
+     * it was spoken, its end (stage 2), and anywhere else the whole of it.
+     */
+    fun dictate(c: Context, item: SpoolFiles.Item, stream: LiveStream? = null): Transcriber.Result {
         val wav = try {
             item.bytes()
         } catch (e: IOException) {
+            stream?.cancel()
             return Transcriber.Result.Err(unreached(c), Transcriber.Why.REFUSED)
         }
-        return ask(c) { Transcriber.send(it, wav) }
+        return try {
+            ask(c) { send(it, wav, stream) }
+        } finally {
+            stream?.cancel()
+        }
     }
+
+    /** [wav] to [road]: the stream's end where the stream went, the whole elsewhere. */
+    fun send(road: Road, wav: ByteArray, stream: LiveStream?): Transcriber.Result =
+        stream?.onDoor(road, wav) ?: Transcriber.send(road, wav)
 
     /** The second reading's proposals, or null when no PC could be asked. Blocking. */
     fun proposals(c: Context): List<Transcriber.Proposal>? {

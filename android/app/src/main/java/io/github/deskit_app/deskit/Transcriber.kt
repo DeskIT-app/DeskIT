@@ -251,19 +251,7 @@ object Transcriber {
             val code = conn.responseCode
             val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader()?.use { it.readText() } ?: ""
-            when {
-                code == 401 -> Result.Err(BAD_TOKEN)
-                code in REFUSED -> Result.Err(errorFrom(body, code), Why.REFUSED)
-                code !in 200..299 -> Result.Err(errorFrom(body, code))
-                else -> {
-                    val o = JSONObject(body)
-                    Result.Ok(o.optString("text", ""),
-                        o.optString("warning", "").ifEmpty { null },
-                        o.optString("backend", ""),
-                        o.optDouble("seconds", 0.0),
-                        rtl = o.optString("target", "") == "Hebrew")
-                }
-            }
+            answer(code, body)
         } catch (e: IOException) {
             // By far the most likely failure in real use, and the least
             // obvious from a raw exception string. Its class, because a door
@@ -279,6 +267,25 @@ object Transcriber {
             Result.Err(e.message ?: "failed")
         } finally {
             conn?.disconnect()
+        }
+    }
+
+    /**
+     * A PC's answer, read: the same for every route and both ways of sending one
+     * ([post] and [LiveStream]'s `/stream`). Throws JSONException for a 2xx that is
+     * not the PC's JSON, which the caller turns into [UNREADABLE].
+     */
+    fun answer(code: Int, body: String): Result = when {
+        code == 401 -> Result.Err(BAD_TOKEN)
+        code in REFUSED -> Result.Err(errorFrom(body, code), Why.REFUSED)
+        code !in 200..299 -> Result.Err(errorFrom(body, code))
+        else -> {
+            val o = JSONObject(body)
+            Result.Ok(o.optString("text", ""),
+                o.optString("warning", "").ifEmpty { null },
+                o.optString("backend", ""),
+                o.optDouble("seconds", 0.0),
+                rtl = o.optString("target", "") == "Hebrew")
         }
     }
 

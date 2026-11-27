@@ -51,6 +51,49 @@ object RelayWire {
     fun endHead(frames: Int, bytes: Int, sha256: String, atMs: Long) =
         "{\"v\":$PROTO,\"k\":\"end\",\"frames\":$frames,\"bytes\":$bytes,\"sha256\":${Json.str(sha256)},\"at\":$atMs}"
 
+    /** A piece of a recording sent while it is spoken (stage 2): its place in the PCM. */
+    fun streamHead(pcmOffset: Int) = "{\"v\":$PROTO,\"k\":\"audio\",\"pcm\":$pcmOffset}"
+
+    fun cancelHead() = "{\"v\":$PROTO,\"k\":\"cancel\"}"
+
+    /** relay.N_CANCEL: where a cancel sits, a place no audio or end can reach. */
+    const val N_CANCEL = MAX_FRAMES
+
+    // ---- a recording sent while it is spoken (stage 2) ----
+
+    /**
+     * Piece n (1 .. N-1) of a streamed recording: the PCM from [pcmOffset], at most
+     * [FRAME_BYTES] of it. Piece n holds PCM [(n-1) * FRAME_BYTES, n * FRAME_BYTES), so
+     * joined in their order behind piece 0 they are the WAV the end names.
+     */
+    fun streamed(key: ByteArray, uid: String, from: String, to: String, rid: String,
+                 pcmOffset: Int, pcm: ByteArray): String {
+        if (pcmOffset % FRAME_BYTES != 0 || pcm.isEmpty() || pcm.size > FRAME_BYTES)
+            throw Refused("a streamed piece out of its place")
+        val n = 1 + pcmOffset / FRAME_BYTES
+        if (n >= MAX_FRAMES) throw Refused("a recording of $n pieces")
+        return seal(key, uid, from, to, rid, n, streamHead(pcmOffset), pcm)
+    }
+
+    /** Piece 0 of a streamed recording, sent LAST: the WAV's header, the length known. */
+    fun header(key: ByteArray, uid: String, from: String, to: String, rid: String, pcmSize: Int): String =
+        seal(key, uid, from, to, rid, 0, audioHead(), Recorder.header(pcmSize))
+
+    /** How many pieces a streamed recording of [pcmSize] bytes is, piece 0 among them. */
+    fun streamedFrames(pcmSize: Int): Int = 1 + (pcmSize + FRAME_BYTES - 1) / FRAME_BYTES
+
+    /** The end of a streamed recording, piece [streamedFrames]: the same end as [recording]'s. */
+    fun streamedEnd(key: ByteArray, uid: String, from: String, to: String, rid: String,
+                    wav: ByteArray, atMs: Long): String {
+        val frames = streamedFrames(wav.size - Recorder.HEADER)
+        if (frames >= MAX_FRAMES) throw Refused("a recording of $frames pieces")
+        return seal(key, uid, from, to, rid, frames, endHead(frames, wav.size, sha256Hex(wav), atMs))
+    }
+
+    /** The phone gave the recording up: the PC lets the request go at once. */
+    fun cancel(key: ByteArray, uid: String, from: String, to: String, rid: String): String =
+        seal(key, uid, from, to, rid, N_CANCEL, cancelHead())
+
     // ---- sealing ----
 
     /** One piece, its payload as JSON text, ready to broadcast. */

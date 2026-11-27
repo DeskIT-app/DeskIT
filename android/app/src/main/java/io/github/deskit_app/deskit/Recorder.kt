@@ -7,6 +7,43 @@ import java.io.ByteArrayOutputStream
 import kotlin.concurrent.thread
 
 /**
+ * The recording as it grows: PCM bytes appended by the mic thread and read from any
+ * offset by the stream that carries it to a PC while it is spoken (PHONE_LINK_PLAN.md
+ * stage 2, [LiveStream]), without copying the whole of it on every read. Locked by
+ * itself; nothing of Android's, so the JVM checks hold it.
+ */
+class PcmBuffer {
+    private var data = ByteArray(64 * 1024)
+    private var length = 0
+
+    @Synchronized fun write(chunk: ByteArray, off: Int, n: Int): Int {
+        if (length + n > data.size) {
+            var grown = data.size * 2
+            while (grown < length + n) grown *= 2
+            data = data.copyOf(grown)
+        }
+        System.arraycopy(chunk, off, data, length, n)
+        length += n
+        return length
+    }
+
+    @Synchronized fun write(chunk: ByteArray) = write(chunk, 0, chunk.size)
+
+    /** The bytes from [offset] to the end so far; empty past the end. */
+    @Synchronized fun since(offset: Int): ByteArray =
+        if (offset >= length) ByteArray(0) else data.copyOfRange(maxOf(0, offset), length)
+
+    @Synchronized fun all(): ByteArray = data.copyOf(length)
+
+    @Synchronized fun reset() {
+        length = 0
+        if (data.size > 1 shl 20) data = ByteArray(64 * 1024)
+    }
+
+    val size: Int @Synchronized get() = length
+}
+
+/**
  * Raw 16 kHz mono PCM, wrapped as a WAV.
  *
  * MediaRecorder would produce a smaller file, but it also decides the
@@ -39,13 +76,43 @@ class Recorder {
         fun pcm(wav: ByteArray): ByteArray =
             if (wav.size > HEADER) wav.copyOfRange(HEADER, wav.size) else ByteArray(0)
 
-        private const val HEADER = 44
+        const val HEADER = 44
+
+        /** The 44 bytes in front of [pcmSize] bytes of this class's PCM: a WAV's header. */
+        fun header(pcmSize: Int): ByteArray {
+            val out = ByteArrayOutputStream(HEADER)
+            fun i32(v: Int) = out.write(
+                byteArrayOf(
+                    (v and 0xff).toByte(), ((v shr 8) and 0xff).toByte(),
+                    ((v shr 16) and 0xff).toByte(), ((v shr 24) and 0xff).toByte()
+                )
+            )
+            fun i16(v: Int) = out.write(
+                byteArrayOf((v and 0xff).toByte(), ((v shr 8) and 0xff).toByte())
+            )
+            out.write("RIFF".toByteArray()); i32(36 + pcmSize)
+            out.write("WAVE".toByteArray())
+            out.write("fmt ".toByteArray()); i32(16); i16(1); i16(1)
+            i32(SAMPLE_RATE); i32(SAMPLE_RATE * 2); i16(2); i16(16)
+            out.write("data".toByteArray()); i32(pcmSize)
+            return out.toByteArray()
+        }
+
+        /** [pcm] as the WAV this class hands over. */
+        fun wav(pcm: ByteArray): ByteArray = header(pcm.size) + pcm
     }
 
     private var record: AudioRecord? = null
     @Volatile private var running = false
     private var worker: Thread? = null
-    private val buffer = ByteArrayOutputStream()
+    private val buffer = PcmBuffer()
+
+    /**
+     * Only the debug probe ever sets this (by reflection, as it sets [loudest]): a voice
+     * for an emulator, whose microphone hears nothing, written over each read as
+     * (chunk, bytes, the recording's offset of its first byte). Null on every phone.
+     */
+    @Volatile private var voice: ((ByteArray, Int, Int) -> Unit)? = null
 
     /**
      * Live loudness 0..1, and the loudest this recording ever got.
@@ -120,10 +187,9 @@ class Recorder {
             while (running) {
                 val n = r.read(chunk, 0, chunk.size)
                 if (n <= 0) continue
+                voice?.invoke(chunk, n, buffer.size)
                 measure(chunk, n)
-                val size = synchronized(buffer) {
-                    buffer.write(chunk, 0, n); buffer.size()
-                }
+                val size = buffer.write(chunk, 0, n)
                 if (size >= cap) {
                     // Stop reading, but leave `active` alone: the audio so
                     // far is good and stop() still has to hand it over.
@@ -160,11 +226,20 @@ class Recorder {
     fun stop(): ByteArray? {
         if (!active) return null
         release()
-        val pcm = synchronized(buffer) { buffer.toByteArray() }
+        val pcm = buffer.all()
         // Mirrors min_seconds on the desktop: a stray tap is not speech.
         if (pcm.size < SAMPLE_RATE / 2 * 2) return null
         return wav(pcm)
     }
+
+    /**
+     * The recording's PCM from [offset] to now, while it is made: what [LiveStream]
+     * sends while the person speaks. Empty when nothing came since, and once it ended.
+     */
+    fun since(offset: Int): ByteArray = if (active) buffer.since(offset) else ByteArray(0)
+
+    /** Bytes of PCM so far. */
+    val size: Int get() = buffer.size
 
     fun cancel() {
         release()
@@ -184,25 +259,5 @@ class Recorder {
     }
 
     val seconds: Float
-        get() = synchronized(buffer) { buffer.size() / 2f / SAMPLE_RATE }
-
-    private fun wav(pcm: ByteArray): ByteArray {
-        val out = ByteArrayOutputStream(44 + pcm.size)
-        fun i32(v: Int) = out.write(
-            byteArrayOf(
-                (v and 0xff).toByte(), ((v shr 8) and 0xff).toByte(),
-                ((v shr 16) and 0xff).toByte(), ((v shr 24) and 0xff).toByte()
-            )
-        )
-        fun i16(v: Int) = out.write(
-            byteArrayOf((v and 0xff).toByte(), ((v shr 8) and 0xff).toByte())
-        )
-        out.write("RIFF".toByteArray()); i32(36 + pcm.size)
-        out.write("WAVE".toByteArray())
-        out.write("fmt ".toByteArray()); i32(16); i16(1); i16(1)
-        i32(SAMPLE_RATE); i32(SAMPLE_RATE * 2); i16(2); i16(16)
-        out.write("data".toByteArray()); i32(pcm.size)
-        out.write(pcm)
-        return out.toByteArray()
-    }
+        get() = buffer.size / 2f / SAMPLE_RATE
 }

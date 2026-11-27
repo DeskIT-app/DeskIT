@@ -47,9 +47,18 @@ def main() -> None:
     # an audio piece with a body
     chosen(bytes(range(50, 62)))
     audio = relay.seal(key, UID, PHONE, PC, RID, 3, {"k": "audio"}, bytes(range(256)) * 4)
+    # stage 2: a piece sent while it is spoken, its place in the PCM in its head
+    chosen(bytes(range(70, 82)))
+    streamed = relay.seal(key, UID, PHONE, PC, RID, 2, {"k": "audio", "pcm": relay.FRAME_BYTES},
+                          bytes(range(256)) * 4)
+    # ...and the phone giving one up, at the place no recording reaches
+    chosen(bytes(range(90, 102)))
+    cancel = relay.seal(key, UID, PHONE, PC, RID, relay.N_CANCEL, {"k": "cancel"})
     print(f'    const val TEXT_S = "{text["s"]}"')
     print(f'    const val PING_S = "{ping["s"]}"')
     print(f'    const val AUDIO_S = "{audio["s"]}"')
+    print(f'    const val STREAMED_S = "{streamed["s"]}"')
+    print(f'    const val CANCEL_S = "{cancel["s"]}"')
 
 
 if __name__ == "__main__":

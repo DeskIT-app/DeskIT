@@ -180,6 +180,13 @@ class DictationIme : InputMethodService() {
     private var askedAt = 0L
 
     /**
+     * The recording being made, on its way to a PC while it is spoken (stage 2): given
+     * its end at the release ([deliverRecording]) and cancelled by a pause or a discard,
+     * so the PC holds nothing it was not meant to. Null when nothing streams.
+     */
+    private var stream: LiveStream? = null
+
+    /**
      * The button beside the line is Add a key and not Send again: the backup is on and
      * holds no key, and the phone is on no road to a PC (the owner's d2, 2026-11-11).
      */
@@ -1042,6 +1049,7 @@ class DictationIme : InputMethodService() {
         v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         holding = true
         askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
+        streamOut()
         tint(recColor)
         say(getString(R.string.slide_to_lock))
         startTicking()
@@ -1059,9 +1067,25 @@ class DictationIme : InputMethodService() {
         holding = true
         locked = true
         askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
+        streamOut()
         tint(lockColor)
         say("")
         startTicking()
+    }
+
+    /**
+     * The recording just begun sets out while it is spoken (stage 2), the kept part of a
+     * Continued one first: [LiveStream] picks the road the ladder would, or none.
+     */
+    private fun streamOut() {
+        stream?.cancel()
+        stream = LiveStream.begin(applicationContext, recorder, askedAt)
+    }
+
+    /** The recording went no further: whatever of it is on its way, the PC lets go. */
+    private fun streamDropped() {
+        stream?.cancel()
+        stream = null
     }
 
     private fun ready(): Boolean {
@@ -1111,6 +1135,7 @@ class DictationIme : InputMethodService() {
         locked = false
         stopTicking()
         recorder.cancel()
+        streamDropped()
         if (continuing) {
             // The whole recording, what came before the keyboard closed included: one
             // unlink, here, so the mic below is not drawn as Continue a moment longer.
@@ -1146,20 +1171,25 @@ class DictationIme : InputMethodService() {
         val capped = recorder.capped
         val silent = recorder.loudest < SILENCE
         val wav = recorder.stop()
+        val streamed = stream
+        stream = null
         // a continued recording, once on its way whole, ends the paused file
         val cont = continuing
         continuing = false
         reset()
-        if (wav == null) { say(getString(R.string.too_short)); return }
+        if (wav == null) { streamed?.cancel(); say(getString(R.string.too_short)); return }
         if (silent) {
             // A whole recording under the noise floor is a microphone
             // another app is holding, not a quiet room. Uploading it buys a
             // round trip and the reply "No speech", which explains nothing.
+            streamed?.cancel()
             sayError(getString(R.string.no_sound))
             return
         }
+        // the end of what was on its way while it was spoken: the rest goes now
+        streamed?.ended(Recorder.pcm(wav))
         val app = applicationContext
-        go(since = if (askedAt > 0) askedAt else SystemClock.elapsedRealtime()) {
+        go(since = if (askedAt > 0) askedAt else SystemClock.elapsedRealtime(), stream = streamed) {
             // kept whole first, the paused part after: never a moment with no copy
             Spool.keep(app, wav).also { if (cont) Spool.dropPaused(app) }
         }
@@ -1174,7 +1204,8 @@ class DictationIme : InputMethodService() {
      * process killed anywhere loses nothing. [note] is the line meanwhile.
      */
     private fun go(note: String = getString(R.string.transcribing),
-                   since: Long = SystemClock.elapsedRealtime(), item: () -> SpoolFiles.Item?) {
+                   since: Long = SystemClock.elapsedRealtime(), stream: LiveStream? = null,
+                   item: () -> SpoolFiles.Item?) {
         busy = true
         tint(busyColor)
         // the mic is not Continue while what it would continue is on its way
@@ -1187,6 +1218,7 @@ class DictationIme : InputMethodService() {
         thread {
             // Nothing: a paused recording whose hour came between the press and here.
             val recording = item() ?: run {
+                stream?.cancel()
                 ui.post {
                     busy = false
                     sendingKept = false
@@ -1198,7 +1230,7 @@ class DictationIme : InputMethodService() {
             // Where it was tried from: a try made off any Wi-Fi says nothing of the PC.
             val off = offWifi(app)
             // The PC road, and the cloud backup beside it when no PC answers (stage 2b).
-            val result = Backup.dictate(app, recording, since) {
+            val result = Backup.dictate(app, recording, since, stream) {
                 ui.post { if (busy && mine == session) say(getString(R.string.transcribing_cloud)) }
             }
             // How long the person waited, whichever road: a measurement, never a word
@@ -1534,6 +1566,8 @@ class DictationIme : InputMethodService() {
         stopTicking()
         val silent = recorder.loudest < SILENCE
         val wav = recorder.stop()
+        // what of it was on its way, the PC lets go: Continue sends it all again from its start
+        streamDropped()
         continuing = false
         reset()
         if (wav == null || silent) {
@@ -1574,6 +1608,8 @@ class DictationIme : InputMethodService() {
         // This touch is spent: a slip downwards must not throw the whole recording away.
         gestured = true
         askedAt = if (Backup.knockAhead(applicationContext)) SystemClock.elapsedRealtime() else 0L
+        // from the kept part's first byte: the PC gets the whole recording, once
+        streamOut()
         tint(lockColor)
         say("")
         startTicking()
