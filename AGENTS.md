@@ -699,6 +699,15 @@ exactly what classic did.
   tuple gets re-run in the open, so a missing name costs a second run
   rather than a wrong answer, and `--no-screen` will not know to skip
   it.
+  **A Tk window timed on the hidden desktop pays 2.0 s on its first
+  `update()`** once two Tk interpreters have come and gone in the
+  process (measured 2026-11-28, raw tkinter, four in turn on four
+  threads: 0.017 / 0.004 / 2.018 / 2.020 s; the interactive desktop
+  0.049 / 0.015 / 0.028 / 0.015). Alone a test is the first and passes;
+  in the full suite it is not, which is how
+  `test_the_consent_and_tour_cards_rest_while_nothing_is_up` failed every
+  night from 2026-11-12 to 11-27. Time nothing about a Tk loop until it
+  has been through one whole turn (that test waits for its first rest).
   `.venv\Scripts\python.exe tests.py` is the same suite in the open —
   plain asserts, **hundreds** of test functions carrying thousands of
   them, safe to run while dictation is live (two bugs that used to kill
@@ -1772,24 +1781,22 @@ exactly what classic did.
   A card that ARRIVES mid-drag is the real race, and a hushed card
   refuses to map at all. `capture.py` gets the callable injected by
   `main.py`; it must not import `overlay.py`.
-  **THE HUSH IS ONLY HALF WIRED, AND THIS IS THE HONEST STATE OF IT.**
+  **THE HUSH IS WIRED ON ALL THREE GLASS CARDS SINCE 2026-11-27.**
   `main.py::_hush_overlays` calls `hush()` on the notification card, the
-  review card and the hint card, but only the NOTIFICATION card obeys it
-  whole on the path that actually runs. `skin.on()` is true on this
-  machine, so all three take their glass loops. `skin\notify.py` reads
-  the flag. `skin\review.py` reads it since 2026-11-10 for two things
-  only: no review card is MAPPED while it is set (the card's line would
-  otherwise bring the next one up mid-drag every time one left) and the
-  clock waits; a review card already up stays where it is, under the
-  selector. `skin\hint.py` does not read it, and the hint card's Tk loop
-  does not either. The hint card takes clicks on glass
-  (`HTCLIENT`/`HTCAPTION`), so one arriving mid-drag still maps over the
-  selector and eats the drag. That is NOT a regression — the affinity
-  flag never touched z-order or hit-testing, so it could always do it —
-  but it is an unfinished mitigation, and one artefact is new: it is now
-  in the frozen backdrop AND can still map live, so the owner can
-  briefly see the same card twice. Finishing it means reading `_hushed`
-  in `skin\hint.py`. Do not write it up as done until it is.
+  review card and the hint card; `skin.on()` is true on this machine, so
+  all three take their glass loops. `skin\notify.py` reads the flag.
+  `skin\review.py` reads it since 2026-11-10: no review card is MAPPED
+  while it is set (the card's line would otherwise bring the next one up
+  mid-drag every time one left) and the clock waits; a review card
+  already up stays where it is, under the selector. `skin\hint.py` reads
+  it since 2026-11-27 (`[hint] hush`, false = the old way): a key card
+  coming due, or changed (hold -> latch) and raised again, is HELD while
+  the hush stands and goes up when it ends; one already up stays under
+  the selector. The hint card's Tk fallback refuses only its FIRST map
+  while hushed (it is click-through, so it cannot eat the drag).
+  `test_the_key_card_waits_out_a_screenshot_selection` drives the glass
+  loop. What is left is the artefact the order has always had: a card up
+  at the freeze is in the frozen backdrop AND live under the selector.
   **The one exemption is the clip bar** (`ClipBar._build` and
   `_build_frame`), and the line is STILL versus MOVING, not ours versus
   theirs. A screenshot has an instant to freeze; a recording does not, so
