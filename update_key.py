@@ -17,4 +17,4 @@ release build refuses to start with it (release.yml, "The update key is
 pinned": `python dev/sign_release.py --check-pinned`).
 """
 
-PUBLIC_KEY = "ecdsa-p256:PLACEHOLDER-no-key-yet-run-dev/sign_release.py--new-key"
+PUBLIC_KEY = "ecdsa-p256:Id4nX1itxGFoja+l6cQUQDJzu1vBF/3mzvn1rfYPiD2vCboXDRLwQh+Xp9hH8sk6vp7OZ0Bb0fkbgc4ZplxAZQ=="
