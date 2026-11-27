@@ -1,10 +1,10 @@
 """Light local cleanup for raw Whisper output.
 
-Gemini transcribes AND cleans in one call (its system prompt removes
-fillers, resolves self-corrections, writes digits). Whisper only
-transcribes, so switching to the local backend would otherwise regress
-output quality on real dictation — which is full of "אה", "אמ" and
-restarted sentences.
+The Gemini engine this app had until 2026-11-27 transcribed AND cleaned
+in one call (its system prompt removed fillers, resolved
+self-corrections, wrote digits). Whisper only transcribes, so without
+this the local output would read rawer on real dictation — which is full
+of "אה", "אמ" and restarted sentences.
 
 This is deliberately CONSERVATIVE. It only removes things that are not
 words, and only collapses repetitions that are exact. Anything ambiguous

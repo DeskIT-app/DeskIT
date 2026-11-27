@@ -12,8 +12,8 @@ Notes that cost real time to discover, keep them:
 - The ivrit-ai fine-tune DEGRADED Whisper's language detection. language
   must always be pinned to "he"; never let it auto-detect. The model is
   Hebrew-only — English dictation would need a different model.
-- Whisper only transcribes. Gemini also cleans up (fillers, self-
-  corrections, digits) via its system prompt, so local output is rawer.
+- Whisper only transcribes. The Gemini engine (gone since 2026-11-27)
+  also cleaned up fillers, self-corrections and digits; local is rawer.
   `condition_on_previous_text=False` at least stops it looping on
   repetitions, which Whisper is prone to on hesitant speech.
 - It also HALLUCINATES A TAIL: the decoder runs past the end of real
@@ -614,9 +614,9 @@ class LocalWhisperTranscriber:
                 "local.language must be pinned (the ivrit-ai fine-tune's "
                 "language autodetect is unreliable)")
         self._language = language
-        # Whisper transcribes but does not tidy; Gemini's prompt does both.
-        # Without this, moving to the local backend visibly regresses the
-        # output on real dictation (fillers, restarted sentences).
+        # Whisper transcribes but does not tidy (the Gemini engine's prompt
+        # did both, until it left on 2026-11-27). Without this the output
+        # visibly regresses on real dictation (fillers, restarted sentences).
         self._cleanup = cleanup
         self._fillers = cleanup_mod.DEFAULT_FILLERS + tuple(extra_fillers)
         # The Hebrew fine-tune transliterates short pure-English utterances
@@ -1066,7 +1066,7 @@ class LocalWhisperTranscriber:
         self.last_windows = []
         text = window.text
         if not text:
-            return ""        # treated as "no speech", same as Gemini
+            return ""        # treated as "no speech"
         return self.clean_text(text)
 
     def clean_text(self, text: str) -> str:

@@ -19,7 +19,31 @@ import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VALID_BACKENDS = ("gemini", "local", "fake")
+VALID_BACKENDS = ("local", "fake")
+
+#: A backend this app had and took out -> what a file that still names it
+#: is read as. "gemini" sent the recording to Google for transcription; it
+#: left on 2026-11-27 (house rule 2: the PC never sends audio anywhere). A
+#: settings file that still says it means the model on this computer: one
+#: line in app.log per process (_backend), never a ConfigError, and nothing
+#: is written back to the person's file.
+RETIRED_BACKENDS: dict[str, str] = {"gemini": "local"}
+_said_retired: set[str] = set()
+
+
+def _backend(value) -> str:
+    """`backend` as the app runs it: a retired name becomes its stand-in."""
+    name = str(value).strip().lower()
+    to = RETIRED_BACKENDS.get(name)
+    if to is None:
+        return name
+    if name not in _said_retired:
+        _said_retired.add(name)
+        logging.getLogger("app").info(
+            'backend = "%s" was taken out of DeskIT on 2026-11-27 (it sent '
+            'the recording to the cloud) — transcribing on this computer '
+            'instead', name)
+    return to
 
 # What Ollama accepts for keep_alive: a Go duration ("30m", "8h", "1h30m")
 # or a bare number of seconds, either of them negative to mean "hold it
@@ -47,7 +71,6 @@ class GeminiConfig:
     # (defaults.toml [gemini], 2026-10-03).
     models: tuple[str, ...] = ("gemini-flash-latest", "gemini-flash-lite-latest",
                                "gemini-2.5-flash", "gemini-2.5-flash-lite")
-    timeout_s: int = 30
 
     @property
     def model(self) -> str:
@@ -372,8 +395,9 @@ class TranslateConfig:
     ollama_model: str = "llama3.1:8b"
     ollama_url: str = "http://127.0.0.1:11434"
     # Which cloud goes first; the other cloud, then Ollama, after it
-    # (translate.ORDER). gemini | groq | ollama.
-    prefer: str = "gemini"
+    # (translate.ORDER). gemini | groq | ollama. Groq since 2026-11-27,
+    # the measurement at [translate] prefer in defaults.toml.
+    prefer: str = "groq"
     timeout_s: int = 30
     # Deliberately much larger than timeout_s. Ollama loads the model into
     # VRAM on the first request after it goes idle: measured 2026-08-12,
@@ -1437,7 +1461,7 @@ class Config:
     # asking it to, and "why did my hotkey stop responding" is a much
     # worse half-hour than pressing the pause key yourself.
     auto_pause_fullscreen: bool = False
-    backend: str = "gemini"
+    backend: str = "local"
     paste_chord: str = "ctrl+v"
     restore_delay_ms: int = 300
     min_seconds: float = 0.3
@@ -1880,7 +1904,7 @@ def build(data: dict) -> Config:
         auto_language=bool(data.get("auto_language", Config.auto_language)),
         auto_pause_fullscreen=bool(data.get(
             "auto_pause_fullscreen", Config.auto_pause_fullscreen)),
-        backend=str(data.get("backend", Config.backend)).strip().lower(),
+        backend=_backend(data.get("backend", Config.backend)),
         paste_chord=str(data.get("paste_chord", Config.paste_chord)).strip().lower(),
         restore_delay_ms=int(data.get("restore_delay_ms", Config.restore_delay_ms)),
         min_seconds=float(data.get("min_seconds", Config.min_seconds)),
@@ -1891,10 +1915,7 @@ def build(data: dict) -> Config:
             sample_rate=int(audio.get("sample_rate", AudioConfig.sample_rate)),
             device=_parse_device(str(audio.get("device", ""))),
         ),
-        gemini=GeminiConfig(
-            models=models,
-            timeout_s=int(gemini.get("timeout_s", GeminiConfig.timeout_s)),
-        ),
+        gemini=GeminiConfig(models=models),
         local=LocalConfig(
             model=str(local.get("model", LocalConfig.model)).strip(),
             language=str(local.get("language", LocalConfig.language)).strip(),

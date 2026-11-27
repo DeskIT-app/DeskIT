@@ -18,9 +18,11 @@ card.
 | Fix misheard words (the repair pass) | the text of what you just said — while you hold the key, stretches of it are sent before you release (rolling); up to 60 learned word pairs that appear in the text | Groq, under your Groq key (or Google under your Gemini key) |
 | Punctuation, translation, lookup | the text or the selection | the same |
 | The second reading's cloud pass | the text | the same |
-| Cloud transcription (PCs without an NVIDIA card) | the recording of what you said, 16 kHz WAV, up to 20 MB per request | Groq or Google, under your key |
 | Ask the screen | a JPEG of the region you selected (long side at most 1344 px), your question, earlier questions and answers in the same card | Groq or Google, under your key |
 | Weekly update check | nothing about you: one request to api.github.com | GitHub |
+
+Your voice never leaves this PC: no feature here sends a recording, and nothing on the PC
+transcribes in the cloud.
 
 Each of these is a **gate** on **Settings > Privacy > WHAT MAY LEAVE THIS PC**. A gate opens
 only through its consent card — never from the settings file — and closes at once from the
@@ -31,12 +33,12 @@ those terms; when the provider changes its terms, the card comes back.
 
 ## Getting a free key
 
-**Groq first.** One Groq key unlocks the repair pass, punctuation, lookup, translation and, on
-a PC without an NVIDIA card, cloud transcription. Create it at
+**Groq first.** One Groq key unlocks the repair pass, punctuation, lookup and translation (it
+goes first for translation). Create it at
 [console.groq.com](https://console.groq.com) (free tier, no credit card).
 
-**Gemini** for translation (it goes first for it when you have both keys; Groq takes over when
-Gemini is busy or spent) and ask-the-screen, at
+**Gemini** for translation (with both keys Groq goes first, and Gemini answers when Groq
+cannot) and ask-the-screen, at
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free, no credit card).
 
 The wizard asks for both on its **Cloud keys** page ([chapter 2](02-first-run)). Afterwards:

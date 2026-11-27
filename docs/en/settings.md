@@ -40,12 +40,6 @@ beside the app keeps the defaults and the help for every key.
 
 ## Dictation
 
-### Where Your Speech Becomes Words
-
-| key | what it does | default | choices |
-|---|---|---|---|
-| `backend` — Where your speech is turned into words | On this computer is faster and better at Hebrew, and nothing leaves the machine. | `local` | On this computer / In Google's cloud |
-
 ### When You Dictate
 
 | key | what it does | default | choices |
@@ -135,7 +129,7 @@ beside the app keeps the defaults and the help for every key.
 |---|---|---|---|
 | `privacy.offline` — Offline mode | Nothing leaves this computer. Dictation keeps working; cloud fixes, translation and updates pause. | off | on / off |
 | `privacy.cloud_text` — Text to the cloud | What you dictated or selected may go to Groq or Google under your own key, for the repair pass, punctuation, translation, lookup and the second reading. Opens only through its card, the first time a feature needs it. | off | on / off |
-| `privacy.cloud_audio` — Recordings to the cloud | What you said, as audio, may go to Google or Groq for transcription. Opens only through its card. | off | on / off |
+| `privacy.cloud_audio` — Recordings to the cloud | Nothing on this PC sends a recording anywhere: your speech becomes words on this computer. The line stays so a yes given to an earlier version can be withdrawn. | off | on / off |
 | `privacy.cloud_screenshots` — Screen pictures to the cloud | The part of the screen you asked about may go to Groq or Google. Opens only through its card. | off | on / off |
 | `privacy.report_upload` — Sending problem reports | Only what the preview showed. Opens only through its card. | off | on / off |
 

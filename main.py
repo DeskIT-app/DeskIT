@@ -11,7 +11,7 @@ launch is refused (single-instance mutex) and "Stop DeskIT.vbs" (i.e.
 
 Flags:
   --fake          use the fake backend (no API key, no speech needed)
-  --check         validate the Gemini key/model with one tiny request, exit
+  --check         validate the Gemini key with one key-test request, exit
   --list-devices  print audio input devices, exit
   --stop          tell a running instance to quit, exit
 """
@@ -2499,16 +2499,6 @@ class App:
         self.consent_card.start()
         self.tour_card.start()
         self.notify_card.start()
-        # backend = "gemini" with the cloud_audio gate shut fell to the
-        # local model at start (transcribers.get_transcriber): that is a
-        # choice the person made in Settings, so the card asks now.
-        if self.cfg.backend == "gemini" and \
-                getattr(self.transcriber, "name", "") != "gemini":
-            with privacy.pressed():
-                try:
-                    privacy.require("cloud_audio")
-                except privacy.ConsentRequired:
-                    pass
         # A consent given under older words is NOT asked here, and not by
         # a card at all (2026-09-21 afternoon, the owner, on the card
         # that came up at start: "I really don't like these messages
@@ -4166,7 +4156,7 @@ class App:
         return answer.text, answer.target, answer.backend, answer.seconds
 
     def _translate_for_phone(self, text: str) -> tuple[str, str]:
-        """The same Gemini-then-Ollama translator the F9 key uses. Shares
+        """The same Groq-Gemini-Ollama translator the F9 key uses. Shares
         the instance, so the phone does not pay Ollama's 76 s cold start
         again on its own copy.
 
@@ -7923,8 +7913,8 @@ def main() -> int:
                         help="use the fake backend (no API, no mic quality "
                              "needed)")
     parser.add_argument("--check", action="store_true",
-                        help="validate Gemini key + model with one tiny "
-                             "request, then exit")
+                        help="validate the Gemini key with one key-test "
+                             "request (nothing of yours is sent), then exit")
     parser.add_argument("--list-devices", action="store_true",
                         help="list audio input devices, then exit")
     parser.add_argument("--stop", action="store_true",
@@ -8231,18 +8221,21 @@ def main() -> int:
     gc.collect()
 
     if args.check:
+        # The Gemini key, checked the way Settings > Privacy checks it: one
+        # key-test request that carries nothing of the person's. It asked
+        # the Gemini speech engine until that left on 2026-11-27 — under
+        # the cloud_audio gate, for a request that sent no audio.
+        import keyrow
         try:
-            from transcribers.gemini import GeminiTranscriber
-            t = GeminiTranscriber(cfg.gemini.model, cfg.gemini.timeout_s)
-            print(f"key source: {t.key_source}")
-            print(f"checking key + model '{cfg.gemini.model}' with one tiny "
-                  "request...")
-            reply = t.check()
-            print(f"API reply: {reply!r} — key and model look good.")
-            return 0
-        except TranscriptionError as e:
-            print(f"check FAILED: {e}")
+            seen = keyrow.probe("gemini")
+        except keyrow.KeyRefused as e:
+            print(f"check FAILED: Google did not accept the Gemini key ({e})")
             return 1
+        except Exception as e:                               # noqa: BLE001
+            print(f"check FAILED: {type(e).__name__}: {e}")
+            return 1
+        print(f"the Gemini key works — it sees {seen} models.")
+        return 0
 
     if args.translate:
         import translate as translate_mod

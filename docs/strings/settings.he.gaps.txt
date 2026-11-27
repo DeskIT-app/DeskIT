@@ -9,7 +9,6 @@ awake.hold
 privacy.update_check
 capture.folder
 capture.clip_folder
-backend
 auto_language
 punctuate.auto
 punctuate.nikud

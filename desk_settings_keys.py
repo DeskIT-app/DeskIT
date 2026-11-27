@@ -29,9 +29,9 @@ log = logging.getLogger("app")
 #: (name, label, where a free key is, why one would want it).
 PROVIDERS = (("groq", "Groq", "https://console.groq.com",
               "recommended first: one key unlocks the repair pass, punctuation, "
-              "lookup, translation and, without an NVIDIA card, cloud transcription"),
+              "lookup and translation"),
              ("gemini", "Gemini", "https://aistudio.google.com",
-              "for translation and ask-the-screen"))
+              "for translation when Groq cannot answer, and ask-the-screen"))
 NAMES = tuple(name for name, *_rest in PROVIDERS)
 
 

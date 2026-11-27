@@ -21,7 +21,7 @@ line here fails the build.
 | Host | Purpose words | Why | Sends a secret? | Gate |
 |---|---|---|---|---|
 | `127.0.0.1` | `ollama`, `notify`, `room` | Ollama on this PC; the app's own phone listener (the Claude Code hook knocks on it); `room` is the app asking Ollama which models it holds and unloading them while a game needs the graphics card — and while it does, every other request to Ollama is refused before a socket | the phone token, to our own listener only | none — loopback is the one host allowed in Offline mode |
-| `generativelanguage.googleapis.com` | `polish`, `punctuate`, `translate`, `lookup`, `review`, `study`, `reading`, `transcribe`, `ask-screen`, `key-test`, `catalog` | Gemini, with your own key | your Gemini key, in the `x-goog-api-key` header, to this host only | cloud text / cloud audio / cloud screenshots consent |
+| `generativelanguage.googleapis.com` | `polish`, `punctuate`, `translate`, `lookup`, `review`, `study`, `reading`, `ask-screen`, `key-test`, `catalog` | Gemini, with your own key | your Gemini key, in the `x-goog-api-key` header, to this host only | cloud text / cloud screenshots consent |
 | `api.groq.com` | the same words, and `summary` — the one sentence a "Claude finished" card says instead of the message's first lines (the head and the tail of the message Claude ended with; Groq only, never Gemini) | Groq, with your own key | your Groq key, as a bearer, to this host only | the same consents (`summary` under cloud text) |
 | `huggingface.co` | `model-download` | the Hebrew model, once, from its model card's repository at a pinned commit | never — the repositories need no token and the app has none | the download step itself is the consent |
 | `cdn-lfs.huggingface.co`, `cas-bridge.xethub.hf.co`, and any host under `.huggingface.co` or `.hf.co` | `model-download` | where huggingface.co redirects a model file to; the CDN hostname changes by region and year (`us.aws.cdn.hf.co` on 2026-09-17) | never | the same |
@@ -100,8 +100,12 @@ measured:
 
 - Anything at all while Offline mode is on, except to `127.0.0.1` (the
   web window's switches above are on whether or not Offline mode is).
-- A transcript, a recording or a screenshot to any host without the
-  consent row for that kind.
+- A transcript or a screenshot to any host without the consent row for
+  that kind.
+- A recording, to any host, except one you tick yourself on a problem
+  report's preview (purpose `report`). Nothing on this PC transcribes in
+  the cloud since 2026-11-27, and net.py has no purpose that would carry
+  a recording to a provider.
 - A key, as it is, to any host but the one provider that issued it. Your
   account gets only the locked copy the settings sync carries.
 - A key in a URL: any query parameter named like one (`key`, `token`,

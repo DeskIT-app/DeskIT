@@ -1,9 +1,11 @@
 """Shared Gemini plumbing: the REST client, 429 parsing and model rotation.
 
 The free tier counts generate_content requests PER MODEL PER DAY (measured
-2026-08-12: gemini-2.5-flash allows 20). Transcription and translation both
-spend from those same buckets, so they share one rotation policy here
-rather than each growing its own drifting copy.
+2026-08-12: gemini-2.5-flash allows 20). Translation, punctuation, lookup
+and the screen question all spend from those same buckets, so they share
+one rotation policy here rather than each growing its own drifting copy.
+Nothing here carries a recording: the dictation engine that did left on
+2026-11-27, and its inline-size cap with it.
 
 The rotation state (cooldown/strikes dicts) stays on the caller, not in
 this module: each feature keeps its own view of which models are spent, and
@@ -171,11 +173,6 @@ def rotate(models: list[str], cooldown: dict[str, float],
 # and weighed 50 MB in the wheelhouse; this is ~100 lines and one row in
 # network.log per call (D12, D19).
 
-#: Google's cap on a request whose parts are inline (base64 in the JSON):
-#: 20 MB in all. 16 kHz mono 16-bit is ~32 KB a second and base64 adds a
-#: third, so a single dictation fits up to roughly seven minutes.
-INLINE_CAP_BYTES = 20 * 1024 * 1024
-
 
 class APIError(Exception):
     """A non-2xx answer from generativelanguage.googleapis.com: the status
@@ -196,15 +193,10 @@ def text_part(text: str) -> dict:
 
 
 def blob_part(data: bytes, mime_type: str) -> dict:
-    """An inline part: audio or an image, base64 in the JSON."""
+    """An inline part: an image (ask-the-screen), base64 in the JSON."""
     import base64
     return {"inlineData": {"mimeType": mime_type,
                            "data": base64.b64encode(data).decode("ascii")}}
-
-
-def inline_size(data: bytes) -> int:
-    """What `data` weighs once it is base64 inside the request."""
-    return (len(data) + 2) // 3 * 4
 
 
 def thinking_config(model: str, cache: dict[str, str]) -> dict | None:
@@ -253,7 +245,7 @@ class Client:
     """generateContent and the model catalog, for one purpose and timeout.
 
     `purpose` is the word net.py logs for every call this client makes
-    (transcribe, translate, ask-screen, ...); the secret is always the
+    (translate, punctuate, ask-screen, ...); the secret is always the
     Gemini key by NAME. Construction touches nothing; the constructors
     that build one have already passed the consent gate and checked the
     key exists (apikey.find_api_key)."""

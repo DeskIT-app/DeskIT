@@ -195,10 +195,13 @@ pause_hotkey = "insert"
 # pause_hotkey yourself. Turn it on from the dashboard if you want it.
 auto_pause_fullscreen = false
 # local = unlimited, offline, ~0.3 s. Measured 2026-08-12 on 8 real Hebrew
-# clips: local 10.8% WER / 0.38 s vs gemini 15.9% WER / 2.71 s. Switch to
-# "gemini" if you ever want its stronger cleanup instead. ("fake" is the
-# test double transcribers/__init__.py answers to; the menu never offers it.)
-backend = "local"             # gemini | local
+# clips: local 10.8% WER / 0.38 s vs gemini 15.9% WER / 2.71 s. "gemini",
+# which sent the recording to Google, was taken out on 2026-11-27 (house
+# rule 2: the PC never sends audio anywhere); a file that still says it is
+# read as "local", with one line in app.log (config.RETIRED_BACKENDS). Not
+# on the Settings screen since then: there is nothing left to choose.
+# ("fake" is the test double transcribers/__init__.py answers to.)
+backend = "local"             # the model on this computer
 paste_chord = "ctrl+v"        # try "shift+insert" for terminals that reject ctrl+v
 restore_delay_ms = 300        # wait after pasting before restoring the old clipboard
 min_seconds = 0.3             # shorter holds are treated as accidental taps and discarded
@@ -359,11 +362,11 @@ placeholder = "..."           # replaced by your text when it arrives
 retry_seconds = 45            # keep retrying this long before spooling to pending\
 
 [translate]
-# Whisper only transcribes, so translating needs a language model. Gemini
-# goes first (it keeps English technical terms in Latin script and holds
-# the register); when its daily cap is spent, or there is no Gemini key,
-# Groq answers, and a local Ollama model after both, so the key never
-# becomes another thing that dies at 20 requests (`prefer` below).
+# Whisper only transcribes, so translating needs a language model. Groq
+# goes first (the measurement at `prefer` below); when it cannot answer,
+# or there is no Groq key, Gemini answers, and a local Ollama model after
+# both, so one free key of either kind translates and the key never
+# becomes another thing that dies at 20 requests.
 target = "English"
 max_chars = 5000              # a guard: above this the key refuses, on the
                               # assumption ctrl+a caught a whole document
@@ -376,8 +379,10 @@ ollama_model = "llama3.1:8b"  # the fallback; must be pulled in ollama
 # 43/44 and 44/44 in two runs, p50 0.46-0.53 s, max 0.71 s, no failures;
 # Gemini (flash-latest, a new key) kept 26/26 of what it answered but
 # failed 7 of 16 (503 "high demand", 30 s read timeouts), p50 4.0 s. Its
-# one Groq miss: "ברנץ'" came out "brunch".
-prefer = "gemini"
+# one Groq miss: "ברנץ'" came out "brunch". So Groq goes first since
+# 2026-11-27 — this line said "gemini" until then, against the numbers
+# right above it — and Gemini is the next backend.
+prefer = "groq"
 # 127.0.0.1 and NOT localhost, and the difference is not cosmetic: this
 # machine's getaddrinfo("localhost") hands back ::1 first, Ollama listens on
 # IPv4 only, and the refused connection takes ~2.05 s to come back before
@@ -1490,10 +1495,11 @@ cloud_text = false             # the text you dictated or selected may go
                                # lookup, the second reading. Off = those
                                # run on this computer (Ollama) or not at
                                # all. Opens only through its card.
-cloud_audio = false            # a recording of what you said may go to
-                               # Google or Groq for transcription
-                               # (backend = "gemini"). Off = the model on
-                               # this computer transcribes. Card only.
+cloud_audio = false            # retired 2026-11-27: nothing on this PC
+                               # sends a recording anywhere (the Gemini
+                               # engine left). Kept so a yes given before
+                               # stays on record until it is withdrawn;
+                               # privacy.RETIRED never lets it open.
 cloud_screenshots = false      # a picture of the screen region you asked
                                # about may go to Groq or Google. Off = only
                                # the model on this computer ever sees your
@@ -1881,7 +1887,9 @@ warm_up = true            # send one throwaway request at startup so the model
 [gemini]
 # Free-tier quota is PER MODEL (gemini-2.5-flash = 20 requests/day), so this
 # list is a longer runway: each is tried in order and rested when it reports
-# its cap. Verified as supporting audio input on 2026-08-12.
+# its cap. Translation, punctuation, lookup and the screen question use it;
+# the dictation engine that also did (audio to Google) left on 2026-11-27,
+# and its timeout_s went with it.
 # The two "-latest" aliases go FIRST since 2026-10-03: a key made that month
 # gets 404 "no longer available to new users" from both 2.5 models (probed
 # one request each: flash-latest answered in 3.7 s, flash-lite-latest in
@@ -1894,7 +1902,6 @@ models = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
 ]
-timeout_s = 30
 
 [local]
 model = "ivrit-ai/whisper-large-v3-turbo-ct2"
