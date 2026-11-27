@@ -61,6 +61,10 @@ class ConfigError(Exception):
 class AudioConfig:
     sample_rate: int = 16000
     device: int | str | None = None  # None = system default input device
+    # The audio kept from just before the press (recorder.PREROLL_FRESH_S's
+    # comment), in ms. 0 = none, the old way — and the default, measured:
+    # see defaults.toml.
+    preroll_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -1938,6 +1942,8 @@ def build(data: dict) -> Config:
         audio=AudioConfig(
             sample_rate=int(audio.get("sample_rate", AudioConfig.sample_rate)),
             device=_parse_device(str(audio.get("device", ""))),
+            preroll_ms=max(0, min(1000, int(audio.get(
+                "preroll_ms", AudioConfig.preroll_ms)))),
         ),
         gemini=GeminiConfig(models=models),
         local=LocalConfig(

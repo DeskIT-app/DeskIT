@@ -19833,6 +19833,77 @@ def test_a_question_is_a_slice_and_the_recording_never_notices() -> None:
     assert rec.slice_since(0) == (None, 0.0)
 
 
+def test_the_preroll_keeps_the_moment_before_the_press_and_nothing_stale(
+        ) -> None:
+    """`[audio] preroll_ms` (2026-11-27): the stream calls back between
+    recordings too, so the last preroll_ms of it is kept in a ring and put
+    in FRONT of the next recording — the decoder sees a word begun a moment
+    before the press. It is not held time (`lead_s`), not in the peak, a
+    ring a stopped stream left behind is not used, a press with nothing
+    after the pre-roll is still empty, and 0 (what the file ships, see its
+    comment) is the old recorder exactly."""
+    import recorder as recorder_mod
+
+    def built(preroll_s):
+        rec = recorder_mod.Recorder.__new__(recorder_mod.Recorder)
+        rec._lock = threading.Lock()
+        rec._state = recorder_mod.IDLE
+        rec.sample_rate = 16000
+        rec._chunks, rec._excluded, rec._questions = [], [], []
+        rec._samples = 0
+        rec._default_max_samples = rec._max_samples = 400 * 16000
+        rec._on_overflow = lambda: None
+        rec._set_preroll(preroll_s)
+        return rec
+
+    def feed(rec, value, n=4, size=1600):           # n buffers of 0.1 s
+        for _ in range(n):
+            rec._callback(np.full((size, 1), value, dtype=np.int16), size,
+                          None, None)
+
+    rec = built(0.3)
+    feed(rec, 9000, n=2)            # old: 0.2 s that falls out of the ring
+    feed(rec, 300, n=3)             # the 0.3 s just before the press
+    assert rec._ring_samples == 4800, rec._ring_samples
+    rec.begin()
+    assert abs(rec.lead_s - 0.3) < 1e-9 and rec._lead == 3, rec.lead_s
+    assert rec.mark() == 3, "a mark is past the pre-roll"
+    assert rec.peak() == 0.0, "the room before the press is not the peak"
+    feed(rec, 1200, n=5)
+    wav, seconds = rec.end()
+    assert wav is not None and abs(seconds - 0.8) < 1e-9, seconds
+    import io
+    import wave as wave_mod
+    with wave_mod.open(io.BytesIO(wav)) as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    assert len(pcm) == 12800 and (pcm[:4800] == 300).all() \
+        and (pcm[4800:] == 1200).all(), "the moment before, then the hold"
+    assert not (pcm == 9000).any(), "only the last 0.3 s"
+    # A press with nothing after the pre-roll is a tap, not a recording.
+    feed(rec, 300, n=3)
+    rec.begin()
+    assert rec.end() == (None, 0.0) and rec.last_empty == recorder_mod.EMPTY_TAP
+    # A stream that stopped: its old ring is not the moment before.
+    feed(rec, 300, n=3)
+    rec._ring[-1] = (time.monotonic() - 5.0, rec._ring[-1][1])
+    rec.begin()
+    assert rec._lead == 0 and rec.lead_s == 0.0 and rec._chunks == []
+    rec.abort()
+    # A ring longer than a chunk's grain is cut to exactly preroll_s.
+    feed(rec, 300, n=2, size=2500)
+    rec.begin()
+    assert sum(len(c) for c in rec._chunks) == 4800, rec._chunks
+    rec.abort()
+    # 0 = the old recorder: nothing kept, nothing in front.
+    off = built(0.0)
+    feed(off, 300, n=3)
+    assert not off._ring
+    off.begin()
+    assert off._chunks == [] and off.lead_s == 0.0
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.audio.preroll_ms == 0, "off until a measurement says on"
+
+
 def test_the_switch_cuts_the_question_out_of_the_dictation_itself(
 ) -> None:
     """What the card switch has to mean once the question is INSIDE the

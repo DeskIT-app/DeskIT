@@ -473,7 +473,9 @@ class App:
         self.reading = reading_mod.Reading(paths.READ_DIR)
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
-                                 cfg.max_seconds, self._on_overflow)
+                                 cfg.max_seconds, self._on_overflow,
+                                 preroll_s=getattr(cfg.audio, "preroll_ms",
+                                                   0) / 1000.0)
         # A dead microphone ten seconds into a dictation, and the
         # all-clear when sound arrives — both from the PortAudio callback,
         # both handed to the dot (see _on_silent). recorder.SILENT_PEAK.
@@ -4502,9 +4504,11 @@ class App:
             log.warning("the microphone stream stopped during this "
                         "recording — %.1f s arrived", seconds)
             self._mic_lost(partial=True)
-        if seconds < self.cfg.min_seconds:
+        # The pre-roll is not held time: a tap stays a tap.
+        held_s = seconds - float(getattr(self.recorder, "lead_s", 0.0) or 0.0)
+        if held_s < self.cfg.min_seconds:
             log.info("discarded: %.2f s hold is under min_seconds=%.2f "
-                     "(accidental tap?)", seconds, self.cfg.min_seconds)
+                     "(accidental tap?)", held_s, self.cfg.min_seconds)
             self._set_state("ready")
             return
         beep("stop")

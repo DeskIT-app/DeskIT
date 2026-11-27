@@ -362,6 +362,24 @@ device = ""
                                # matches several devices is ambiguous and
                                # falls back to the default. "" = system
                                # default input (see --list-devices)
+preroll_ms = 0                 # the audio kept from just BEFORE the press and
+                               # put in front of the recording, so a word begun
+                               # a moment early keeps its first sound. The 50
+                               # recent\ sidecars of 2026-11-09 had the first
+                               # word at <= 0.10 s in 13 and <= 0.00 s in 6
+                               # (reports\2026-11-09\dictation-speed.md F5).
+                               # It is not held time (min_seconds still means
+                               # the hold). OFF because of what it was measured
+                               # to do, 2026-11-28, night17, the 50 recent\
+                               # wavs, Hebrew pinned, no hotwords: 0.3 s of each
+                               # clip's own quietest stretch in front changed
+                               # 19 of 50 transcripts, 61 word edits over 1,193
+                               # words, 35 of 41 changed spans mid-sentence
+                               # (the decoder's windows shift), in BOTH
+                               # directions - and there is no unbiased label
+                               # here to say which way it nets. What a real
+                               # pre-roll adds (a clipped first sound) cannot
+                               # be measured without one. 300 = try it. 0..1000
 
 [feedback]
 enabled = true                # paste a marker at the cursor while transcribing
