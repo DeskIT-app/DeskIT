@@ -49,8 +49,11 @@ def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
     from .local_whisper import LocalWhisperTranscriber
 
     def build():
-        return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords),
-                                       english_later=english_later)
+        backend = LocalWhisperTranscriber(**local_kwargs(cfg, hotwords),
+                                          english_later=english_later)
+        backend.stop_empty_passes = bool(
+            getattr(cfg.local, "stop_empty_passes", True))
+        return backend
     try:
         return build()
     except ModelMissing as e:

@@ -3510,6 +3510,27 @@ def test_an_empty_last_pass_ends_the_decode_instead_of_crawling():
         decoder=5.98, paste=0.09) == (
         "stages (s): queue 0.02, decoder 5.98 (28 passes, 26 empty 4.31 s),"
         " paste 0.09")
+    # the switch: on by default, in defaults.toml, and what the builder
+    # hands the backend — false is faster-whisper's loop as it was
+    assert config_mod.LocalConfig().stop_empty_passes is True
+    assert config_mod.defaults_flat()["local.stop_empty_passes"] is True
+    assert lw.LocalWhisperTranscriber.stop_empty_passes is True
+    import transcribers
+
+    class _Built:
+        stop_empty_passes = "unset"
+
+        def __init__(self, **kw):
+            pass
+
+    for value in (False, True):
+        parsed = config_mod.build({"local": {"stop_empty_passes": value}})
+        assert parsed.local.stop_empty_passes is value, value
+        cfg = dataclasses.replace(config_mod.Config(), backend="local",
+                                  local=parsed.local)
+        with _patched(lw, "LocalWhisperTranscriber", _Built):
+            backend = transcribers.get_transcriber(cfg)
+        assert backend.stop_empty_passes is value, value
 
 
 def test_www_survives_what_a_decoder_loop_does_not() -> None:

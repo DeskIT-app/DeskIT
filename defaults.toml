@@ -2018,6 +2018,19 @@ rolling_window_s = 25.0          # how much settled audio a stretch waits for
                                  # is read with more of its own context. Below
                                  # 20 it was measured to cost words
 #
+# THE EMPTY-PASS CRAWL (2026-11-28). faster-whisper decodes a clip in passes,
+# and with word timestamps on, a pass that finds NO text (one timestamp token)
+# moves the next pass only 0.1 s on: a full 30 s encode per tenth of a second
+# of quiet. The 127.4 s dictation of 2026-11-27 22:17 waited 6.7 s for its
+# paste because of it: its 19.3 s tail ended in 2.6 s of quiet with a breath in
+# it, and with the hotwords in the prompt every pass over that quiet came back
+# empty — 28 passes, 26 of them empty, 5.45 s, against one pass and 0.54 s for
+# the same tail without hotwords. A pass that reached the end of the clip and
+# found nothing has already looked at all that is left, so this ends the loop
+# there. The words are the same (see the slow-tail notes for the replay).
+stop_empty_passes = true         # end the decode at an empty last pass;
+                                 # false = faster-whisper's loop as it was
+#
 # WARM AGAIN ON THE WAY BACK (wake.py, 2026-10-20). An idle model does not stay
 # where it was loaded: the night's training took 15.1 of the card's 15.9 GB and
 # Windows moved these models off it; they stayed off all day (the card read 2.6

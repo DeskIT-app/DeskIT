@@ -375,6 +375,12 @@ class LocalConfig:
     # edge of that noise; at 8 s it is plainly worse (13.9% against 7.5%
     # WER). Cuts always land in a pause, never mid-word.
     rolling_window_s: float = 25.0
+    # End faster-whisper's seek loop at a pass that reached the end of the
+    # clip and decoded no text, instead of stepping 0.1 s on and encoding
+    # again (local_whisper._without_empty_crawl). Measured 2026-11-28: the
+    # 19.3 s tail of a 127 s dictation took 5.45 s in 28 passes, 26 of them
+    # empty, over its last 2.6 s of quiet. False = the loop as it was.
+    stop_empty_passes: bool = True
     # Warm the models again when the person comes back after this many
     # minutes with no key or mouse (wake.py): Windows pushes an idle model
     # out of memory, and the first dictation then paid 7-12 s to bring it
@@ -1964,6 +1970,8 @@ def build(data: dict) -> Config:
             rolling=bool(local.get("rolling", LocalConfig.rolling)),
             rolling_window_s=float(local.get(
                 "rolling_window_s", LocalConfig.rolling_window_s)),
+            stop_empty_passes=bool(local.get(
+                "stop_empty_passes", LocalConfig.stop_empty_passes)),
             warm_after_away_min=float(local.get(
                 "warm_after_away_min", LocalConfig.warm_after_away_min)),
         ),

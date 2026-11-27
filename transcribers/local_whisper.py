@@ -466,7 +466,7 @@ class LocalWhisperTranscriber:
     at_real_length = False
     #: [local] stop_empty_passes (_without_empty_crawl): set by the
     #: builder (transcribers._local), asked at every pass.
-    stop_empty_passes = False
+    stop_empty_passes = True
     #: Where the seconds went, for the log and the wizard: the ivrit
     #: load, its warm-up, the English load and ITS warm-up — each alone,
     #: so a slow start can be read instead of guessed at.
