@@ -3728,6 +3728,13 @@ class App:
         server = self.cfg.server
         return bool(server.enabled and (server.phone_allowed or self._approved))
 
+    def _phone_streams(self) -> bool:
+        """``[server] stream``: does this PC take a phone dictation while it
+        is spoken (stage 2)? The row says so (_phone_publish) and a stream
+        is rolled (_stream_roller) only then. A config from before the key
+        reads as on, which is what defaults.toml ships."""
+        return bool(getattr(getattr(self.cfg, "server", None), "stream", True))
+
     def _phone_read(self) -> None:
         """The devices' rows from the account. This comes before anything
         that decides on them or on this PC's row: Sign out of every PC clears
@@ -3751,7 +3758,8 @@ class App:
             phone_mod.publish(port=self.phone_door.port or self.cfg.server.phone_port,
                               listening=self._phone_listening(),
                               words_sync=privacy.allowed("settings_sync"),
-                              history_sync=privacy.allowed("history_sync"))
+                              history_sync=privacy.allowed("history_sync"),
+                              stream=self._phone_streams())
         except Exception as e:                               # noqa: BLE001
             log.debug("this PC's row did not go out (%s)", type(e).__name__)
 
@@ -4359,7 +4367,12 @@ class App:
         it is decoded whole at its end as /transcribe always did. The desk's
         own, on the stream instead of the microphone, its stretches repaired
         as they settle. None while the app is locked or the model is not on:
-        the answer at the end then says why, in the words /transcribe uses."""
+        the answer at the end then says why, in the words /transcribe uses.
+        None too with ``[server] stream`` off: this PC's row then names no
+        /stream and a phone sends whole, and one that streams anyway (it
+        read the row before the switch moved) gets the old whole decode."""
+        if not self._phone_streams():
+            return None
         locked = getattr(self, "locked", None)
         if locked is not None and locked():
             return None

@@ -1558,6 +1558,17 @@ away = true                    # also from outside home: a phone of your
                                # so the server carries only sealed bytes.
                                # Off: this PC does not answer it, and the
                                # phone goes on to its cloud key or waits.
+stream = true                  # a phone dictation is sent while it is spoken
+                               # and decoded as it arrives, so the release
+                               # waits only for the last stretch, as at the
+                               # desk. Measured 2026-11-27 on the emulator,
+                               # 60 s spoken, release to text: the home door
+                               # 3.2 s -> 1.15 s (11.8 -> 1.5 s on a link
+                               # like mobile data), through the account
+                               # 2.9 s -> 1.06 s (14.3 -> 2.4 s). Off: this
+                               # PC's row in the account names no /stream, so
+                               # the phone sends the whole recording at the
+                               # release as before. Read at start.
 
 [history]
 # transcripts.log is every sentence you dictated, corrected, translated,

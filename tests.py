@@ -6374,6 +6374,15 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
         assert phone_mod.publish(**dict(args, listening=False, history_sync=True)) is True
         assert vault.open_json(box["key"], box["written"][-1], aad)["history_sync"] is True
 
+        # [server] stream off: the row is one from before stage 2, the field not
+        # written at all, and that is a change that goes out. A phone then sends
+        # the recording whole on both roads (Link.kt reads no field as no stream)
+        assert phone_mod.publish(**dict(args, stream=False)) is True
+        off = vault.open_json(box["key"], box["written"][-1], aad)
+        assert "stream" not in off, off
+        assert off == {"v": 1, "kind": "pc", "cert": phone_mod.identity(), "addrs": ["10.1.2.3"],
+                       "port": 8766, "proto": 1, "words_sync": True, "history_sync": False}, off
+
         count = len(box["written"])
         box["gone"] = {_THIS_PC}
         assert phone_mod.publish(**dict(args, port=9000)) is False
@@ -7876,9 +7885,10 @@ def test_the_account_key_stays_out_of_main() -> None:
     import phone as phone_mod
 
     # Flags only, never a key: history_sync came with stage 2b (a phone's
-    # cloud text goes only where a PC's row says its account keeps it).
+    # cloud text goes only where a PC's row says its account keeps it), and
+    # stream with stage 2's switch ([server] stream: the row names /stream or not).
     assert list(inspect.signature(phone_mod.publish).parameters) == [
-        "port", "listening", "words_sync", "history_sync"]
+        "port", "listening", "words_sync", "history_sync", "stream"]
     assert not inspect.signature(phone_mod.anchors).parameters
     assert list(inspect.signature(main_mod.App._phone_account).parameters) == ["self"]
     assert list(inspect.signature(main_mod.App._phone_publish).parameters) == ["self"]
@@ -49051,8 +49061,41 @@ def test_a_phone_stream_is_rolled_and_finished_through_the_desks_own_path():
         assert app._stream_roller(phonestream.PhoneStream()) is None
         app.locked = lambda: False
         # ...nor with [local] rolling off
+        rolling_on = app.cfg
         app.cfg = dataclasses.replace(app.cfg, local=dataclasses.replace(app.cfg.local, rolling=False))
         assert app._stream_roller(phonestream.PhoneStream()) is None
+
+        # THE SWITCH, [server] stream: on as defaults.toml ships it, and one line
+        # off is the old road. This PC's row then names no /stream (the phone
+        # sends whole) and a stream that arrives anyway is decoded whole at its end
+        assert config_mod.load(REPO / "defaults.toml").server.stream is True
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.toml"
+            p.write_text('hotkey = "right ctrl"\n', "utf-8")
+            assert config_mod.load(p).server.stream is True, "a file from before the key reads as off"
+            p.write_text('hotkey = "right ctrl"\n[server]\nstream = false\n', "utf-8")
+            assert config_mod.load(p).server.stream is False
+        app.cfg = rolling_on
+        assert app._phone_streams() is True
+        live = app._stream_roller(phonestream.PhoneStream())
+        assert live is not None, "the switch on, and a stream got no rolling transcriber"
+        live.invalidate()
+        app.cfg = dataclasses.replace(app.cfg, server=dataclasses.replace(app.cfg.server, stream=False))
+        assert app._phone_streams() is False
+        assert app._stream_roller(phonestream.PhoneStream()) is None, "the switch off, and a stream rolled"
+        said = {}
+        import phone as phone_mod
+        app._approved = set()
+        app.phone_door = type("Door", (), {"port": 8799})()
+        with _patched(phone_mod, "publish", lambda **kw: said.update(kw) or True):
+            app._phone_publish()
+        assert said.get("stream") is False, f"the switch off, and this PC's row still says /stream: {said}"
+        before = len(backend.calls)
+        off = server_mod.Routes(app._transcribe_for_phone, stream_begin=app._stream_roller).stream(None)
+        assert not off.rolling
+        off.feed(_voice(3.0))
+        status, reply = off.finish()
+        assert status == 200 and backend.calls[before][0] == "whole", (status, backend.calls[before:])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

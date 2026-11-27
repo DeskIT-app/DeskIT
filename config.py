@@ -1276,6 +1276,14 @@ class ServerConfig:
     # by default, the plan's words; off, this PC does not answer, and the
     # phone goes on to its cloud key or waits.
     away: bool = True
+    # A phone dictation sent while it is spoken and decoded as it arrives
+    # (phonestream.py, PHONE_LINK_PLAN.md stage 2). On: this PC's row in the
+    # account says its door reads /stream, and a phone that reads so streams
+    # to it on both roads. Off: the row names no /stream, exactly a row from
+    # before stage 2, so the phone sends the whole recording at the release
+    # as it always did, and a stream that still arrives is decoded whole at
+    # its end. It is read at start: the row goes out with the account pass.
+    stream: bool = True
 
 
 @dataclass(frozen=True)
@@ -2080,6 +2088,7 @@ def build(data: dict) -> Config:
                                         ServerConfig.review_scope)).strip().lower(),
             phone_allowed=bool(server.get("phone_allowed", ServerConfig.phone_allowed)),
             away=bool(server.get("away", ServerConfig.away)),
+            stream=bool(server.get("stream", ServerConfig.stream)),
         ),
         vocab=VocabConfig(
             enabled=bool(vocab.get("enabled", VocabConfig.enabled)),
