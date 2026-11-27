@@ -155,7 +155,7 @@ URL_PREFIXES = ("https://github.com/", "https://deskit-app.github.io/",
 ACTS = frozenset({
     "set", "browse", "file.open",
     "dot.move", "dot.corner",
-    "update.check", "update.install", "update.winget", "update.notes",
+    "update.check", "update.install", "update.winget", "update.notes", "update.site",
     "awake.screens", "awake.check",
     "model.download", "model.redownload", "model.delete",
     "pack.install", "pack.remove", "pack.retry",
@@ -703,6 +703,10 @@ class Place:
         rows = [{"label": "Check now", "do": "update.check"}]
         rel = s["available"]
         if rel is None or s["mode"] in ("store", "off", "offline"):
+            return rows
+        if not getattr(rel, "checked", False) and not s["winget_command"]:
+            # the feed's signature did not verify (updates.py)
+            rows.append({"label": "Open the website", "do": "update.site"})
             return rows
         if self._too_old_for(rel):
             rows.append({"label": "Release notes", "do": "update.notes"})
@@ -1577,6 +1581,13 @@ class Place:
         rel = updates.status()["available"]
         if rel is not None:
             self._open_url(str(rel.notes_url))
+        return ""
+
+    def _do_update_site(self, arg) -> str:
+        """Open the website: the way to a release whose feed did not
+        verify (updates.UNCHECKED_WORDS)."""
+        import updates
+        self._open_url(updates.WEBSITE)
         return ""
 
     # -- awake

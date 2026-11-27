@@ -3060,6 +3060,18 @@ class Dashboard:
         mb = rel.size / 1_048_576
         when = f", {rel.published[:10]}" if rel.published else ""
         buttons: list = []
+        if not getattr(rel, "checked", False) and not s.get("winget_command"):
+            # the feed's signature did not verify (updates.py): news, never
+            # a download — the website is the way to it
+            return [{
+                "at": time.time(), "kind": "update", "mark": "version",
+                "mark_colour": ui.AMBER, "eyebrow": "A newer version",
+                "eyebrow_right": False,
+                "text": f"DeskIT {rel.version} is out. {updates.UNCHECKED_WORDS}",
+                "note": "Your copy keeps working as it is.",
+                "buttons": [("Open the website", "gold",
+                             lambda: self._open_url(updates.WEBSITE))],
+            }]
         if self._too_old_for(rel):
             return [{
                 "at": time.time(), "kind": "update", "mark": "version",
@@ -9177,6 +9189,9 @@ class Dashboard:
         rows = [("Check now", self._update_check)]
         rel = s["available"]
         if rel is None or s["mode"] in ("store", "off", "offline"):
+            return rows
+        if not getattr(rel, "checked", False) and not s["winget_command"]:
+            rows.append(("Open the website", lambda: self._open_url(updates.WEBSITE)))
             return rows
         if self._too_old_for(rel):
             rows.append(("Release notes", lambda r=rel: self._open_url(r.notes_url)))

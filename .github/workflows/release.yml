@@ -112,6 +112,24 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # 0b. the update key (update_key.py, update_sig.py): every copy built
+      #     here checks each later latest.json against the key it pins, and
+      #     the placeholder verifies nothing, so a copy built with it would
+      #     refuse every update for good. A tag builds nothing until it is
+      #     real; a dry run goes on with a warning (its stage is never a
+      #     release). The draft's latest.json is signed on the owner's PC
+      #     afterwards, by dev/sign_release.py, never here: the key is not
+      #     on GitHub.
+      - name: The update key is pinned
+        run: |
+          python dev/sign_release.py --check-pinned
+          $pinned = $LASTEXITCODE
+          if ($pinned -ne 0) {
+            if ("${{ github.ref_type }}" -eq "tag") { throw "update_key.py pins no update key: no release is built with it" }
+            Write-Host "::warning::a dry run with the placeholder update key: this stage could never install an update"
+          }
+          exit 0
+
       - name: The runner's Python is the embeddable's patch version
         run: |
           $got = (python -c "import platform; print(platform.python_version())").Trim()
