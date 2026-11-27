@@ -81,6 +81,8 @@ class Pc:
         self.fail: str | None = None
         self.review: list[dict] = []
         self.decided: list[tuple[str, str]] = []
+        #: What the row says of the door's /stream (stage 2): 0, a PC from before it.
+        self.stream = 0
         self.routes = server_mod.Routes(
             self._transcribe, self._translate, punctuate=self._punctuate,
             review_pending=lambda: [dict(i) for i in self.review],
@@ -144,7 +146,8 @@ class Pc:
             "v": 1, "kind": "pc", "cert": cert or phone_mod.identity(),
             "addrs": [ADDRESS] if addrs is None else addrs,
             "port": port if port is not None else (self.door.port or 8766),
-            "proto": 1, "words_sync": words_sync, "history_sync": history_sync})
+            "proto": 1, "words_sync": words_sync, "history_sync": history_sync,
+            **({"stream": self.stream} if self.stream else {})})
 
     def down(self):
         self.door.stop()
