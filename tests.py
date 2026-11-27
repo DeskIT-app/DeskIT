@@ -41231,10 +41231,15 @@ def test_the_consent_and_tour_cards_rest_while_nothing_is_up() -> None:
         def __init__(self):
             super().__init__()
             self.polls = 0
+            self.rests = 0
 
         def get_nowait(self):
             self.polls += 1
             return super().get_nowait()
+
+        def rest(self, seconds):
+            self.rests += 1
+            return super().rest(seconds)
 
     for card, ask in ((overlay_mod.ConsentCard(on_answer=lambda k, a: None),
                        lambda c: c.show("cloud_audio")),
@@ -41247,6 +41252,17 @@ def test_the_consent_and_tour_cards_rest_while_nothing_is_up() -> None:
         if card._thread is None or not card._alive.is_set():
             return
         try:
+            # The loop's FIRST update() must be over before anything is
+            # timed. On a HIDDEN desktop, once two Tk interpreters have
+            # come and gone in a process, a new one's first update() takes
+            # 2.0 s (measured 2026-11-28, raw tkinter, four interpreters on
+            # four threads in turn: 0.017 / 0.004 / 2.018 / 2.020 s; on the
+            # interactive desktop 0.049 / 0.015 / 0.028 / 0.015). Alone this
+            # test is the first; in the full suite it is not, and it failed
+            # every night from 2026-11-12 with "waited out the rest (1.1 s)"
+            # — the put landed while the loop was still in that update.
+            assert _until(lambda: card._q.rests >= 1, 5), \
+                f"the {type(card).__name__} loop never came to rest"
             time.sleep(0.3)
             n = card._q.polls
             time.sleep(0.6)
