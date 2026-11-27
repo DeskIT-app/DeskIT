@@ -3186,6 +3186,8 @@ def _open_origin(bounds, screen, saved, size, near, keep: int = 60):
 
 
 _REVIEW_BUTTONS = ("accept", "reject", "later")
+# Daylight between the review card and the notify column it steps around.
+AVOID_GAP = 12
 
 
 class ReviewCard(HintCard):
@@ -3256,9 +3258,15 @@ class ReviewCard(HintCard):
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_verdict=None, seconds: float = 20.0,
                  keys: dict | None = None, on_edit=None, still_open=None,
-                 held=None) -> None:
+                 held=None, avoid=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
+        # avoid() -> the notify column's card rect on screen, or None
+        # (`[review] avoid_notify`, 2026-11-27): both cards default to
+        # mid-height on the right, and a finish card landing a few seconds
+        # after a dictation covered the proposal. Called on the card's own
+        # thread; must be quick. None = never step aside (the old way).
+        self._avoid = avoid
         self._on_verdict = on_verdict
         # The pencil: on_edit(id, row, rect) — the owner wants to type the
         # word himself. The card is down by the time it is called.
@@ -3552,7 +3560,46 @@ class ReviewCard(HintCard):
         x = (m - inset) if self._corner == "left" \
             else (sw - m - width + inset)
         y = (sh - height) // 2
-        return int(x), int(y)
+        return int(x), int(self._aside(x, y, width, height, inset, sh))
+
+    def _aside(self, x: int, y: int, width: int, height: int, inset: int,
+               sh: int) -> int:
+        """The window's y, stepped out of the notify column's way: ABOVE
+        it when the whole card fits there, else BELOW it, else where it
+        was. Only for the default spot — a card he dragged stays where he
+        put it, and so does one in a corner of its own. Pure arithmetic
+        on the column's rect, so a test drives it with numbers."""
+        try:
+            col = self._avoid() if self._avoid is not None else None
+        except Exception:                 # noqa: BLE001 — decoration
+            col = None
+        if not col:
+            return y
+        ax0, ay0, ax1, ay1 = col
+        cx0, cy0 = x + inset, y + inset
+        cx1, cy1 = x + width - inset, y + height - inset
+        if cx1 <= ax0 or ax1 <= cx0 or cy1 <= ay0 or ay1 <= cy0:
+            return y                      # not in its way
+        card_h, m = height - 2 * inset, self._margin
+        above = ay0 - AVOID_GAP - card_h
+        if above >= m:
+            return above - inset
+        below = ay1 + AVOID_GAP
+        if below + card_h <= sh - m:
+            return below - inset
+        return y
+
+    def in_the_way(self) -> bool:
+        """Is the notify column standing on the card that is up?"""
+        rect = self.rect
+        try:
+            col = self._avoid() if self._avoid is not None else None
+        except Exception:                 # noqa: BLE001
+            col = None
+        if not rect or not col:
+            return False
+        return not (rect[2] <= col[0] or col[2] <= rect[0]
+                    or rect[3] <= col[1] or col[3] <= rect[1])
 
     # -- overlay thread --
 

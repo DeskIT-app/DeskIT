@@ -29992,6 +29992,127 @@ def test_the_review_card_sits_mid_height_on_the_right_and_stays_where_put(
     assert top.origin(400, 200, (2560, 1440), 26)[1] == 14 - 26
 
 
+def test_the_review_card_steps_out_of_the_notify_columns_way() -> None:
+    """design-ux.md 7: `[notify] corner` and `[review] corner` are both
+    mid-height on the right, so a finish card landing seconds after a
+    dictation covered the proposal. The card in its default spot now goes
+    ABOVE the column when it fits, else BELOW, else stays; a dragged card,
+    a corner of its own and no column change nothing. Then the glass loop
+    with a stand-in window: a column landing on a card already up builds
+    it again out of the way, the clock kept."""
+    screen, inset = (2560, 1440), 26
+    w, h = 400 + 2 * inset, 200 + 2 * inset
+    col = [None]
+    card = overlay_mod.ReviewCard(corner="right", margin=14,
+                                  avoid=lambda: col[0])
+    x0, y0 = card.origin(w, h, screen, inset)
+    assert (x0, y0) == (2560 - 14 - w + inset, (1440 - h) // 2)
+    gap = overlay_mod.AVOID_GAP
+    col[0] = (2150, 600, 2546, 900)                  # on it: above fits
+    assert card.origin(w, h, screen, inset) == (x0, 600 - gap - 200 - inset)
+    col[0] = (2150, 150, 2546, 640)                  # no room above: below
+    assert card.origin(w, h, screen, inset) == (x0, 640 + gap - inset)
+    col[0] = (2150, 100, 2546, 1300)                 # no room either way
+    assert card.origin(w, h, screen, inset) == (x0, y0)
+    col[0] = (0, 600, 400, 900)                      # the other edge
+    assert card.origin(w, h, screen, inset) == (x0, y0)
+    col[0] = (2150, 600, 2546, 900)
+    moved = overlay_mod.ReviewCard(corner="right", x=2100, y=650,
+                                   avoid=lambda: col[0])
+    assert moved.origin(w, h, screen, inset) == (2100 - inset, 650 - inset), \
+        "a card he dragged stays where he put it"
+    corner = overlay_mod.ReviewCard(corner="top-right", avoid=lambda: col[0])
+    assert corner.origin(w, h, screen, inset)[1] == 14 - inset
+    off = overlay_mod.ReviewCard(corner="right", margin=14)      # the switch
+    assert off.origin(w, h, screen, inset) == (x0, y0)
+
+    def broken():
+        raise RuntimeError("decoration")
+    assert overlay_mod.ReviewCard(corner="right", margin=14, avoid=broken) \
+        .origin(w, h, screen, inset) == (x0, y0)
+    card.rect = (x0 + inset, y0 + inset, x0 + w - inset, y0 + h - inset)
+    assert card.in_the_way()
+    col[0] = None
+    assert not card.in_the_way() and not off.in_the_way()
+    assert config_mod.load(Path(__file__).resolve().parent
+                           / "defaults.toml").review.avoid_notify is True
+
+    # -- the glass loop, a column landing on a card already up
+    from PIL import Image
+    try:
+        from skin import review as s_review
+    except Exception:
+        return
+    built = []
+
+    class Canvas:
+        def clear(self, *_a):
+            pass
+
+        def drawImage(self, *_a):
+            pass
+
+    class FakeGlass:
+        def __init__(self, x, y, w, h, **_kw):
+            self.at, self.width, self.height = (x, y), w, h
+            self.canvas = Canvas()
+            built.append(self)
+
+        def where(self):
+            return self.at
+
+        def show(self):
+            pass
+
+        def raise_(self):
+            pass
+
+        def flush(self):
+            pass
+
+        def pump(self):
+            pass
+
+        def close(self):
+            pass
+
+    held = (s_review.Glass, s_review._frost, s_review.face,
+            s_review._to_skia, s_review.primary_screen,
+            s_review.virtual_screen)
+    s_review.Glass = FakeGlass
+    s_review._frost = lambda *_a: None
+    s_review.face = lambda *_a, **_k: None
+    s_review._to_skia = lambda img: img
+    s_review.primary_screen = lambda: screen
+    s_review.virtual_screen = lambda: (0, 0) + screen
+    live = overlay_mod.ReviewCard(corner="right", margin=14, seconds=20,
+                                  avoid=lambda: col[0])
+    live.hovering = lambda: False
+    worker = threading.Thread(target=s_review.run, args=(live,), daemon=True)
+    live._thread = worker
+    worker.start()
+    try:
+        assert live._alive.wait(5)
+        live.show(_review_proposal("a"))
+        assert _until(lambda: built and live.rect is not None, 3), "never up"
+        first = built[-1]
+        assert first.at[0] > 2000, first.at
+        col[0] = live.rect                       # the column lands on it
+        assert _until(lambda: len(built) >= 2, 2), "it never stepped aside"
+        again = built[-1]
+        assert again.at[1] < first.at[1], (first.at, again.at)
+        assert live.visible() and live.current() == "a", "the same card"
+        assert not live.in_the_way(), (live.rect, col[0])
+        time.sleep(0.6)
+        assert len(built) == 2, "once out of the way it stays"
+    finally:
+        live._q.put(overlay_mod._DONE)
+        worker.join(3)
+        (s_review.Glass, s_review._frost, s_review.face, s_review._to_skia,
+         s_review.primary_screen, s_review.virtual_screen) = held
+    assert not worker.is_alive()
+
+
 # ---- the review card's line (2026-11-10): a second proposal waits behind
 # the first instead of taking its place
 

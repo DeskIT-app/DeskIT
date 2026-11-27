@@ -2096,6 +2096,16 @@ card_families = ["term"]      # which proposals pop up as that card; the rest
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
+avoid_notify = true           # true = when the notify column (Claude's finish
+                              # cards) stands where this card is, the card
+                              # steps above it, or below it when only that
+                              # fits - at its first show and if the column
+                              # lands on it later (clock kept). Both default
+                              # to mid-height on the right, and a finish card
+                              # often lands seconds after a dictation
+                              # (reports6-11-09\design-ux.md, 7). Only
+                              # the default spot: a dragged card stays put.
+                              # false = the old way, they may overlap
 x = -100000               # the top-left of the CARD where you last
 y = -100000               # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a

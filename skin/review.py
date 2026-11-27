@@ -43,6 +43,8 @@ RADIUS = rc.RADIUS
 FACE_A = 202              # the face's alpha — skin\hint.py's glass weight
 BLUR = 11
 TICK_S = 0.03             # the loop; a click must feel immediate
+ASIDE_S = 0.25            # how often a card that is up asks whether the
+                          # notify column landed on it (pure arithmetic)
 REPAINT_S = 0.1           # the clock: ten frames a second is smooth enough
 
 
@@ -179,6 +181,25 @@ def run(card) -> None:
         deadline = (time.monotonic() + float(item.get("seconds") or 0)
                     if float(item.get("seconds") or 0) > 0 else None)
 
+    def step_aside():
+        """A notify column came up ON this card (a finish card a few
+        seconds after the dictation, `[review] avoid_notify`): put the
+        same card up again where ReviewCard.origin now says, clock kept.
+        Built again rather than moved, so its frost is of what is behind
+        the new spot and not of the old one."""
+        nonlocal deadline
+        if glass is None or shown is None:
+            return
+        x, y = card.origin(glass.width, glass.height, primary_screen(),
+                           SHADOW, virtual_screen())
+        if (x, y) == tuple(glass.where()):
+            return                        # dragged, a corner, or no room
+        keep = deadline
+        put_up(shown)
+        deadline = keep
+
+    next_aside = 0.0
+
     try:
         while not card._closing.is_set():
             now = time.monotonic()
@@ -213,6 +234,11 @@ def run(card) -> None:
                 nxt = card._q_next(now, hold=hushed)
                 if nxt is not None:
                     put_up(nxt)
+            if shown is not None and glass is not None and not hushed \
+                    and now >= next_aside and not card.hovering():
+                next_aside = now + ASIDE_S
+                if card.in_the_way():
+                    step_aside()
             if shown is not None and glass is not None:
                 seconds = float(shown.get("seconds") or 0)
                 progress = 1.0

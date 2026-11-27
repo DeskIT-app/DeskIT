@@ -751,7 +751,12 @@ class App:
                   "later": rcfg.later_key,
                   "edit": getattr(rcfg, "edit_key", "e")},
             on_edit=self._review_edit, still_open=self._review_open,
-            held=lambda: self._word_prompt.open())
+            held=lambda: self._word_prompt.open(),
+            # the notify column's rect, read at the moment the card asks:
+            # the column is built further down and may be the NullCard
+            avoid=((lambda: getattr(getattr(self, "notify_card", None),
+                                    "rect", None))
+                   if getattr(rcfg, "avoid_notify", True) else None))
             if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
             else overlay_mod.ReviewCard.off())
         # The consent card (consent_card.py, privacy.py): asks ONCE per

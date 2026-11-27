@@ -1249,6 +1249,9 @@ class ReviewConfig:
     # the pile on Home and Corrections (review.carded). The measurement
     # is beside the key in defaults.toml.
     card_families: tuple = ("term",)
+    # Step the card out of the notify column's way when both are in the
+    # default spot (2026-11-27). False = the old way: they may overlap.
+    avoid_notify: bool = True
 
 
 REVIEW_CORNERS = HINT_CORNERS + ("right", "left")
@@ -2115,6 +2118,8 @@ def build(data: dict) -> Config:
                                        ReviewConfig.llm_per_day)),
             card_families=_families(review.get(
                 "card_families", ReviewConfig.card_families)),
+            avoid_notify=bool(review.get("avoid_notify",
+                                         ReviewConfig.avoid_notify)),
         ),
         server=ServerConfig(
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
