@@ -5855,6 +5855,116 @@ def test_idle_glass_cards_rest_and_wake_on_their_queue() -> None:
                 f"{type(card).__name__} waited out its rest before _DONE")
 
 
+def test_the_key_card_waits_out_a_screenshot_selection() -> None:
+    """AGENTS.md's "THE HUSH IS ONLY HALF WIRED": skin\\hint.py never read
+    `_hushed`, so a key card coming due, or changed (hold -> latch) and
+    raised again, mapped OVER the screenshot selector and took the drag.
+    Driven through the glass loop itself with a stand-in window: while
+    hushed nothing is built, shown, painted or raised; the unhush puts it
+    up at once. And `[hint] hush = false` is the old way: main.py does not
+    hush the key card at all, while every other card still is."""
+    import types
+    from PIL import Image
+    try:
+        from skin import hint as s_hint
+    except Exception:
+        return
+    import main as main_mod
+    import overlay as overlay_mod
+
+    events = []
+
+    class FakeGlass:
+        gripping = False
+
+        def __init__(self, x, y, w, h, **_kw):
+            self.width, self.height = w, h
+            events.append("new")
+
+        def show(self):
+            events.append("show")
+
+        def raise_(self):
+            events.append("raise")
+
+        def present(self, _img):
+            events.append("present")
+
+        def resize(self, w, h):
+            self.width, self.height = w, h
+
+        def move(self, *_xy):
+            pass
+
+        def pump(self):
+            pass
+
+        def where(self):
+            return 0, 0
+
+        def let_go(self):
+            pass
+
+        def close(self):
+            events.append("close")
+
+    held = (s_hint.Glass, s_hint._frost, s_hint.paint)
+    s_hint.Glass = FakeGlass
+    s_hint._frost = lambda *_a: None
+    s_hint.paint = lambda *_a, **_k: Image.new("RGBA", (4, 4))
+    card = overlay_mod.HintCard(after_ms=0)
+    cfg = _hint_cfg()
+    hold = hint_mod.card_for(cfg, hint_mod.HOLD, main_mod._SCREEN_ACTIONS)
+    latched = hint_mod.card_for(cfg, hint_mod.LATCHED,
+                                main_mod._SCREEN_ACTIONS)
+    worker = threading.Thread(target=s_hint.run, args=(card,), daemon=True)
+    worker.start()
+    try:
+        assert card._alive.wait(5)
+        card._hushed.set()
+        card._q.put(hold)
+        time.sleep(0.3)
+        assert events == [], f"a hushed card went up: {events}"
+        card._hushed.clear()
+        assert _until(lambda: "present" in events, 2), "the unhush did not put it up"
+        assert events[:2] == ["new", "show"], events
+        raised = events.count("raise")
+        assert raised == 1, events
+        card._hushed.set()
+        card._q.put(latched)               # hold -> latch under the selector
+        time.sleep(0.3)
+        assert events.count("raise") == raised, f"raised over the selector: {events}"
+        assert "close" not in events, "a card already up stays where it is"
+        card._hushed.clear()
+        assert _until(lambda: events.count("raise") == raised + 1, 2), events
+    finally:
+        card._q.put(overlay_mod._DONE)
+        worker.join(3)
+        s_hint.Glass, s_hint._frost, s_hint.paint = held
+    assert not worker.is_alive()
+
+    class Cardish:
+        def __init__(self):
+            self.calls = []
+
+        def hush(self):
+            self.calls.append("hush")
+
+        def unhush(self):
+            self.calls.append("unhush")
+
+    for want, calls in ((True, ["hush", "unhush"]), (False, [])):
+        app = types.SimpleNamespace(
+            cfg=types.SimpleNamespace(hint=types.SimpleNamespace(hush=want)),
+            hint=Cardish(), notify_card=Cardish())
+        main_mod.App._hush_overlays(app, True)
+        main_mod.App._hush_overlays(app, False)
+        assert app.hint.calls == calls, (want, app.hint.calls)
+        assert app.notify_card.calls == ["hush", "unhush"], want
+    assert config_mod.load(Path(__file__).resolve().parent
+                           / "defaults.toml").hint.hush is True
+
+
 def test_status_dot_ignores_states_it_does_not_know() -> None:
     """set_state is called from the keyboard hook. A typo must not raise
     there — an exception inside the hook makes Windows drop it."""

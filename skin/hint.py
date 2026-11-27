@@ -795,6 +795,15 @@ def run(hint_card) -> None:
     due = None
     redraw = False
     drag = None                    # the corner drag in progress, or None
+    # A put-up refused while a screenshot selection is on screen
+    # (HintCard.hush). THE HUSH'S LAST HALF (2026-11-27): until then this
+    # loop never read `_hushed`, so a card that became due, or changed
+    # (hold -> latch) and was put up again with raise_(), mapped OVER the
+    # selector and took the drag. A card already up stays where it is —
+    # under the selector, which mapped after it — exactly like the review
+    # card's glass loop; whatever was refused goes up the moment the hush
+    # ends (the unhush rings the queue this loop rests on).
+    held = False
     hint_card._alive.set()
 
     def view():
@@ -830,7 +839,7 @@ def run(hint_card) -> None:
         redraw = False              # the picture did not change, only where
 
     def on_click(x, y):
-        nonlocal redraw, pending, due
+        nonlocal redraw, pending, due, held
         _code, what = hit_test(shown or pending, hint_card.scale, x, y,
                                view())
         if what == MORE:
@@ -841,7 +850,7 @@ def run(hint_card) -> None:
             # Gone until the next dictation — or for good, if the box is
             # ticked. HintCard decides which and writes it down.
             hint_card.closed_by_hand()
-            pending, due = None, None
+            pending, due, held = None, None, False
             take_down()
             return
         redraw = True
@@ -986,7 +995,7 @@ def run(hint_card) -> None:
                         # The dictation is over (or the shelf took the
                         # corner): a tick left on the box counts now.
                         hint_card.card_gone()
-                        pending, due = None, None
+                        pending, due, held = None, None, False
                         take_down()
                     elif not hint_card.accepts(item):
                         continue            # closed by hand until the next
@@ -1005,9 +1014,13 @@ def run(hint_card) -> None:
             # it at the old size would fight the corner under the pointer.
             if drag is None and pending is not None and (
                     (shown is None and due is not None
-                     and time.monotonic() >= due) or changed or redraw):
-                redraw = False
-                put_up(pending)
+                     and time.monotonic() >= due) or changed or redraw
+                    or held):
+                if hint_card._hushed.is_set():
+                    held = True     # after the selection, not over it
+                else:
+                    held = redraw = False
+                    put_up(pending)
             if glass is not None:
                 glass.pump()
             # Nothing moves on this card but a corner being dragged, so the
@@ -1024,6 +1037,8 @@ def run(hint_card) -> None:
             # (set inside pump), keeps the tick.
             if drag is not None:
                 time.sleep(0.012)
+            elif held:
+                overlay.rest(hint_card._q, overlay.IDLE_S, 0.02)
             elif redraw and pending is not None:
                 time.sleep(0.02)
             elif pending is not None and shown is None and due is not None:

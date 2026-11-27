@@ -1031,6 +1031,9 @@ class App:
             card = getattr(self, name, None)
             if card is None:
                 continue
+            if name == "hint" and not getattr(getattr(self.cfg, "hint", None),
+                                              "hush", True):
+                continue                    # [hint] hush = false: the old way
             try:
                 card.hush() if on else card.unhush()
             except Exception:
