@@ -78,7 +78,13 @@ internal fun streamChecks(check: (String, Boolean) -> Unit) {
     check("a kept recording crosses as frames none over AUDIO_MAX, and they join back into it",
           joined.isNotEmpty() && joined.all { it.first == 'A' && it.second.size <= StreamWire.AUDIO_MAX } &&
               joined.fold(ByteArray(0)) { a, f -> a + f.second }.contentEquals(pcm))
-    check("nothing to send is no frame at all", StreamWire.audio(ByteArray(0)).isEmpty())
+    check("nothing to send is no frame at all", StreamWire.audio(ByteArray(0)).isEmpty())
+    // the longest kept recording a Continue sends at once: every frame under server.FRAME_MAX
+    val kept = ByteArray(Recorder.MAX_SECONDS * 32_000)
+    val keptFrames = StreamWire.audio(kept).map { frames(it)!!.single() }
+    check("a five-minute kept recording crosses in frames each under the PC's 1 MB frame cap",
+          keptFrames.all { it.second.size <= (1 shl 20) } &&
+              keptFrames.sumOf { it.second.size } == kept.size)
     val sha = Crypt.hex(MessageDigest.getInstance("SHA-256").digest(pcm))
     check("the end says how many bytes came and their SHA-256",
           frames(StreamWire.end(pcm.size, sha))?.single()?.let { (k, p) ->
