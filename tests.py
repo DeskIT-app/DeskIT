@@ -36767,6 +36767,18 @@ def test_the_roller_settles_windows_as_the_audio_arrives_and_stops_clean():
         r._step()
     assert calls == [(5.5, 0.0, 5.5), (5.0, 0.0, 5.0)], calls
 
+    # The release does not sit out the rest of a poll: a running thread, closed in
+    # the middle of its wait, is done well inside POLL_S (it used to sleep it out).
+    chunks.clear(); seen["n"] = 0
+    r = rolling.Roller(since, rate, decode, 8.0, frames_to_wav)
+    r.start()
+    time.sleep(rolling.POLL_S * 1.1)                 # early in its second wait
+    began = time.perf_counter()
+    r.close()
+    r.finish()
+    took = time.perf_counter() - began
+    assert took < rolling.POLL_S / 2, f"the release waited {took:.3f} s on the poll"
+
 
 def test_a_window_keeps_the_words_whose_middle_is_its_own():
     """decode_window is handed a second of the previous window and most

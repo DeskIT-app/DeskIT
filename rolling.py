@@ -332,8 +332,12 @@ class Roller:
     def _run(self) -> None:
         try:
             while not self._stop.is_set():
-                time.sleep(POLL_S)
-                if self._stop.is_set():
+                # wait, not sleep: the release (close) ends the wait at once, so
+                # finish() does not sit out the rest of a poll. A sleep here cost
+                # every rolled release up to POLL_S (app.log's "rolling wait",
+                # 0.03-0.17 s on 2026-11-27; 0.17 s on a phone stream's 10 s
+                # dictation on the emulator the same day)
+                if self._stop.wait(POLL_S):
                     break
                 self._step()
         except Exception:
