@@ -4511,6 +4511,10 @@ class NotifyCard(HintCard):
 
     CORNERS = ("right", "left", "top-right", "top-left",
                "bottom-right", "bottom-left")
+    # "Esc / click to dismiss" on the top card of a stack only
+    # (`[notify] one_footer`, set by main.py; design-ux.md 12: the same
+    # line on every card of a three-card column). False = every card.
+    one_footer = False
 
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
@@ -4631,6 +4635,8 @@ class NotifyCard(HintCard):
         if not cards:
             self.hide()
             return
+        if self.one_footer:
+            cards[1:] = [dict(c, footless=True) for c in cards[1:]]
         with self._state_lock:
             # The NEWEST id: `current()` is what the dashboard and the
             # dismiss key mean by "the one on screen", and the newest is

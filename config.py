@@ -974,6 +974,9 @@ class NotifyConfig:
     x: int = -100000
     y: int = -100000
     scale: float = 1.0
+    # "Esc / click to dismiss" on the top card of a stack only (2026-11-27).
+    # False = on every card, the old way.
+    one_footer: bool = True
     # The dismiss key ("dismiss_hotkey" in the file): a tap takes the
     # card down and marks everything seen, wherever the mouse is.
     hotkey: str = "ctrl+alt+m"
@@ -2298,6 +2301,7 @@ def build(data: dict) -> Config:
             card_seconds=int(notify.get("card_seconds",
                                         NotifyConfig.card_seconds)),
             stack_max=int(notify.get("stack_max", NotifyConfig.stack_max)),
+            one_footer=bool(notify.get("one_footer", NotifyConfig.one_footer)),
             remind_every_s=int(notify.get("remind_every_s",
                                           NotifyConfig.remind_every_s)),
             remind_times=int(notify.get("remind_times",

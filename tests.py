@@ -60966,6 +60966,50 @@ def _pin_card(**over):
     return nc.pinned_card(**kw)
 
 
+def test_a_stack_says_esc_or_click_once_on_its_top_card() -> None:
+    """design-ux.md 12: "Esc / click to dismiss" stood on every card of a
+    column. With `[notify] one_footer` NotifyCard.show marks every card but
+    the top (newest) one footless: no footer row, 22 px shorter at scale 1,
+    the picture exactly its measure, the "+N earlier" line still drawn,
+    the × and the drag where they were. A pinned card keeps its row (its
+    button lives there); one_footer off is every card as before."""
+    import notify_card as nc
+    import overlay as overlay_mod
+
+    items = [{"id": i, "kind": "done", "source": "claude-code",
+              "title": "Claude finished", "body": f"Done {i}.", "at": "",
+              "unread": 3} for i in (3, 2, 1)]
+    items[-1]["more"] = 2
+
+    def shown(one_footer):
+        card = overlay_mod.NotifyCard()
+        card._thread = object()                   # show() only enqueues
+        card.one_footer = one_footer
+        card.show(items)
+        return card._q.get_nowait()
+
+    on, off = shown(True), shown(False)
+    assert [bool(c.get("footless")) for c in on] == [False, True, True]
+    assert not any(c.get("footless") for c in off)
+    assert overlay_mod.NotifyCard.one_footer is False, "the class is the old way"
+    gap = nc.ROW + nc.FOOTER_H
+    for a, b in zip(on[1:], off[1:]):
+        assert nc.measure(b, 1.0)[1] - nc.measure(a, 1.0)[1] == gap
+        img = nc.compose(a, 1.0)
+        assert img.size == nc.measure(a, 1.0), (img.size, nc.measure(a, 1.0))
+        assert nc.regions(a, 1.0)[nc.DISMISS] == nc.regions(b, 1.0)[nc.DISMISS]
+    assert nc.measure(on[0], 1.0) == nc.measure(off[0], 1.0)
+    assert nc.stack_measure(off)[1] - nc.stack_measure(on)[1] == 2 * gap
+    last = nc.compose(on[-1], 1.0)
+    bare = nc.compose(dict(on[-1], more=0), 1.0)
+    assert last.height - bare.height == 2 + nc.MORE_H, "the +N line stays"
+    pin = dict(_pin_card(), footless=True)
+    assert not nc.footless(pin)
+    assert nc.measure(pin, 1.0) == nc.measure(_pin_card(), 1.0)
+    assert config_mod.load(Path(__file__).resolve().parent
+                           / "defaults.toml").notify.one_footer is True
+
+
 def test_a_pinned_card_has_a_pill_and_no_cross() -> None:
     """The geometry of the Screens off card (2026-10-07): a footer row as
     tall as the pill, no × box, a pill box that is a client hit, and the

@@ -814,6 +814,9 @@ class App:
                 log.info("notify card: this overlay takes no anchor — the "
                          "column will grow downward")
             self.notify_card = card_cls(ncfg.corner, **fields)
+            if hasattr(self.notify_card, "one_footer"):
+                self.notify_card.one_footer = bool(
+                    getattr(ncfg, "one_footer", True))
         else:
             self.notify_card = notify_mod.NullCard()
         self.notify = notify_mod.Engine(paths.DATA_DIR, ncfg, cue=beep,

@@ -403,12 +403,21 @@ def _footer_h(card: dict) -> int:
     return BUTTON_H if is_pinned(card) else FOOTER_H
 
 
+def footless(card: dict) -> bool:
+    """A card in a stack that leaves "Esc / click to dismiss" to the one
+    on top (`[notify] one_footer`, overlay.NotifyCard.show): no footer row
+    at all, so the column is shorter by it. Never a pinned card - its
+    footer row holds its one button."""
+    return bool(card.get("footless")) and not is_pinned(card)
+
+
 def measure(card: dict, scale: float = 1.0) -> tuple[int, int]:
     """The card's size at `scale`. Arithmetic, except for the body's
     height, which is the one thing only the text layout knows."""
     s = clamp_scale(scale)
     width, h = _above_footer(card, s)
-    h += ROW * s + _footer_h(card) * s
+    if not footless(card):
+        h += ROW * s + _footer_h(card) * s
     if int(card.get("more") or 0) > 0:
         h += 2 * s + MORE_H * s
     h += PAD * s
@@ -797,27 +806,28 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
             img.alpha_composite(fill, (int(right - left_w), int(y)))
         y += BAR_H * s
 
-    # -- footer
-    y += ROW * s
-    foot = card.get("footer") or FOOTER
-    f_avail = inner - ((BUTTON_W + 10) * s if is_pinned(card) else 0)
-    f_img = _fit_line(_text(cache, foot, 8.0 * s, INK_MUTED),
-                      f_avail, _is_rtl(foot))
-    row_h = _footer_h(card) * s
-    img.alpha_composite(f_img, (int(pad), int(y + (row_h - f_img.height)
-                                              / 2)))
-    if is_pinned(card):
-        # The card's one action, so the one lit thing on it: B+'s soft
-        # iris pill (look.primary), its light pooled UNDER it.
-        bw, bh = int(BUTTON_W * s), int(BUTTON_H * s)
-        lit = hover == BUTTON
-        look.primary(img, (right - bw, y, right, y + bh), hover=lit,
-                     glow=False)
-        t = _text(cache, card.get("button") or "", 8.5 * s, "iris_on",
-                      look.W_STRONG)
-        img.alpha_composite(t, (int(right - bw + (bw - t.width) / 2),
-                                int(y + (bh - t.height) / 2)))
-    y += row_h
+    # -- footer (none on a card below the top one of a stack: footless)
+    if not footless(card):
+        y += ROW * s
+        foot = card.get("footer") or FOOTER
+        f_avail = inner - ((BUTTON_W + 10) * s if is_pinned(card) else 0)
+        f_img = _fit_line(_text(cache, foot, 8.0 * s, INK_MUTED),
+                          f_avail, _is_rtl(foot))
+        row_h = _footer_h(card) * s
+        img.alpha_composite(f_img, (int(pad), int(y + (row_h - f_img.height)
+                                                  / 2)))
+        if is_pinned(card):
+            # The card's one action, so the one lit thing on it: B+'s soft
+            # iris pill (look.primary), its light pooled UNDER it.
+            bw, bh = int(BUTTON_W * s), int(BUTTON_H * s)
+            lit = hover == BUTTON
+            look.primary(img, (right - bw, y, right, y + bh), hover=lit,
+                         glow=False)
+            t = _text(cache, card.get("button") or "", 8.5 * s, "iris_on",
+                          look.W_STRONG)
+            img.alpha_composite(t, (int(right - bw + (bw - t.width) / 2),
+                                    int(y + (bh - t.height) / 2)))
+        y += row_h
 
     # -- "+N earlier": what the column could not fit.
     #

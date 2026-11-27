@@ -1284,6 +1284,12 @@ stack_max = 5                  # how many unread cards may be on screen at
                                # once, the newest at the top. The rest wait
                                # in the dashboard, counted on the bottom
                                # card as "+3 earlier" (1 .. 8)
+one_footer = true              # true = "Esc / click to dismiss" on the top
+                               # card of a stack only; the cards under it
+                               # have no footer row (22 px a card at scale 1:
+                               # three cards 558 -> 514 px). The 2026-11-09 audit
+                               # (design-ux.md 12) found the same line on
+                               # every card. false = on every card
 remind_every_s = 120           # while something is unread, play the cue and
                                # show the card again this many seconds
                                # after the last time. 0 = never remind
