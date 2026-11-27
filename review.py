@@ -1227,10 +1227,13 @@ class Engine:
             # card he let run out would be. Family names only (D8).
             families = getattr(self._rcfg, "card_families", FAMILIES)
             if not carded(suggestion, families):
+                # the family NAMES, worked out before the call, so the log
+                # line is handed names and never the changes themselves
+                # (test_app_log_never_quotes_text reads every log call)
+                kinds = ", ".join(sorted({str(c.get("family") or "context")
+                                          for c in suggestion["changes"]}))
                 log.info("second reading of %s: in the pile, no card (%s)",
-                         item.wav_path.name, ", ".join(sorted(
-                             {str(c.get("family") or "context")
-                              for c in suggestion["changes"]})))
+                         item.wav_path.name, kinds)
                 return
             try:
                 self._on_suggest(suggestion)
