@@ -1360,6 +1360,9 @@ class HistoryConfig:
     0 = history off — no handler, an empty Recent view. A developer copy
     never prunes (history.apply says why)."""
     keep_days: int = 30
+    # Said's row for a dictation with no words reads "Nothing was heard"
+    # (2026-11-27). False = the blank row it was.
+    nothing_heard: bool = True
 
 
 @dataclass(frozen=True)
@@ -2366,7 +2369,9 @@ def build(data: dict) -> Config:
             name: bool(privacy.get(name, getattr(PrivacyConfig, name)))
             for name in PrivacyConfig.__dataclass_fields__}),
         history=HistoryConfig(
-            keep_days=int(history.get("keep_days", HistoryConfig.keep_days))),
+            keep_days=int(history.get("keep_days", HistoryConfig.keep_days)),
+            nothing_heard=bool(history.get("nothing_heard",
+                                           HistoryConfig.nothing_heard))),
         desk=DeskConfig(web=bool(desk.get("web", DeskConfig.web))),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),

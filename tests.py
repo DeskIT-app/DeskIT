@@ -6945,6 +6945,40 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
         assert len(box["written"]) == count
 
 
+def test_a_dictation_with_no_words_says_nothing_was_heard_on_said() -> None:
+    """design-ux.md 9: 77 of 1,833 OK lines (about 1 row in 25) have an
+    empty last field, and Said drew each as a time, a disc and a blank —
+    a row that looks broken. It reads "Nothing was heard", dimmed, with
+    nothing to copy; a dictation WITH words, a learned row and a discarded
+    one are as they were; `[history] nothing_heard = false` is the blank
+    row again. Read off a real log line, through history's own parser."""
+    import tempfile
+
+    import desk_said
+    import history as history_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "transcripts.log"
+        log.write_text(
+            "2026-11-27 22:00:01,100 | OK | 9.8s | local | 0.3s latency | \n"
+            "2026-11-27 22:01:02,200 | OK | 2.0s | local | 0.4s latency | שלום\n",
+            "utf-8")
+        events = history_mod._events_in(log)
+    assert [e.kind for e in events] == ["dictation", "dictation"], events
+    empty = next(e for e in events if not e.text)
+    said = next(e for e in events if e.text)
+    row = desk_said._row(empty, "1", heard_word=True)
+    assert row["text"] == desk_said.NOTHING_HEARD == "Nothing was heard"
+    assert row["dim"] is True and row["copy"] is False and row["rtl"] is False
+    assert row["meta"] == ["on this PC", "ready in 0.3 s"], row["meta"]
+    words = desk_said._row(said, "2", heard_word=True)
+    assert words["text"] == "שלום" and words["dim"] is False
+    off = desk_said._row(empty, "1", heard_word=False)
+    assert off["text"] == "" and off["dim"] is False, "the switch is the old row"
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.history.nothing_heard is True
+
+
 def test_a_long_phone_name_gives_way_and_cloud_stays_whole_on_said() -> None:
     """His Said row at 22:48 on 2026-11-11: "ה-Yoav של S26 Ultra · cl…". The
     word that says where the text came from is the one that got cut. The

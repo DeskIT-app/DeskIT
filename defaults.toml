@@ -1602,6 +1602,11 @@ keep_days = 30                 # how long those lines are kept. Older lines
                                # empty and says so. (The checkout's own
                                # copy never drops anything: its history
                                # is training data.)
+nothing_heard = true           # true = a dictation that came back with no
+                               # words reads "Nothing was heard" on the Said
+                               # page, dimmed (77 of 1,833 OK lines on
+                               # 2026-11-09 were such rows, and drew as a time
+                               # and a blank). false = the blank row
 
 [desk]
 # The desk as a web page (React in WebView2, deskweb.py) instead of the Tk
