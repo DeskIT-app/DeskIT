@@ -18,5 +18,6 @@ title: Quick start
 5. **Dictate.** Click into any text field, hold the key, speak, release. The Hebrew text is
    pasted at the cursor.
 
-Nothing leaves your PC until you switch it on yourself — the **Network** place on the
-dashboard shows every request, and [chapter 4](04-privacy) shows how to check for yourself.
+Nothing you say leaves your PC unless you say yes first — the **EVERY CONNECTION** card on
+**Settings > Privacy** lists every request, and [chapter 4](04-privacy) shows how to check for
+yourself.

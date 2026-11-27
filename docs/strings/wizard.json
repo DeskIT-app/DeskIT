@@ -5,7 +5,7 @@
   "welcome.lines": [
     "Your voice stays on this computer.",
     "What you said is kept in one folder you can delete.",
-    "Nothing is sent anywhere until you turn it on yourself."
+    "Nothing you say leaves this PC unless you say yes first."
   ],
   "welcome.defaults": "The defaults are good. Everything can be changed later in Settings.",
   "welcome.link": "How to check this yourself",

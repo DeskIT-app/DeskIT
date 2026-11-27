@@ -7,7 +7,7 @@ title: 4. Privacy, and how to check it yourself
 # 4. Privacy, and how to check it yourself
 
 Your voice stays on this computer. The words you say are kept in one folder you can delete.
-Nothing is sent anywhere until you switch it on.
+Nothing you say leaves this PC unless you say yes first.
 
 Every claim below comes with a way to check it that does not require trusting us. Four of the
 checks take ten minutes together; two more are for the sceptic with an afternoon.

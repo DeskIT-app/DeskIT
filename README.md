@@ -5,8 +5,8 @@
 **הכתבה בעברית לחלונות שנשארת במחשב שלך.** ה־Win+H שעברית מעולם לא קיבלה.
 
 מחזיקים מקש, מדברים, משחררים — הטקסט העברי מופיע אצל הסמן, בכל חלון. התמלול רץ על
-המחשב שלך עם המודל העברי של ivrit.ai; שום דבר לא נשלח לשום מקום עד שתפעיל את זה
-בעצמך, ואפשר לראות כל בקשה. קוד פתוח, Apache-2.0, חינם.
+המחשב שלך עם המודל העברי של ivrit.ai; שום דבר ממה שאתה אומר לא יוצא מהמחשב
+בלי שתאשר קודם, ואפשר לראות כל בקשה. קוד פתוח, Apache-2.0, חינם.
 
 ## להתקין
 
@@ -49,8 +49,8 @@
 **Hebrew dictation for Windows that stays on your PC.** The Win+H that Hebrew never got.
 
 Hold a key, speak, release — the Hebrew text lands at your cursor in any window.
-Transcription runs on your machine with ivrit.ai's Hebrew model; nothing is sent anywhere
-until you turn it on yourself, and every request can be seen. Open source, Apache-2.0, free.
+Transcription runs on your machine with ivrit.ai's Hebrew model; nothing you say leaves your
+PC unless you say yes first, and every request can be seen. Open source, Apache-2.0, free.
 
 ## Install
 
