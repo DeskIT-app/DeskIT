@@ -117,6 +117,26 @@ WHY_REPAIR = "מודל התיקון המקומי מציע"
 PENDING, ACCEPTED, REJECTED = "pending", "accepted", "rejected"
 VERDICTS = (ACCEPTED, REJECTED)
 
+# Every family a change can carry: vocab.family's two (validate, and a
+# replacement from the local repair), the dropped tail (tail_drop) and the
+# local repair's own drop (changes_from_repair). What [review]
+# card_families may name; config.py spells the same four out.
+FAMILIES = ("term", "context", "tail", "repair")
+
+
+def carded(suggestion: dict, families) -> bool:
+    """Does this proposal go up as a card beside the dot, or only to the
+    pile on Home and Corrections? ([review] card_families, 2026-11-27.)
+
+    A card when ANY of its changes is of a family named there: the card
+    shows the whole proposal, and one strong change in it is reason
+    enough to ask. A change with no family is "context", as
+    Store.summary counts it. The rest wait in the pile exactly as a card
+    left to run out does, and are answered there the same way."""
+    want = {str(f).strip().lower() for f in families or ()}
+    return any(str(c.get("family") or "context") in want
+               for c in suggestion.get("changes") or [])
+
 
 # ---------------------------------------------------------------------------
 # what a change is: finding it, applying it, showing it
@@ -1202,6 +1222,16 @@ class Engine:
         log.info("second reading of %s proposes %d change(s)",
                  item.wav_path.name, len(suggestion["changes"]))
         if card and self._on_suggest is not None:
+            # Only the strong family pops up ([review] card_families):
+            # the rest are in the pile already (store.add above), as a
+            # card he let run out would be. Family names only (D8).
+            families = getattr(self._rcfg, "card_families", FAMILIES)
+            if not carded(suggestion, families):
+                log.info("second reading of %s: in the pile, no card (%s)",
+                         item.wav_path.name, ", ".join(sorted(
+                             {str(c.get("family") or "context")
+                              for c in suggestion["changes"]})))
+                return
             try:
                 self._on_suggest(suggestion)
                 self.store.mark_shown(suggestion["id"])

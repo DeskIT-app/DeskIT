@@ -10436,8 +10436,10 @@ def test_the_local_repair_no_longer_holds_the_paste() -> None:
             ("המקללת", "המקלדת", "replace"), change
         assert change["why"] == review_mod.WHY_REPAIR and change["support"] == 0
         assert result["proposed"] == fixed, result
-        # the whole channel: the engine puts it on the card, and nothing
-        # was written to the screen by anyone but the paste
+        # the whole channel: the engine files it — in the pile on Home,
+        # not up as a card, since a Hebrew-for-Hebrew change is "context"
+        # and [review] card_families ships "term" (2026-11-27) — and
+        # nothing was written to the screen by anyone but the paste
         shown: list = []
         engine = review_mod.Engine(
             app.cfg, transcriber, app.vocab, _ReviewRecent([item], Path(tmp)),
@@ -10447,7 +10449,9 @@ def test_the_local_repair_no_longer_holds_the_paste() -> None:
             reader=_ReviewReader(None), corpus=_NoCorpus(),
             repair=app._local_repair)
         engine._read(item, 0, True, 0)
-        assert shown and shown[0]["proposed"] == fixed, shown
+        assert shown == [], shown
+        [filed] = engine.store.pending()
+        assert filed["proposed"] == fixed and not filed["shown"], filed
         assert item.meta["review"]["repair"] is True, item.meta["review"]
         writes = [c for c in fake.calls if c[0] in ("replace", "inject")]
         assert len(writes) == 1, "the card path wrote to the screen"
@@ -26355,7 +26359,7 @@ def _shelf_pile(n: int = 5) -> list:
     word: nothing here comes out of anybody's store."""
     kinds = (
         ("input", [("notify.open", "Open"), ("notify.dismiss", "Dismiss")]),
-        ("review", [("review.accept", "Keep"), ("review.reject", "No")]),
+        ("review", [("review.accept", "Yes"), ("review.reject", "No")]),
         ("problem", [("problem.open", "Open"), ("problem.close", "Close")]),
         ("question", [("question.answer", "Answer"),
                       ("question.later", "Later")]),
@@ -29390,8 +29394,14 @@ def test_the_engine_proposes_on_a_card_and_learns_only_what_was_accepted(
         recent = _ReviewRecent([item], tmp)
         v = vocab_mod.Vocab(tmp / "vocab.json")
         shown, applied = [], []
+        # Every family carded, so this is the whole channel for a Hebrew
+        # ("context") change too; which families pop up by default is
+        # test_only_the_strong_family_pops_up_and_the_rest_wait_in_the_pile.
+        every = _hint_cfg()
+        every = dataclasses.replace(every, review=dataclasses.replace(
+            every.review, card_families=review_mod.FAMILIES))
         engine = review_mod.Engine(
-            _hint_cfg(),
+            every,
             _StudyTranscriber(wide="טוב אז הלכתי לאכול מנטוס עם החברים",
                               general="טוב אז הלכתי לאכול מנטוס עם החברים",
                               loose="טוב אז הלכתי לאכול מטוס עם החברים"),
@@ -29433,6 +29443,180 @@ def test_the_engine_proposes_on_a_card_and_learns_only_what_was_accepted(
         assert ("מאטוס", "מנטוס") in v.glossary(), v.glossary()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_only_the_strong_family_pops_up_and_the_rest_wait_in_the_pile(
+        ) -> None:
+    """[review] card_families (2026-11-27). He answers No to about half
+    of what the second reading proposes, and the family predicts it: a
+    proposal with a "term" change in it (Latin letters or digits on a
+    side) was Yes 63% of the time, one without 43% (transcripts.log, 374
+    answers, 2026-09-17..11-27). So only a proposal with a term in it
+    goes up as a card beside the dot; the rest are filed in the pile on
+    Home and Corrections — pending, never shown — exactly as a card left
+    to run out, and answered there the same way. The key is the
+    developer's: in defaults.toml, never on a Settings tab."""
+    import shutil
+    import review as review_mod
+
+    term, context = {"family": "term"}, {"family": "context"}
+    assert review_mod.carded({"changes": [term]}, ("term",))
+    assert not review_mod.carded({"changes": [context]}, ("term",))
+    assert review_mod.carded({"changes": [context, term]}, ("term",)), \
+        "one strong change is reason enough to ask"
+    assert not review_mod.carded({"changes": [{}]}, ("term",)), \
+        "a change with no family is context, as Store.summary counts it"
+    assert review_mod.carded({"changes": [{}]}, ["Context"])
+    assert not review_mod.carded({"changes": [term]}, ()), "none named, no card"
+    assert not review_mod.carded({"changes": []}, review_mod.FAMILIES)
+    assert review_mod.FAMILIES == config_mod.REVIEW_FAMILIES
+
+    # the shipped key, and the file's own check of it
+    base_cfg = _hint_cfg()
+    assert base_cfg.review.card_families == ("term",), base_cfg.review
+    here = Path(__file__).resolve().parent
+    base = (here / "defaults.toml").read_text("utf-8")
+    assert base.count('\ncard_families = ["term"]') == 1
+    for module in ("settings.py", "desk_settings.py", "dashboard.py"):
+        assert "card_families" not in (here / module).read_text("utf-8"), \
+            f"{module}: a developer key, not a Settings row"
+    tmp = Path(tempfile.mkdtemp(prefix="review-families-"))
+    try:
+        path = tmp / "config.toml"
+        for said, got in (('["term", "Context"]', ("term", "context")),
+                          ('"term"', ("term",)), ("[]", ())):
+            path.write_text(base.replace('card_families = ["term"]',
+                                         f"card_families = {said}"), "utf-8")
+            assert config_mod.load(path).review.card_families == got, said
+        path.write_text(base.replace('card_families = ["term"]',
+                                     'card_families = ["terms"]'), "utf-8")
+        try:
+            config_mod.load(path)
+        except config_mod.ConfigError as e:
+            assert "card_families" in str(e), e
+        else:
+            raise AssertionError("a misspelt family loaded happily")
+
+        # the engine: one reading of each kind, the gate on the way out
+        def reading(family):
+            return {"engine": review_mod.ENGINE, "when": "2026-11-27 10:00:00",
+                    "decodes": ["wide"], "variants": ["x"], "agree": 0.9,
+                    "llm": True, "repair": False, "proposed": "b",
+                    "changes": [{"before": "a", "after": "b", "why": "w",
+                                 "kind": "replace", "span": [0, 1],
+                                 "family": family, "support": 2}]}
+
+        store = review_mod.Store(tmp / "review.json")
+        for n, (family, families, up) in enumerate((
+                ("term", ("term",), True),
+                ("context", ("term",), False),
+                ("context", ("term", "context"), True),
+                ("term", (), False))):
+            item = _StudyItem(tmp / f"clip{n}.wav",
+                              {"text": "a", "raw": "a", "seconds": 3.0},
+                              seconds=3.0)
+            cfg = dataclasses.replace(base_cfg, review=dataclasses.replace(
+                base_cfg.review, card_families=families))
+            shown: list = []
+            engine = review_mod.Engine(
+                cfg, _StudyTranscriber(wide="a"),
+                vocab_mod.Vocab(tmp / "vocab.json"),
+                _ReviewRecent([item], tmp), store, model_lock=None,
+                quiet=lambda: True, app_dir=tmp, on_suggest=shown.append,
+                on_accept=lambda s: None, reader=_ReviewReader([]),
+                corpus=_NoCorpus())
+            with _patched(review_mod, "read_one",
+                          lambda *a, _f=family, **k: reading(_f)):
+                engine._read(item, 0, True, 0)
+            filed = store.get(f"clip{n}")
+            assert filed and filed["status"] == review_mod.PENDING, filed
+            assert bool(shown) is up and bool(filed["shown"]) is up, \
+                (family, families, shown, filed["shown"])
+        # every one of them is in the pile, carded or not
+        assert sorted(i["id"] for i in store.pending()) == \
+            [f"clip{n}" for n in range(4)]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_one_decision_reads_the_same_on_the_card_the_shelf_and_the_desk(
+        ) -> None:
+    """reports\\2026-11-09\\design-ux.md finding 2: the same answer to a
+    proposal was "נכון / לא / אחר כך" on the card, "Keep / No" on the
+    shelf and "Yes / No" on the desk, and the desk put Yes on the LEFT
+    where the card and the shelf put it on the right. One wording and
+    one order since 2026-11-27: Yes / No, Yes the right-hand one of the
+    pair on the card, the shelf, the web desk's Home and Corrections and
+    the Tk desk (test_the_waiting_pile_lists_what_the_second_reading_
+    waits_on); the card's keys are what they were."""
+    import shutil
+    import types
+    import desk_corrections as dc
+    import main as main_mod
+    import review as review_mod
+    import review_card as rc
+    import shelf_card as sc
+
+    # the card: English chrome, the same two words, Yes on the right
+    assert (rc.LABELS[rc.ACCEPT], rc.LABELS[rc.REJECT]) == ("Yes", "No")
+    assert rc.TITLE == "Second reading"
+    assert all(t.isascii() for t in (*rc.LABELS.values(), rc.TITLE, rc.MORE))
+    change = {"before": "הרליסס", "after": "ה-releases", "why": "x",
+              "kind": "replace", "span": [3, 4], "family": "term",
+              "support": 2}
+    text = "אני מעלה את הרליסס היום"
+    one = rc.card_for({"id": "s", "text": text, "changes": [change]},
+                      seconds=20)
+    four = rc.card_for({"id": "s", "text": text, "changes": [change] * 4},
+                       seconds=20)
+    assert (one["sub"], four["sub"], four["more"]) == \
+        ("One change", "4 changes", 1), (one["sub"], four["sub"])
+    assert one["keys"] == {rc.ACCEPT: "V", rc.REJECT: "X", rc.LATER: "L",
+                           rc.EDIT: "E"}, "the card's keys are what they were"
+    boxes = rc.regions(four)
+    assert boxes[rc.LATER][2] < boxes[rc.REJECT][0] < \
+        boxes[rc.REJECT][2] < boxes[rc.ACCEPT][0], "Later, No, Yes"
+    rc.compose(four, 1.0, 0.5, hover=rc.ACCEPT, cache={})
+
+    tmp = Path(tempfile.mkdtemp(prefix="review-one-decision-"))
+    try:
+        # the shelf: the pile main.App builds, as the shelf draws it
+        store = review_mod.Store(tmp / "review.json")
+        store.add({"id": "s", "when": "2026-11-27 10:00:00",
+                   "status": review_mod.PENDING, "text": text,
+                   "proposed": text.replace("הרליסס", "ה-releases"),
+                   "changes": [change]})
+        app = main_mod.App.__new__(main_mod.App)
+        app.notify, app.problems = None, None
+        app._review = types.SimpleNamespace(store=store)
+        [row] = app._shelf_pile()
+        assert row["answers"] == [("review.accept", "Yes"),
+                                  ("review.reject", "No")], row["answers"]
+        shelf = sc.card_for({"mode": "listening", "uptime_s": 60}, [row],
+                            "", False)
+        cache: dict = {}
+        boxes = sc.regions(shelf, 1.0, cache)
+        yes, no = boxes[sc.row_name(0, "a")], boxes[sc.row_name(0, "b")]
+        assert no[2] < yes[0], ("Yes right of No on the shelf", yes, no)
+        assert sc.action_at(shelf, sc.row_name(0, "a"))[2] == "review.accept"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # the web desk: Home's pile and the Corrections place
+    with _web_desk(_WEB_STATUS) as (model, folder, _asked):
+        _web_desk_fill(folder)
+        rows = [r for r in model.pile() if r["kind"] == "review"]
+        assert rows
+        for r in rows:
+            assert [b["label"] for b in r["buttons"]] == ["No", "Yes"], r
+            assert [b["act"] for b in r["buttons"]] == \
+                ["review.rejected", "review.accepted"], r
+        assert any(b["tone"] == "primary" and b["label"] == "Yes"
+                   for r in rows for b in r["buttons"]), "the lit one is Yes"
+        corr = dc.proposal_rows(review_mod.Store(paths.REVIEW_FILE).pending())
+        assert corr and all([b["label"] for b in p["buttons"]] == ["No", "Yes"]
+                            for p in corr), corr
+        assert corr[0]["buttons"][1]["tone"] == "primary"
 
 
 def test_an_accepted_card_teaches_the_decoders_word_not_the_repairs() -> None:
@@ -29556,7 +29740,8 @@ def test_an_english_row_runs_left_to_right_and_a_hebrew_row_does_not(
         "English: heard, then the proposal, from the left"
     assert 0.5 < pill_centre(he) < pill_centre(he, rc.RED_SOFT), \
         "Hebrew: heard, then the proposal, from the right"
-    # the chrome is Hebrew whatever the row says: the buttons do not move
+    # the chrome is the card's own (English since 2026-11-27) whatever
+    # the row says: the buttons do not move
     assert rc.regions({"rows": [en], "more": 0}) == \
         rc.regions({"rows": [he], "more": 0})
 
@@ -30169,6 +30354,10 @@ def test_the_waiting_pile_lists_what_the_second_reading_waits_on() -> None:
             # happened in. The old row drew the whole proposal with the
             # new word on a pill and he could not tell what had changed.
             spec = board._waiting_review()[0]
+            # No, then Yes — PileRow packs left to right, so Yes is the
+            # right-hand one, as on the card, the shelf and the web desk
+            assert [(b[0], b[1]) for b in spec["buttons"]] == \
+                [("No", "quiet"), ("Yes", "gold")], spec["buttons"]
             before, change = spec["runs"][0][0], spec["runs"][1][0]
             assert isinstance(change, widgets_mod.Change), spec["runs"]
             assert (change.heard, change.meant) == ("מטוס", "מנטוס"), change
@@ -62084,13 +62273,15 @@ def test_the_web_desk_corrections_says_what_the_tk_desk_says():
             assert [p["id"] for p in got["proposals"]] == [sids[1], sids[0]], got["proposals"]
             assert got["waiting"] == "2, newest first"
             tones = [[b["tone"] for b in p["buttons"]] for p in got["proposals"]]
-            assert tones == [["primary", "quiet"], ["quiet", "quiet"]], tones
+            # No, then Yes: Yes on the right, as on the card and the shelf
+            assert tones == [["quiet", "primary"], ["quiet", "quiet"]], tones
             assert got["teach_lit"] is False
             lead = got["proposals"][0]
             assert lead["count"] == "one word changed" and lead["why"] == "a name"
             assert lead["rtl"] is True and lead["more"] == ""
             assert {"t": "chg", "heard": "הרליסס", "meant": "ה-releases"} in lead["segs"]
-            assert [b["do"] for b in lead["buttons"]] == ["accept", "reject"]
+            assert [b["do"] for b in lead["buttons"]] == ["reject", "accept"]
+            assert [b["label"] for b in lead["buttons"]] == ["No", "Yes"]
             assert [w["heard"] for w in got["words"]] == ["הדב", "יכלת", "סלאש קליר", "גואס"]
             by = {w["heard"]: w for w in got["words"]}
             assert (by["סלאש קליר"]["dot"], by["סלאש קליר"]["said"]) == \

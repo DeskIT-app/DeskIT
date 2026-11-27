@@ -226,9 +226,11 @@ def proposal_rows(pending: list) -> list[dict]:
         why = _flat(first.get("why"))
         row = {"id": sid, "rtl": deskweb.is_rtl(heard_text or proposed),
                "why": why, "why_rtl": deskweb.is_rtl(why), "more": "",
-               "buttons": [{"label": "Yes", "tone": "primary" if not rows else "quiet",
-                            "do": "accept", "arg": sid},
-                           {"label": "No", "tone": "quiet", "do": "reject", "arg": sid}]}
+               # No, then Yes: Yes on the right, as on the card, the
+               # shelf and Home (review_card's ONE DECISION, 2026-11-27)
+               "buttons": [{"label": "No", "tone": "quiet", "do": "reject", "arg": sid},
+                           {"label": "Yes", "tone": "primary" if not rows else "quiet",
+                            "do": "accept", "arg": sid}]}
         if not changes:
             row.update(count="", why="", text=summary.first_sentence(proposed), segs=None)
         elif not str(first.get("after") or "").strip() or str(first.get("kind")) == "drop":
