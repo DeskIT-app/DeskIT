@@ -314,6 +314,26 @@ def read_frame(body) -> tuple[bytes, bytes]:
     return kind, _read_exactly(body, length)
 
 
+def _to_its_end(body, quiet: bool = False) -> None:
+    """The rest of the body, read and dropped: after its end or cancel frame a
+    phone still sends the chunked body's own end (the zero chunk), and a socket
+    closed with bytes unread goes out as a reset, which can take the answer
+    still on its way to the phone with it. Measured 2026-11-27 on the emulator
+    behind a link like mobile data: answered before it, the stream's text was
+    lost every time (ProtocolException on the phone) and the recording went
+    again whole. Nothing is waited for past what the phone sends at once, and
+    the socket's own timeout bounds it. quiet: on the way to saying no
+    already, a body that breaks off is no new news."""
+    try:
+        while body.read(65536):
+            pass
+    except StreamBroken:
+        if not quiet:
+            raise
+    except Exception:                                  # noqa: BLE001 — the socket's
+        pass
+
+
 def frame(kind: bytes, payload: bytes = b"") -> bytes:
     """One frame, as the keyboard writes it (StreamWire.kt)."""
     return kind + len(payload).to_bytes(4, "big") + payload
@@ -793,12 +813,14 @@ class _PhoneHandler(_Handler):
                     if not (isinstance(size, int) and isinstance(digest, str)
                             and session.checks(size, digest)):
                         raise StreamBroken("the stream's end does not say what came")
+                    _to_its_end(body)
                     self._json(*session.finish())
                     return
                 elif kind == FRAME_CANCEL:
                     session.cancel()
                     log.info("phone: a stream was cancelled (%.1f s had come)",
                              session.stream.seconds)
+                    _to_its_end(body)
                     self._json(200, {"cancelled": True})
                     return
                 else:
@@ -807,11 +829,13 @@ class _PhoneHandler(_Handler):
             if session is not None:
                 session.cancel()
             log.info("phone: a stream was dropped (%s)", e)
+            _to_its_end(body, quiet=True)          # the same reset would take this answer too
             self._json(400, {"error": str(e), "whole": True})
         except Exception as e:                       # noqa: BLE001 — the socket, a feed past the cap
             if session is not None:
                 session.cancel()
             log.info("phone: a stream ended before its end (%s)", type(e).__name__)
+            _to_its_end(body, quiet=True)
             self._json(400, {"error": "the stream broke", "whole": True})
 
 

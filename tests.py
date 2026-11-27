@@ -48805,6 +48805,33 @@ def test_the_phone_door_streams_a_dictation_and_answers_once_at_its_end():
             # 7. /transcribe stands beside it, unchanged
             assert _ask_door(port, s26["chain"], "POST", "/transcribe", _pcm_wav(pcm[:32000]))[0] == 200
             assert pc.answered[-1][1] is None, "a whole recording was handed a head"
+
+            # 8. the answer comes once the body has ended, never at the end frame: a
+            # door that answered there and closed with the zero chunk still unread
+            # reset the connection under its own answer (the emulator behind a link
+            # like mobile data, every time)
+            import socket as socket_mod
+            with _dial(port, s26["chain"]) as tls:
+                tls.settimeout(20)
+                tls.sendall(b"POST /stream HTTP/1.1\r\nHost: pc\r\nTransfer-Encoding: chunked\r\n"
+                            b"Connection: close\r\n\r\n")
+                for f in _stream_frames(pcm[:32000]):
+                    tls.sendall(b"%x\r\n" % len(f) + f + b"\r\n")
+                tls.settimeout(1.5)
+                try:
+                    early = tls.recv(100)
+                except (socket_mod.timeout, OSError):
+                    early = b""
+                assert early == b"", f"the door answered before the body ended: {early[:40]!r}"
+                tls.settimeout(20)
+                tls.sendall(b"0\r\n\r\n")
+                got = b""
+                while True:
+                    more = tls.recv(65536)
+                    if not more:
+                        break
+                    got += more
+            assert got.startswith(b"HTTP/1.0 200"), got[:60]
         finally:
             door.stop()
     # the phone door's alone: in no table, on neither road
