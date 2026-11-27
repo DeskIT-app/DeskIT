@@ -6353,8 +6353,11 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
         assert phone_mod.publish(**args) is True
         aad = vault.AAD_DEVICE.format(uid=box["uid"], device_id=_THIS_PC)
         row = vault.open_json(box["key"], box["written"][-1], aad)
+        # "stream": the door's /stream, the recording sent while it is spoken
+        # (stage 2): a phone streams only to a PC whose row says so
         assert row == {"v": 1, "kind": "pc", "cert": phone_mod.identity(), "addrs": ["10.1.2.3"],
-                       "port": 8766, "proto": 1, "words_sync": True, "history_sync": False}, row
+                       "port": 8766, "proto": 1, "words_sync": True, "history_sync": False,
+                       "stream": 1}, row
 
         box["rows"] = [{"id": _THIS_PC, "name": "me", "link": box["written"][-1]}]
         phone_mod.refresh()
@@ -37106,28 +37109,27 @@ def test_the_repair_pass_skips_the_stretches_repaired_while_he_spoke():
         w2 = rolling.Window(25.0, 50.0, "שתיים", polished="<שתיים>", polished_by="groq")
         w3 = rolling.Window(50.0, 75.0, "אה שלוש")          # still on its way
         tail = rolling.Window(75.0, 80.0, "ארבע")
-        app._last_windows = [w1, w2, w3, tail]
         receipt: dict = {}
-        out = app._improve_rolled("אחת שתיים שלוש ארבע", head, receipt)
+        out = app._improve_rolled("אחת שתיים שלוש ארבע", head, receipt,
+                                  windows=[w1, w2, w3, tail])
         assert out == "<אחת> <שתיים> <שלוש ארבע>", ascii(out)
         assert seen == ["שלוש ארבע"], ascii(seen)
         # who repaired it, for the second reading: the pass now, or a
         # stretch's own while he spoke
         assert receipt == {"by": "stub"}, receipt
         w2b = rolling.Window(25.0, 50.0, "שתיים", polished="<שתיים>", polished_by="groq")
-        app._last_windows = [w1, w2b]
         receipt = {}
-        assert app._improve_rolled("אחת שתיים", head, receipt) == "<אחת> <שתיים>"
+        assert app._improve_rolled("אחת שתיים", head, receipt,
+                                   windows=[w1, w2b]) == "<אחת> <שתיים>"
         assert receipt == {"by": "groq"}, receipt
         # Nothing repaired in time: the whole text, one pass, as before.
         seen.clear()
-        app._last_windows = [rolling.Window(0.0, 25.0, "אחת"), tail]
-        out = app._improve_rolled("אחת ארבע", head)
+        out = app._improve_rolled("אחת ארבע", head,
+                                  windows=[rolling.Window(0.0, 25.0, "אחת"), tail])
         assert out == "<אחת ארבע>" and seen == ["אחת ארבע"], (out, seen)
         # Decoded whole: no head, and the windows are not consulted.
         seen.clear()
-        app._last_windows = [w1, w2]
-        out = app._improve_rolled("אחת שתיים", None)
+        out = app._improve_rolled("אחת שתיים", None, windows=[w1, w2])
         assert out == "<אחת שתיים>" and seen == ["אחת שתיים"], (out, seen)
         # The stretch's own repair: filler cleanup first, then the pass,
         # and the answer lands on the window — with who gave it.
@@ -48564,6 +48566,542 @@ def test_the_relay_answers_through_the_running_app():
     carried = re.findall(r"log\.\w+\(.*?,\s*(sealed|key|wav|text|body|payload|plain)\s*[,)]", src)
     assert not carried, f"relay.py logs what it carries: {carried}"
     assert relay.FRAME_BYTES * 4 // 3 + 200 < relay.PAYLOAD_MAX // 2 + 1000
+
+
+# -- stage 2: a phone dictation decoded while it is spoken (phonestream.py)
+
+
+def _voice(seconds: float, on: float = 2.0, off: float = 0.8, rate: int = 16000) -> bytes:
+    """PCM of speech as rolling.cut_at sees it: a loud tone ``on`` seconds,
+    ``off`` of silence, again. 16-bit little-endian, what the phone sends."""
+    t = np.arange(int(seconds * rate)) / rate
+    loud = (t % (on + off)) < on
+    return (np.sin(2 * np.pi * 220 * t) * 9000 * loud).astype("<i2").tobytes()
+
+
+def _pcm_wav(pcm: bytes) -> bytes:
+    return frames_to_wav([np.frombuffer(pcm, dtype="<i2")], 16000)
+
+
+class _StreamPc:
+    """What a PC does with a stream, the App's way, with fakes where the model
+    would be: a REAL rolling.Roller over the stream (``window_s``), each window
+    "decoded" at once, and an answer that, as App._transcribe_for_phone does,
+    takes the roller's head and leaves only the tail."""
+
+    def __init__(self, window_s: float = 6.0):
+        import rolling
+        self.rolling = rolling
+        self.window_s = window_s
+        self.windows: list = []
+        self.answered: list = []
+        self.rollers: list = []
+
+    def decode(self, wav, lead_s, keep_s):
+        self.windows.append(round(keep_s, 2))
+        return self.rolling.Window(0.0, 0.0, f"w{len(self.windows)}", [], [], None)
+
+    def begin(self, stream):
+        r = self.rolling.Roller(stream.chunks_since, stream.sample_rate, self.decode,
+                                self.window_s, frames_to_wav, overlap=True)
+        r.start()
+        self.rollers.append(r)
+        return r
+
+    def transcribe(self, wav, rolled=None):
+        head = rolled.finish() if rolled is not None else None
+        self.answered.append((wav, head))
+        return f"text after {len(head.windows) if head else 0} window(s)", "fake", None
+
+
+def _stream_frames(pcm: bytes, *, step: int = 16000, sha: str | None = None) -> list[bytes]:
+    """A whole stream as the keyboard writes it: the head, the audio a half
+    second at a time, the end with what it sent."""
+    import hashlib
+    import server as server_mod
+    head = json.dumps({"v": 1, "rate": 16000, "bits": 16, "channels": 1}).encode()
+    out = [server_mod.frame(b"H", head)]
+    out += [server_mod.frame(b"A", pcm[i:i + step]) for i in range(0, len(pcm), step)]
+    end = {"bytes": len(pcm), "sha256": sha or hashlib.sha256(pcm).hexdigest()}
+    out.append(server_mod.frame(b"E", json.dumps(end).encode()))
+    return out
+
+
+def _stream_door(port: int, chain, frames, *, pace: float = 0.0, before_end=None,
+                 hang_up: bool = False, chunked: bool = True) -> tuple[int, dict] | None:
+    """One chunked POST to /stream, written frame by frame as the keyboard's
+    HttpURLConnection writes it. ``before_end`` runs before the last frame;
+    ``hang_up`` goes away before the end, with no zero chunk."""
+    with _dial(port, chain) as tls:
+        tls.settimeout(20)
+        if chunked:
+            tls.sendall(b"POST /stream HTTP/1.1\r\nHost: pc\r\nTransfer-Encoding: chunked\r\n"
+                        b"Connection: close\r\n\r\n")
+        else:
+            body = b"".join(frames)
+            tls.sendall(b"POST /stream HTTP/1.1\r\nHost: pc\r\nContent-Length: %d\r\n"
+                        b"Connection: close\r\n\r\n" % len(body) + body)
+            frames = []
+        for i, f in enumerate(frames):
+            if i == len(frames) - 1:
+                if hang_up:
+                    return None
+                if before_end is not None:
+                    before_end()
+            tls.sendall(b"%x\r\n" % len(f) + f + b"\r\n")
+            if pace:
+                time.sleep(pace)
+        if chunked:
+            tls.sendall(b"0\r\n\r\n")
+        got = b""
+        while True:
+            more = tls.recv(65536)
+            if not more:
+                break
+            got += more
+    head, _, reply = got.partition(b"\r\n\r\n")
+    return int(head.split()[1]), json.loads(reply)
+
+
+def test_a_phone_stream_is_the_desks_own_chunks():
+    """phonestream.PhoneStream is what rolling.Roller reads: whatever sizes the
+    road delivered, a sample split between two of them included, it hands out
+    int16 chunks of the desk recorder's 10 ms, whose loudness rolling reads
+    (handed raw bytes, rolling._peak reads silence with no error and every
+    window would be skipped); [] once it ended; and the WAV it makes is the
+    phone's own. A real Roller over it settles windows as the audio comes."""
+    import phonestream
+    import rolling
+
+    pcm = _voice(9.0)
+    s = phonestream.PhoneStream()
+    at = 0
+    for n in (1, 4095, 3, 6401, 17, 100_000, 7):
+        s.feed(pcm[at:at + n])
+        at += n
+    s.feed(pcm[at:])
+    chunks = s.chunks_since(0)
+    assert {c.size for c in chunks} == {160} and {c.dtype for c in chunks} == {np.dtype(np.int16)}
+    assert len(chunks) == len(pcm) // 320, len(chunks)
+    assert np.concatenate(chunks).astype("<i2").tobytes() == pcm[:len(chunks) * 320]
+    assert max(rolling._peak(c) for c in chunks) > 0.2, "the chunks read as silence"
+    assert rolling._peak(pcm[:320]) == 0.0, "raw bytes would read as silence: the trap"
+    assert s.size == len(pcm) and abs(s.seconds - 9.0) < 1e-6
+    assert s.wav() == _pcm_wav(pcm)
+    assert s.chunks_since(len(chunks) - 3) == chunks[-3:]
+    s.end()
+    assert s.chunks_since(0) == [], "a stream that ended hands the roller nothing"
+    try:
+        phonestream.PhoneStream().feed(b"\0" * (phonestream.MAX_PCM + 2))
+    except phonestream.TooLong:
+        pass
+    else:
+        raise AssertionError("a stream longer than a phone records was taken")
+
+    pc = _StreamPc(window_s=4.0)
+    live = phonestream.PhoneStream()
+    r = pc.begin(live)
+    try:
+        for i in range(0, len(pcm), 3200):                   # a tenth of a second at a time
+            live.feed(pcm[i:i + 3200])
+            time.sleep(0.004)
+        deadline = time.monotonic() + 5
+        while len(pc.windows) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        r.close()
+        head = r.finish()
+    finally:
+        r.invalidate()
+    assert head is not None and len(head.windows) >= 2, pc.windows
+    assert all(w.end_s > w.start_s for w in head.windows)
+
+
+def test_the_phone_door_streams_a_dictation_and_answers_once_at_its_end():
+    """/stream on the phone door (PHONE_LINK_PLAN.md stage 2): a chunked POST
+    the keyboard writes while the person speaks, read by its own handler; a
+    REAL Roller decodes the stretches as they come, and the answer is
+    /transcribe's, once, only after the end said what came and it checked.
+    Each rule broken once: an end that does not check, a cancel, a stream that
+    is not 16 kHz mono 16-bit, one that does not begin with its head, a frame of
+    no known kind, a phone that goes away before its end. None of them is
+    answered with text, and every one says ``whole``, or nothing at all for a
+    phone that left. /stream is the phone door's alone."""
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, server=dataclasses.replace(cfg.server, phone_port=_door_port()))
+    pc = _StreamPc(window_s=4.0)
+    routes = server_mod.Routes(pc.transcribe, stream_begin=pc.begin)
+    pcm = _voice(14.0)
+
+    def windows(n):
+        def wait():
+            deadline = time.monotonic() + 6
+            while len(pc.windows) < n and time.monotonic() < deadline:
+                time.sleep(0.05)
+        return wait
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s26 = _a_phone(Path(tmp), "S26 Ultra")
+        door = server_mod.PhoneDoor(cfg, routes)
+        port = door.start(_anchors(s26))
+        try:
+            # 1. the dictation: its stretches decoded while it came, one answer
+            status, reply = _stream_door(port, s26["chain"], _stream_frames(pcm), pace=0.05,
+                                         before_end=windows(2))
+            assert status == 200, reply
+            assert len(pc.answered) == 1, pc.answered
+            wav, head = pc.answered[0]
+            assert head is not None and len(head.windows) >= 2, (pc.windows, head)
+            assert head.end_s >= 6.0, head
+            assert reply["text"] == f"text after {len(head.windows)} window(s)", reply
+            assert reply["seconds"] == 14.0 and reply["backend"] == "fake", reply
+            assert len(wav) == len(_pcm_wav(pcm)), "not the whole recording"
+            assert "whole" not in reply
+
+            # 2. an end that does not check: nothing answered, the stretches dropped
+            before = len(pc.answered)
+            status, reply = _stream_door(port, s26["chain"], _stream_frames(pcm[:64000], sha="0" * 64))
+            assert status == 400 and reply.get("whole") is True, reply
+            assert len(pc.answered) == before and pc.rollers[-1]._invalid
+            # ...and one that names more bytes than came
+            frames = _stream_frames(pcm[:64000])
+            frames[-1] = server_mod.frame(b"E", json.dumps(
+                {"bytes": 64002, "sha256": json.loads(frames[-1][5:])["sha256"]}).encode())
+            assert _stream_door(port, s26["chain"], frames)[0] == 400 and len(pc.answered) == before
+
+            # 3. a cancel: said, not inferred; nothing answered
+            frames = _stream_frames(pcm[:96000])[:-1] + [server_mod.frame(b"C")]
+            status, reply = _stream_door(port, s26["chain"], frames)
+            assert (status, reply) == (200, {"cancelled": True}), reply
+            assert len(pc.answered) == before and pc.rollers[-1]._invalid
+
+            # 4. a stream this PC does not read, one with no head first, a frame
+            # of no known kind: the phone sends the recording whole instead
+            rollers = len(pc.rollers)
+            bad_head = [server_mod.frame(b"H", json.dumps({"v": 1, "rate": 8000, "bits": 16,
+                                                           "channels": 1}).encode())]
+            for frames in (bad_head + _stream_frames(pcm[:32000])[1:],
+                           _stream_frames(pcm[:32000])[1:]):
+                status, reply = _stream_door(port, s26["chain"], frames)
+                assert status == 400 and reply.get("whole") is True, reply
+            assert len(pc.rollers) == rollers, "a stream with no head of its own was decoded"
+            frames = _stream_frames(pcm[:32000])
+            frames.insert(2, server_mod.frame(b"Z", b"?"))
+            status, reply = _stream_door(port, s26["chain"], frames)
+            assert status == 400 and reply.get("whole") is True and pc.rollers[-1]._invalid
+
+            # 5. the phone goes away before its end: no answer, the stretches dropped
+            assert _stream_door(port, s26["chain"], _stream_frames(pcm[:96000]), hang_up=True) is None
+            deadline = time.monotonic() + 5
+            while not pc.rollers[-1]._invalid and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert pc.rollers[-1]._invalid and len(pc.answered) == before
+
+            # 6. the same stream with a Content-Length, written whole: the same answer
+            status, reply = _stream_door(port, s26["chain"], _stream_frames(pcm[:96000]), chunked=False)
+            assert status == 200 and len(pc.answered) == before + 1, reply
+
+            # 7. /transcribe stands beside it, unchanged
+            assert _ask_door(port, s26["chain"], "POST", "/transcribe", _pcm_wav(pcm[:32000]))[0] == 200
+            assert pc.answered[-1][1] is None, "a whole recording was handed a head"
+        finally:
+            door.stop()
+    # the phone door's alone: in no table, on neither road
+    assert routes.handle(server_mod.STREAM_ROUTE, b"", None)[0] == 404
+    assert routes.handle(server_mod.STREAM_ROUTE, b"", object())[0] == 404
+    assert server_mod.STREAM_ROUTE not in server_mod.LOOPBACK_ROUTES
+
+
+def test_the_relay_feeds_a_streamed_recording_while_it_is_spoken_and_checks_it_whole():
+    """relay.py, stage 2: the pieces of a recording come while it is spoken,
+    PCM with its place in the recording (``pcm``), and piece 0, the WAV's
+    header, last; they feed the phone door's own session in the recording's
+    order whatever order they came in, and nothing is answered until the end
+    has come and the whole checks. A PC with no stream takes the same pieces
+    whole at the end, as a PC before stage 2 does. Broken once each: a cancel
+    (let go at once, what comes after is a replay), a cancel out of its place,
+    pieces whose places are not the WAV's (the stretches are thrown away and
+    the whole is decoded), and a place no recording has."""
+    import hashlib
+
+    import relay
+    import server as server_mod
+
+    pc = _StreamPc(window_s=4.0)
+    routes = server_mod.Routes(pc.transcribe, stream_begin=pc.begin)
+    b = _RelayBench(stream=routes.stream)
+    step = relay.FRAME_BYTES
+
+    def streamed(pcm, rid, *, places=None, at=None, bench=None):
+        bench = bench or b
+        wav = _pcm_wav(pcm)
+        assert wav[relay.WAV_HEADER:] == pcm
+        slices = [pcm[i:i + step] for i in range(0, len(pcm), step)]
+        places = places or [i * step for i in range(len(slices))]
+        audio = [bench.piece({"k": "audio", "pcm": places[i]}, s, n=i + 1, rid=rid)
+                 for i, s in enumerate(slices)]
+        header = bench.piece({"k": "audio"}, wav[:relay.WAV_HEADER], n=0, rid=rid)
+        end = bench.piece({"k": "end", "frames": len(slices) + 1, "bytes": len(wav),
+                           "sha256": hashlib.sha256(wav).hexdigest(),
+                           "at": int((bench.now if at is None else at) * 1000)},
+                          n=len(slices) + 1, rid=rid)
+        return audio, header, end, wav
+
+    def wait(cond, seconds=6.0):
+        deadline = time.monotonic() + seconds
+        while not cond() and time.monotonic() < deadline:
+            time.sleep(0.03)
+        return cond()
+
+    # 1. while he speaks: the pieces as the recording reaches them, two out of order
+    pcm = _voice(15.0)
+    audio, header, end, wav = streamed(pcm, "a" * 32)
+    order = [audio[0], audio[2], audio[1]] + audio[3:]
+    for p in order:
+        b.relay.heard(p)
+        time.sleep(0.3)
+    assert wait(lambda: len(pc.windows) >= 2), pc.windows
+    assert not pc.answered and not b.sent, "something was said before the end"
+    b.relay.heard(header)
+    b.relay.heard(end)
+    assert wait(lambda: len(pc.answered) == 1 and len(b.sent) == 2), (pc.answered, b.sent)
+    got, head = pc.answered[0]
+    assert head is not None and len(head.windows) >= 2 and not b.heard, "not through the stream"
+    assert len(got) == len(wav)
+    assert b.relay.counts.get("streamed") == 1 and not b.relay.counts.get("stream-mismatch")
+    took, text = b.opened(b.sent[0])[0], b.opened(b.sent[1])[0]
+    assert took == {"v": 1, "k": "took"}, took
+    assert text["status"] == 200 and text["body"]["text"].startswith("text after"), text
+
+    # 2. a PC with no stream (one before stage 2) takes the same pieces whole
+    old = _RelayBench()
+    audio, header, end, wav = streamed(_voice(7.0), "b" * 32, bench=old)
+    for p in audio + [header, end]:
+        old.relay.heard(p)
+    assert old.done.wait(5) and old.heard[0][0] == wav, "a streamed recording did not assemble whole"
+
+    # 3. a cancel: let go at once, unanswered; what comes after is a replay
+    answered = len(pc.answered)
+    audio, header, end, wav = streamed(_voice(12.0), "c" * 32)
+    for p in audio[:3]:
+        b.relay.heard(p)
+    assert wait(lambda: len(pc.rollers) == 2)
+    try:
+        relay.Relay._cancel(b.relay, b.PHONE, "c" * 32, 3)
+    except relay.Refused:
+        pass
+    else:
+        raise AssertionError("a cancel out of its place was taken")
+    b.relay.heard(b.piece({"k": "cancel"}, n=relay.N_CANCEL, rid="c" * 32))
+    assert b.relay.counts.get("cancelled") == 1 and pc.rollers[-1]._invalid
+    for p in audio[3:] + [header, end]:
+        b.relay.heard(p)
+    time.sleep(0.3)
+    assert len(pc.answered) == answered and b.relay.counts.get("replay"), b.relay.counts
+
+    # 4. places that are not the WAV's: the stretches are not this recording's,
+    # and the whole that checked is decoded instead
+    pcm = _voice(6.0)
+    audio, header, end, wav = streamed(pcm, "d" * 32, places=[step, 0])
+    for p in audio + [header, end]:
+        b.relay.heard(p)
+    assert wait(lambda: len(b.heard) == 1), b.relay.counts
+    assert b.heard[0][0] == wav and b.relay.counts.get("stream-mismatch") == 1
+    assert len(pc.answered) == answered
+
+    # 4b. a streamed recording whose end does not check: decoded while it came, and
+    # still nothing is final: no answer, the stretches dropped
+    rollers = len(pc.rollers)
+    audio, header, end, wav = streamed(_voice(9.0), "9" * 32)
+    lie = b.piece({"k": "end", "frames": len(audio) + 1, "bytes": len(wav), "sha256": "0" * 64,
+                   "at": int(b.now * 1000)}, n=len(audio) + 1, rid="9" * 32)
+    for p in audio + [header, lie]:
+        b.relay.heard(p)
+        time.sleep(0.1)
+    assert wait(lambda: b.relay.counts.get("corrupt") == 1), b.relay.counts
+    assert len(pc.rollers) == rollers + 1 and pc.rollers[-1]._invalid, "the stretches outlived the lie"
+    assert len(pc.answered) == answered and len(b.heard) == 1, "a recording that did not check was answered"
+
+    # 5. a place no recording has
+    before = b.relay.counts.get("refused", 0)
+    b.relay.heard(b.piece({"k": "audio", "pcm": relay.MAX_BYTES + 1}, b"\0" * 10, n=1, rid="e" * 32))
+    b.relay.heard(b.piece({"k": "audio", "pcm": "0"}, b"\0" * 10, n=1, rid="f" * 32))
+    assert b.relay.counts.get("refused", 0) == before + 2, b.relay.counts
+
+
+def test_a_phone_stream_is_rolled_and_finished_through_the_desks_own_path():
+    """The App's half (main.py): a stream gets the desk's own rolling
+    transcriber (App._start_roller, reading the stream instead of the
+    microphone), and its end goes through App._transcribe_for_phone with the
+    roller: the head of decoded windows, only the tail decoded now
+    (transcribe_with_head), the language left to the whole recording's
+    detection, and the second reading's sidecar written from THIS decode's
+    words. No roller while the model is off or the app is locked: the answer
+    then is /transcribe's words."""
+    import shutil
+
+    import rolling
+    import server as server_mod
+    import spool as spool_mod
+
+    class Backend:
+        name = "local"
+        can_overlap = True
+
+        def __init__(self):
+            self.calls, self.windows = [], 0
+            self.last_words, self.last_windows, self.last_warning = [], [], None
+
+        def decode_window(self, wav, lead_s, keep_s):
+            self.windows += 1
+            return rolling.Window(0.0, 0.0, f"חלון{self.windows}", [("w", 0.1, 0.2, 0.9)], [], None)
+
+        def clean_text(self, text):
+            return text
+
+        def transcribe(self, wav, language=None):
+            self.calls.append(("whole", language))
+            self.last_words, self.last_windows = [("whole", 0.0, 0.1, 0.9)], []
+            return "שלם"
+
+        def transcribe_with_head(self, wav, head, language=None):
+            self.calls.append(("tail", language, len(head.windows)))
+            self.last_words = [("tail", 0.0, 0.1, 0.9)]
+            self.last_windows = list(head.windows) + [rolling.Window(head.end_s, 99.0, "זנב")]
+            return " ".join(w.text for w in self.last_windows)
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-phone-stream-"))
+    try:
+        backend = Backend()
+        app = _worker_app(backend, tmp)
+        app.cfg = dataclasses.replace(app.cfg, local=dataclasses.replace(
+            app.cfg.local, rolling=True, rolling_window_s=4.0))
+        app.recent = spool_mod.Spool(tmp / "recent", keep=5)
+        app._review = None
+        app.locked = lambda: False
+        app._improve = lambda text, wait=True, max_wait_s=None, receipt=None: text
+        routes = server_mod.Routes(app._transcribe_for_phone, stream_begin=app._stream_roller)
+        session = routes.stream(None)
+        assert session.rolling, "a stream got no rolling transcriber"
+        pcm = _voice(14.0)
+        for i in range(0, len(pcm), 3200):
+            session.feed(pcm[i:i + 3200])
+            time.sleep(0.004)
+        deadline = time.monotonic() + 6
+        while backend.windows < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        status, reply = session.finish()
+        assert status == 200, reply
+        assert backend.calls and backend.calls[0][:2] == ("tail", None), backend.calls
+        assert backend.calls[0][2] >= 2, backend.calls
+        assert reply["text"].endswith("זנב") and reply["text"].startswith("חלון1"), reply
+        assert reply["seconds"] == 14.0, reply
+        kept = sorted((tmp / "recent").glob("*.json"))
+        assert kept, "the phone dictation was not kept for the second reading"
+        meta = json.loads(kept[-1].read_text("utf-8"))
+        assert meta["source"] == "phone" and meta["words"] == [["tail", 0.0, 0.1, 0.9]], meta
+        assert session.finish()[0] == 409, "a stream answered twice"
+
+        # no rolling transcriber while the model is off or the app is locked
+        import phonestream
+        app._model_state = "off"
+        assert app._stream_roller(phonestream.PhoneStream()) is None
+        app._model_state = "on"
+        app.locked = lambda: True
+        assert app._stream_roller(phonestream.PhoneStream()) is None
+        app.locked = lambda: False
+        # ...nor with [local] rolling off
+        app.cfg = dataclasses.replace(app.cfg, local=dataclasses.replace(app.cfg.local, rolling=False))
+        assert app._stream_roller(phonestream.PhoneStream()) is None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_phone_and_a_desk_dictation_crossing_keep_their_own_words():
+    """The cross-thread trap PHONE_LINK_PLAN.md stage 2 names: a transcript's
+    words and windows were two attributes of the App, written under the model
+    lock and read outside it, so a desk dictation decoded between a phone's
+    decode and its reads swapped them: the phone's sidecar got the desk's
+    words and its repair the desk's windows. They are values of the decode now
+    (main.Decoded). Two threads: the phone's is held right after its decode,
+    the desk's decodes meanwhile, then the phone's goes on."""
+    import shutil
+
+    import main as main_mod
+    import rolling
+    import spool as spool_mod
+
+    class Backend:
+        name = "local"
+        can_overlap = True
+        last_warning = None
+
+        def __init__(self):
+            self.last_words, self.last_windows = [], []
+
+        def clean_text(self, text):
+            return text
+
+        def transcribe_with_head(self, wav, head, language=None):
+            who = "phone" if len(wav) < 40000 else "desk"
+            self.last_words = [(who, 0.0, 0.5, 0.9)]
+            self.last_windows = [rolling.Window(0.0, 4.0, who, polished=f"<{who}>", polished_by="groq"),
+                                 rolling.Window(4.0, 5.0, f"{who}-tail")]
+            return f"{who} {who}-tail"
+
+        def transcribe(self, wav, language=None):
+            return self.transcribe_with_head(wav, None, language)
+
+    class Rolled:
+        busy_s = 0.0
+
+        def finish(self):
+            return rolling.Head([rolling.Window(0.0, 4.0, "x")], 4.0)
+
+        def invalidate(self):
+            pass
+
+    held, desk_done = threading.Event(), threading.Event()
+
+    class Log:
+        """transcript_log: the phone's thread waits here, between its decode
+        and everything that reads what the decode said."""
+        def info(self, line, *args):
+            if "PHONE" in line and threading.current_thread().name == "the-phone":
+                held.set()
+                desk_done.wait(5)
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-crossing-"))
+    try:
+        app = _worker_app(Backend(), tmp)
+        app.recent = spool_mod.Spool(tmp / "recent", keep=5)
+        app._review = None
+        app._improve = lambda text, wait=True, max_wait_s=None, receipt=None: f"[{text}]"
+        phone_wav = frames_to_wav([np.zeros(16000, dtype=np.int16)], 16000)       # 1 s
+        desk_wav = frames_to_wav([np.zeros(48000, dtype=np.int16)], 16000)        # 3 s
+        out: dict = {}
+
+        def phone():
+            out["phone"] = app._transcribe_for_phone(phone_wav, rolled=Rolled())
+
+        with _patched(main_mod, "transcript_log", Log()):
+            t = threading.Thread(target=phone, name="the-phone")
+            t.start()
+            assert held.wait(5), "the phone's decode never came"
+            out["desk"] = app._transcribe(desk_wav, None, rolling.Head([], 4.0))
+            desk_done.set()
+            t.join(5)
+        text, backend, _warning = out["phone"]
+        assert "<phone>" in text and "desk" not in text, f"the phone's repair read the desk's windows: {text}"
+        meta = json.loads(sorted((tmp / "recent").glob("*.json"))[-1].read_text("utf-8"))
+        assert meta["words"] == [["phone", 0.0, 0.5, 0.9]], f"the phone's sidecar has the desk's words: {meta}"
+        desk = out["desk"]
+        assert tuple(desk) == ("desk desk-tail", "local"), desk
+        assert desk.words == [("desk", 0.0, 0.5, 0.9)] and desk.windows[0].text == "desk"
+        assert not hasattr(app, "_last_words") and not hasattr(app, "_last_windows")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_sign_out_of_every_pc_reaches_the_running_copies_within_the_second():

@@ -346,12 +346,16 @@ def rotate() -> str:
 # on and said yes to, a bool; a keyboard older than the backup names none, and
 # the one before it wrote a "backup": true that meant nothing and is not read).
 # A PC: {"v", "kind": "pc", "cert": <SHA-256, hex>, "addrs", "port", "proto",
-# "words_sync", "history_sync"}, the last whether this PC's account keeps what
+# "words_sync", "history_sync", "stream"}: whether this PC's account keeps what
 # was said, which is where a phone writes the text of a dictation the cloud
-# carried. An unknown field is ignored.
+# carried, and the version of the door's /stream (stage 2: the recording sent
+# while it is spoken), which a PC from before it names none of, and a phone
+# then sends it whole. An unknown field is ignored.
 
 #: What this PC's door speaks, in a `link` row.
 PROTO = 1
+#: The door's /stream, in a `link` row: server.STREAM_PROTO.
+STREAM = 1
 #: A row is small and a PC has few adapters; the sealed column is not free.
 MAX_ADDRS = 8
 
@@ -641,7 +645,7 @@ def publish(*, port: int, listening: bool, words_sync: bool, history_sync: bool 
                 return False
             row = {"v": 1, "kind": "pc", "cert": cert, "addrs": addrs, "port": int(port),
                    "proto": PROTO, "words_sync": bool(words_sync),
-                   "history_sync": bool(history_sync)}
+                   "history_sync": bool(history_sync), "stream": STREAM}
             here = [r for r in kept.get("rows") or [] if str(r.get("id") or "") == mine]
             opened = _open_rows(key, uid, here, set())
             if opened and opened[0]["link"] == row:

@@ -26,12 +26,27 @@ open. The head says what the piece is (``k``):
     PC -> phone   pong   {"ready": true} or {"ready": false, "why": words}
     phone -> PC   audio  a slice of the WAV, in ``body``: pieces 0 .. N-1
     phone -> PC   end    piece N: {"frames": N, "bytes", "sha256", "at"}
+    phone -> PC   cancel piece MAX_FRAMES: a stream the phone gave up (below)
     PC -> phone   took   piece 1: every piece is in, the model has it
     PC -> phone   text   piece 2: {"status", "body"}, /transcribe's answer
 
 A ping is answered with no model involved: the phone learns while the person
 speaks whether this PC is there, so the release already knows which road
 the recording takes (Backup.kt, Road.next).
+
+STREAMED, WHILE HE SPEAKS (stage 2). The pieces of a recording can come while
+it is still being spoken: piece n of 1 .. N-1 is 96,000 bytes of PCM, its head
+``{"k": "audio", "pcm": <offset into the PCM>}``, sent as the recording
+reaches it, and piece 0 is the WAV's 44-byte header, sent LAST, once the
+length is known; then the end, as above. Joined in their order they are the
+same WAV the end's SHA-256 names, so nothing about the seal, the AAD or the
+check changes, and a PC from before stage 2 takes such a recording whole at
+its end. This one feeds the PCM, in order, to a rolling transcriber as it
+comes (phonestream.Session, the phone door's own), and still decodes nothing
+as final until the end has come and the whole checks: the streamed PCM must
+then be the start of that very WAV, or the stretches are thrown away and the
+whole is decoded. A ``cancel`` (the phone paused or threw the recording away)
+lets the request go at once, its stretches with it.
 
 WHO MAY ASK. Only a phone of the account: the ``device`` of every piece
 must be a phone whose row opens under the account key and that is not on the
@@ -100,6 +115,12 @@ ASSEMBLY_S = 120.0
 STRAGGLE_S = 3.0
 #: The pieces of the PC's own answers.
 N_PONG, N_TOOK, N_TEXT = 0, 1, 2
+#: Where a phone's ``cancel`` sits: a place no audio or end of a recording
+#: can reach (a phone's longest is about 102 pieces), so its seal binds it to
+#: nothing else.
+N_CANCEL = MAX_FRAMES
+#: The WAV's own header, piece 0 of a streamed recording.
+WAV_HEADER = 44
 #: Requests being put together at once. A phone sends one at a time.
 MOST_OPEN = 8
 
@@ -182,6 +203,19 @@ class _Request:
         self.bytes = 0
         self.end: dict | None = None
         self.timer: threading.Timer | None = None
+        #: A streamed recording's rolling session (phonestream.Session), the
+        #: PCM fed to it so far, and pieces come ahead of their turn.
+        self.session = None
+        self.fed = 0
+        self.early: dict[int, bytes] = {}
+
+    def drop(self) -> None:
+        """This request goes unanswered: its stretches, if any, with it."""
+        if self.timer is not None:
+            self.timer.cancel()
+        if self.session is not None:
+            self.session.cancel()
+            self.session = None
 
     def complete(self) -> bool:
         if self.end is None:
@@ -203,14 +237,17 @@ class Relay:
     when a dictation would be taken now, else the PC's own sentence why not;
     ``allowed()`` -> the switch and the account's gate; ``send(payload)`` ->
     True when the server took a piece (sb.send_link); ``transcribe(wav,
-    peer)`` -> (status, body), the phone door's route.
+    peer)`` -> (status, body), the phone door's route; ``stream(peer)`` -> a
+    phonestream.Session for a recording streamed while it is spoken (stage 2),
+    the door's own (server.Routes.stream), or None to decode it whole.
     """
 
     def __init__(self, *, who, key, phones, can_take, allowed, send, transcribe,
-                 clock=time.time, mono=time.monotonic) -> None:
+                 stream=None, clock=time.time, mono=time.monotonic) -> None:
         self.who, self.key, self.phones = who, key, phones
         self.can_take, self.allowed, self.send = can_take, allowed, send
         self.transcribe = transcribe
+        self.stream = stream
         self.clock, self.mono = clock, mono
         self._lock = threading.Lock()
         self._open: dict[str, _Request] = {}
@@ -273,9 +310,11 @@ class Relay:
         elif to != me:
             raise Refused(f"a {kind} for every PC")
         elif kind == "audio":
-            self._audio(frm, rid, n, body)
+            self._audio(frm, rid, n, body, head, peer)
         elif kind == "end":
             self._end(uid, me, frm, rid, n, head, peer)
+        elif kind == "cancel":
+            self._cancel(frm, rid, n)
         else:
             raise Refused(f"a head of kind {kind!r}")
 
@@ -300,8 +339,7 @@ class Relay:
         """Requests whose pieces stopped coming, and ids past their window."""
         for rid in [r for r, q in self._open.items() if now - q.touched > ASSEMBLY_S]:
             q = self._open.pop(rid)
-            if q.timer is not None:
-                q.timer.cancel()
+            q.drop()
             self._count("abandoned")
             log.info("link: a recording's pieces stopped coming — let go")
         while self._seen and (len(self._seen) > SEEN_MAX or
@@ -319,15 +357,20 @@ class Relay:
         if q is None:
             if len(self._open) >= MOST_OPEN:
                 oldest = min(self._open.values(), key=lambda r: r.touched)
-                self._open.pop(oldest.rid)
+                self._open.pop(oldest.rid).drop()
             q = self._open[rid] = _Request(frm, rid, now)
         if q.frm != frm:
             raise Refused("a piece of another device's request")
         q.touched = now
         return q
 
-    def _audio(self, frm: str, rid: str, n: int, body: bytes) -> None:
+    def _audio(self, frm: str, rid: str, n: int, body: bytes, head: dict | None = None,
+               peer=None) -> None:
         now = self.mono()
+        at = (head or {}).get("pcm")
+        if at is not None and not (isinstance(at, int) and not isinstance(at, bool)
+                                   and 0 <= at <= MAX_BYTES):
+            raise Refused("a streamed piece with no place in the recording")
         with self._lock:
             q = self._request(frm, rid, now)
             if q is None:
@@ -340,11 +383,60 @@ class Relay:
                     raise Refused("a recording longer than a phone makes")
                 q.pieces[n] = body
                 q.bytes += len(body)
+                if at is not None:
+                    self._stream_in(q, at, body, peer)
             elif had != body:
                 raise Refused("a piece that came twice, different")
             ready = q.complete()
         if ready:
             self._finish(rid)
+
+    def _stream_in(self, q: _Request, at: int, body: bytes, peer) -> None:
+        """A streamed piece: into the rolling session, in the recording's own
+        order, whatever order the pieces came in. The session is opened by
+        the first; a PC with no ``stream`` takes the recording whole at its
+        end. Under the lock: a feed is a copy and nothing that waits."""
+        if self.stream is None:
+            return
+        if q.session is None and q.fed == 0 and not q.early:
+            try:
+                q.session = self.stream(peer)
+            except Exception:                                # noqa: BLE001
+                log.warning("link: a stream could not be opened", exc_info=True)
+                q.session = None
+            if q.session is None:
+                q.fed = -1                           # none, and none again
+                return
+            self._count("streamed")
+        if q.session is None:
+            return
+        if at < q.fed:
+            return                                   # a piece it has had
+        q.early[at] = body
+        try:
+            while q.fed in q.early:
+                piece = q.early.pop(q.fed)
+                q.session.feed(piece)
+                q.fed += len(piece)
+        except Exception:                                    # noqa: BLE001 — past the cap
+            log.info("link: a stream was let go (%s)", "too long")
+            q.session.cancel()
+            q.session, q.fed = None, -1
+
+    def _cancel(self, frm: str, rid: str, n: int) -> None:
+        """The phone gave this recording up: it is let go now, unanswered,
+        and a piece of it that still comes is a replay."""
+        if n != N_CANCEL:
+            raise Refused("a cancel out of its place")
+        with self._lock:
+            q = self._open.get(rid)
+            if q is not None and q.frm != frm:
+                raise Refused("a cancel of another device's request")
+            q = self._open.pop(rid, None)
+            self._seen[rid] = self.mono()
+        if q is not None:
+            q.drop()
+        self._count("cancelled")
 
     def _end(self, uid: str, me: str, frm: str, rid: str, n: int, head: dict, peer) -> None:
         now = self.mono()
@@ -386,6 +478,7 @@ class Relay:
             self._seen[rid] = self.mono()
             got = len(q.pieces)
             want = q.end["frames"] if q.end else "?"
+        q.drop()
         self._count("incomplete")
         log.info("link: a recording arrived without all its pieces (%s of %s)", got, want)
 
@@ -403,24 +496,37 @@ class Relay:
         end = q.end
         wav = q.wav()
         if len(wav) != end["bytes"] or hashlib.sha256(wav).hexdigest() != end["sha256"]:
+            q.drop()
             self._count("corrupt")
             log.info("link: a recording whose pieces do not add up — dropped")
             return
+        session = q.session
+        if session is not None and wav[WAV_HEADER:WAV_HEADER + session.stream.size] \
+                != session.stream.pcm():
+            # the stream was not this recording's start: its stretches are no
+            # use, and the whole that checked is decoded instead
+            session.cancel()
+            session = None
+            self._count("stream-mismatch")
+            log.info("link: a streamed recording's pieces were not its start — decoded whole")
         self._count("took")
         self._reply(end["uid"], end["me"], q.frm, rid, N_TOOK, {"k": "took"})
-        threading.Thread(target=self._transcribe, args=(q.frm, rid, wav, end), daemon=True,
-                         name="link-transcribe").start()
+        threading.Thread(target=self._transcribe, args=(q.frm, rid, wav, end, session),
+                         daemon=True, name="link-transcribe").start()
 
-    def _transcribe(self, frm: str, rid: str, wav: bytes, end: dict) -> None:
+    def _transcribe(self, frm: str, rid: str, wav: bytes, end: dict, session=None) -> None:
         started = self.mono()
         try:
-            status, body = self.transcribe(wav, end["peer"])
+            if session is not None:
+                status, body = session.finish(wav)
+            else:
+                status, body = self.transcribe(wav, end["peer"])
         except Exception as e:                               # noqa: BLE001
             log.warning("link: the transcription tripped (%s)", type(e).__name__)
             status, body = 503, {"error": "the PC could not transcribe this"}
         self._count("answered")
-        log.info("link: %.1f s of audio, answered %s in %.1f s", (len(wav) - 44) / 32000.0,
-                 status, self.mono() - started)
+        log.info("link: %.1f s of audio, answered %s in %.1f s%s", (len(wav) - 44) / 32000.0,
+                 status, self.mono() - started, " (streamed)" if session is not None else "")
         if not self.allowed():
             return                                   # the switch went meanwhile
         who = self.who()
@@ -452,12 +558,13 @@ class Relay:
 PHONES_TTL_S = 5.0
 
 
-def for_app(*, can_take, allowed, transcribe) -> Relay:
+def for_app(*, can_take, allowed, transcribe, stream=None) -> Relay:
     """The app's relay: who is signed in from sb, the account key from
     vault (asked per piece, here and not in main.py), the phones from
     phone.anchors(), the door's own list, and the pieces out through
     sb.send_link. Nothing is imported until a piece comes: the App is
-    built before the account is."""
+    built before the account is. ``stream(peer)``: the session a recording
+    streamed while it is spoken feeds (stage 2), server.Routes.stream."""
     def who():
         import sb
         uid = str((sb.user() or {}).get("id") or "")
@@ -489,4 +596,4 @@ def for_app(*, can_take, allowed, transcribe) -> Relay:
         return sb.send_link(payload)
 
     return Relay(who=who, key=key, phones=phones, can_take=can_take, allowed=allowed,
-                 send=send, transcribe=transcribe)
+                 send=send, transcribe=transcribe, stream=stream)

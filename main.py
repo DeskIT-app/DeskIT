@@ -328,6 +328,28 @@ def cursor_point() -> tuple[int, int] | None:
     return None
 
 
+class Decoded(tuple):
+    """What App._transcribe answers: ``(text, backend)``, so every caller that
+    unpacks a pair still does, and beside it what that one decode said, read
+    under the model lock off the backend that ran: the decoder's per-word
+    confidence (``words``, for the second reading), the stretches the text was
+    joined from (``windows``, rolling.py, [] for a whole decode), and a loop's
+    ``warning``.
+
+    Values and not attributes of the App, because the App is shared: until
+    stage 2 they were ``self._last_words`` / ``self._last_windows``, written
+    under the lock and read outside it, and a phone dictation that crossed a
+    desk one could take the other's words into its sidecar, or repair against
+    the other's windows (PHONE_LINK_PLAN.md stage 2)."""
+
+    def __new__(cls, text: str, backend: str, words=(), windows=(), warning=None):
+        self = super().__new__(cls, (text, backend))
+        self.words = list(words or [])
+        self.windows = list(windows or [])
+        self.warning = warning
+        return self
+
+
 class App:
     # Class-level defaults for the visual-QA and capture slots on purpose:
     # the test suite builds half-initialised Apps by hand (no __init__),
@@ -899,14 +921,12 @@ class App:
         # _shelf_refresh.
         self._shelf_stamp: tuple = ()
         self._review = None
-        # The decoder's per-word confidence for the LAST live transcription,
-        # read under the model lock in _transcribe and written into the
-        # recording's sidecar for the second reading.
-        self._last_words: list = []
-        # And the stretches the LAST live transcription was joined from
-        # (rolling.py), [] when it was decoded whole — for the repair pass
-        # to skip the ones already repaired while the key was held.
-        self._last_windows: list = []
+        # The decoder's per-word confidence and the stretches a transcript
+        # was joined from are NOT kept on the App: they come back from
+        # _transcribe as values (Decoded), read under the model lock off the
+        # backend that ran. Until stage 2 they were two attributes written
+        # under the lock and read outside it, which a phone dictation and a
+        # desk one crossing could swap (PHONE_LINK_PLAN.md stage 2).
         # The two doors, built here and opened by _doors: the loopback one
         # owns the routes both of them answer with.
         self.phone = server_mod.PhoneServer(
@@ -917,14 +937,17 @@ class App:
             self._notify_from_outside,
             review_pending=self._review_pending_for_phone,
             review_decide=self._review_decide_for_phone,
-            lookup=self._lookup_for_phone)
+            lookup=self._lookup_for_phone,
+            stream_begin=self._stream_roller)
         self.phone_door = server_mod.PhoneDoor(cfg, self.phone.routes)
         # The phone away from home: the same routes, through the account's
-        # own channel, every piece sealed (relay.py, PHONE_LINK_PLAN.md 3)
+        # own channel, every piece sealed (relay.py, PHONE_LINK_PLAN.md 3),
+        # and the same stream as the door's while he speaks (stage 2).
         import relay as relay_mod
         self.relay = relay_mod.for_app(
             can_take=self._relay_can_take, allowed=self._relay_allowed,
-            transcribe=lambda wav, peer: self.phone.routes.handle("/transcribe", wav, peer))
+            transcribe=lambda wav, peer: self.phone.routes.handle("/transcribe", wav, peer),
+            stream=lambda peer: self.phone.routes.stream(peer))
         self._doors_lock = threading.RLock()
         # [Not now] on Home's row: until the next start, like a consent's.
         self._phone_no = False
@@ -3892,10 +3915,16 @@ class App:
             return {"ok": True, "message": f"forgetting {found['name']}"}
         return {"ok": False, "error": f"unknown phone action {do!r}"}
 
-    def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str, str | None]:
+    def _transcribe_for_phone(self, wav: bytes, rolled=None) -> tuple[str, str, str | None]:
         """No language is passed: the phone has no per-language key, so it
         goes through the same Hebrew/English detection the desktop uses
         when nothing was specified.
+
+        `rolled` is the rolling transcriber that read this recording while
+        it was spoken (a stream, PHONE_LINK_PLAN.md stage 2): its windows
+        are the head, only the tail is decoded now (transcribe_with_head),
+        and the stretches it already repaired are not repaired again —
+        exactly the desk's release. None is the whole decode, as before.
 
         Logged to transcripts.log like every desktop dictation. Without
         this, "the transcript from my phone looked wrong" has no evidence
@@ -3913,28 +3942,45 @@ class App:
         # getattr: a test hands this method a bare namespace as self
         locked = getattr(self, "locked", None)
         if locked is not None and locked():
+            if rolled is not None:
+                rolled.invalidate()
             raise RuntimeError(self.LOCK_WORDS)
         if getattr(self, "_model_state", "on") != "on":
+            if rolled is not None:
+                rolled.invalidate()
             raise RuntimeError(getattr(self, "_model_off_words",
                                        self.MODEL_OFF_WORDS))
+        head = rolled.finish() if rolled is not None else None
+        if head is not None:
+            log.info("rolling: %d window(s) covering %.1f of %.1f s of a phone "
+                     "dictation were decoded while it was spoken (%.1f s of "
+                     "decoder time) — only the tail is left", len(head.windows),
+                     head.end_s, max(0.0, (len(wav) - 44) / 32000.0), rolled.busy_s)
         started = time.monotonic()
-        text, backend = self._transcribe(wav, language=None)
+        decoded = (self._transcribe(wav, language=None) if head is None
+                   else self._transcribe(wav, None, head))
+        text, backend = decoded[0], decoded[1]
+        # What the decode said beside its text, as values off the decode that
+        # made this text, never off the App: a desk dictation may have run
+        # since (PHONE_LINK_PLAN.md stage 2). A test's own _transcribe may
+        # answer a bare pair, which says none of it.
+        words = list(getattr(decoded, "words", None) or [])
+        windows = list(getattr(decoded, "windows", None) or [])
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
                             backend, time.monotonic() - started, text)
         raw = text.strip()
         # Same blocking pass the desktop runs, under the same ceiling: both
         # have somebody waiting on the other end of it — and the same
         # split: the cloud side here, the local model on the reading.
+        # A stream's stretches repaired while it was spoken are taken as
+        # they are (_improve_rolled), as at the desk.
         receipt: dict = {}
-        text = self._improve(raw, receipt=receipt) if raw else text
+        if raw:
+            text = (self._improve(raw, receipt=receipt) if head is None
+                    else self._improve_rolled(raw, head, receipt, windows=windows))
         # A decoder loop means words are LOST, not garbled — surface that
         # on the phone right away instead of letting reading discover it.
-        warning = None
-        for b in (self.transcriber, self._local or None):
-            found = getattr(b, "last_warning", None)
-            if found:
-                warning = found
-                break
+        warning = getattr(decoded, "warning", None)
         # Kept in recent\ like a desk dictation, and handed to the second
         # reading — WITHOUT the desktop card (card=False): the person who
         # said this is holding a phone, and the phone asks GET /review
@@ -3949,8 +3995,7 @@ class App:
                     wav, max(0.0, (len(wav) - 44) / 32000.0), "",
                     extra={"text": text.strip(), "raw": raw,
                            "backend": backend, "language": "auto",
-                           "words": list(getattr(self, "_last_words", [])
-                                         or []),
+                           "words": words,
                            "source": "phone",
                            "repair": receipt.get("by") or ""})
                 engine = getattr(self, "_review", None)
@@ -4258,7 +4303,7 @@ class App:
                  f", tap '{self.cfg.latch_hotkey}' to lock it on"
                  if self.cfg.latch_hotkey else "")
 
-    def _start_roller(self, polish: bool = True):
+    def _start_roller(self, polish: bool = True, source=None):
         """The rolling transcriber for the recording just begun, or None.
 
         Only for the local backend, and only when [local] rolling says
@@ -4270,6 +4315,9 @@ class App:
         `polish`: also send each decoded stretch through the repair pass
         (_polish_window) while the key is still held, so the release
         repairs only what came after it.
+
+        `source`: what it reads (``chunks_since``, ``sample_rate``): the
+        microphone when left unsaid, a phone's stream for _stream_roller.
         """
         local = getattr(self.cfg, "local", None)
         if local is None or not getattr(local, "rolling", False):
@@ -4293,8 +4341,9 @@ class App:
                                      name="rolling-polish").start()
                 return window
 
+            source = self.recorder if source is None else source
             roller = rolling_mod.Roller(
-                self.recorder.chunks_since, self.recorder.sample_rate,
+                source.chunks_since, source.sample_rate,
                 decode, local.rolling_window_s, frames_to_wav,
                 overlap=bool(getattr(backend, "can_overlap", False)))
             roller.start()
@@ -4303,6 +4352,20 @@ class App:
             log.exception("could not start the rolling transcriber — this "
                           "recording is decoded whole at the end")
             return None
+
+    def _stream_roller(self, stream):
+        """The rolling transcriber for a phone dictation arriving while it is
+        spoken (PHONE_LINK_PLAN.md stage 2, phonestream.py), or None, and then
+        it is decoded whole at its end as /transcribe always did. The desk's
+        own, on the stream instead of the microphone, its stretches repaired
+        as they settle. None while the app is locked or the model is not on:
+        the answer at the end then says why, in the words /transcribe uses."""
+        locked = getattr(self, "locked", None)
+        if locked is not None and locked():
+            return None
+        if getattr(self, "_model_state", "on") != "on":
+            return None
+        return self._start_roller(polish=True, source=stream)
 
     def _on_stop(self, language: str | None = "he") -> None:
         # The release, for the clock the worker stops at the paste: the
@@ -5855,7 +5918,7 @@ class App:
 
     def _transcribe(self, wav: bytes,
                     language: str | None = None,
-                    head=None) -> tuple[str, str]:
+                    head=None) -> Decoded:
         """Cloud first; local only once every cloud model is out of quota.
 
         Serialised: the phone endpoint runs on its own threads and would
@@ -5866,6 +5929,11 @@ class App:
         held (rolling.Head): the backend that made it decodes only the
         tail after it. Any other backend — the cloud, or the local
         fallback under it — was not there and gets the whole recording.
+
+        -> Decoded: (text, backend) as a pair, and the decode's words,
+        windows and warning beside it, read HERE, under the lock, off the
+        backend that ran, so neither another dictation's nor an earlier
+        one's is ever mistaken for this one's.
         """
         with self._model_lock:
             self._model_used_at = time.monotonic()
@@ -5876,15 +5944,11 @@ class App:
                         wav, head, language=language)
                 else:
                     text = self._call(self.transcriber, wav, language)
-                self._last_words = list(
-                    getattr(self.transcriber, "last_words", None) or [])
-                # The windows this text was joined from (rolling), [] for
-                # a whole decode — read HERE, off the backend that ran,
-                # so a stale list from an earlier dictation is never
-                # mistaken for this one's.
-                self._last_windows = list(
-                    getattr(self.transcriber, "last_windows", None) or [])
-                return text, self.transcriber.name
+                ran = self.transcriber
+                return Decoded(text, ran.name,
+                               getattr(ran, "last_words", None),
+                               getattr(ran, "last_windows", None),
+                               getattr(ran, "last_warning", None))
             except (RateLimitError, TooLongForCloud) as e:
                 local = self._local_backend()
                 if local is None:
@@ -5895,10 +5959,9 @@ class App:
                     self._say(str(e))
                     log.info("%s", e)
                 text = self._call(local, wav, language)
-                self._last_words = list(
-                    getattr(local, "last_words", None) or [])
-                self._last_windows = []
-                return text, local.name
+                return Decoded(text, local.name,
+                               getattr(local, "last_words", None), (),
+                               getattr(local, "last_warning", None))
 
     def _worker(self) -> None:
         while True:
@@ -6752,7 +6815,7 @@ class App:
                           "— the release will repair it")
 
     def _improve_rolled(self, cleaned: str, head,
-                        receipt: dict | None = None) -> str:
+                        receipt: dict | None = None, windows=()) -> str:
         """_improve, minus the stretches already repaired while he spoke.
 
         The leading run of windows whose repair has landed is taken as it
@@ -6762,10 +6825,13 @@ class App:
         pass on a 106 s dictation (997 chars) took 2.0 s; on its last
         stretch alone it is the 0.7 s a short dictation pays.
 
+        `windows` are the stretches THIS text was joined from, the tail's
+        included (Decoded.windows of its own decode, never the App's).
+
         `receipt["by"]` says which backend repaired any of it — the
         stretches while he spoke or the rest now — or None.
         """
-        windows = list(getattr(self, "_last_windows", None) or [])
+        windows = list(windows or [])
         done: list = []
         if head is not None:
             for window in windows:
@@ -7048,6 +7114,9 @@ class App:
         last_error = ""
         attempt = 0
         text = backend = None
+        # The decode's own words and windows, as values (Decoded): a phone
+        # dictation decoded meanwhile is never read in their place.
+        decoded = None
         no_model = False     # the model is not on disk: said as such
         # What the rolling transcriber finished while the key was held.
         # finish() waits for the decode it is in the middle of, if any —
@@ -7068,7 +7137,8 @@ class App:
                     text, backend = self._transcribe_pieces(pieces,
                                                             language)
                 else:
-                    text, backend = self._transcribe(wav, language, head)
+                    decoded = self._transcribe(wav, language, head)
+                    text, backend = decoded[0], decoded[1]
                 break
             except TranscriptionError as e:
                 last_error = str(e)
@@ -7325,7 +7395,8 @@ class App:
         # round trip" and the log read as if the paste had been fast.
         repair_started = time.monotonic()
         receipt: dict = {}
-        cleaned = self._improve_rolled(cleaned, head, receipt)
+        cleaned = self._improve_rolled(cleaned, head, receipt,
+                                       windows=getattr(decoded, "windows", None))
         # And the punctuation, if the box is ticked — after the repair, so
         # it works on the final words; punctuate.max_wait_s bounds it.
         cleaned = self._auto_punctuate(cleaned)
@@ -7334,7 +7405,7 @@ class App:
         # The decoder's per-word confidence belongs to ONE decode; a
         # recording transcribed in pieces has several, so it carries none.
         words = ([] if (pieces and len(pieces) > 1)
-                 else list(getattr(self, "_last_words", []) or []))
+                 else list(getattr(decoded, "words", None) or []))
         # A silent recording (a dead microphone, see _on_stop) is not
         # kept: recent\ is the labelled set every measurement in this repo
         # is made against, and a wav with nobody in it is not a label.
