@@ -294,15 +294,48 @@ def beep(kind: str) -> None:
     cues.play(kind)
 
 
-def stage_line(**spans: float | None) -> str:
+def stage_line(*, notes: dict | None = None,
+               **spans: float | None) -> str:
     """The tail of the "pasted" line in app.log: each stage of the wait
     from the release to the chord, in seconds and in the order given,
     leaving out what this dictation did not have (no release to start a
-    clock from, no rolling, a backend with no language check). Numbers
-    and stage names only, never a word of what was said (D8)."""
+    clock from, no rolling, a backend with no language check). `notes`
+    puts a few words in brackets after a stage — what its seconds went
+    on (decoder_note). Numbers and stage names only, never a word of
+    what was said (D8)."""
+    notes = notes or {}
     parts = [f"{name.replace('_', ' ')} {value:.2f}"
+             + (f" ({notes[name]})" if notes.get(name) else "")
              for name, value in spans.items() if value is not None]
     return f"stages (s): {', '.join(parts)}" if parts else ""
+
+
+def decoder_note(timing: dict) -> str | None:
+    """What the decoder's seconds went on, when it was more than one
+    plain pass (local_whisper._decoder_tally): how many passes
+    faster-whisper made, the empty ones and their seconds ("stopped":
+    [local] stop_empty_passes ended the loop at the first), and the loop
+    retry's rungs and seconds. The 127 s dictation of 2026-11-27 22:17
+    waited 5.98 s in the decoder and the line could not say why; it
+    would have read "decoder 5.98 (28 passes, 26 empty 4.31 s)"."""
+    parts: list[str] = []
+    try:
+        passes = int(timing.get("passes") or 0)
+        empty = int(timing.get("empty") or 0)
+        retries = int(timing.get("retries") or 0)
+        if passes > 1:
+            parts.append(f"{passes} passes")
+        if empty:
+            parts.append(f"{empty} empty "
+                         f"{float(timing.get('empty_s') or 0.0):.2f} s"
+                         + (", stopped" if timing.get("stopped") else ""))
+        if retries:
+            parts.append(f"loop retry {retries} "
+                         f"rung{'s' if retries > 1 else ''} "
+                         f"{float(timing.get('retry_s') or 0.0):.2f} s")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return ", ".join(parts) or None
 
 
 def language_label(language: str | None, shout: bool = False) -> str:
@@ -4398,6 +4431,10 @@ class App:
         # stretches are not sent to the repair pass either.
         self._roller = self._start_roller(
             polish=not (self._to_card or self._to_prompt or self._to_read))
+        if language and self._roller is not None:
+            # a key that named its language: the release will not ask,
+            # so the rolling thread must not either (early_language)
+            self._roller.decide = None
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
@@ -4443,6 +4480,15 @@ class App:
                 self.recorder.chunks_since, self.recorder.sample_rate,
                 decode, local.rolling_window_s, frames_to_wav,
                 overlap=bool(getattr(backend, "can_overlap", False)))
+            if getattr(local, "early_language", False) \
+                    and getattr(self.cfg, "auto_language", True) \
+                    and hasattr(backend, "early_language"):
+                # the release's language decision, made while he speaks
+                # once it can be (LocalWhisperTranscriber.early_language);
+                # the model lock only for the detector's own pass
+                def decide(wav: bytes):
+                    return backend.early_language(wav, self._model_lock)
+                roller.decide = decide
             roller.start()
             return roller
         except Exception:
@@ -5928,12 +5974,12 @@ class App:
             self._local = False
             return None
         try:
-            from transcribers import local_kwargs
+            from transcribers import configure, local_kwargs
             from transcribers.local_whisper import LocalWhisperTranscriber
             log.info("cloud quota spent — loading the local model (first "
                      "run downloads it; this takes a while)...")
-            self._local = LocalWhisperTranscriber(
-                **local_kwargs(self.cfg, self._hotwords))
+            self._local = configure(LocalWhisperTranscriber(
+                **local_kwargs(self.cfg, self._hotwords)), self.cfg)
             log.info("local backend ready — dictation continues offline")
         except Exception as e:
             log.warning("no local fallback available: %s", e)
@@ -7624,6 +7670,9 @@ class App:
         # the language check and the decoder were timed on every dictation
         # in last_timing and written nowhere). Numbers only (D8).
         stages = stage_line(
+            notes={"decoder": decoder_note(timing),
+                   "language_check": "decided while speaking"
+                   if timing.get("early_language") else None},
             queue=None if released is None else started - released,
             rolling_wait=head_wait,
             language_check=timing.get("detect_s"),

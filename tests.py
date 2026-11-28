@@ -3348,6 +3348,238 @@ def test_a_word_loop_is_retried_with_the_penalty_the_first_decode_dropped() -> N
     assert "ותעביר מסר אופטימי" in out and out.count("זהו") == 1, out
     assert asked == [(5, 1.0), (5, 1.15)], asked
     assert t.last_warning is None, asked
+    # ...and the pasted line can say the retry is where the seconds went
+    assert t.last_timing["retries"] == 1 and t.last_timing["retry_s"] >= 0, \
+        t.last_timing
+    import main as main_mod
+    note = main_mod.decoder_note(t.last_timing)
+    assert note.startswith("loop retry 1 rung "), note
+
+
+def _crawling_model(tokens_per_pass):
+    """faster-whisper's REAL seek loop (WhisperModel.generate_segments and
+    _split_segments_by_timestamps, the installed version) over a stand-in
+    whose passes answer `tokens_per_pass(offset)` — the encoder, the
+    prompt, the beam search and the alignment are the stand-in's, the
+    loop is the library's. -> (model, passes) where passes lists each
+    pass's offset in seconds."""
+    import logging as logging_mod
+    import numpy as np
+    from faster_whisper import WhisperModel
+    from faster_whisper.transcribe import TranscriptionOptions
+
+    tb = 50365                      # <|0.00|> in Whisper's vocabulary
+    passes: list[float] = []
+
+    class Tok:
+        timestamp_begin = tb
+
+        def decode(self, tokens):
+            return "".join(" מילה" for t in tokens if t < tb)
+
+    class Result:
+        def __init__(self, ids):
+            self.sequences_ids, self.no_speech_prob = [ids], 0.0
+
+    m = WhisperModel.__new__(WhisperModel)
+    m.feature_extractor = type("FE", (), {"time_per_frame": 0.01,
+                                          "nb_max_frames": 3000})()
+    m.frames_per_second, m.time_precision, m.input_stride = 100, 0.02, 2
+    m.logger = logging_mod.getLogger("faster_whisper")
+    m.get_prompt = lambda *a, **k: [1, 2, 3]
+
+    def encode(segment):
+        # every frame of the stand-in's features holds its own index + 1,
+        # so the window a pass encodes says where it starts
+        passes.append(round((float(segment[0, 0]) - 1) / 100, 2))
+        return "encoded"
+
+    def generate(encoder_output, prompt, tokenizer, options):
+        return Result(tokens_per_pass(passes[-1])), -0.4, 0.0, 1.0
+
+    def align(segments, *a, **k):
+        for seg in segments[0]:
+            texts = [t for t in seg["tokens"] if t < tb]
+            seg["words"] = ([dict(word=" מילה", start=seg["start"],
+                                  end=seg["start"] + 0.4, probability=0.9)]
+                            if texts else [])
+
+    m.encode, m.generate_with_fallback, m.add_word_timestamps = \
+        encode, generate, align
+    guards = {k: v for k, v in
+              __import__("transcribers.local_whisper", fromlist=["x"])
+              .hallucination_guards(True).items()}
+    options = TranscriptionOptions(
+        beam_size=5, best_of=5, patience=1.0, length_penalty=1.0,
+        repetition_penalty=1.0, no_repeat_ngram_size=0,
+        log_prob_threshold=guards["log_prob_threshold"],
+        no_speech_threshold=guards["no_speech_threshold"],
+        compression_ratio_threshold=guards["compression_ratio_threshold"],
+        condition_on_previous_text=False, prompt_reset_on_temperature=0.5,
+        temperatures=[0.0], initial_prompt=None, prefix=None,
+        suppress_blank=True, suppress_tokens=[-1], without_timestamps=False,
+        max_initial_timestamp=1.0, word_timestamps=True,
+        prepend_punctuations="", append_punctuations="", multilingual=False,
+        max_new_tokens=None, clip_timestamps="0",
+        hallucination_silence_threshold=guards[
+            "hallucination_silence_threshold"],
+        hotwords=None)
+
+    def transcribe(audio, **kw):
+        features = np.tile(np.arange(1, 302, dtype=np.float32),
+                           (80, 1))                         # 3.0 s
+        return m.generate_segments(features, Tok(), options, False), None
+
+    m.transcribe = transcribe
+    return m, passes, tb
+
+
+def test_an_empty_last_pass_ends_the_decode_instead_of_crawling():
+    """The 127 s dictation of 2026-11-27 22:17 waited 6.7 s for its paste,
+    5.98 s of it in the decoder on a 19.3 s tail. Replayed on the real
+    model: 28 passes, 26 of them EMPTY — one timestamp token, no text —
+    0.1 s apart over the tail's last 2.6 s of quiet, each a whole 30 s
+    encode. faster-whisper's own loop does that with word timestamps on;
+    [local] stop_empty_passes ends it at the first empty pass that reached
+    the end of the clip, which has already looked at everything left. On
+    the library's real loop: off, an empty clip is crawled a tenth of a
+    second at a time; on, one pass; a pass with words in it, or one whose
+    window does not reach the end, is never ended early; and the pasted
+    line says how many passes there were and what the empty ones cost."""
+    from transcribers import local_whisper as lw
+    import main as main_mod
+
+    lone = lambda offset: [50365 + 5]          # <|0.10|> and nothing else
+    model, passes, tb = _crawling_model(lone)
+    t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+    t._model, t._english = model, None
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = None
+    t._guards, t._boilerplate = lw.hallucination_guards(True), ()
+    t._hotwords = None
+    t._no_crawl(model)
+
+    t.stop_empty_passes = False
+    assert t.transcribe(RIFF, language="he") == ""
+    assert len(passes) == 30 and passes[:3] == [0.0, 0.1, 0.2], passes
+    assert t.last_timing["passes"] == 30 and t.last_timing["empty"] == 30, \
+        t.last_timing
+    assert "stopped" not in t.last_timing
+    assert main_mod.decoder_note(t.last_timing).startswith(
+        "30 passes, 30 empty "), main_mod.decoder_note(t.last_timing)
+
+    passes.clear()
+    t.stop_empty_passes = True
+    import logging as _logging
+    said: list[str] = []
+
+    class _Said(_logging.Handler):
+        def emit(self, record):
+            said.append(record.getMessage())
+
+    catch = _Said(level=_logging.INFO)
+    app_log = _logging.getLogger("app")
+    level = app_log.level
+    app_log.setLevel(_logging.INFO)
+    app_log.addHandler(catch)
+    try:
+        assert t.transcribe(RIFF, language="he") == ""
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+    assert passes == [0.0], passes
+    assert t.last_timing["passes"] == 1 and t.last_timing["stopped"], \
+        t.last_timing
+    ended = [m for m in said if m.startswith("decoder: ended at an empty")]
+    assert ended == ["decoder: ended at an empty last pass — 1 pass(es), "
+                     "1 empty " + ended[0].split("1 empty ")[1]], said
+    assert ended[0].endswith("0 word(s)") and not re.search("[֐-׿]", ended[0])
+    note = main_mod.decoder_note(t.last_timing)
+    assert note.startswith("1 empty ") and note.endswith(", stopped"), note
+
+    # words, then an empty pass over the rest: the words stay, the crawl
+    # after them does not happen
+    spoken = lambda offset: ([tb, 100, 101] if offset == 0.0
+                             else [tb + 5])
+    model, passes, tb = _crawling_model(spoken)
+    t._model = model
+    t._no_crawl(model)
+    out = t.transcribe(RIFF, language="he")
+    assert out.split() == ["מילה", "מילה"], out
+    assert passes == [0.0, 0.4], passes
+    t.stop_empty_passes = False
+    assert t.transcribe(RIFF, language="he") == out, "the same words"
+    assert len(passes) > 20, passes
+
+    # a pass with text is never the one that ends it, and the line stays
+    # quiet for a plain one-pass decode
+    split = lw._without_empty_crawl(
+        lambda **kw: ([], kw["seek"] + kw["segment_size"], False),
+        lambda: True)
+    tok = type("T", (), {"timestamp_begin": tb})()
+    assert split(tokenizer=tok, tokens=[tb, 7], segment_size=300,
+                 seek=0)[2] is False
+    assert split(tokenizer=tok, tokens=[tb + 5], segment_size=3000,
+                 seek=0)[2] is False, "a window that does not reach the end"
+    assert split(tokenizer=tok, tokens=[tb + 5], segment_size=300,
+                 seek=0)[2] is True
+    # ...and never where the old loop would carry on to speech: a lone
+    # timestamp AT the first-timestamp cap ("it starts later than 1 s"),
+    # a pass of two timestamps, a seek the library did not move to the end
+    assert split(tokenizer=tok, tokens=[tb + 50], segment_size=300,
+                 seek=0)[2] is False, "the 1.0 s cap: speech may follow"
+    assert split(tokenizer=tok, tokens=[tb, tb + 5], segment_size=300,
+                 seek=0)[2] is False, "two timestamps are not a lone one"
+    short = lw._without_empty_crawl(
+        lambda **kw: ([], kw["seek"] + 10, False), lambda: True)
+    assert short(tokenizer=tok, tokens=[tb + 5], segment_size=300,
+                 seek=0)[2] is False, "the library did not move to the end"
+    # a lone timestamp at the cap is crawled exactly as before, on the
+    # real loop: 1.0 s a pass over 3 s
+    model, passes, tb = _crawling_model(lambda offset: [tb + 50])
+    t._model = model
+    t._no_crawl(model)
+    t.stop_empty_passes = True
+    t.transcribe(RIFF, language="he")
+    assert passes == [0.0, 1.0, 2.0], passes
+    assert "stopped" not in t.last_timing, t.last_timing
+    assert main_mod.decoder_note({"passes": 1, "decode_s": 0.4}) is None
+    assert main_mod.stage_line(
+        notes={"decoder": "28 passes, 26 empty 4.31 s"}, queue=0.02,
+        decoder=5.98, paste=0.09) == (
+        "stages (s): queue 0.02, decoder 5.98 (28 passes, 26 empty 4.31 s),"
+        " paste 0.09")
+    # the switch: on by default, in defaults.toml, and what the builder
+    # hands the backend — false is faster-whisper's loop as it was
+    assert config_mod.LocalConfig().stop_empty_passes is True
+    assert config_mod.defaults_flat()["local.stop_empty_passes"] is True
+    assert lw.LocalWhisperTranscriber.stop_empty_passes is True
+    import transcribers
+
+    class _Built:
+        stop_empty_passes = "unset"
+
+        def __init__(self, **kw):
+            pass
+
+    for value in (False, True):
+        parsed = config_mod.build({"local": {"stop_empty_passes": value}})
+        assert parsed.local.stop_empty_passes is value, value
+        cfg = dataclasses.replace(config_mod.Config(), backend="local",
+                                  local=parsed.local)
+        with _patched(lw, "LocalWhisperTranscriber", _Built):
+            backend = transcribers.get_transcriber(cfg)
+        assert backend.stop_empty_passes is value, value
+        assert transcribers.configure(_Built(), cfg).stop_empty_passes is value
+    # every place that builds the backend from a config goes through
+    # configure, so an A/B with the switch off really is off there too
+    here = Path(__file__).resolve().parent
+    for name in ("main.py", "review.py", "study.py", "dev/measure.py",
+                 "transcribers/__init__.py"):
+        src = (here / name).read_text("utf-8")
+        built = src.count("LocalWhisperTranscriber(")
+        assert built and built == src.count("configure(LocalWhisperTranscriber("), name
 
 
 def test_www_survives_what_a_decoder_loop_does_not() -> None:
@@ -38789,6 +39021,190 @@ def test_the_press_starts_a_roller_and_the_release_hands_it_to_the_worker():
     finally:
         main_mod.injector, main_mod.beep = real, was_beep
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_language_is_decided_while_he_speaks_once_it_can_be_exact():
+    """[local] early_language (2026-11-28). The release's language check
+    costs 0.2-0.4 s on every dictation, and the detector it asks reads only
+    the first 30 s of the SPEECH in the recording. So once 30 s of speech
+    and 3 s after it exist, the rolling thread can ask the same question
+    and get the release's own answer: measured on 479 recordings, it
+    answered early on 75 and agreed on all 75, while the first 5-20 s, the
+    first rolling window and everything but the tail got English and mixed
+    clips wrong. Here: the Roller asks from 33 s every 5 s until answered
+    and hands the answer on in the Head; a check that raises is dropped;
+    early_language answers only past 30 s of speech + 3 s; the release uses
+    the answer and asks the detector nothing, unless a key named a
+    language; the app hands the Roller the check only with the switch on."""
+    import dataclasses as _dc
+    import rolling
+    import faster_whisper.vad as fw_vad
+    import main as main_mod
+    from transcribers import local_whisper as lw
+    from recorder import frames_to_wav
+
+    rate = 16000
+    loud, quiet = np.full(160, 8000, dtype=np.int16), np.zeros(160, dtype=np.int16)
+    # 60 s of "speech" with a 0.6 s pause every 10 s, at 10 ms chunks
+    chunks = [quiet if (i % 1000) >= 940 else loud for i in range(6000)]
+
+    def run(decide):
+        clock = {"t": 0.0}
+        roller = rolling.Roller(
+            lambda mark: chunks[mark:int(clock["t"] * rate) // 160], rate,
+            lambda wav, lead, keep: rolling.Window(0.0, 0.0, "x"), 25.0,
+            frames_to_wav, overlap=False)
+        roller.decide = decide
+        while clock["t"] < 60:
+            clock["t"] += rolling.POLL_S
+            roller._step()
+        return roller
+
+    asked: list[int] = []
+
+    def decide(wav):
+        seconds = (len(wav) - 44) / 2 / rate
+        asked.append(round(seconds))
+        return "he" if seconds >= 42 else None
+
+    roller = run(decide)
+    assert asked == [33, 38, 43], asked
+    assert roller.finish().language == "he"
+
+    def broken(wav):
+        raise RuntimeError("no detector today")
+
+    roller = run(broken)
+    assert roller.decide is None and roller.windows, "the windows go on"
+    assert roller.finish().language is None
+    assert run(None).finish().language is None
+    # a sparse recording that never gets there: asked DECIDE_TRIES times,
+    # then left to the release (each try reads the recording so far)
+    asked.clear()
+    roller = run(lambda wav: asked.append(len(wav)) or None)
+    assert len(asked) == rolling.DECIDE_TRIES == 6 and roller.decide is None, asked
+    assert roller.finish().language is None
+
+    # early_language: only once 30 s of speech and 3 s after it exist
+    class Det:
+        calls = 0
+
+        def detect_language(self, audio=None, vad_filter=False):
+            Det.calls += 1
+            return "en", 0.97, []
+
+        def transcribe(self, audio, **kw):
+            return iter(()), None
+
+    t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+    t._english, t._language, t._english_threshold = Det(), "he", 0.8
+    wav = lambda s: frames_to_wav([np.zeros(int(s * rate), dtype=np.int16)], rate)
+    speech = [{"start": 0, "end": 20 * rate}, {"start": 22 * rate, "end": 40 * rate}]
+    import threading as _threading
+    lock = _threading.Lock()
+    held: list[tuple] = []
+
+    def vad(audio, *a, **k):
+        held.append(("vad", lock.locked()))
+        return speech
+
+    real_detect = Det.detect_language
+
+    def detect(self, audio=None, vad_filter=False):
+        held.append(("detect", lock.locked(), vad_filter, round(len(audio) / rate)))
+        return real_detect(self, audio, vad_filter)
+
+    with _patched(fw_vad, "get_speech_timestamps", vad), \
+            _patched(Det, "detect_language", detect):
+        assert t.early_language(wav(34.9), lock) is None, "30 s of speech at 32 s, + 3"
+        assert t.early_language(wav(35.1), lock) == "en"
+    # the VAD and the count without the model lock, the detector with it,
+    # handed exactly the speech detect_language's own VAD would collect
+    assert held == [("vad", False), ("vad", False), ("detect", True, False, 33)], held
+    assert t.early_language.__doc__ and "lock" in t.early_language.__doc__
+    with _patched(fw_vad, "get_speech_timestamps", lambda audio, *a, **k: speech):
+        assert t.early_language(wav(35.1)) == "en", "no lock given: none taken"
+    with _patched(fw_vad, "get_speech_timestamps",
+                  lambda audio, *a, **k: speech[:1]):
+        assert t.early_language(wav(60)) is None, "20 s of speech is not enough"
+    t._english = None
+    assert t.early_language(wav(60)) is None, "no detector, no early answer"
+
+    # the release takes the answer and asks the detector nothing
+    class Model:
+        def transcribe(self, audio, **kw):
+            return iter(()), None
+
+    t._english, t._model = Det(), Model()
+    t._cleanup, t._fillers, t._initial_prompt = False, (), None
+    t._guards, t._boilerplate, t._hotwords = {}, (), None
+    head = rolling.Head([rolling.Window(0.0, 35.0, "שלום",
+                                        [("שלום", 0.1, 0.5, 0.9)])], 35.0, "he")
+    Det.calls = 0
+    assert t.transcribe_with_head(wav(40), head) == "שלום"
+    assert Det.calls == 0 and t.last_timing["detect_s"] == 0.0, t.last_timing
+    assert t.last_timing["early_language"] == "he"
+    head.language = None
+    t.transcribe_with_head(wav(40), head)
+    assert Det.calls == 1 and "early_language" not in t.last_timing
+    head.language = "en"                     # a key that named Hebrew wins
+    t.transcribe_with_head(wav(40), head, language="he")
+    assert Det.calls == 1 and "early_language" not in t.last_timing
+    # an early "en" goes the English way and keeps its note on the line
+    t.transcribe_with_head(wav(40), head)
+    assert Det.calls == 1 and t.last_timing.get("early_language") == "en", \
+        t.last_timing
+    # ...but not when the English model went aside before the release
+    # (room for a game): then the release decides, as always — Hebrew
+    t._english = None
+    assert t.transcribe_with_head(wav(40), head) == "שלום"
+    assert "early_language" not in t.last_timing, t.last_timing
+    t._english = Det()
+    assert main_mod.stage_line(
+        notes={"language_check": "decided while speaking"},
+        language_check=0.0) == \
+        "stages (s): language check 0.00 (decided while speaking)"
+
+    # the switch: on by default, and the app hands the check over only then
+    assert config_mod.LocalConfig().early_language is True
+    assert config_mod.defaults_flat()["local.early_language"] is True
+    assert config_mod.build(
+        {"local": {"early_language": False}}).local.early_language is False
+    tmp = Path(tempfile.mkdtemp(prefix="early-language-"))
+    try:
+        app = _worker_app(_Flaky(fail_times=0), tmp)
+
+        class Rec:
+            sample_rate = 16000
+
+            def chunks_since(self, mark):
+                return []
+
+        app.recorder = Rec()
+        app.transcriber.decode_window = lambda *_a: rolling.Window(0.0, 0.0, "x")
+        app.transcriber.can_overlap = False
+        given: list = []
+        app.transcriber.early_language = \
+            lambda wav, lock=None: given.append(lock) or "en"
+        for on, auto in ((True, True), (False, True), (True, False)):
+            app.cfg = _dc.replace(app.cfg, auto_language=auto,
+                                  local=_dc.replace(app.cfg.local, rolling=True,
+                                                    early_language=on))
+            roller = app._start_roller(polish=False)
+            assert (roller.decide is not None) is (on and auto), (on, auto)
+            if on and auto:
+                assert roller.decide(b"RIFF") == "en"
+                assert given == [app._model_lock], "the lock goes in, not around"
+            roller.invalidate()
+            roller.finish()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    src = Path(__file__).resolve().parent.joinpath("main.py").read_text("utf-8")
+    assert '"decided while speaking"' in src and 'timing.get("early_language")' in src
+    # a key that named its language: the press takes the check away again
+    start = src[src.index("    def _on_start("):src.index("    def _start_roller(")]
+    assert "if language and self._roller is not None:" in start
+    assert "self._roller.decide = None" in start
 
 
 def test_the_rolling_knobs_parse_and_are_bounded():

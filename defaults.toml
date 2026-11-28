@@ -2018,6 +2018,34 @@ rolling_window_s = 25.0          # how much settled audio a stretch waits for
                                  # is read with more of its own context. Below
                                  # 20 it was measured to cost words
 #
+# THE EMPTY-PASS CRAWL (2026-11-28). faster-whisper decodes a clip in passes,
+# and with word timestamps on, a pass that finds NO text (one timestamp token)
+# moves the next pass only 0.1 s on: a full 30 s encode per tenth of a second
+# of quiet. The 127.4 s dictation of 2026-11-27 22:17 waited 6.7 s for its
+# paste because of it: its 19.3 s tail ended in 2.6 s of quiet with a breath in
+# it, and with the hotwords in the prompt every pass over that quiet came back
+# empty — 28 passes, 26 of them empty, 5.45 s, against one pass and 0.54 s for
+# the same tail without hotwords. A pass that reached the end of the clip and
+# found nothing has already looked at all that is left, so this ends the loop
+# there. The words are the same (see the slow-tail notes for the replay).
+stop_empty_passes = true         # end the decode at an empty last pass;
+                                 # false = faster-whisper's loop as it was
+#
+# THE LANGUAGE, DECIDED WHILE YOU SPEAK (2026-11-28). The release asks the
+# English detector about the whole recording, 0.2-0.4 s on every dictation
+# (p50 0.21 s, a quarter of the wait), and the detector reads only the first
+# 30 s of SPEECH of it. So a dictation that holds 30 s of speech, and 3 s of
+# audio after that, already has its answer while the key is still held: the
+# rolling thread asks then, and the release skips the check. Measured on 479
+# recordings (the 50 kept ones, the corpus's 28 English and 301 mixed clips,
+# 100 Hebrew ones): it answered early on 75 and agreed with the release on all
+# 75 (3 English, 65 mixed), saving 0.29 s each at the median; deciding on the
+# first 5-20 s, the first stretch or everything but the tail got English and
+# mixed clips wrong both ways. It helps only dictations of about 35 s or more
+# (11% of them); a shorter one is decided at the release, as before.
+early_language = true            # decide the language while the key is held,
+                                 # once it can be exact; false = at the release
+#
 # WARM AGAIN ON THE WAY BACK (wake.py, 2026-10-20). An idle model does not stay
 # where it was loaded: the night's training took 15.1 of the card's 15.9 GB and
 # Windows moved these models off it; they stayed off all day (the card read 2.6
