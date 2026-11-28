@@ -4560,6 +4560,16 @@ class NotifyCard(HintCard):
 
     # -- caller's threads --
 
+    def _footers(self, cards: list) -> list:
+        """The footer on the TOP card only (`one_footer`): every card under
+        it footless, the top one never. Applied wherever the column is
+        decided - show() and pressed()'s own redraw - so a dismissed top
+        card hands its footer to the next one at once, and the engine's
+        answer a moment later draws the same picture (no second jump)."""
+        if not self.one_footer:
+            return cards
+        return [dict(c, footless=i > 0) for i, c in enumerate(cards)]
+
     def _drawn(self) -> list:
         """What is on the window: the notifications, newest first, then
         the pin. Caller holds `_state_lock`."""
@@ -4635,8 +4645,7 @@ class NotifyCard(HintCard):
         if not cards:
             self.hide()
             return
-        if self.one_footer:
-            cards[1:] = [dict(c, footless=True) for c in cards[1:]]
+        cards = self._footers(cards)
         with self._state_lock:
             # The NEWEST id: `current()` is what the dashboard and the
             # dismiss key mean by "the one on screen", and the newest is
@@ -4762,7 +4771,7 @@ class NotifyCard(HintCard):
                 defer = (callback is not None
                          and int(self._cards[-1].get("more") or 0) > 0)
                 was = self._current
-                self._cards = keep
+                self._cards = self._footers(keep)
                 self._current = keep[0]["id"]
             drawn = self._drawn()
         if self._thread is not None and not defer:

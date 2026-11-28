@@ -61052,6 +61052,33 @@ def test_a_stack_says_esc_or_click_once_on_its_top_card() -> None:
     last = nc.compose(on[-1], 1.0)
     bare = nc.compose(dict(on[-1], more=0), 1.0)
     assert last.height - bare.height == 2 + nc.MORE_H, "the +N line stays"
+    # The top card dismissed (or opened): pressed() redraws the column at
+    # once, without show(), and the next card must take the footer THERE —
+    # or the engine's show(live()) a moment later would grow it back, the
+    # second jump the 2026-10-18 comment in pressed() exists to prevent.
+    told = []
+    card = overlay_mod.NotifyCard(on_dismiss=told.append, on_open=told.append)
+    card._thread = object()
+    card.one_footer = True
+    plain = [dict(i) for i in items]
+    plain[-1].pop("more", None)
+    card.show(plain)
+    card._q.get_nowait()
+    for name in ("dismiss", "open"):
+        top = card.current()
+        card.pressed(name, top)
+        drawn = card._q.get_nowait()
+        assert top in told and drawn and drawn[0]["id"] != top, (told, drawn)
+        assert [bool(c.get("footless")) for c in drawn] == \
+            [False] + [True] * (len(drawn) - 1), drawn
+        rest = [i for i in plain if i["id"] not in told]
+        again = overlay_mod.NotifyCard()
+        again._thread = object()
+        again.one_footer = True
+        again.show(rest)
+        answer = again._q.get_nowait()
+        assert [nc.measure(c, 1.0) for c in drawn] == \
+            [nc.measure(c, 1.0) for c in answer], "the engine's answer moves nothing"
     pin = dict(_pin_card(), footless=True)
     assert not nc.footless(pin)
     assert nc.measure(pin, 1.0) == nc.measure(_pin_card(), 1.0)
