@@ -50551,7 +50551,10 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
     # the npm toolchain is third-party code: built in a job of its own that
     # holds no secret, no OIDC token, a read-only token and no credentials
     # in .git/config, with the exact Node ci.yml builds with
-    job = rel[rel.index("\n  pages:"):rel.index("\n  stage:")]
+    # the pages job alone: up to the next job, whichever comes next (the
+    # keyboard's two jobs sit between it and the stage since 2026-11-28)
+    start = rel.index("\n  pages:")
+    job = rel[start:re.search(r"\n  [a-z]+:\n", rel[start + 1:]).start() + start + 1]
     for must in ("permissions:\n      contents: read", "persist-credentials: false",
                  "actions/setup-node@", "node-version: ${{ env.NODE_VERSION }}",
                  "npm ci --ignore-scripts", "npm run build", "actions/upload-artifact@",
