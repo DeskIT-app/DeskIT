@@ -719,6 +719,10 @@ jobs:
           $feed = Get-Content dist/latest.json -Raw | ConvertFrom-Json
           if ($sha -ne $feed.apk_sha256 -or $sha -ne "${{ needs.signing.outputs.apk_sha256 }}") { throw "dist/$name is $sha; latest.json says $($feed.apk_sha256)" }
           if (-not $feed.apk_url.EndsWith("/v${{ needs.stage.outputs.version }}/$name")) { throw "latest.json's apk_url is $($feed.apk_url)" }
+          # the stable name beside the versioned one, as DeskIT-Setup.exe is:
+          # releases/latest/download/DeskIT-keyboard.apk never goes stale,
+          # and the site's keyboard page names it (2026-11-28)
+          Copy-Item "dist/$name" dist/DeskIT-keyboard.apk
           "$name $sha versionCode $($feed.ime_version_code)"
 
       # 8a. attest — the manifest's provenance, what the FAQ's "read the
@@ -785,7 +789,11 @@ jobs:
           $prevLine = if ($previous) { "Previous version, for rollback: https://github.com/$repo/releases/tag/$previous" } else { "Previous version: none — this is the first release" }
           $apk = "DeskIT-keyboard-$version.apk"
           $apkSha = (Get-Content "dist/$apk.sha256" -Raw).Split(" ")[0]
+          # the two files first, the long notes after (2026-11-28: on a
+          # phone the notes buried the downloads under 14,000 characters)
+          $top = "**Download:** [DeskIT for Windows](https://github.com/$repo/releases/download/v$version/DeskIT-Setup-$version.exe) · [The keyboard for Android](https://github.com/$repo/releases/download/v$version/$apk)"
           $body = @(
+            $top, "", "---", "",
             $section, "",
             "---", "",
             "**On an Android phone:** download ``$apk`` from the files below and open it. The guide's phone chapter says what to allow: $env:GUIDE_PHONE",
@@ -820,4 +828,5 @@ jobs:
             dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json
             dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk
             dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk.sha256
+            dist/DeskIT-keyboard.apk
           retention-days: 14
