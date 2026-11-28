@@ -5863,33 +5863,45 @@ def test_an_overlay_queue_rests_until_something_wakes_it() -> None:
     import ctypes.wintypes as wt
     import overlay as overlay_mod
 
-    # The suite's main thread may already hold window messages from the tests
-    # before this one, and a rest wakes once for a message nobody removed. So
-    # on CI's order the first rest woke at once and this failed twice in a row
-    # (2026-11-28, run 46141983799). This test is about what wakes a rest, so
-    # it starts from an empty message queue.
-    drain = ctypes.WinDLL("user32", use_last_error=True)
-    drain.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                   ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
-    left = wt.MSG()
-    while drain.PeekMessageW(ctypes.byref(left), None, 0, 0, 1):   # PM_REMOVE
-        pass
-
+    # These rests run on a thread of their own, which owns no window, so
+    # nothing but this test can wake it. They ran on the suite's main thread,
+    # and that thread owns whatever the tests before left behind: a rest
+    # wakes for any message to a window of its thread, so on some CI runners
+    # the first rest woke at once and the test failed twice in a row
+    # (2026-11-28: run 46141983799 in the morning, and run 46162494877 in
+    # both full runs of one job, on a branch that touched no Python, with
+    # main green on the same suite four minutes later). Emptying the queue
+    # first, the morning's fix, could not help with a message that arrives
+    # DURING the 150 ms. A message that woke a rest early also raced the
+    # timers below: four rests could end before the first put had landed.
     q = overlay_mod._Queue()
-    t0 = time.monotonic()
-    assert q.rest(0.15) is False, "a rest with nothing to wake it woke"
-    assert time.monotonic() - t0 >= 0.1, "a rest with nothing to wake it ran short"
     flag = overlay_mod._Signal(q)
-    for name, wake in (("put", lambda: q.put("x")), ("ring", q.ring),
-                       ("set", flag.set), ("clear", flag.clear)):
-        threading.Timer(0.05, wake).start()
-        t0 = time.monotonic()
-        assert q.rest(3.0) is True, name
-        assert time.monotonic() - t0 < 1.0, (name, "woke late")
-    assert q.get_nowait() == "x" and q.empty()
-    q.ring()                                  # nobody resting: not lost
-    t0 = time.monotonic()
-    assert q.rest(3.0) is True and time.monotonic() - t0 < 0.5
+    tripped: list = []
+
+    def away_from_every_window() -> None:
+        try:
+            t0 = time.monotonic()
+            assert q.rest(0.15) is False, "a rest with nothing to wake it woke"
+            assert time.monotonic() - t0 >= 0.1, "a rest with nothing to wake it ran short"
+            for name, wake in (("put", lambda: q.put("x")), ("ring", q.ring),
+                               ("set", flag.set), ("clear", flag.clear)):
+                threading.Timer(0.05, wake).start()
+                t0 = time.monotonic()
+                assert q.rest(3.0) is True, name
+                assert time.monotonic() - t0 < 1.0, (name, "woke late")
+            assert q.get_nowait() == "x" and q.empty()
+            q.ring()                              # nobody resting: not lost
+            t0 = time.monotonic()
+            assert q.rest(3.0) is True and time.monotonic() - t0 < 0.5
+        except BaseException as e:                # noqa: BLE001
+            tripped.append(e)
+
+    alone = threading.Thread(target=away_from_every_window, daemon=True)
+    alone.start()
+    alone.join(30)
+    assert not alone.is_alive(), "the rests never came back"
+    if tripped:
+        raise tripped[0]
 
     u32 = ctypes.WinDLL("user32", use_last_error=True)
     u32.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
