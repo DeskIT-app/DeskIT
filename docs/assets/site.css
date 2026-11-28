@@ -154,3 +154,23 @@ img { max-width: 100%; height: auto; }
 .foot .wrap { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
 .foot a { color: var(--dim); }
 .foot a:hover { color: var(--fg); }
+
+/* ---- the phone keyboard's page (keyboard.md): one column, phone first ---- */
+.kb { max-width: 460px; margin: 0 auto; padding: 44px 0 36px; text-align: center; position: relative; }
+.kb + .kb { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 56px; }
+.kb-lang { position: absolute; top: 14px; inset-inline-end: 0; font-size: 14px; color: var(--dim); padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; }
+.kb-lang:hover { color: var(--fg); border-color: var(--gold); text-decoration: none; }
+.content .kb-icon { width: 72px; height: 72px; border: 0; border-radius: 18px; margin: 0 auto 18px; display: block; box-shadow: var(--shadow); }
+.content .kb h1 { font-size: 32px; margin: 0 0 10px; }
+.kb-lead { color: var(--dim) !important; font-size: 18px; margin: 0 auto 28px; max-width: 26em; }
+.btn.kb-btn { display: flex; justify-content: center; width: 100%; padding: 17px 22px; font-size: 19px; border-radius: 14px; box-shadow: 0 10px 30px rgba(227, 166, 60, .18); }
+.kb-meta { color: var(--faint) !important; font-size: 13.5px; margin: 12px 0 30px; }
+.kb-steps { list-style: none; counter-reset: kb; padding: 0; margin: 0 0 28px; text-align: start; }
+.kb-steps li { counter-increment: kb; position: relative; padding-inline-start: 44px; margin: 0 0 16px; color: var(--fg); font-size: 16px; line-height: 1.55; }
+.kb-steps li::before { content: counter(kb); position: absolute; inset-inline-start: 0; top: 0; width: 28px; height: 28px; border-radius: 50%; background: var(--gold-soft); color: var(--gold-text); font-weight: 500; font-size: 14px; line-height: 28px; text-align: center; }
+.kb-steps bdi, .kb-meta bdi { white-space: nowrap; }
+.kb-foot { color: var(--faint) !important; font-size: 14px; }
+@media (max-width: 520px) {
+  .kb { padding-top: 36px; }
+  .content .kb h1 { font-size: 28px; }
+}
