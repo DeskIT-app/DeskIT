@@ -34,7 +34,7 @@ import queue
 import time
 
 import review_card as rc
-from .glass import Glass, primary_screen, virtual_screen
+from .glass import Glass, primary_screen, virtual_screen, work_area
 
 _log = logging.getLogger("app")
 
@@ -167,7 +167,7 @@ def run(card) -> None:
         width, height = rc.measure(item, s)
         win_w, win_h = width + SHADOW * 2, height + SHADOW * 2
         x, y = card.origin(win_w, win_h, primary_screen(), SHADOW,
-                           virtual_screen())
+                           virtual_screen(), work=work_area())
         frost = _frost(x, y, win_w, win_h)
         glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
                       clicked=on_click)
@@ -191,9 +191,12 @@ def run(card) -> None:
         if glass is None or shown is None:
             return
         x, y = card.origin(glass.width, glass.height, primary_screen(),
-                           SHADOW, virtual_screen())
-        if (x, y) == tuple(glass.where()):
-            return                        # dragged, a corner, or no room
+                           SHADOW, virtual_screen(), work=work_area())
+        if (x, y) == tuple(glass.where()) or card.would_cover(
+                x, y, glass.width, glass.height, SHADOW):
+            # dragged, a corner of its own, or nowhere out of the way: it
+            # STAYS — never back to the default spot on top of the column
+            return
         keep = deadline
         put_up(shown)
         deadline = keep

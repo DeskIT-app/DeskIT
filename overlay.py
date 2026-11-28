@@ -3550,9 +3550,12 @@ class ReviewCard(HintCard):
     # -- placement --
 
     def origin(self, width: int, height: int, screen: tuple,
-               inset: int = 0, bounds=None) -> tuple:
+               inset: int = 0, bounds=None, work=None) -> tuple:
         """Mid-height on the right (or left) edge by default; the four
-        corners and a saved position exactly as the hint card does them."""
+        corners and a saved position exactly as the hint card does them.
+        `work` is the primary's work area (x, y, w, h), read from Windows
+        when not given: where a card stepping round the notify column may
+        go, so it never lands on the taskbar."""
         if self.moved() or self._corner not in ("right", "left"):
             return super().origin(width, height, screen, inset, bounds)
         sw, sh = screen
@@ -3560,46 +3563,75 @@ class ReviewCard(HintCard):
         x = (m - inset) if self._corner == "left" \
             else (sw - m - width + inset)
         y = (sh - height) // 2
-        return int(x), int(self._aside(x, y, width, height, inset, sh))
+        if self._column() is not None:
+            work = work or _work_area() or (0, 0, sw, sh)
+            spot = self._aside(x, y, width, height, inset, work)
+            if spot is not None:
+                x, y = spot
+        return int(x), int(y)
+
+    def _column(self):
+        """The notify column's rect on screen, or None."""
+        try:
+            return self._avoid() if self._avoid is not None else None
+        except Exception:                 # noqa: BLE001 — decoration
+            return None
 
     def _aside(self, x: int, y: int, width: int, height: int, inset: int,
-               sh: int) -> int:
-        """The window's y, stepped out of the notify column's way: ABOVE
-        it when the whole card fits there, else BELOW it, else where it
-        was. Only for the default spot — a card he dragged stays where he
-        put it, and so does one in a corner of its own. Pure arithmetic
-        on the column's rect, so a test drives it with numbers."""
-        try:
-            col = self._avoid() if self._avoid is not None else None
-        except Exception:                 # noqa: BLE001 — decoration
-            col = None
-        if not col:
-            return y
+               work: tuple):
+        """Where the window goes to be out of the notify column's way:
+        ABOVE it when the whole card fits inside the work area, else BELOW
+        it, else BESIDE it (on the screen's side of a column at the edge),
+        at the same height. None when it is not in the way, or when there
+        is nowhere to go — the caller then keeps what it has. Only for the
+        default spot: a card he dragged stays where he put it, and so does
+        one in a corner of its own. Pure arithmetic, so a test drives it
+        with numbers."""
+        col = self._column()
+        if not col or not self.covers(col, x, y, width, height, inset):
+            return None
         ax0, ay0, ax1, ay1 = col
+        wx, wy, ww, wh = work
+        card_w, card_h = width - 2 * inset, height - 2 * inset
+        m = self._margin
+        above = ay0 - AVOID_GAP - card_h
+        if above >= wy + m:
+            return x, above - inset
+        below = ay1 + AVOID_GAP
+        if below + card_h <= wy + wh - m:
+            return x, below - inset
+        if self._corner == "left":
+            beside = ax1 + AVOID_GAP
+            if beside + card_w <= wx + ww - m:
+                return beside - inset, y
+        else:
+            beside = ax0 - AVOID_GAP - card_w
+            if beside >= wx + m:
+                return beside - inset, y
+        return None
+
+    @staticmethod
+    def covers(col, x: int, y: int, width: int, height: int,
+               inset: int = 0) -> bool:
+        """Would a window at (x, y) of this size put its CARD on `col`?"""
         cx0, cy0 = x + inset, y + inset
         cx1, cy1 = x + width - inset, y + height - inset
-        if cx1 <= ax0 or ax1 <= cx0 or cy1 <= ay0 or ay1 <= cy0:
-            return y                      # not in its way
-        card_h, m = height - 2 * inset, self._margin
-        above = ay0 - AVOID_GAP - card_h
-        if above >= m:
-            return above - inset
-        below = ay1 + AVOID_GAP
-        if below + card_h <= sh - m:
-            return below - inset
-        return y
+        return not (cx1 <= col[0] or col[2] <= cx0
+                    or cy1 <= col[1] or col[3] <= cy0)
 
     def in_the_way(self) -> bool:
         """Is the notify column standing on the card that is up?"""
-        rect = self.rect
-        try:
-            col = self._avoid() if self._avoid is not None else None
-        except Exception:                 # noqa: BLE001
-            col = None
+        rect, col = self.rect, self._column()
         if not rect or not col:
             return False
-        return not (rect[2] <= col[0] or col[2] <= rect[0]
-                    or rect[3] <= col[1] or col[3] <= rect[1])
+        return self.covers(col, rect[0], rect[1], rect[2] - rect[0],
+                           rect[3] - rect[1])
+
+    def would_cover(self, x: int, y: int, width: int, height: int,
+                    inset: int = 0) -> bool:
+        """Would the card, put at (x, y), stand on the notify column?"""
+        col = self._column()
+        return bool(col) and self.covers(col, x, y, width, height, inset)
 
     # -- overlay thread --
 

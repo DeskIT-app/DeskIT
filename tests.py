@@ -30104,26 +30104,42 @@ def test_the_review_card_steps_out_of_the_notify_columns_way() -> None:
     """design-ux.md 7: `[notify] corner` and `[review] corner` are both
     mid-height on the right, so a finish card landing seconds after a
     dictation covered the proposal. The card in its default spot now goes
-    ABOVE the column when it fits, else BELOW, else stays; a dragged card,
-    a corner of its own and no column change nothing. Then the glass loop
-    with a stand-in window: a column landing on a card already up builds
-    it again out of the way, the clock kept."""
+    ABOVE the column when it fits in the WORK AREA, else BELOW (never onto
+    the taskbar), else BESIDE it, else nowhere: a dragged card, a corner
+    of its own and no column change nothing. Then the glass loop with a
+    stand-in window: a column landing on a card already up builds it again
+    out of the way, the clock kept; a column it cannot get away from leaves
+    it where it is (the 2026-11-28 review: it used to jump back on top)."""
     screen, inset = (2560, 1440), 26
+    work = (0, 0, 2560, 1400)                        # a 40 px taskbar
     w, h = 400 + 2 * inset, 200 + 2 * inset
     col = [None]
     card = overlay_mod.ReviewCard(corner="right", margin=14,
                                   avoid=lambda: col[0])
-    x0, y0 = card.origin(w, h, screen, inset)
+
+    def at(c=card):
+        return c.origin(w, h, screen, inset, work=work)
+
+    x0, y0 = at()
     assert (x0, y0) == (2560 - 14 - w + inset, (1440 - h) // 2)
     gap = overlay_mod.AVOID_GAP
     col[0] = (2150, 600, 2546, 900)                  # on it: above fits
-    assert card.origin(w, h, screen, inset) == (x0, 600 - gap - 200 - inset)
+    assert at() == (x0, 600 - gap - 200 - inset)
     col[0] = (2150, 150, 2546, 640)                  # no room above: below
-    assert card.origin(w, h, screen, inset) == (x0, 640 + gap - inset)
-    col[0] = (2150, 100, 2546, 1300)                 # no room either way
-    assert card.origin(w, h, screen, inset) == (x0, y0)
+    assert at() == (x0, 640 + gap - inset)
+    col[0] = (2150, 150, 2546, 1180)                 # below fits the SCREEN,
+    beside = (2150 - gap - 400 - inset, y0)          # not the work area
+    assert at() == beside, "never onto the taskbar"
+    col[0] = (2150, 100, 2546, 1300)                 # neither way: beside it
+    assert at() == beside
+    col[0] = (100, 100, 2546, 1300)                  # nowhere to go
+    assert at() == (x0, y0) and card.would_cover(x0, y0, w, h, inset)
     col[0] = (0, 600, 400, 900)                      # the other edge
-    assert card.origin(w, h, screen, inset) == (x0, y0)
+    assert at() == (x0, y0)
+    left = overlay_mod.ReviewCard(corner="left", margin=14,
+                                  avoid=lambda: col[0])
+    col[0] = (14, 100, 414, 1300)                    # a left column: beside
+    assert at(left) == (414 + gap - inset, y0)       # it, on the right
     col[0] = (2150, 600, 2546, 900)
     moved = overlay_mod.ReviewCard(corner="right", x=2100, y=650,
                                    avoid=lambda: col[0])
@@ -30193,6 +30209,8 @@ def test_the_review_card_steps_out_of_the_notify_columns_way() -> None:
     s_review._to_skia = lambda img: img
     s_review.primary_screen = lambda: screen
     s_review.virtual_screen = lambda: (0, 0) + screen
+    held_work = s_review.work_area
+    s_review.work_area = lambda: work
     live = overlay_mod.ReviewCard(corner="right", margin=14, seconds=20,
                                   avoid=lambda: col[0])
     live.hovering = lambda: False
@@ -30213,11 +30231,16 @@ def test_the_review_card_steps_out_of_the_notify_columns_way() -> None:
         assert not live.in_the_way(), (live.rect, col[0])
         time.sleep(0.6)
         assert len(built) == 2, "once out of the way it stays"
+        col[0] = (0, 0, 2560, 1440)              # a column it cannot leave
+        time.sleep(0.6)
+        assert len(built) == 2 and built[-1] is again, \
+            "nowhere to go: it stays where it is, never back on top"
     finally:
         live._q.put(overlay_mod._DONE)
         worker.join(3)
         (s_review.Glass, s_review._frost, s_review.face, s_review._to_skia,
          s_review.primary_screen, s_review.virtual_screen) = held
+        s_review.work_area = held_work
     assert not worker.is_alive()
 
 
