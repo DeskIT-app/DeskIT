@@ -4008,6 +4008,53 @@ def _mine() -> str:
     return device_id()
 
 
+def _key_for_a_press(uid: str) -> bytes:
+    """The account's key for something a person pressed, or an AccountError
+    whose sentence says what stands in the way.
+
+    ``_lock_state`` is this process's memory of the lock and it starts
+    empty: the worker's first account pass, 30 s after the app opens, is
+    what fills it. Settings > Phone draws its rows, Forget beside each, from
+    the kept rows and the key on the disk, so the button is live from the
+    first second. Until 2026-11-28 a press inside those 30 s was refused as
+    "this PC does not hold the account's key", with the key on the disk and
+    not one request sent: app.log has Forget failing 18 s and 27 s after a
+    start, network.log has nothing between the socket and the pass at 31 s,
+    and the same press nine minutes later went through. So a PC that holds
+    a key and has not looked at the lock yet looks now, in the pass's own
+    order: the lock, then the forgotten list, because a PC that finds
+    itself on it leaves and forgets nobody. A PC with no key does not look:
+    asking to join is the pass's to start, never a Forget's, and nothing
+    leaves. One look can still end in a request to join: a PC that had a
+    key, whose account has no profile row, and which reads there that it
+    was forgotten (``_ensure_lock`` through ``ensure_profile``), leaves and
+    asks as a new device, as the pass would have 30 s later. So a look
+    that left this PC under another id forgets nobody on that press,
+    whatever it holds afterwards: the id moves only when the account forgot
+    this PC or the id turned out to be another account's, and either way
+    the person looks at Home before pressing again. The caller holds
+    ``_sync_lock``, as every look at the lock does."""
+    key = vault.key(uid)
+    if key is not None and not _lock_state.get("state"):
+        was = device_id()
+        key = _ensure_lock(uid)
+        if device_id() != was:
+            raise AccountError("this PC's place in the account changed just now — look at "
+                               "Home, then try again")
+        if key is not None and _forgotten_pass(uid):
+            raise AccountError("this PC was forgotten on another device — it asks to join "
+                               "again as a new one")
+    state = _lock_state.get("state")
+    if key is not None and state == "have":
+        return key
+    if state == "changed":
+        raise AccountError("the account's lock changed — answer the question on Home first")
+    if state == "waiting":
+        raise AccountError("this PC does not hold the account's key yet — approve it on "
+                           "another device of yours first")
+    raise AccountError("this PC does not hold the account's key")
+
+
 def forget_device(device_id: str, cert: str) -> bool:
     """Forget, from this device: the target goes on the account's list and
     on this PC's first, so a failure further on leaves it forgotten and
@@ -4029,9 +4076,7 @@ def forget_device(device_id: str, cert: str) -> bool:
         raise AccountError("this is the device you are on — sign out instead")
     uid = _fresh()["user"]["id"]
     with _sync_lock:
-        key = vault.key(uid)
-        if key is None or _lock_state.get("state") != "have":
-            raise AccountError("this PC does not hold the account's key")
+        key = _key_for_a_press(uid)
         theirs = _account_forgotten(uid, key)
         union = _keep_forgotten(uid, theirs + [{"device": target, "cert": str(cert or ""),
                                                 "at": _now_iso()}])
