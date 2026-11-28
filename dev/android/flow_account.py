@@ -610,10 +610,14 @@ def flow_reinstall():
         drive.tap("^Done$")
 
         # once: a later look asks no more of it, and the phone stays in
+        forget = ("POST", "/rest/v1/rpc/forget_device")
+        check("it forgot exactly one device", acct.calls.count(forget) == 1,
+              str(acct.calls.count(forget)))
         drive.kill()
         drive.home()
         time.sleep(4)
-        check("a later look takes nothing more away",
+        check("a later look forgets nobody", acct.calls.count(forget) == 1)
+        check("and takes nothing more away",
               [r["id"] for r in acct.phones()] == [req["device_id"]]
               and acct.row_of(acct.pc_id) is not None)
         check("and the phone still holds the key", "account_key.bin" in sealed_files())

@@ -803,8 +803,10 @@ object Lock {
      *
      * Once per install: nothing earlier than this install can appear later. Until
      * it has been through it is tried again at a look, at most every
-     * [RETIRE_EVERY_S], and it never changes what a look answers: the row of an
-     * install that is gone is housekeeping, and this phone is ready without it.
+     * [RETIRE_EVERY_S], and a failure of its own never changes what a look
+     * answers: the row of an install that is gone is housekeeping, and this phone
+     * is ready without it. Only a session that ended under it goes on up, because
+     * that is the look's answer whoever met it first.
      *
      * The rows are read as the server has them, and not through [parseDevices],
      * which leaves out what the list already names: a try that got as far as the
@@ -816,7 +818,8 @@ object Lock {
         val device = deviceId(c, s.uid)
         val p = sp(c)
         if (p.getString(PREF_RETIRED, "") == device) return
-        if (nowS() - p.getLong(PREF_RETIRE_TRIED, 0) < RETIRE_EVERY_S) return
+        // `in`, not `<`: a clock set back must not hold the next try off for days
+        if (nowS() - p.getLong(PREF_RETIRE_TRIED, 0) in 0 until RETIRE_EVERY_S) return
         try {
             val mine = sameMark(c, s.uid)
             if (mine.isNotEmpty()) {
@@ -857,6 +860,14 @@ object Lock {
             }
             p.edit().putString(PREF_RETIRED, device).remove(PREF_RETIRE_TRIED).commit()
         } catch (e: Account.Failed) {
+            // Signed out under the call: that is the look's own answer, as it
+            // was before this ran, and not housekeeping to put off.
+            val gone = try {
+                Account.session(c) == null
+            } catch (n: Sealed.NotNow) {
+                false
+            }
+            if (gone) throw e
             Log.i("DeskIT", "lock: an earlier install's row waits for a later look")
         } catch (e: JSONException) {
             Log.i("DeskIT", "lock: an earlier install's row waits for a later look")
