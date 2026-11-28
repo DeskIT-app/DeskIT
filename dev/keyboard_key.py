@@ -373,14 +373,17 @@ def sign(key_dir: Path, unsigned: Path, out: Path) -> int:
         _run([str(bt / "zipalign.exe"), "-f", "4", str(unsigned), str(aligned)], what="zipalign")
         _apksigner("sign", "--ks", str(store), "--ks-type", "PKCS12", "--ks-key-alias", ALIAS,
                    "--ks-pass", f"env:{_ENV}", "--key-pass", f"env:{_ENV}",
+                   "--v4-signing-enabled", "false",
                    "--out", str(out), str(aligned), passphrase=passphrase)
     del passphrase
     certs = _apksigner("verify", "--print-certs", str(out))
-    m = re.search(r"Signer #1 certificate SHA-256 digest: ([0-9a-f]{64})", certs)
-    if not m or m.group(1) != pinned():
+    # every signer line, whatever its form (build-tools 37 writes "Signer
+    # (minSdkVersion=…)"): exactly one certificate, the pinned one
+    digests = set(re.findall(r"^Signer.* certificate SHA-256 digest: ([0-9a-f]{64})$", certs, re.M))
+    if digests != {pinned()}:
         out.unlink(missing_ok=True)
         raise Refused("the signed APK's certificate is not the pinned one")
-    print(f"{out.name}: signed, certificate SHA-256 {m.group(1)}")
+    print(f"{out.name}: signed, certificate SHA-256 {pinned()}")
     return 0
 
 

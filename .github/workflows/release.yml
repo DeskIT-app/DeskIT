@@ -187,7 +187,15 @@ jobs:
             echo "::warning::a dry run without the keyboard's signing secrets: no keyboard in this stage"
             exit 0
           fi
-          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          # build-tools 34.0.0, the version AGP 8.5 builds with and the one
+          # the owner's PC signs and checks with (dev/keyboard_key.py); the
+          # newest only when the image has dropped it. 37.0.0 prints its
+          # signer lines in another form (dry run 46127152267).
+          bt="$ANDROID_HOME/build-tools/34.0.0"
+          if [ ! -x "$bt/apksigner" ]; then
+            bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+            echo "::notice::build-tools 34.0.0 is not on the image; signing with $bt"
+          fi
           ks="$RUNNER_TEMP/keyboard.p12"
           trap 'rm -f "$ks"' EXIT
           printf '%s' "$KS_B64" | base64 -d > "$ks"
@@ -195,14 +203,19 @@ jobs:
           mkdir -p out
           "$bt/zipalign" -f 4 unsigned/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
           "$bt/apksigner" sign --ks "$ks" --ks-type PKCS12 --ks-key-alias deskit \
-            --ks-pass env:KS_PASS --key-pass env:KS_PASS --out "out/$name" "$RUNNER_TEMP/aligned.apk"
+            --ks-pass env:KS_PASS --key-pass env:KS_PASS --v4-signing-enabled false \
+            --out "out/$name" "$RUNNER_TEMP/aligned.apk"
           rm -f "$ks"
-          certs=$("$bt/apksigner" verify --print-certs "out/$name")
-          digest=$(printf '%s\n' "$certs" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          certs=$("$bt/apksigner" verify --verbose --print-certs "out/$name" 2>&1)
+          printf '%s\n' "$certs" | grep -E "^Verif|certificate (DN|SHA-256)" || true
+          # every signer line, whatever its form ("Signer #1 …", "Signer
+          # (minSdkVersion=…) …"): exactly one certificate, the pinned one
+          digests=$(printf '%s\n' "$certs" | sed -n 's/^Signer.* certificate SHA-256 digest: \([0-9a-f]\{64\}\)$/\1/p' | sort -u)
           pinned=$(tr -d '\r\n' < android/release-cert.sha256)
-          if [ -z "$digest" ] || [ "$digest" != "$pinned" ]; then
-            echo "::error::the keyboard is signed by $digest, not the certificate android/release-cert.sha256 pins"; exit 1
+          if [ -z "$digests" ] || [ "$digests" != "$pinned" ]; then
+            echo "::error::the keyboard is signed by [$digests], not the certificate android/release-cert.sha256 pins"; exit 1
           fi
+          digest="$digests"
           badging=$("$bt/aapt" dump badging "out/$name")
           code=$(printf '%s\n' "$badging" | sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
           vname=$(printf '%s\n' "$badging" | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
