@@ -35,6 +35,9 @@ env:
   # above (verified 2026-10-23: npm ci + npm run build on 22.23.4 / npm
   # 10.9.9 gave the same bytes as 25.7.0); ci.yml builds with the same one
   NODE_VERSION: "22.23.4"
+  # Gradle 8.9's own wrapper jar, as services.gradle.org publishes its
+  # SHA-256 (checked 2026-11-28; the committed jar is that file)
+  GRADLE_WRAPPER_SHA256: "498495120a03b9a6ab5d155f5de3c8f0d986a449153702fb80fc80e134484f17"
 
 # Read-only for every job; the one job that writes (`release`, at the end)
 # asks for its own. The jobs that install packages and run a build (pages,
@@ -86,8 +89,152 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # 6c, the phone keyboard (DISTRIBUTION_PLAN.md 12.7-12.9, PHONE_LINK_PLAN.md
+  # "Getting the keyboard"), built APART like the pages: Gradle and the
+  # Android plugin it downloads run here, with a read-only token and NO
+  # secret. The committed wrapper, its jar checked against Gradle's own
+  # published SHA-256 and the distribution against the one in
+  # gradle-wrapper.properties; JDK 17. assembleRelease comes out UNSIGNED
+  # (android/app/build.gradle.kts reads no keystore): the `signing` job
+  # below signs it. versionName and versionCode come from VERSION inside the
+  # build (MAJOR*10000 + MINOR*100 + PATCH), and `signing` checks them.
+  keyboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: The Gradle wrapper is Gradle's own
+        run: |
+          set -euo pipefail
+          got=$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | cut -d' ' -f1)
+          if [ "$got" != "${{ env.GRADLE_WRAPPER_SHA256 }}" ]; then
+            echo "::error::gradle-wrapper.jar is $got, not Gradle 8.9's published jar"; exit 1
+          fi
+          grep -q '^distributionSha256Sum=' android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Build the keyboard (unsigned)
+        working-directory: android
+        run: |
+          set -euo pipefail
+          bash gradlew --no-daemon assembleRelease
+          ls -l app/build/outputs/apk/release/
+          test -f app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: keyboard-unsigned
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  # 6d. sign — the ONE job that holds the keyboard's release key: the two
+  #     secrets dev/keyboard_key.py set (ANDROID_KEYSTORE_B64, the keystore;
+  #     ANDROID_KEYSTORE_PASSWORD, its passphrase), on one step, for
+  #     apksigner from the runner's own Android build-tools. It runs no
+  #     Gradle and downloads no package. The key never leaves the runner's
+  #     temp folder and is deleted at the end of the step. A tag without the
+  #     secrets builds nothing; a dry run without them goes on with a
+  #     warning and no keyboard. The signed APK must carry the certificate
+  #     android/release-cert.sha256 pins (a swapped secret is refused), the
+  #     versionCode and versionName VERSION says, and no debuggable flag.
+  #     Only a tag keeps the signed APK, as this run's artifact: a dry run
+  #     signs to prove the secrets and keeps nothing but the numbers, so no
+  #     release-signed build of an unreleased commit lies in the artifacts.
+  signing:
+    needs: keyboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      apk_name: ${{ steps.sign.outputs.apk_name }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
+      apk_size: ${{ steps.sign.outputs.apk_size }}
+      version_code: ${{ steps.sign.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: keyboard-unsigned
+          path: unsigned
+
+      - name: Sign the keyboard
+        id: sign
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ]; then
+            if [ "$REF_TYPE" = "tag" ]; then
+              echo "::error::the keyboard's signing secrets are not set: no release is built without the keyboard (dev/keyboard_key.py --secrets)"; exit 1
+            fi
+            echo "::warning::a dry run without the keyboard's signing secrets: no keyboard in this stage"
+            exit 0
+          fi
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          ks="$RUNNER_TEMP/keyboard.p12"
+          trap 'rm -f "$ks"' EXIT
+          printf '%s' "$KS_B64" | base64 -d > "$ks"
+          name="DeskIT-keyboard-$version.apk"
+          mkdir -p out
+          "$bt/zipalign" -f 4 unsigned/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+          "$bt/apksigner" sign --ks "$ks" --ks-type PKCS12 --ks-key-alias deskit \
+            --ks-pass env:KS_PASS --key-pass env:KS_PASS --out "out/$name" "$RUNNER_TEMP/aligned.apk"
+          rm -f "$ks"
+          certs=$("$bt/apksigner" verify --print-certs "out/$name")
+          digest=$(printf '%s\n' "$certs" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          pinned=$(tr -d '\r\n' < android/release-cert.sha256)
+          if [ -z "$digest" ] || [ "$digest" != "$pinned" ]; then
+            echo "::error::the keyboard is signed by $digest, not the certificate android/release-cert.sha256 pins"; exit 1
+          fi
+          badging=$("$bt/aapt" dump badging "out/$name")
+          code=$(printf '%s\n' "$badging" | sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
+          vname=$(printf '%s\n' "$badging" | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
+          want=$(python3 -c "import re; m=re.match(r'(\d+)\.(\d+)\.(\d+)', '$version'); print(int(m[1])*10000+int(m[2])*100+int(m[3]))")
+          if [ "$code" != "$want" ] || [ "$vname" != "$version" ]; then
+            echo "::error::the keyboard says versionCode $code, versionName $vname; VERSION $version means $want"; exit 1
+          fi
+          if printf '%s\n' "$badging" | grep -q "application-debuggable"; then
+            echo "::error::the release keyboard is debuggable"; exit 1
+          fi
+          sha=$(sha256sum "out/$name" | cut -d' ' -f1)
+          printf '%s  %s\n' "$sha" "$name" > "out/$name.sha256"
+          echo "$name: versionCode $code, certificate $digest, SHA-256 $sha, $(stat -c %s "out/$name") bytes"
+          {
+            echo "apk_name=$name"
+            echo "apk_sha256=$sha"
+            echo "apk_size=$(stat -c %s "out/$name")"
+            echo "version_code=$code"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ github.ref_type == 'tag' }}
+        with:
+          name: keyboard
+          path: |
+            out/DeskIT-keyboard-*.apk
+            out/DeskIT-keyboard-*.apk.sha256
+          if-no-files-found: error
+          retention-days: 3
+
   stage:
-    needs: pages
+    needs: [pages, signing]
     runs-on: windows-latest
     timeout-minutes: 180        # step 10b may wait up to two hours for the owner's approval
     permissions:
@@ -218,6 +365,28 @@ jobs:
           }
           $forbidden = @("tests.py", "tests_quiet.py", "nightly.py", "questions.py", "AGENTS.md", "dev", "docs", "packaging", "android", "web", ".github", ".gitattributes", ".gitignore")
           foreach ($f in $forbidden) { if (Test-Path "stage/app/$f") { throw "$f is in the archive" } }
+
+      # 6c'. the keyboard this build carries the address of (server.py's
+      #      api_version, which the phone asks): keyboard.json in app\,
+      #      before step 7 lists every file — the APK's name, versionCode
+      #      and SHA-256 from the signing job. The APK itself is a release
+      #      asset, never in the installer. A tag cannot get here without
+      #      it; a dry run without the secrets writes none.
+      - name: The keyboard this build names
+        run: |
+          $sha = "${{ needs.signing.outputs.apk_sha256 }}"
+          if (-not $sha) {
+            if ("${{ github.ref_type }}" -eq "tag") { throw "no signed keyboard: no release without it" }
+            Write-Host "::warning::no signed keyboard in this dry run: keyboard.json not written"
+            exit 0
+          }
+          $keyboard = [ordered]@{
+            apk = "${{ needs.signing.outputs.apk_name }}"
+            version_code = [int]"${{ needs.signing.outputs.version_code }}"
+            sha256 = $sha
+          }
+          [IO.File]::WriteAllText("stage/app/keyboard.json", ($keyboard | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+          Get-Content stage/app/keyboard.json
 
       # 6a. the web desk's pages (deskweb.py, webdesk.py) — web\ is
       #     export-ignored, sources and npm lock alike, so the archive has
@@ -383,6 +552,18 @@ jobs:
             notes_url = "https://github.com/${{ github.repository }}/releases/tag/v$version"
             published = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
           }
+          # the keyboard (12.8, 12.9): where the newest one is, its digest
+          # and its versionCode, for every PC's api_version to hand its
+          # phones. In the file before the owner signs it (sign_release.py
+          # signs these exact bytes), so a PC believes them only from a
+          # feed that verified.
+          $apkSha = "${{ needs.signing.outputs.apk_sha256 }}"
+          if ($apkSha) {
+            $apk = "${{ needs.signing.outputs.apk_name }}"
+            $latest.apk_url = "https://github.com/${{ github.repository }}/releases/download/v$version/$apk"
+            $latest.apk_sha256 = $apkSha
+            $latest.ime_version_code = [int]"${{ needs.signing.outputs.version_code }}"
+          } elseif ("${{ github.ref_type }}" -eq "tag") { throw "no signed keyboard: latest.json would name none" }
           $latest | ConvertTo-Json | Set-Content -Path dist/latest.json -Encoding utf8
           Copy-Item stage/MANIFEST.sha256 dist/MANIFEST.sha256
           # The same bytes under a name without the version, so the site's
@@ -489,7 +670,7 @@ jobs:
   # nothing and builds nothing — it takes the stage job's finished files,
   # byte for byte, and the attestation subjects are those bytes.
   release:
-    needs: stage
+    needs: [stage, signing]
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -508,6 +689,24 @@ jobs:
         with:
           name: DeskIT-${{ needs.stage.outputs.version }}
           path: dist
+
+      # the signed keyboard, kept by the signing job on a tag only
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ github.ref_type == 'tag' }}
+        with:
+          name: keyboard
+          path: dist
+
+      - name: The keyboard is the one latest.json names
+        if: ${{ github.ref_type == 'tag' }}
+        run: |
+          $name = "${{ needs.signing.outputs.apk_name }}"
+          if ($name -ne "DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk") { throw "the keyboard is $name" }
+          $sha = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
+          $feed = Get-Content dist/latest.json -Raw | ConvertFrom-Json
+          if ($sha -ne $feed.apk_sha256 -or $sha -ne "${{ needs.signing.outputs.apk_sha256 }}") { throw "dist/$name is $sha; latest.json says $($feed.apk_sha256)" }
+          if (-not $feed.apk_url.EndsWith("/v${{ needs.stage.outputs.version }}/$name")) { throw "latest.json's apk_url is $($feed.apk_url)" }
+          "$name $sha versionCode $($feed.ime_version_code)"
 
       # 8a. attest — the manifest's provenance, what the FAQ's "read the
       #     build attestation" line points to (D12 lock 5). GitHub signs
@@ -533,6 +732,13 @@ jobs:
           subject-path: dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe
           sbom-path: dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json
 
+      # 8c. attest — the keyboard, as the signing job made it
+      - name: Attest the keyboard
+        if: ${{ github.ref_type == 'tag' && !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk
+
       # 14. release — a DRAFT with the notes from CHANGELOG.md under the
       #     version's heading, then the fixed block: SHA-256, VirusTotal,
       #     the attestation, the previous installer for rollback (11.7).
@@ -543,6 +749,8 @@ jobs:
         id: notes
         env:
           GH_TOKEN: ${{ github.token }}
+          # paths.PAGES_URL + the guide's install section (a test holds both)
+          GUIDE_PHONE: https://deskit-app.github.io/DeskIT/en/06-phone#installing-the-keyboard
         run: |
           $version = "${{ needs.stage.outputs.version }}"
           $repo = "${{ github.repository }}"
@@ -562,10 +770,15 @@ jobs:
           $vt = "${{ needs.stage.outputs.vt_permalink }}"
           $vtLine = if ($vt) { "VirusTotal: $vt (${{ needs.stage.outputs.vt_verdict }})" } else { "VirusTotal: not scanned" }
           $prevLine = if ($previous) { "Previous version, for rollback: https://github.com/$repo/releases/tag/$previous" } else { "Previous version: none — this is the first release" }
+          $apk = "DeskIT-keyboard-$version.apk"
+          $apkSha = (Get-Content "dist/$apk.sha256" -Raw).Split(" ")[0]
           $body = @(
             $section, "",
             "---", "",
+            "**On an Android phone:** download ``$apk`` from the files below and open it. The guide's phone chapter says what to allow: $env:GUIDE_PHONE",
+            "",
             "``DeskIT-Setup-$version.exe`` SHA-256: ``$sha``",
+            "``$apk`` SHA-256: ``$apkSha``, signing certificate SHA-256: ``$((Get-Content android/release-cert.sha256 -Raw).Trim())``",
             $vtLine,
             "Build attestation: https://github.com/$repo/attestations",
             "Code signing policy: https://github.com/$repo/blob/main/CODE_SIGNING_POLICY.md",
@@ -592,4 +805,6 @@ jobs:
             dist/MANIFEST.sha256
             dist/THIRD-PARTY-NOTICES.txt
             dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json
+            dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk
+            dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk.sha256
           retention-days: 14

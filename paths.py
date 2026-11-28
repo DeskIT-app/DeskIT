@@ -235,6 +235,12 @@ MODELS_LOCK = APP_DIR / "models.lock"
 #: version, file, PyPI URL, size, SHA-256, licence links. `packs.py
 #: --lock` writes it from the owner's venv; packs.py reads it.
 PACKS_LOCK = APP_DIR / "packs.lock"
+#: The phone keyboard this build was released with (12.8, 12.9): the APK's
+#: asset name, versionCode and SHA-256, written by release.yml from the
+#: signing job before the manifest; read by server.api_version. Absent in a
+#: checkout and in a build without a keyboard — then the phone is sent to
+#: the latest release's page, never to a file that may not exist.
+KEYBOARD_FILE = APP_DIR / "keyboard.json"
 
 #: Read-only assets that stay with the code in every layout.
 FONTS_DIR = APP_DIR / "fonts"

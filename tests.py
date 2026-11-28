@@ -9249,6 +9249,11 @@ def test_settings_phone_says_it_in_plain_words_and_details_holds_the_numbers() -
     assert len(desk_settings.device_rows({"phone": {}})) == 1
     first = desk_settings.keyboard_card({"phone": {"phones": []}})
     assert "get the DeskIT keyboard" in first["line"]
+    # the code is the latest release's page, and the words say which file on it
+    # is the phone's: the one asset name release.yml gives the keyboard
+    import phone as phone_mod
+    assert phone_mod.download_url().endswith("/releases/latest")
+    assert "DeskIT-keyboard under Assets" in first["said"], first["said"]
     google = desk_settings.keyboard_card({"account": {"anonymous": True}})
     assert google["kind"] == "line" and google["buttons"][0]["arg"] == "google"
     assert desk_settings.phone_info({"phone": "an older app's string"}) == {}
@@ -9367,8 +9372,10 @@ def test_phone_api_version_fields() -> None:
     ime_latest, apk_url, apk_sha256, play_url. ime_min ≤ ime_latest;
     the versionCode mapping of VERSION is MAJOR*10000 + MINOR*100 +
     PATCH, the same line build.gradle.kts computes, and ime_latest is
-    that of the running VERSION; apk_url is the release asset 12.8
-    names, on GitHub, never a path on this PC."""
+    that of the running VERSION; apk_url is a real address on GitHub,
+    never a path on this PC: this build's own keyboard (keyboard.json,
+    which release.yml writes), a newer one from a feed that verified,
+    or else the latest release's page."""
     import requests
 
     import server as server_mod
@@ -9383,18 +9390,73 @@ def test_phone_api_version_fields() -> None:
     assert 'namespace = "io.github.deskit_app.deskit"' in gradle
     assert "com.yoav" not in gradle
 
-    payload = server_mod.api_version()
-    assert set(payload) == {"pc", "ime_min", "ime_latest", "apk_url", "apk_sha256",
-                            "play_url"}, payload
-    assert payload["pc"] == version_mod.VERSION
-    assert isinstance(payload["ime_min"], int) and isinstance(payload["ime_latest"], int)
-    assert 0 < payload["ime_min"] <= payload["ime_latest"], payload
-    assert payload["ime_latest"] == server_mod.ime_code(version_mod.VERSION)
-    assert payload["ime_min"] == min(server_mod.ime_code(server_mod.IME_MIN), payload["ime_latest"])
-    assert payload["apk_url"].startswith("https://github.com/") and \
-        payload["apk_url"].endswith(f"/v{version_mod.VERSION}/DeskIT-{version_mod.VERSION}.apk"), \
-        payload["apk_url"]
-    assert payload["apk_sha256"] == "" and payload["play_url"] == ""
+    import paths as paths_mod
+    import updates as updates_mod
+
+    page = f"https://github.com/{updates_mod.REPO}/releases/latest"
+    v = version_mod.VERSION
+    scratch = Path(tempfile.mkdtemp())
+    updates_mod._last.clear()
+    try:
+        # a checkout carries no keyboard.json and no check has run: the
+        # versionCode VERSION means, and the latest release's PAGE — never
+        # an asset address made from a pattern (it named DeskIT-<v>.apk,
+        # which no release ever carried)
+        with _patched(paths_mod, "KEYBOARD_FILE", scratch / "keyboard.json"):
+            payload = server_mod.api_version()
+        assert set(payload) == {"pc", "ime_min", "ime_latest", "apk_url", "apk_sha256",
+                                "play_url"}, payload
+        assert payload["pc"] == v
+        assert isinstance(payload["ime_min"], int) and isinstance(payload["ime_latest"], int)
+        assert 0 < payload["ime_min"] <= payload["ime_latest"], payload
+        assert payload["ime_latest"] == server_mod.ime_code(v)
+        assert payload["ime_min"] == min(server_mod.ime_code(server_mod.IME_MIN), payload["ime_latest"])
+        assert payload["apk_url"] == page and payload["apk_sha256"] == "" and payload["play_url"] == ""
+        # IME_MIN is a real version again: 1.0.7, the first keyboard a release carried
+        assert server_mod.IME_MIN == "1.0.7" and server_mod.ime_code(server_mod.IME_MIN) == 10007
+
+        # an installed copy: release.yml wrote keyboard.json from the signing job
+        sha = "ab" * 32
+        own = scratch / "keyboard.json"
+        own.write_text(json.dumps({"apk": f"DeskIT-keyboard-{v}.apk",
+                                   "version_code": server_mod.ime_code(v), "sha256": sha}), "utf-8")
+        asset = f"https://github.com/{updates_mod.REPO}/releases/download/v{v}/DeskIT-keyboard-{v}.apk"
+        with _patched(paths_mod, "KEYBOARD_FILE", own):
+            mine = server_mod.api_version()
+            assert (mine["ime_latest"], mine["apk_url"], mine["apk_sha256"]) == \
+                (server_mod.ime_code(v), asset, sha), mine
+            assert updates_mod.APK_URL.match(mine["apk_url"]), mine["apk_url"]
+            # a file that names another version's APK, or no digest, is not this build's
+            for bad in ({"apk": "DeskIT-keyboard-0.0.1.apk", "version_code": 1, "sha256": sha},
+                        {"apk": f"DeskIT-keyboard-{v}.apk", "version_code": 1, "sha256": "x"},
+                        {"apk": f"DeskIT-{v}.apk", "version_code": 1, "sha256": sha}, []):
+                own.write_text(json.dumps(bad), "utf-8")
+                assert server_mod.api_version()["apk_url"] == page, bad
+            own.write_text(json.dumps({"apk": f"DeskIT-keyboard-{v}.apk",
+                                       "version_code": server_mod.ime_code(v), "sha256": sha}), "utf-8")
+
+            # a newer release the weekly check found: its keyboard, only when
+            # its feed verified
+            newer = updates_mod.Release(
+                "99.0.0", "https://github.com/x/releases/download/v99.0.0/DeskIT-Setup-99.0.0.exe",
+                "cd" * 32, 10, 1, "https://github.com/x/releases/tag/v99.0.0",
+                apk_url=f"https://github.com/{updates_mod.REPO}/releases/download/v99.0.0/DeskIT-keyboard-99.0.0.apk",
+                apk_sha256="ef" * 32, ime_version_code=990000)
+            updates_mod._last["release"] = newer
+            assert server_mod.api_version()["apk_url"] == asset, "an unchecked feed was believed"
+            updates_mod._last["release"] = dataclasses.replace(newer, checked=True)
+            got = server_mod.api_version()
+            assert (got["ime_latest"], got["apk_url"], got["apk_sha256"]) == \
+                (990000, newer.apk_url, "ef" * 32), got
+            # a checked release that names no keyboard leaves this build's
+            updates_mod._last["release"] = dataclasses.replace(newer, checked=True, apk_url="",
+                                                               apk_sha256="", ime_version_code=0)
+            assert server_mod.api_version()["apk_url"] == asset
+    finally:
+        updates_mod._last.clear()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    payload = server_mod.api_version()           # what the route below must answer
 
     srv = _phone_server(8792)
     base = "http://127.0.0.1:8792"
@@ -9419,7 +9481,7 @@ def test_the_keyboard_has_its_own_identity_and_no_default_pc() -> None:
     tree; Prefs has no DEFAULT_URL (a fresh keyboard knows no PC; the
     owner's tailnet name is not baked into anyone's phone); the strings
     no longer tell a stranger to turn Tailscale on; the release build
-    signs from a gitignored keystore.properties and is never debuggable."""
+    is never debuggable and is signed by apksigner, never by Gradle."""
     android = REPO / "android"
     src = android / "app" / "src" / "main"
     kt_dir = src / "java" / "io" / "github" / "deskit_app" / "deskit"
@@ -9451,7 +9513,10 @@ def test_the_keyboard_has_its_own_identity_and_no_default_pc() -> None:
     assert "Tailscale on" not in strings and "url_hint" in strings
     assert "update_required" in strings
     gradle = (android / "app" / "build.gradle.kts").read_text("utf-8")
-    assert "keystore.properties" in gradle and "isDebuggable = false" in gradle
+    # Gradle builds the release unsigned and apksigner signs it (2026-11-28):
+    # no signing config, so no passphrase in a file and none in the build
+    assert "isDebuggable = false" in gradle and "signingConfig" not in gradle
+    assert "apksigner" in gradle and "android/release-cert.sha256" in gradle
     ignore = (REPO / ".gitignore").read_text("utf-8")
     assert "android/keystore.properties" in ignore and "android/*.jks" in ignore
     manifest = (src / "AndroidManifest.xml").read_text("utf-8")
@@ -45111,10 +45176,37 @@ def test_release_workflow_has_every_step():
     assert not re.search(r"^  (contents|id-token|attestations): write", top, re.M)
     jobs = re.split(r"^  (?=[a-z]+:\n)", rest, flags=re.M)
     by = {j.split(":", 1)[0]: j for j in jobs if re.fullmatch(r"[a-z]+", j.split(":", 1)[0])}
-    assert set(by) == {"pages", "stage", "release"}, set(by)
-    for name in ("pages", "stage"):
+    assert set(by) == {"pages", "keyboard", "signing", "stage", "release"}, set(by)
+    for name in ("pages", "keyboard", "signing", "stage"):
         assert "write" not in by[name].split("steps:")[0], f"{name} holds a write permission"
         assert "contents: read" in by[name].split("steps:")[0], name
+    # the keyboard (12.7-12.9): Gradle builds it unsigned in a job with no
+    # secret; the signing job holds the key, runs no Gradle, checks the
+    # certificate, the versionCode and the debuggable flag, refuses a tag
+    # without the secrets and keeps the signed APK on a tag only; the stage
+    # waits for it and puts it in latest.json and keyboard.json; the release
+    # attaches and attests it and the notes say where a phone gets it
+    assert "secrets." not in by["keyboard"] and "secrets." not in by["pages"]
+    assert "gradlew --no-daemon assembleRelease" in by["keyboard"]
+    assert "GRADLE_WRAPPER_SHA256" in by["keyboard"] and "distributionSha256Sum" in by["keyboard"]
+    assert "gradle" not in by["signing"].lower().replace("keyboard-unsigned", "")
+    for must in ("secrets.ANDROID_KEYSTORE_B64", "secrets.ANDROID_KEYSTORE_PASSWORD",
+                 "--ks-pass env:KS_PASS", "android/release-cert.sha256", "versionCode",
+                 "application-debuggable", 'if [ "$REF_TYPE" = "tag" ]', "rm -f \"$ks\"",
+                 "if: ${{ github.ref_type == 'tag' }}"):
+        assert must in by["signing"], must
+    assert "needs: [pages, signing]" in by["stage"] and "keyboard.json" in by["stage"]
+    assert "needs: [stage, signing]" in by["release"]
+    for must in ("dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk",
+                 "dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk.sha256",
+                 "name: Attest the keyboard", "On an Android phone:"):
+        assert must in by["release"], must
+    import paths
+    guide = f"GUIDE_PHONE: {paths.PAGES_URL}/en/06-phone#installing-the-keyboard"
+    assert guide in by["release"], guide
+    for lang in ("en", "he"):
+        page = (REPO / "docs" / lang / "06-phone.md").read_text("utf-8")
+        assert "{#installing-the-keyboard}" in page, lang
     assert "contents: write" in by["release"] and "pip install" not in by["release"]
     # pip: exact versions only, in the stage job
     assert "pip-licenses==" in yml and "pip install --upgrade" not in yml
@@ -48363,11 +48455,33 @@ def test_latest_json_schema():
             pass
         else:
             raise AssertionError(f"parsed: {bad}")
+    # the keyboard the release carries (12.8, 12.9): kept whole when it is
+    # THIS release's DeskIT-keyboard asset, dropped — never the update with
+    # it — when any of the three is off
+    apk = base + "v9.9.9/DeskIT-keyboard-9.9.9.apk"
+    keyed = {**good, "apk_url": apk, "apk_sha256": "AB" * 32, "ime_version_code": 90909}
+    rel = updates.Release.parse(keyed)
+    assert (rel.apk_url, rel.apk_sha256, rel.ime_version_code) == (apk, "ab" * 32, 90909)
+    assert updates.Release.parse(good).apk_url == "" and updates.Release.parse(good).ime_version_code == 0
+    for odd in ({"apk_url": base + "v9.9.8/DeskIT-keyboard-9.9.8.apk"},       # another release's
+                {"apk_url": base + "v9.9.9/DeskIT-9.9.9.apk"},                # the old invented name
+                {"apk_url": "https://github.com/someone/else/releases/download/v9.9.9/DeskIT-keyboard-9.9.9.apk"},
+                {"apk_url": apk + "?raw=1"}, {"apk_url": apk.replace("https:", "http:")},
+                {"apk_sha256": "abc"}, {"ime_version_code": 0}, {"ime_version_code": "x"},
+                {"apk_sha256": ""}):
+        rel = updates.Release.parse({**keyed, **odd})
+        assert (rel.apk_url, rel.apk_sha256, rel.ime_version_code) == ("", "", 0), odd
+        assert rel.version == "9.9.9" and rel.url == good["url"], odd
+    # from_feed keeps them, and a cached feed gives them back
+    body = json.dumps(keyed).encode("utf-8")
+    assert updates.Release.from_feed(body, None).ime_version_code == 90909
     # the workflow writes exactly these keys
     wf = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
-    for key in ("version", "url", "sha256", "size", "min_config_version", "notes_url"):
+    for key in ("version", "url", "sha256", "size", "min_config_version", "notes_url",
+                "apk_url", "apk_sha256", "ime_version_code"):
         assert f"{key} = " in wf, f"release.yml does not write {key}"
     assert "releases/download/v$version/DeskIT-Setup-$version.exe" in wf
+    assert "releases/download/v$version/$apk" in wf and 'name="DeskIT-keyboard-$version.apk"' in wf
 
 
 def test_update_check_cadence():
@@ -48886,6 +49000,66 @@ def test_the_release_signer_is_the_owners_alone():
         "the release job must not sign: the key is not on GitHub"
     agents = (REPO / "AGENTS.md").read_text("utf-8")
     assert "dev\\sign_release.py --sign" in agents
+
+
+def test_the_keyboard_key_is_the_owners_alone():
+    """dev\\keyboard_key.py keeps the keyboard's release keystore (12.7): no
+    product module imports it or names its slot; under DESKIT_SUITE every
+    verb that makes, moves or uses the key refuses before it touches
+    Credential Manager, gh or keytool; the passphrase reaches keytool and
+    apksigner through their environment and is never printed or put on a
+    command line; the pinned certificate is one line of 64 hex; release.yml's
+    signing job reads the two secrets the tool sets, and only that job does."""
+    assert "keyboard_key" in DEV_MODULES
+    for name in product_modules():
+        py = REPO / (name.replace(".", "/") + ".py")
+        if not py.exists():
+            py = REPO / name.replace(".", "/") / "__init__.py"
+        src = py.read_text("utf-8")
+        assert not re.search(r"^\s*(?:import|from)\s+(?:dev\.)?keyboard_key\b", src, re.M), name
+        assert "keyboard-keystore-passphrase" not in src, name
+    tool = REPO / "dev" / "keyboard_key.py"
+    env = dict(os.environ, DESKIT_SUITE="1")
+    scratch = Path(tempfile.mkdtemp())
+    try:
+        for args in (["--new"], ["--secrets"], ["--backup", str(scratch / "b")],
+                     ["--restore", str(scratch / "k.p12"), str(scratch / "p.txt")],
+                     ["--sign", str(scratch / "in.apk"), str(scratch / "out.apk")]):
+            proc = subprocess.run([sys.executable, str(tool), *args, "--dir", str(scratch / "keys")],
+                                  cwd=str(REPO), env=env, capture_output=True, text=True,
+                                  timeout=60, creationflags=0x08000000)
+            assert proc.returncode == 2 and "DESKIT_SUITE" in proc.stderr, (args, proc.stdout, proc.stderr)
+        assert not any(scratch.iterdir()), "a refused verb wrote something"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    src = tool.read_text("utf-8")
+    for verb in ("new", "set_secrets", "sign", "backup", "restore"):
+        start = src.index(f"\ndef {verb}(")
+        body = src[start:src.index("\ndef ", start + 1)]
+        touches = [body.index(x) for x in ("_read_pass()", "_need_pass()", "_write_pass(",
+                                           "_gh(", "_keytool(", "_fingerprint(", "_secret_names(")
+                   if x in body]
+        assert touches and body.index("_not_under_the_suite(") < min(touches), verb
+    assert '"-storepass:env", _ENV' in src and 'f"env:{_ENV}"' in src
+    # the VALUE never reaches a print or a log (the word may: "its passphrase is in …")
+    value = r"(?:\{\s*passphrase\b|[(,]\s*passphrase\s*[,)]|%\s*passphrase\b)"
+    assert not re.search(r"(?<![\w.])print\([^\n]*" + value, src), "a print carries the passphrase"
+    assert not re.search(r"log\w*\.\w+\([^\n]*" + value, src), "a log line carries the passphrase"
+    assert "Refused(f" in src and not re.search(r"Refused\([^\n]*" + value, src)
+    assert "secrets.token_urlsafe(32)" in src and "_in_a_checkout(key_dir)" in src
+    pin = (REPO / "android" / "release-cert.sha256").read_bytes()
+    assert re.fullmatch(rb"[0-9a-f]{64}\r?\n", pin), pin       # CRLF in a Windows checkout
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("keyboard_key_probe", tool)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.pinned() == pin.decode("ascii").strip()
+    yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    for name in (mod.SECRET_STORE, mod.SECRET_PASS):
+        assert yml.count(f"secrets.{name}") == 1, name
+    signing = yml[yml.index("\n  signing:\n"):yml.index("\n  stage:\n")]
+    assert f"secrets.{mod.SECRET_STORE}" in signing and f"secrets.{mod.SECRET_PASS}" in signing
+    assert "android/release-cert.sha256" in signing
 
 
 def test_inno_script_never_names_data_dir():
@@ -50858,7 +51032,9 @@ def test_install_hook_names_an_interpreter_that_exists():
 DEV_MODULES = ("nightly", "questions", "tests_quiet", "tests_ops", "inbox",
                "weekly_review", "dev_git", "answer_card", "versions",
                # dev\sign_release.py: the owner's release key (update_sig.py)
-               "sign_release")
+               "sign_release",
+               # dev\keyboard_key.py: the keyboard's release keystore
+               "keyboard_key")
 #: The tree's files that are not product modules. (versions.py is gone
 #: since PR 9 — version.py, which reads VERSION, is the product's.)
 DEV_FILES = frozenset({"tests.py", "tests_quiet.py", "nightly.py",
