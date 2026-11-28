@@ -160,9 +160,11 @@ account's own key.
 ## 5. The phone companion
 
 At home, audio travels between your phone and your PC over your own
-network — a pairing over a certificate the PC generates, optionally
-Tailscale — never through any server of the owner. The phone token is
-stored under DPAPI.
+network, straight from one to the other over TLS: each side checks the
+other's certificate, and only a phone your account lists gets in. It
+never goes through any server of the owner. Your PC's key for that door
+is kept on your PC, encrypted, with its passphrase in Windows Credential
+Manager.
 
 **Away from home, through your account.** When the phone cannot reach your
 PC on the network it is on, it sends the recording through your account

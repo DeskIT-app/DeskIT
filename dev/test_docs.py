@@ -209,18 +209,29 @@ def test_the_guide_names_no_tailscale_road():
     the old road (the phone's pasted line beside the door, Link.Pasted, and
     the loopback door `tailscale serve` used to front) serves only a phone
     set up before, until stage 6 takes it out. A guide page that names
-    Tailscale sends a new person down a road no screen offers. If a screen
-    ever names it again, this test steps aside for as long as one does,
-    because the guide may then describe it, and it says which screen."""
+    Tailscale sends a new person down a road no screen offers. The
+    privacy policy and the terms are read too: they make promises about the
+    same road.
+
+    The test cannot tell a screen's words from a comment in the same file,
+    so it does not try. Any mention in a screen's file fails it, comment or
+    not, and the failure names the file: reword the comment, or, if a
+    Tailscale road really comes back as something a person is offered,
+    change this test together with the guide. The first version stepped
+    aside quietly whenever a screen's file named Tailscale, so one comment
+    would have switched it off without a word (a review, 2026-11-28)."""
     offered = _screens_naming_tailscale()
-    if offered:
-        print(f"    a screen names Tailscale ({', '.join(offered)}): the guide may too")
-        return
-    for lang in ("he", "en"):
-        for name, text in _pages(lang).items():
-            low = text.lower()
-            for word in ("tailscale", "ts.net"):
-                assert word not in low, f"{lang}/{name} names {word!r}, a road no screen offers"
+    assert not offered, (
+        f"a screen's file names Tailscale: {', '.join(offered)}. Reword it if it is a "
+        "comment; if a person is offered that road again, change this test with the guide")
+    pages = {f"{lang}/{name}": text for lang in ("he", "en")
+             for name, text in _pages(lang).items()}
+    for name in ("privacy.md", "terms.md"):
+        pages[name] = (DOCS / name).read_text("utf-8")
+    for where, text in pages.items():
+        low = text.lower()
+        for word in ("tailscale", "ts.net"):
+            assert word not in low, f"{where} names {word!r}, a road no screen offers"
 
 
 def test_guide_uses_screen_names():
