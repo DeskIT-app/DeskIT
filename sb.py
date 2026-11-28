@@ -4025,11 +4025,22 @@ def _key_for_a_press(uid: str) -> bytes:
     order: the lock, then the forgotten list, because a PC that finds
     itself on it leaves and forgets nobody. A PC with no key does not look:
     asking to join is the pass's to start, never a Forget's, and nothing
-    leaves. The caller holds ``_sync_lock``, as every look at the lock
-    does."""
+    leaves. One look can still end in a request to join: a PC that had a
+    key, whose account has no profile row, and which reads there that it
+    was forgotten (``_ensure_lock`` through ``ensure_profile``), leaves and
+    asks as a new device, as the pass would have 30 s later. So a look
+    that left this PC under another id forgets nobody on that press,
+    whatever it holds afterwards: the id moves only when the account forgot
+    this PC or the id turned out to be another account's, and either way
+    the person looks at Home before pressing again. The caller holds
+    ``_sync_lock``, as every look at the lock does."""
     key = vault.key(uid)
     if key is not None and not _lock_state.get("state"):
+        was = device_id()
         key = _ensure_lock(uid)
+        if device_id() != was:
+            raise AccountError("this PC's place in the account changed just now — look at "
+                               "Home, then try again")
         if key is not None and _forgotten_pass(uid):
             raise AccountError("this PC was forgotten on another device — it asks to join "
                                "again as a new one")

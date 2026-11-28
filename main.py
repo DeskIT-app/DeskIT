@@ -4103,8 +4103,9 @@ class App:
         for the person (``str(e)`` is the sentence), so the card shows it,
         and without "try again": most of them say what to do instead.
         Anything else stays a type on the card, and its text goes to the log
-        through the redactor, cut short. No device's name, id or certificate
-        is in either."""
+        through the redactor, cut short. sb.py's own sentences name no
+        device, id or certificate; what a server or Windows said in an error
+        is quoted as it came, 160 characters of it at most."""
         import redact
         import sb
         try:

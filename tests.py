@@ -55293,6 +55293,28 @@ def test_forget_pressed_before_the_first_account_pass_looks_at_the_lock_itself()
                     raise AssertionError("a forgotten PC forgot another device")
                 assert vault.key(fake.UID) is None, "a forgotten PC kept its key"
                 assert sb.device_id() != was, "it stayed under the id the account forgot"
+
+            # The look itself can move a PC to another id: it read on the way
+            # that it was forgotten, or its id was another account's. Whatever
+            # it holds after that, nobody is forgotten on that press.
+            with a:
+                _app_opened_again()
+                look = sb._ensure_lock
+
+                def moved(uid):
+                    sb._new_device_id(uid)
+                    return look(uid)
+
+                asked = len(fake.calls)
+                with _patched(sb, "_ensure_lock", moved):
+                    try:
+                        sb.forget_device(second, "")
+                    except sb.AccountError as e:
+                        assert "changed just now" in str(e), str(e)
+                    else:
+                        raise AssertionError("a PC whose id moved under the press forgot a device")
+                went = [c["path"] for c in fake.calls[asked:]]
+                assert "rest/v1/rpc/forget_device" not in went and "rest/v1/vault" not in went, went
             assert any(r["id"] == second for r in fake.tables["devices"]), "the row went"
             row = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")
             inside = vault.open_json(key, row["cipher"], vault.AAD_VAULT.format(uid=fake.UID, name="forgotten"))
