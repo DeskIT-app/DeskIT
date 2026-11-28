@@ -555,6 +555,72 @@ def flow_forget():
         acct.stop()
 
 
+def flow_reinstall():
+    """The app removed and installed again with no Sign out (2026-11-28): the earlier
+    install's row stayed beside the new one, and every PC listed the phone twice.
+    `pm clear` is that as far as the app can tell: its storage and its Keystore keys
+    go, and the id Android gives it on this phone stays. The new install joins under
+    a new id and a new certificate, and takes the earlier one's row away itself, the
+    ordinary way: the list, the row, the session."""
+    acct = fresh()
+    try:
+        first = join(acct)
+        link = acct.open_link(first)
+        mark = str(link.get("same") or "")
+        check("the row says which phone wrote it",
+              re.fullmatch(r"[0-9a-f]{32}", mark) is not None, str(sorted(link)))
+        old_cert = hashlib.sha256(base64.b64decode(link["cert"])).hexdigest()
+        old_session = first["session_id"]
+
+        def told_of_devices() -> int:
+            return sum("devices" in (e.get("stores") or []) for e in acct.events("changed"))
+
+        before = told_of_devices()
+        drive.clear_app()                        # removed and installed again
+        told("--es", "backup", "off")
+        sign_in(acct)
+        drive.wait(CODE, 30)
+        req = acct.requests()[-1]
+        check("it asks as a new device", req["device_id"] != first["id"])
+        check("the earlier row is still there while it waits", acct.row_of(first["id"]) is not None)
+        same_code()
+        acct.approve(req["id"])
+        drive.wait("This phone is ready", 20)
+        check("the new install's row lands",
+              until(lambda: acct.row_of(req["device_id"]) is not None, 15))
+        check("and the earlier install's row goes, by itself",
+              until(lambda: acct.row_of(first["id"]) is None, 20))
+        phones = acct.phones()
+        check("one phone on the account", [r["id"] for r in phones] == [req["device_id"]],
+              str([r["id"] for r in phones]))
+        now = acct.open_link(phones[0])
+        check("the same phone by its mark, under a new certificate",
+              now.get("same") == mark and now["cert"] != link["cert"], str(sorted(now)))
+        got = acct.forgotten()
+        check("the earlier install is on the account's list, its id and its certificate",
+              any(e.get("device") == first["id"] and e.get("cert") == old_cert and e.get("at")
+                  for e in got), str(got))
+        check("this install is not on it", not any(e.get("device") == req["device_id"] for e in got))
+        with acct.mutex:
+            alive = set(acct.sessions)
+        check("the earlier install's session is ended", old_session not in alive)
+        check("and this one's is not", phones[0]["session_id"] in alive)
+        check("the PC's own row is where it was", acct.row_of(acct.pc_id) is not None)
+        check("the others are told", until(lambda: told_of_devices() > before + 1, 10))
+        drive.tap("^Done$")
+
+        # once: a later look asks no more of it, and the phone stays in
+        drive.kill()
+        drive.home()
+        time.sleep(4)
+        check("a later look takes nothing more away",
+              [r["id"] for r in acct.phones()] == [req["device_id"]]
+              and acct.row_of(acct.pc_id) is not None)
+        check("and the phone still holds the key", "account_key.bin" in sealed_files())
+    finally:
+        acct.stop()
+
+
 def flow_dead_rows():
     """Rows of installs that went (M17): no door, nobody seen for a month. The list
     leaves them out, and keeps a copy with no door that was here this month, so it
