@@ -33409,7 +33409,7 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
                     "summarize", "summary_wait_s", "summary_model",
                     "summary_language",
                     "corner", "anchor", "x", "y",
-                    "scale", "dismiss_hotkey"}, keys
+                    "scale", "dismiss_hotkey", "one_footer"}, keys
     # The one sentence (2026-09-21): on, a second's ceiling, its own
     # model, Hebrew — the file and the dataclass agree.
     assert cfg.notify.summarize is True and cfg.notify.summary_wait_s == 1.0
