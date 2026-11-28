@@ -4431,6 +4431,10 @@ class App:
         # stretches are not sent to the repair pass either.
         self._roller = self._start_roller(
             polish=not (self._to_card or self._to_prompt or self._to_read))
+        if language and self._roller is not None:
+            # a key that named its language: the release will not ask,
+            # so the rolling thread must not either (early_language)
+            self._roller.decide = None
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
@@ -4477,12 +4481,13 @@ class App:
                 decode, local.rolling_window_s, frames_to_wav,
                 overlap=bool(getattr(backend, "can_overlap", False)))
             if getattr(local, "early_language", False) \
+                    and getattr(self.cfg, "auto_language", True) \
                     and hasattr(backend, "early_language"):
                 # the release's language decision, made while he speaks
-                # once it can be (LocalWhisperTranscriber.early_language)
+                # once it can be (LocalWhisperTranscriber.early_language);
+                # the model lock only for the detector's own pass
                 def decide(wav: bytes):
-                    with self._model_lock:
-                        return backend.early_language(wav)
+                    return backend.early_language(wav, self._model_lock)
                 roller.decide = decide
             roller.start()
             return roller

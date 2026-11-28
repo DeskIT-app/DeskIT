@@ -39069,6 +39069,12 @@ def test_the_language_is_decided_while_he_speaks_once_it_can_be_exact():
     assert roller.decide is None and roller.windows, "the windows go on"
     assert roller.finish().language is None
     assert run(None).finish().language is None
+    # a sparse recording that never gets there: asked DECIDE_TRIES times,
+    # then left to the release (each try reads the recording so far)
+    asked.clear()
+    roller = run(lambda wav: asked.append(len(wav)) or None)
+    assert len(asked) == rolling.DECIDE_TRIES == 6 and roller.decide is None, asked
+    assert roller.finish().language is None
 
     # early_language: only once 30 s of speech and 3 s after it exist
     class Det:
@@ -39085,9 +39091,30 @@ def test_the_language_is_decided_while_he_speaks_once_it_can_be_exact():
     t._english, t._language, t._english_threshold = Det(), "he", 0.8
     wav = lambda s: frames_to_wav([np.zeros(int(s * rate), dtype=np.int16)], rate)
     speech = [{"start": 0, "end": 20 * rate}, {"start": 22 * rate, "end": 40 * rate}]
+    import threading as _threading
+    lock = _threading.Lock()
+    held: list[tuple] = []
+
+    def vad(audio, *a, **k):
+        held.append(("vad", lock.locked()))
+        return speech
+
+    real_detect = Det.detect_language
+
+    def detect(self, audio=None, vad_filter=False):
+        held.append(("detect", lock.locked(), vad_filter, round(len(audio) / rate)))
+        return real_detect(self, audio, vad_filter)
+
+    with _patched(fw_vad, "get_speech_timestamps", vad), \
+            _patched(Det, "detect_language", detect):
+        assert t.early_language(wav(34.9), lock) is None, "30 s of speech at 32 s, + 3"
+        assert t.early_language(wav(35.1), lock) == "en"
+    # the VAD and the count without the model lock, the detector with it,
+    # handed exactly the speech detect_language's own VAD would collect
+    assert held == [("vad", False), ("vad", False), ("detect", True, False, 33)], held
+    assert t.early_language.__doc__ and "lock" in t.early_language.__doc__
     with _patched(fw_vad, "get_speech_timestamps", lambda audio, *a, **k: speech):
-        assert t.early_language(wav(34.9)) is None, "30 s of speech at 32 s, + 3"
-        assert t.early_language(wav(35.1)) == "en"
+        assert t.early_language(wav(35.1)) == "en", "no lock given: none taken"
     with _patched(fw_vad, "get_speech_timestamps",
                   lambda audio, *a, **k: speech[:1]):
         assert t.early_language(wav(60)) is None, "20 s of speech is not enough"
@@ -39114,6 +39141,16 @@ def test_the_language_is_decided_while_he_speaks_once_it_can_be_exact():
     head.language = "en"                     # a key that named Hebrew wins
     t.transcribe_with_head(wav(40), head, language="he")
     assert Det.calls == 1 and "early_language" not in t.last_timing
+    # an early "en" goes the English way and keeps its note on the line
+    t.transcribe_with_head(wav(40), head)
+    assert Det.calls == 1 and t.last_timing.get("early_language") == "en", \
+        t.last_timing
+    # ...but not when the English model went aside before the release
+    # (room for a game): then the release decides, as always — Hebrew
+    t._english = None
+    assert t.transcribe_with_head(wav(40), head) == "שלום"
+    assert "early_language" not in t.last_timing, t.last_timing
+    t._english = Det()
     assert main_mod.stage_line(
         notes={"language_check": "decided while speaking"},
         language_check=0.0) == \
@@ -39137,20 +39174,28 @@ def test_the_language_is_decided_while_he_speaks_once_it_can_be_exact():
         app.recorder = Rec()
         app.transcriber.decode_window = lambda *_a: rolling.Window(0.0, 0.0, "x")
         app.transcriber.can_overlap = False
-        app.transcriber.early_language = lambda wav: "en"
-        for on in (True, False):
-            app.cfg = _dc.replace(app.cfg, local=_dc.replace(
-                app.cfg.local, rolling=True, early_language=on))
+        given: list = []
+        app.transcriber.early_language = \
+            lambda wav, lock=None: given.append(lock) or "en"
+        for on, auto in ((True, True), (False, True), (True, False)):
+            app.cfg = _dc.replace(app.cfg, auto_language=auto,
+                                  local=_dc.replace(app.cfg.local, rolling=True,
+                                                    early_language=on))
             roller = app._start_roller(polish=False)
-            assert (roller.decide is not None) is on, on
-            if on:
+            assert (roller.decide is not None) is (on and auto), (on, auto)
+            if on and auto:
                 assert roller.decide(b"RIFF") == "en"
+                assert given == [app._model_lock], "the lock goes in, not around"
             roller.invalidate()
             roller.finish()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     src = Path(__file__).resolve().parent.joinpath("main.py").read_text("utf-8")
     assert '"decided while speaking"' in src and 'timing.get("early_language")' in src
+    # a key that named its language: the press takes the check away again
+    start = src[src.index("    def _on_start("):src.index("    def _start_roller(")]
+    assert "if language and self._roller is not None:" in start
+    assert "self._roller.decide = None" in start
 
 
 def test_the_rolling_knobs_parse_and_are_bounded():

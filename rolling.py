@@ -108,6 +108,11 @@ EXT_S = 0.8
 # until it does.
 DECIDE_FROM_S = 33.0
 DECIDE_EVERY_S = 5.0
+# ...and asked at most this many times: each try reads the whole recording
+# so far (VAD, no model), so a sparse one that never reaches 30 s of speech
+# would otherwise pay more on every try. Six reach 58 s of audio; past that
+# the release decides, as it always did.
+DECIDE_TRIES = 6
 
 
 @dataclass
@@ -299,6 +304,7 @@ class Roller:
         self.decide: Callable[[bytes], str | None] | None = None
         self.language: str | None = None
         self._decide_at = DECIDE_FROM_S
+        self.decide_tries = 0
         self._stop = threading.Event()
         self._invalid = False
         self._thread = threading.Thread(target=self._run, daemon=True,
@@ -367,12 +373,15 @@ class Roller:
             heard = self._offset + sum(len(c) for c in chunks)
             if heard >= self._decide_at * self._rate:
                 self._decide_at = heard / self._rate + DECIDE_EVERY_S
+                self.decide_tries += 1
                 try:
                     self.language = self.decide(self._to_wav(
                         self._chunks_since(0), self._rate))
                 except Exception:
                     log.debug("rolling: the early language check failed — "
                               "the release decides", exc_info=True)
+                    self.decide = None
+                if self.decide_tries >= DECIDE_TRIES:
                     self.decide = None
         for chunk in chunks[len(self._peaks):]:
             self._peaks.append(_peak(chunk))

@@ -42,6 +42,7 @@ Notes that cost real time to discover, keep them:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import re
@@ -1031,7 +1032,7 @@ class LocalWhisperTranscriber:
         self.last_timing = {"detect_s": round(detect_s, 3), "decode_s": 0.0}
         return model, chosen
 
-    def early_language(self, wav_bytes: bytes) -> str | None:
+    def early_language(self, wav_bytes: bytes, lock=None) -> str | None:
         """The release's language decision, made while the key is still
         held -> "en" / "he", or None when it cannot be made yet.
 
@@ -1050,23 +1051,48 @@ class LocalWhisperTranscriber:
         on all 78, the 4 English and 67 mixed among them, while every
         shorter prefix (the first 5/10/15/20 s, the first rolling window,
         everything before the tail) got English and mixed clips wrong,
-        both ways. [local] early_language."""
-        if self._detector() is None:
+        both ways. [local] early_language. `lock`, when given, is held
+        for the detector's own pass only: the VAD and the count run
+        without it, so nothing waits on them."""
+        # self._english, never _detector(): the one "still loading" line
+        # belongs to the release, which may decide differently
+        if self._english is None:
             return None
         audio = _decode_pcm(wav_bytes)
         if audio is None:
             return None
-        from faster_whisper.vad import get_speech_timestamps
+        import numpy as np
+        from faster_whisper.vad import collect_chunks, get_speech_timestamps
         need, total = EARLY_SPEECH_S * DETECT_RATE, 0
-        for chunk in get_speech_timestamps(audio):   # detect_language's own
+        speech = get_speech_timestamps(audio)          # detect_language's own
+        for chunk in speech:
             length = chunk["end"] - chunk["start"]
             if total + length >= need:
-                there = chunk["start"] + (need - total)
-                if len(audio) < there + EARLY_MARGIN_S * DETECT_RATE:
-                    return None
-                return self._pick_language(audio)
+                break
             total += length
-        return None
+        else:
+            return None
+        if len(audio) < chunk["start"] + (need - total) \
+                + EARLY_MARGIN_S * DETECT_RATE:
+            return None
+        # what detect_language(audio, vad_filter=True) would hand its
+        # encoder, made here outside the lock: the same chunks, collected
+        # the same way, so only the detector's own pass holds the model
+        pieces, _ = collect_chunks(audio, speech)
+        with lock if lock is not None else contextlib.nullcontext():
+            detector = self._english
+            if detector is None:
+                return None
+            try:
+                lang, prob, _ = detector.detect_language(
+                    audio=np.concatenate(pieces, axis=0), vad_filter=False)
+            except Exception as e:
+                log.debug("early language check failed (%s)", e)
+                return None
+        # _pick_language's rule, without its log lines: those are said at
+        # the release, and only when this answer is the one it uses
+        return "en" if lang == "en" and prob >= self._english_threshold \
+            else self._language
 
     def _decode(self, model, chosen: str, wav_bytes: bytes):
         """One decode with the live settings, and the retry after a loop
@@ -1315,10 +1341,16 @@ class LocalWhisperTranscriber:
         """
         from rolling import LEAD_S, MIN_TAIL_S
         early = None if language else getattr(head, "language", None)
+        if early == "en" and self._english is None:
+            # the English model went aside (room for a game) after it
+            # answered: English to the Hebrew model is the one thing worse
+            # than asking again, so the release decides, as always
+            early = None
         try:
             model, chosen = self._choose(wav_bytes, language or early)
             if early:
                 self.last_timing["early_language"] = early
+                log.info("language decided while you spoke: %s", early)
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         if model is not self._model or chosen != self._language:
@@ -1326,7 +1358,10 @@ class LocalWhisperTranscriber:
             # The whole recording, the old way — these are short.
             log.info("rolling: the recording is not %s — decoding it whole",
                      self._language)
-            return self.transcribe(wav_bytes, language=chosen)
+            text = self.transcribe(wav_bytes, language=chosen)
+            if early:
+                self.last_timing["early_language"] = early
+            return text
         total_s = _wav_seconds(wav_bytes)
         windows = list(head.windows)
         start = float(head.end_s)
