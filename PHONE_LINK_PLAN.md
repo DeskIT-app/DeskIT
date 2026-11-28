@@ -573,6 +573,12 @@ Blocker** stops installs from outside the Play and Galaxy stores, and updates to
 wizard has it on by default (Settings > Security and privacy > Auto Blocker). Google Play Protect can still refuse
 after that, so the guide's install page leads with both, and One UI 9, on the S26 since September, also refuses APKs it
 judges high-risk, so a microphone keyboard from GitHub is tested on his phone before anyone else's (M11).
+**Built 2026-11-28 (lane phone-release, for 1.0.7):** the key exists (`dev\keyboard_key.py`, AGENTS.md rule 9),
+release.yml's `keyboard` + `signing` jobs make and attach `DeskIT-keyboard-<v>.apk`, latest.json and
+`app\keyboard.json` carry it, `server.api_version()` names only real addresses, `IME_MIN` is 1.0.7, `keyboard.yml`
+builds it on every push to `android/`, and the guide's 06-phone has "Installing the keyboard". The QR stays on
+`releases/latest`, and the words under it say which file to tap. His phone's debug build must be uninstalled
+once (a release cannot install over it: `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, measured on the emulator).
 
 **Screens.** Settings > Phone changes and the phone gets a sign-in and a waiting screen, so prototypes photographed on
 the hidden desktop go to him first, his standing rule. On the desk: the switch, the devices of the account with Forget,
