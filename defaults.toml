@@ -829,7 +829,11 @@ warm_on_press = true           # true = the same load is ALSO asked for at the
                                # and Ollama lets the model go after five
                                # minutes, and the first questions paid 26.5,
                                # 27.7 and 26.8 s (3 of 3, 2026-11-09 audit,
-                               # screen-tools.md 1). false = start-up only
+                               # screen-tools.md 1). Under the same rules as
+                               # the start-up one: `warmup = false` turns it
+                               # off too, and it waits for the same room in
+                               # memory (WARM_NEEDS_MB) and stands aside while
+                               # a game holds the card. false = start-up only
 ollama_timeout_s = 120         # generous on purpose: a COLD local model can
                                # spend minutes loading ([translate]
                                # measures 76 s for a text-only load), and

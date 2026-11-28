@@ -41121,22 +41121,52 @@ def test_the_vision_model_is_warmed_at_the_key_press_when_ollama_answers_first(
         tried.append(url)
         raise net_mod.NetError("refused") from ConnectionRefusedError(10061, "refused")
 
+    import hardware as hardware_mod
+
     cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.visual_qa.warm_on_press is True and cfg.visual_qa.prefer == "ollama"
-    off = dataclasses.replace(cfg, visual_qa=dataclasses.replace(
-        cfg.visual_qa, warm_on_press=False))
-    with _patched(net_mod, "_connect", fake_connect):
+
+    def vq_with(**over):
+        return dataclasses.replace(cfg, visual_qa=dataclasses.replace(
+            cfg.visual_qa, **over))
+
+    roomy = lambda: (20_000, 40_000)
+    with _patched(net_mod, "_connect", fake_connect), \
+            _patched(hardware_mod, "free_mb", roomy):
         vq.Controller(lambda: cfg).warm_for_question()        # refused: no raise
         assert any("11434" in url for url in tried), tried
         tried.clear()
-        vq.Controller(lambda: off).warm_for_question()
+        vq.Controller(lambda: vq_with(warm_on_press=False)).warm_for_question()
         assert tried == [], "the switch is off"
+        vq.Controller(lambda: vq_with(warmup=False)).warm_for_question()
+        assert tried == [], "warmup = false is no implicit load at all"
+        with _patched(hardware_mod, "free_mb", lambda: (3_000, 9_000)):
+            vq.Controller(lambda: cfg).warm_for_question()
+        assert tried == [], "a full machine is not paged for a press"
+        url = cfg.translate.ollama_url
+        net_mod.hold(url, "a game holds the card")
+        try:
+            vq.Controller(lambda: cfg).warm_for_question()
+        finally:
+            net_mod.release(url)
+        assert tried == [], "room.py's hold is respected"
         built = []
         cloud_first = [("groq", lambda: built.append("groq")),
                        ("ollama", lambda: built.append("ollama"))]
         with _patched(vq.Chain, "_builders", lambda self: cloud_first):
             vq.Controller(lambda: cfg).warm_for_question()
         assert built == [] and tried == [], "a cloud backend is never warmed"
+
+    # an Ollama without the model answers 404: that is not a warm load
+    with _patched(net_mod, "_connect",
+                  lambda *a, **k: _FakeRaw(b'{"error":"model not found"}', status=404)):
+        vision = dict(vq.Chain(cfg)._builders())["ollama"]()
+        try:
+            vision.warm()
+        except RuntimeError as e:
+            assert "404" in str(e), e
+        else:
+            raise AssertionError("a 404 was taken for a warm model")
 
     ctrl = vq.Controller(lambda: cfg)
     warmed, flowed = threading.Event(), threading.Event()
