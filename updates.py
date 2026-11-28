@@ -78,6 +78,13 @@ API = f"https://api.github.com/repos/{REPO}/releases"
 ASSET_URL = re.compile(r"^https://github\.com/" + re.escape(REPO)
                        + r"/releases/download/[A-Za-z0-9][A-Za-z0-9._+-]{0,99}"
                        r"/[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\.exe\Z")
+#: The only keyboard a feed may name (12.8): this repository's release
+#: asset `…/releases/download/v<version>/DeskIT-keyboard-<version>.apk`,
+#: the one name release.yml's signing job gives it. A PC hands it to its
+#: phones (server.api_version), and only from a feed that verified.
+APK_URL = re.compile(r"^https://github\.com/" + re.escape(REPO)
+                     + r"/releases/download/v(?P<tag>[0-9][A-Za-z0-9.+-]{0,99})"
+                     r"/DeskIT-keyboard-(?P=tag)\.apk\Z")
 WINGET_ID = "YoavShimron.DeskIT"
 WINGET_COMMAND = f"winget upgrade {WINGET_ID}"
 CADENCE_S = 7 * 24 * 3600
@@ -132,6 +139,15 @@ class Release:
     #: the release had none) — what the cache keeps.
     feed: str = ""
     sig: str = ""
+    #: The phone keyboard the release carries (12.8, 12.9; release.yml's
+    #: signing job since 1.0.7): its asset's address, its SHA-256 and its
+    #: versionCode. "" / "" / 0 when the feed names none, or names one that
+    #: is not this repository's DeskIT-keyboard APK — that drops the
+    #: keyboard and never the update: a PC's own update must not hang on
+    #: the phone's fields.
+    apk_url: str = ""
+    apk_sha256: str = ""
+    ime_version_code: int = 0
 
     @classmethod
     def from_feed(cls, body: bytes, sig: bytes | None) -> "Release":
@@ -176,8 +192,30 @@ class Release:
         notes = str(data.get("notes_url", "")).strip()
         if not notes.startswith("https://github.com/"):
             raise ValueError("latest.json notes_url is not on GitHub")
+        apk_url, apk_sha, code = cls._keyboard(data, v)
         return cls(v, url, sha, size, int(data.get("min_config_version", 1) or 1),
-                   notes, str(data.get("published", "") or ""))
+                   notes, str(data.get("published", "") or ""),
+                   apk_url=apk_url, apk_sha256=apk_sha, ime_version_code=code)
+
+    @staticmethod
+    def _keyboard(data: dict, v: str) -> tuple[str, str, int]:
+        """The feed's keyboard, whole or not at all: the asset of THIS
+        release (its tag is the feed's own version), 64 hex, a positive
+        versionCode."""
+        url = str(data.get("apk_url", "") or "").strip()
+        sha = str(data.get("apk_sha256", "") or "").strip().lower()
+        try:
+            code = int(data.get("ime_version_code", 0) or 0)
+        except (TypeError, ValueError):
+            code = 0
+        if not (url or sha or code):
+            return "", "", 0
+        m = APK_URL.match(url)
+        if not m or m.group("tag") != v or len(sha) != 64 \
+                or any(c not in "0123456789abcdef" for c in sha) or code <= 0:
+            log.debug("updates: the feed's keyboard fields are not a keyboard; ignored")
+            return "", "", 0
+        return url, sha, code
 
     def newer_than(self, running: str) -> bool:
         return version.key(self.version) > version.key(running)

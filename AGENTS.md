@@ -367,7 +367,19 @@ exactly what classic did.
    under DESKIT_SUITE, and release.yml refuses to build a tag while
    `update_key.py` still holds the placeholder (`--check-pinned`). Lose
    the key and that website row is the recovery, with nothing else to
-   it. In a week that
+   it. **The phone keyboard rides on the same tag** (since 2026-11-28):
+   release.yml's `keyboard` job builds the APK unsigned and its `signing`
+   job signs it with the key `dev\keyboard_key.py --new` made once — the
+   keystore in `Desktop\Organized\Projects\DeskIT-keys`, outside every
+   checkout; its passphrase only in Credential Manager as
+   `DeskIT.dev/keyboard-keystore-passphrase`; both on GitHub as the secrets
+   `ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` — and refuses any
+   certificate but `android\release-cert.sha256`. The asset is
+   `DeskIT-keyboard-<v>.apk`; its address, digest and versionCode are in
+   latest.json before he signs it. **Never make a second key**: Android
+   installs an update only over the same one, so a new key means every
+   phone uninstalls. Its two backups are his (`--backup <folder>`), and
+   `--restore` brings it to a new PC. In a week that
    touched the installer, the wizard or the updater, a pre-release first
    (`vX.Y.Z-beta.1`, marked Pre-release, `releases/latest` untouched): he
    installs it over his copy like a customer would, walks it, then the

@@ -76,10 +76,13 @@ TOKEN_FILE = paths.PHONE_TOKEN
 #: The oldest keyboard build this PC still speaks with, as a version
 #: (12.9): raised when a route the phone uses changes shape, so an old
 #: keyboard is told to update instead of failing in the middle of a
-#: sentence. 1.1.0 is the first build that reads /health as {ok, version}
-#: and asks /api/version at all — everything before it was the owner's
-#: own com.yoav.dictation, which never left his phone.
-IME_MIN = "1.1.0"
+#: sentence. 1.0.7 is the first keyboard any release carried (release.yml,
+#: 2026-11-28), and the first that joins the account and the door. It read
+#: "1.1.0" from before the numbering restarted at 1.0.0 (2026-09-20): above
+#: every version since, so api_version clamped it to ime_latest and every
+#: PC update would have put the blocking "update the keyboard" card on a
+#: keyboard that was only one version behind.
+IME_MIN = "1.0.7"
 
 
 def pc_version() -> str:
@@ -102,28 +105,69 @@ def ime_code(text: str) -> int:
     return major * 10000 + minor * 100 + patch
 
 
+#: The keyboard's one asset name (12.8): release.yml's signing job, the
+#: update feed (updates.APK_URL), the guide and the CHANGELOG say the same.
+APK_NAME = "DeskIT-keyboard-{v}.apk"
+
+
+def own_keyboard(v: str) -> tuple[int, str, str] | None:
+    """The keyboard this build was released with — (versionCode, asset URL,
+    SHA-256) from paths.KEYBOARD_FILE, which release.yml writes — or None:
+    a checkout, a build without one, or a file that does not name this
+    very version's APK."""
+    import json
+
+    import updates
+    try:
+        kept = json.loads(paths.KEYBOARD_FILE.read_text("utf-8"))
+        apk = str(kept.get("apk") or "")
+        code = int(kept.get("version_code") or 0)
+        sha = str(kept.get("sha256") or "").strip().lower()
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if apk != APK_NAME.format(v=v) or code <= 0 or len(sha) != 64 \
+            or any(c not in "0123456789abcdef" for c in sha):
+        return None
+    return code, f"https://github.com/{updates.REPO}/releases/download/v{v}/{apk}", sha
+
+
 def api_version() -> dict:
     """What `GET /api/version` answers (12.9): the PC's version, the
     oldest keyboard build it accepts and the newest it knows of (as
-    versionCodes), and where to get the newest. This build's own values:
-    the newest keyboard is the one built from the same VERSION and lives
-    at the release's asset (12.8's name), the Play page is "" until Play
-    is live, and the APK's digest is "" until the update feed carries it
-    (11.3 gains apk_url / apk_sha256 / ime_version_code / play_url with
-    the release that ships a keyboard; the last successful check will
-    overlay these then)."""
+    versionCodes), and where to get the newest. Real values only, never
+    an address made up from a pattern (until 2026-11-28 it named
+    `DeskIT-<v>.apk`, which no release ever carried):
+    - the keyboard this build was released with (own_keyboard), when it
+      has one: its asset, its digest;
+    - a newer one from the update check (updates.available()), and only
+      from a feed whose signature verified: the asset and digest the feed
+      names (release.yml puts them in before the owner signs it);
+    - neither: the versionCode this PC's VERSION means, and the latest
+      release's page (phone.download_url), which has the keyboard on it
+      or will — never a file that may not exist.
+    The Play page is "" until Play is live."""
     import updates
     v = pc_version()
     try:
         latest = ime_code(v)
     except ValueError:                         # an unreadable VERSION
         latest = 0
+    apk_url = f"https://github.com/{updates.REPO}/releases/latest"
+    apk_sha = ""
+    own = own_keyboard(v)
+    if own:
+        latest, apk_url, apk_sha = own
+    try:
+        rel = updates.available()
+    except Exception:                          # noqa: BLE001 — the phone's answer must come
+        rel = None
+    if rel is not None and rel.checked and rel.apk_url and rel.ime_version_code > latest:
+        latest, apk_url, apk_sha = rel.ime_version_code, rel.apk_url, rel.apk_sha256
     least = ime_code(IME_MIN)
     if latest and least > latest:              # never ask for more than exists
         least = latest
     return {"pc": v, "ime_min": least, "ime_latest": latest,
-            "apk_url": f"https://github.com/{updates.REPO}/releases/download/v{v}/DeskIT-{v}.apk",
-            "apk_sha256": "", "play_url": ""}
+            "apk_url": apk_url, "apk_sha256": apk_sha, "play_url": ""}
 
 # Bodies are speech, not uploads. A minute of Opus is ~100 KB; this is a
 # sanity bound so a stray POST cannot buffer a gigabyte into memory.
