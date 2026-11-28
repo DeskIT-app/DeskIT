@@ -5863,33 +5863,45 @@ def test_an_overlay_queue_rests_until_something_wakes_it() -> None:
     import ctypes.wintypes as wt
     import overlay as overlay_mod
 
-    # The suite's main thread may already hold window messages from the tests
-    # before this one, and a rest wakes once for a message nobody removed. So
-    # on CI's order the first rest woke at once and this failed twice in a row
-    # (2026-11-28, run 46141983799). This test is about what wakes a rest, so
-    # it starts from an empty message queue.
-    drain = ctypes.WinDLL("user32", use_last_error=True)
-    drain.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                   ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
-    left = wt.MSG()
-    while drain.PeekMessageW(ctypes.byref(left), None, 0, 0, 1):   # PM_REMOVE
-        pass
-
+    # These rests run on a thread of their own, which owns no window, so
+    # nothing but this test can wake it. They ran on the suite's main thread,
+    # and that thread owns whatever the tests before left behind: a rest
+    # wakes for any message to a window of its thread, so on some CI runners
+    # the first rest woke at once and the test failed twice in a row
+    # (2026-11-28: run 46141983799 in the morning, and run 46162494877 in
+    # both full runs of one job, on a branch that touched no Python, with
+    # main green on the same suite four minutes later). Emptying the queue
+    # first, the morning's fix, could not help with a message that arrives
+    # DURING the 150 ms. A message that woke a rest early also raced the
+    # timers below: four rests could end before the first put had landed.
     q = overlay_mod._Queue()
-    t0 = time.monotonic()
-    assert q.rest(0.15) is False, "a rest with nothing to wake it woke"
-    assert time.monotonic() - t0 >= 0.1, "a rest with nothing to wake it ran short"
     flag = overlay_mod._Signal(q)
-    for name, wake in (("put", lambda: q.put("x")), ("ring", q.ring),
-                       ("set", flag.set), ("clear", flag.clear)):
-        threading.Timer(0.05, wake).start()
-        t0 = time.monotonic()
-        assert q.rest(3.0) is True, name
-        assert time.monotonic() - t0 < 1.0, (name, "woke late")
-    assert q.get_nowait() == "x" and q.empty()
-    q.ring()                                  # nobody resting: not lost
-    t0 = time.monotonic()
-    assert q.rest(3.0) is True and time.monotonic() - t0 < 0.5
+    tripped: list = []
+
+    def away_from_every_window() -> None:
+        try:
+            t0 = time.monotonic()
+            assert q.rest(0.15) is False, "a rest with nothing to wake it woke"
+            assert time.monotonic() - t0 >= 0.1, "a rest with nothing to wake it ran short"
+            for name, wake in (("put", lambda: q.put("x")), ("ring", q.ring),
+                               ("set", flag.set), ("clear", flag.clear)):
+                threading.Timer(0.05, wake).start()
+                t0 = time.monotonic()
+                assert q.rest(3.0) is True, name
+                assert time.monotonic() - t0 < 1.0, (name, "woke late")
+            assert q.get_nowait() == "x" and q.empty()
+            q.ring()                              # nobody resting: not lost
+            t0 = time.monotonic()
+            assert q.rest(3.0) is True and time.monotonic() - t0 < 0.5
+        except BaseException as e:                # noqa: BLE001
+            tripped.append(e)
+
+    alone = threading.Thread(target=away_from_every_window, daemon=True)
+    alone.start()
+    alone.join(30)
+    assert not alone.is_alive(), "the rests never came back"
+    if tripped:
+        raise tripped[0]
 
     u32 = ctypes.WinDLL("user32", use_last_error=True)
     u32.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
@@ -8200,7 +8212,8 @@ def test_a_forget_that_fails_and_rows_that_will_not_go_still_move_the_door() -> 
             with _patched(sb, "forget_device", refused):
                 app._phone_forget(ident, phone["fingerprint"])
             assert not app.phone_door.running, "a phone this PC forgot kept the door"
-            assert "try again" in app._phone_error
+            assert app._phone_error == "that did not go through: the server refused to forget it", \
+                app._phone_error
 
             box["gone"] = set()
             app._doors()
@@ -9090,6 +9103,46 @@ def test_forget_goes_to_the_account_and_a_failure_is_said_in_words() -> None:
             app.control_command("phone", {"do": "forget", "id": ident})
             assert _until(lambda: bool(app._phone_status()["error"]), 5)
             assert "no network" not in app._phone_status()["error"]
+            assert "try again" in app._phone_status()["error"]
+
+            # The reason, on the card and in app.log. Both said "(AccountError)"
+            # and nothing else until 2026-11-28, and that one type is every
+            # refusal sb.py has. sb.py's sentence is written for the person and
+            # goes on the card; any other failure stays a type there, and the
+            # log has its words. No device's name, id or certificate in either.
+            lines: list[str] = []
+
+            class Keep(logging.Handler):
+                def emit(self, record):
+                    lines.append(record.getMessage())
+
+            def no_key(d, c):
+                raise sb.AccountError("this PC does not hold the account's key")
+
+            keep = Keep()
+            logger = logging.getLogger("app")
+            level = logger.level
+            logger.addHandler(keep)
+            logger.setLevel(logging.INFO)
+            try:
+                sb.forget_device = no_key
+                app.control_command("phone", {"do": "forget", "id": ident})
+                assert _until(lambda: app._phone_status()["error"] ==
+                              "that did not go through: this PC does not hold the account's key", 5), \
+                    app._phone_status()
+                # the card has its words before the log has its line
+                assert _until(lambda: any("AccountError" in line for line in lines), 5), lines
+                sb.forget_device = refused
+                app.control_command("phone", {"do": "forget", "id": ident})
+                assert _until(lambda: any("OSError: no network" in line for line in lines), 5), lines
+            finally:
+                logger.removeHandler(keep)
+                logger.setLevel(level)
+            said = [line for line in lines if line.startswith("phone: Forget failed")]
+            assert "phone: Forget failed (AccountError: this PC does not hold the account's key)" in said, said
+            assert "phone: Forget failed (OSError: no network)" in said, said
+            assert not any(ident in line or phone["fingerprint"] in line or "S26" in line
+                           for line in said), said
         finally:
             if had is None:
                 del sb.forget_device
@@ -55154,6 +55207,133 @@ def test_forget_says_whether_it_ended_the_device():
             assert theirs not in fake.ended and sb.status()["last_error"] == sb.OLDER_COPY_WORDS
     finally:
         pc.gone()
+
+
+def _app_opened_again() -> None:
+    """The app closed and opened: the session, the key and the kept rows are
+    on the disk, and what sb.py remembers of the lock is what a process
+    starts with, which is nothing. The worker's first account pass, 30 s in,
+    is what fills it."""
+    import sb
+    sb._lock_state.update(at=0.0, state="", lock_id="", pairing=None, pending=[],
+                          recovery=None, error="", changed=None)
+    sb._device_names.update(at=0.0, names={}, phone=False)
+    sb._seen_pairings.clear()
+
+
+def test_forget_pressed_before_the_first_account_pass_looks_at_the_lock_itself():
+    """The owner's report of 2026-11-28: he opened the app, went to Settings >
+    Phone, pressed Forget on the row his reinstalled phone had left behind,
+    and read "that did not go through (AccountError) — try again", twice.
+    app.log has the two presses 18 s and 27 s after the start; network.log
+    has no request between the socket and the worker's first pass at 31 s;
+    the same press nine minutes later went through. sb.py's memory of the
+    lock starts empty in every process and that pass is what fills it, so
+    forget_device() took a PC holding the key for one without it, while the
+    card drew its Forget buttons from the first second. Now a PC that holds a
+    key and has not looked yet looks, in the pass's own order. The lock moved
+    while the app was closed: nothing is forgotten and the sentence says so.
+    A PC that was itself forgotten while it was closed forgets nobody: it
+    leaves. (A PC with no key still asks the server nothing: the test of the
+    forgotten list holds that.)"""
+    import sb
+    import vault
+
+    sid = "bbbbbbbb-0000-4000-8000-000000000019"
+    second = "99999999-8888-7777-6666-555555555502"
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync"), \
+                _patched(sb, "FORGOTTEN_HOOKS", [lambda: None]):
+            with a:
+                _sign_in_pc(fake, "desk")
+                sb.sync_now()
+                key = vault.key(fake.UID)
+                fp = vault.fingerprint(key)
+                fake.sessions[sid] = fake.UID
+                _a_phone_row(fake, _PHONE, session_id=sid)
+                _a_phone_row(fake, second)
+
+                _app_opened_again()
+                assert sb.status()["lock"]["state"] != "have"
+                asked = len(fake.calls)
+                assert sb.forget_device(_PHONE, _PHONE_CERT) is True, \
+                    "a press in the first seconds after a start was refused"
+                assert fake.ended == [sid]
+                assert all(r["id"] != _PHONE for r in fake.tables["devices"]), "the row stayed"
+                assert sb.status()["lock"]["state"] == "have"
+                went = [c["path"] for c in fake.calls[asked:]]
+                assert went[0] == "rest/v1/profiles", f"the lock was not looked at first: {went}"
+                assert "rest/v1/rpc/forget_device" in went, went
+
+                # the lock moved while the app was closed
+                _app_opened_again()
+                fake.tables["profiles"][0]["lock_id"] = "e" * 16
+                try:
+                    sb.forget_device(second, "")
+                except sb.AccountError as e:
+                    assert "lock changed" in str(e) and "Home" in str(e), str(e)
+                else:
+                    raise AssertionError("it forgot a device under a lock this PC does not trust")
+                assert second not in sb.forgotten()
+                assert any(r["id"] == second for r in fake.tables["devices"]), "the row went"
+                fake.tables["profiles"][0]["lock_id"] = fp
+                _app_opened_again()
+                sb.account_pass("test")
+                assert sb.status()["lock"]["state"] == "have", sb.status()["lock"]
+
+            # B joins, and is forgotten from A while it is closed
+            with b:
+                _sign_in_pc(fake, "laptop")
+                sb.sync_now()
+            with a:
+                sb.approve_pairing(sb.pending_pairings()[0]["id"])
+            with b:
+                sb.same_code(sb.status()["lock"]["code"])
+                sb.sync_now()
+                assert vault.key(fake.UID) == key
+                was = sb.device_id()
+            with a:
+                sb.forget_device(was, "")       # no session on its row: only the list can tell it
+            with b:
+                _app_opened_again()
+                try:
+                    sb.forget_device(second, "")
+                except sb.AccountError as e:
+                    assert "was forgotten" in str(e), str(e)
+                else:
+                    raise AssertionError("a forgotten PC forgot another device")
+                assert vault.key(fake.UID) is None, "a forgotten PC kept its key"
+                assert sb.device_id() != was, "it stayed under the id the account forgot"
+
+            # The look itself can move a PC to another id: it read on the way
+            # that it was forgotten, or its id was another account's. Whatever
+            # it holds after that, nobody is forgotten on that press.
+            with a:
+                _app_opened_again()
+                look = sb._ensure_lock
+
+                def moved(uid):
+                    sb._new_device_id(uid)
+                    return look(uid)
+
+                asked = len(fake.calls)
+                with _patched(sb, "_ensure_lock", moved):
+                    try:
+                        sb.forget_device(second, "")
+                    except sb.AccountError as e:
+                        assert "changed just now" in str(e), str(e)
+                    else:
+                        raise AssertionError("a PC whose id moved under the press forgot a device")
+                went = [c["path"] for c in fake.calls[asked:]]
+                assert "rest/v1/rpc/forget_device" not in went and "rest/v1/vault" not in went, went
+            assert any(r["id"] == second for r in fake.tables["devices"]), "the row went"
+            row = next(r for r in fake.tables["vault"] if r["name"] == "forgotten")
+            inside = vault.open_json(key, row["cipher"], vault.AAD_VAULT.format(uid=fake.UID, name="forgotten"))
+            assert second not in [e["device"] for e in inside["v"]], inside
+    finally:
+        for pc in (a, b):
+            pc.gone()
 
 
 

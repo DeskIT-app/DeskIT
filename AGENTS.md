@@ -569,6 +569,24 @@ exactly what classic did.
   press. `test_the_addresses_come_from_the_machine_on_any_network` refuses
   an address in the code, and a fact about one home is a test case, never a
   constant.
+- **sb.py's memory of the lock starts empty in every process, and a
+  button can be pressed before anything fills it.** `sb._lock_state` is
+  "" at import; the worker's first account pass, 30 s after start, is what
+  makes it "have". Settings > Phone draws its rows, a Forget beside each,
+  from the kept rows and the key on the disk (`phone.view()`), so the
+  button is live from the first second, and `sb.forget_device` refused a
+  press in those 30 s as "this PC does not hold the account's key". On
+  2026-11-28 he opened the app, pressed Forget after 18 s and again after
+  27 s, read "that did not go through (AccountError)" twice, and
+  network.log had not one request between the socket and the pass at
+  31 s; the same press nine minutes later went through. A press now looks
+  at the lock itself, in the pass's order (`sb._key_for_a_press`: the
+  lock, then the forgotten list), and a failure names its reason on the
+  card and in app.log (`main.App._phone_forget`). Anything new that a
+  person can press and that asks `_lock_state` for "have" goes through
+  that function, or it is this bug again. `make_recovery` still asks
+  directly: its buttons are drawn from the lock's own status, which is
+  empty for the same 30 s.
 - **`net.py` defines `open()`; inside it, write files with
   `path.open(...)`.** A bare `open(path, "a")` in that module calls the
   request function and fails on "unknown purpose 'a'" — silently, in
