@@ -727,11 +727,12 @@ def study_all(cfg, app_dir: Path) -> int:
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=getattr(cfg.vocab,
                                                   "hebrew_after_hits", 3))
-    from transcribers import local_kwargs
+    from transcribers import configure, local_kwargs
     from transcribers.local_whisper import LocalWhisperTranscriber
     print(f"{len(todo)} recording(s) to study "
           f"({len(labelled)} carry a human correction). Loading models...")
-    transcriber = LocalWhisperTranscriber(**local_kwargs(cfg, None))
+    transcriber = configure(LocalWhisperTranscriber(
+        **local_kwargs(cfg, None)), cfg)
     adjudicator = Adjudicator(cfg)
     corpus = Corpus(app_dir / "corpus", cfg.study.corpus_keep)
 

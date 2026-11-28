@@ -63,12 +63,13 @@ def benchmark(cfg: config_mod.Config) -> int:
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=cfg.vocab.hebrew_after_hits)
     on = {"enabled": False}
-    from transcribers import local_kwargs
+    from transcribers import configure, local_kwargs
     from transcribers.local_whisper import LocalWhisperTranscriber
 
     print(f"{len(cases)} corrected recording(s). Loading the model...")
-    t = LocalWhisperTranscriber(
-        **local_kwargs(cfg, lambda: v.hotwords() if on["enabled"] else ""))
+    t = configure(LocalWhisperTranscriber(
+        **local_kwargs(cfg, lambda: v.hotwords() if on["enabled"] else "")),
+        cfg)
 
     totals = {False: [0, 0], True: [0, 0]}
     for item in cases:

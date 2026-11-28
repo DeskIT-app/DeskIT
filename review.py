@@ -1402,11 +1402,11 @@ def review_all(cfg, app_dir: Path, pause_s: float = 4.0) -> int:
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=getattr(cfg.vocab,
                                                   "hebrew_after_hits", 3))
-    from transcribers import local_kwargs
+    from transcribers import configure, local_kwargs
     from transcribers.local_whisper import LocalWhisperTranscriber
     print(f"{len(labelled)} labelled clip(s). Loading the models...")
-    transcriber = LocalWhisperTranscriber(
-        **local_kwargs(cfg, v.hotwords if cfg.vocab.enabled else None))
+    transcriber = configure(LocalWhisperTranscriber(
+        **local_kwargs(cfg, v.hotwords if cfg.vocab.enabled else None)), cfg)
     reader = Reader(cfg, local=bool(getattr(cfg.review, "local_model",
                                             False)))
 

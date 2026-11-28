@@ -3571,6 +3571,15 @@ def test_an_empty_last_pass_ends_the_decode_instead_of_crawling():
         with _patched(lw, "LocalWhisperTranscriber", _Built):
             backend = transcribers.get_transcriber(cfg)
         assert backend.stop_empty_passes is value, value
+        assert transcribers.configure(_Built(), cfg).stop_empty_passes is value
+    # every place that builds the backend from a config goes through
+    # configure, so an A/B with the switch off really is off there too
+    here = Path(__file__).resolve().parent
+    for name in ("main.py", "review.py", "study.py", "dev/measure.py",
+                 "transcribers/__init__.py"):
+        src = (here / name).read_text("utf-8")
+        built = src.count("LocalWhisperTranscriber(")
+        assert built and built == src.count("configure(LocalWhisperTranscriber("), name
 
 
 def test_www_survives_what_a_decoder_loop_does_not() -> None:

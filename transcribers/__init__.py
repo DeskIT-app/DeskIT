@@ -4,7 +4,7 @@ from __future__ import annotations
 from .base import ModelMissing, RateLimitError, Transcriber, TranscriptionError
 
 __all__ = ["Transcriber", "TranscriptionError", "RateLimitError",
-           "ModelMissing", "get_transcriber", "local_kwargs"]
+           "ModelMissing", "get_transcriber", "local_kwargs", "configure"]
 
 
 def local_kwargs(cfg, hotwords=None) -> dict:
@@ -41,6 +41,19 @@ def local_kwargs(cfg, hotwords=None) -> dict:
                 boilerplate=boilerplate)
 
 
+def configure(backend, cfg):
+    """The [local] settings a local backend takes as attributes rather
+    than constructor arguments (so no signature changed for them), set
+    from `cfg` -> the backend. Every place that builds one from a config
+    calls this — the app's builder, the fallback, review.py, study.py,
+    dev\\measure.py — so `stop_empty_passes = false` reaches an A/B run
+    exactly as it reaches the app."""
+    if hasattr(backend, "stop_empty_passes"):
+        backend.stop_empty_passes = bool(
+            getattr(getattr(cfg, "local", None), "stop_empty_passes", True))
+    return backend
+
+
 def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
     """The local backend — or, on an installed copy whose model is not
     on disk yet (models.py), the stand-in that lets the app start and
@@ -49,11 +62,8 @@ def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
     from .local_whisper import LocalWhisperTranscriber
 
     def build():
-        backend = LocalWhisperTranscriber(**local_kwargs(cfg, hotwords),
-                                          english_later=english_later)
-        backend.stop_empty_passes = bool(
-            getattr(cfg.local, "stop_empty_passes", True))
-        return backend
+        return configure(LocalWhisperTranscriber(
+            **local_kwargs(cfg, hotwords), english_later=english_later), cfg)
     try:
         return build()
     except ModelMissing as e:
