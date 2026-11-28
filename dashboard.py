@@ -10032,7 +10032,7 @@ class Dashboard:
                       "Only your voice never leaves this PC: your learned words and "
                       "settings are kept in your account, and so are what you said "
                       "and your cloud keys, locked with a key only your own devices hold. "
-                      "Settings > Privacy > Withdraw turns this off.")
+                      "Settings > Account > Withdraw turns this off.")
 
     def _locked_now(self, reply: dict | None) -> bool:
         """Is there an account on this PC? The app's word when it

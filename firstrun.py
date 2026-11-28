@@ -165,8 +165,8 @@ WORDS = {
     "step": "Step {n} of {total}",
     "welcome.title": "Welcome to DeskIT",
     "welcome.lines": ("Your voice stays on this computer.",
-                      "What you said is kept in one folder you can delete.",
-                      "Nothing is sent anywhere until you turn it on yourself."),
+                      "What you said is kept on this PC; a copy in your account is locked.",
+                      "Nothing you say leaves this PC unless you say yes first."),
     "welcome.defaults": "The defaults are good. Everything can be changed later in Settings.",
     "welcome.link": "How to check this yourself",
     "welcome.privacy": "Privacy policy",
@@ -210,7 +210,7 @@ WORDS = {
     "account.never.signin": ("Only your voice never leaves this PC. Your learned words and "
                              "settings are kept in your account, and so are what you said and "
                              "your cloud keys, locked with a key only your own devices hold. "
-                             "Settings > Privacy > Withdraw turns this off."),
+                             "Settings > Account > Withdraw turns this off."),
     "account.none": "This copy has no account server — you can go on.",
     "account.button": "Sign in with Google",
     "account.waiting": "Waiting for Google's sign-in page in your browser…",
@@ -344,7 +344,7 @@ WORDS = {
                        "from you, the settings you changed, the text of what you said and "
                        "your cloud keys follow you there — what you said and the keys locked "
                        "with a key only your own devices hold. Never your voice. "
-                       "Settings > Privacy > Withdraw turns it off."),
+                       "Settings > Account > Withdraw turns it off."),
     "cloud.title": "Cloud keys",
     "cloud.sub": ("Free keys for the features that need a language model. Only the text "
                   "leaves this PC, never your voice; Settings > Privacy changes it later."),

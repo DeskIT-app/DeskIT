@@ -570,7 +570,7 @@ jobs:
             "Build attestation: https://github.com/$repo/attestations",
             "Code signing policy: https://github.com/$repo/blob/main/CODE_SIGNING_POLICY.md",
             $prevLine,
-            "Install: download the installer, or ``winget install YoavShimron.DeskIT`` once the manifest is merged.",
+            "Install: download ``DeskIT-Setup-$version.exe`` from this page and run it.",
             "", "**Verify this download.** In PowerShell, run ``Get-FileHash .\DeskIT-Setup.exe -Algorithm SHA256`` and compare the result with the SHA-256 above. Then run ``gh attestation verify DeskIT-Setup.exe --repo $repo`` to check that GitHub's build, from this repository, made the file."
           ) -join "`n"
           [IO.File]::WriteAllText("dist/notes.md", $body, (New-Object Text.UTF8Encoding $false))

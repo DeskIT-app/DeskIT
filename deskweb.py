@@ -152,7 +152,7 @@ LANDING_STORED = ("What is stored: an account id and the e-mail of the Google ac
                   "is DeskIT's own (Supabase, Frankfurt). Only your voice never leaves this "
                   "PC: your learned words and settings are kept in your account, and so are "
                   "what you said and your cloud keys, locked with a key only your own devices "
-                  "hold. Settings > Privacy > Withdraw turns this off.")
+                  "hold. Settings > Account > Withdraw turns this off.")
 LANDING_WAITING = "Waiting for Google's sign-in page in your browser…"
 #: A recovery key as a person types it: Crockford letters and digits in
 #: six groups, with or without the dashes and spaces between them.

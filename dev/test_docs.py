@@ -182,6 +182,58 @@ def test_faq_has_no_owner_words():
                 assert word not in text, f"{lang}/{name} says {word!r}"
 
 
+#: Where a person is offered a road to the PC: the desk's screens, the
+#: wizard, the cards and the phone app, words and code alike.
+_SCREEN_FILES = ("dashboard.py", "deskweb.py", "firstrun.py", "settings.py")
+_SCREEN_TREES = (("web/src", (".ts", ".tsx")), ("android/app/src/main", (".kt", ".xml")))
+
+
+def _screens_naming_tailscale() -> list[str]:
+    paths = [REPO / name for name in _SCREEN_FILES]
+    paths += sorted(REPO.glob("desk_*.py")) + sorted(REPO.glob("*_card.py"))
+    for folder, suffixes in _SCREEN_TREES:
+        if (REPO / folder).exists():
+            paths += sorted(p for p in (REPO / folder).rglob("*") if p.suffix in suffixes)
+    return [str(p.relative_to(REPO)) for p in paths
+            if p.is_file() and "tailscale" in p.read_text("utf-8", errors="replace").lower()]
+
+
+def test_the_guide_names_no_tailscale_road():
+    """No guide page names Tailscale, or a ts.net address, while nothing a
+    person sees offers that road.
+
+    Until 1.0.7 the phone chapter told people to install Tailscale on both
+    devices, run `tailscale serve` and paste a link. The phone now joins
+    the account and finds its PC by itself (PHONE_LINK_PLAN.md stages 1-3),
+    and no screen hands out a link to paste. What the code still keeps of
+    the old road (the phone's pasted line beside the door, Link.Pasted, and
+    the loopback door `tailscale serve` used to front) serves only a phone
+    set up before, until stage 6 takes it out. A guide page that names
+    Tailscale sends a new person down a road no screen offers. The
+    privacy policy and the terms are read too: they make promises about the
+    same road.
+
+    The test cannot tell a screen's words from a comment in the same file,
+    so it does not try. Any mention in a screen's file fails it, comment or
+    not, and the failure names the file: reword the comment, or, if a
+    Tailscale road really comes back as something a person is offered,
+    change this test together with the guide. The first version stepped
+    aside quietly whenever a screen's file named Tailscale, so one comment
+    would have switched it off without a word (a review, 2026-11-28)."""
+    offered = _screens_naming_tailscale()
+    assert not offered, (
+        f"a screen's file names Tailscale: {', '.join(offered)}. Reword it if it is a "
+        "comment; if a person is offered that road again, change this test with the guide")
+    pages = {f"{lang}/{name}": text for lang in ("he", "en")
+             for name, text in _pages(lang).items()}
+    for name in ("privacy.md", "terms.md"):
+        pages[name] = (DOCS / name).read_text("utf-8")
+    for where, text in pages.items():
+        low = text.lower()
+        for word in ("tailscale", "ts.net"):
+            assert word not in low, f"{where} names {word!r}, a road no screen offers"
+
+
 def test_guide_uses_screen_names():
     """Every "Settings > X" and "Dashboard > X" a page names is a tab or a
     place the app draws (settings.TABS, dashboard.NAV), and the block

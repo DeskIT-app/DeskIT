@@ -100,7 +100,7 @@ Name: "hebrew"; MessagesFile: "compiler:Languages\Hebrew.isl"
 [Messages]
 english.SetupWindowTitle=%1
 english.WelcomeLabel1=Welcome to DeskIT
-english.WelcomeLabel2=Hebrew dictation that stays on this PC.%n%nDeskIT installs for your user only, without an administrator password. On the first start a short wizard sets up the microphone and the key, while DeskIT downloads the Hebrew model (1.6 GB, once) in the background.%n%nYour voice stays on this computer. Nothing is sent anywhere until you turn it on yourself.
+english.WelcomeLabel2=Hebrew dictation that stays on this PC.%n%nDeskIT installs for your user only, without an administrator password. On the first start a short wizard sets up the microphone and the key, while DeskIT downloads the Hebrew model (1.6 GB, once) in the background.%n%nYour voice stays on this computer. Nothing you say leaves this PC unless you say yes first.
 english.ButtonNext=&Install
 english.ClickNext=Click Install to continue, or Cancel to exit.
 english.FinishedHeadingLabel=DeskIT is installed
@@ -108,7 +108,7 @@ english.FinishedLabel=Start it now: the first-run wizard takes about a minute.
 english.ClickFinish=Click Finish to exit Setup.
 hebrew.SetupWindowTitle=%1
 hebrew.WelcomeLabel1=ברוכים הבאים ל־DeskIT
-hebrew.WelcomeLabel2=הכתבה בעברית שנשארת במחשב הזה.%n%nDeskIT מותקן למשתמש שלך בלבד, בלי סיסמת מנהל. בהפעלה הראשונה אשף קצר מגדיר את המיקרופון ואת המקש, ובינתיים DeskIT מוריד ברקע את המודל העברי (1.6 ג'יגה־בייט, פעם אחת).%n%nהקול שלך נשאר במחשב הזה. שום דבר לא נשלח לשום מקום עד שתפעיל את זה בעצמך.
+hebrew.WelcomeLabel2=הכתבה בעברית שנשארת במחשב הזה.%n%nDeskIT מותקן למשתמש שלך בלבד, בלי סיסמת מנהל. בהפעלה הראשונה אשף קצר מגדיר את המיקרופון ואת המקש, ובינתיים DeskIT מוריד ברקע את המודל העברי (1.6 ג'יגה־בייט, פעם אחת).%n%nהקול שלך נשאר במחשב הזה. שום דבר ממה שאתה אומר לא יוצא מהמחשב בלי שתאשר קודם.
 hebrew.ButtonNext=&התקנה
 hebrew.ClickNext=לחץ על 'התקנה' כדי להמשיך, או על 'ביטול' כדי לצאת.
 hebrew.FinishedHeadingLabel=DeskIT מותקן

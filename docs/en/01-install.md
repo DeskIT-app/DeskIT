@@ -10,19 +10,13 @@ title: 1. Install
 password, and lands in `%LOCALAPPDATA%\Programs\DeskIT`. Windows may warn you once because the
 installer is not signed with a paid certificate; the code is open and every build is attested.
 
-## Three ways in, in the order to try them
+## Where to get it
 
-1. **The Microsoft Store** — coming in a later version. It is the door with no warning at all.
-2. **winget**, if you have it (Windows 11 has it built in). Open a terminal and run:
+**GitHub Releases.** Download `DeskIT-Setup-x.y.z.exe` from the
+[latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). Beside it on the
+release page: the file's SHA-256, a VirusTotal link and the build attestation.
 
-   ```
-   winget install YoavShimron.DeskIT
-   ```
-
-   winget downloads the same installer and skips the SmartScreen download dialog.
-3. **GitHub Releases.** Download `DeskIT-Setup-x.y.z.exe` from the
-   [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). Beside it on the
-   release page: the file's SHA-256, a VirusTotal link and the build attestation.
+The Microsoft Store, the door with no warning at all, is coming in a later version.
 
 ## "Windows protected your PC"
 
@@ -48,7 +42,7 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
   **Finish** with "Start DeskIT now" ticked. The app itself is English
   chrome with Hebrew text.
 - Downloads nothing itself: the big files DeskIT needs come down by themselves on the first
-  start, in the background — the same on every copy, from here, winget or the Microsoft Store.
+  start, in the background — the same on every copy, from here or the Microsoft Store.
   What each one is, its exact size and its licence: [below](#downloads).
 - Puts the program in `%LOCALAPPDATA%\Programs\DeskIT`, the downloads in
   `%LOCALAPPDATA%\DeskIT\models` and `\packs`, and a shortcut in the Start menu and on the
@@ -82,7 +76,7 @@ Settings > Screen) is not downloaded again.
 DeskIT looks for a newer version once a week (one request to github.com, no identifier; the
 switch is under **Settings > Privacy**). When there is one, **Settings > General** shows it with
 a **Download and install** button; the download is checked against its SHA-256 before the
-installer runs. winget users can also run `winget upgrade YoavShimron.DeskIT`.
+installer runs.
 
 ## Uninstalling
 
