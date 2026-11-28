@@ -1041,9 +1041,13 @@ class App:
             card = getattr(self, name, None)
             if card is None:
                 continue
-            if name == "hint" and not getattr(getattr(self.cfg, "hint", None),
-                                              "hush", True):
-                continue                    # [hint] hush = false: the old way
+            # [hint] hush = false: the key card is never hushed, the old
+            # way. Read at the HUSH only - an unhush always goes out (it is
+            # idempotent), so a config reload in between cannot leave the
+            # card's `_hushed` set for good.
+            if name == "hint" and on and not getattr(
+                    getattr(self.cfg, "hint", None), "hush", True):
+                continue
             try:
                 card.hush() if on else card.unhush()
             except Exception:

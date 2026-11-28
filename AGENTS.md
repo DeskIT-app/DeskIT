@@ -1789,14 +1789,15 @@ exactly what classic did.
   while it is set (the card's line would otherwise bring the next one up
   mid-drag every time one left) and the clock waits; a review card
   already up stays where it is, under the selector. `skin\hint.py` reads
-  it since 2026-11-27 (`[hint] hush`, false = the old way): a key card
-  coming due, or changed (hold -> latch) and raised again, is HELD while
-  the hush stands and goes up when it ends; one already up stays under
-  the selector. The hint card's Tk fallback refuses only its FIRST map
-  while hushed (it is click-through, so it cannot eat the drag).
-  `test_the_key_card_waits_out_a_screenshot_selection` drives the glass
-  loop. What is left is the artefact the order has always had: a card up
-  at the freeze is in the frozen backdrop AND live under the selector.
+  it since 2026-11-27 (`[hint] hush`, false = the old way, read at the
+  hush only so an unhush always goes out): for as long as capture.py
+  holds the screen - a screenshot's selection and editor, the camera, a
+  screen recording for its whole length, where a card up would be in the
+  mp4 - the key card is OFF it (taken down if it was up, never put up or
+  raised by a change), and the LATEST card goes back up when it ends, or
+  none if the dictation ended meanwhile. The Tk fallback does the same
+  with withdraw. `test_the_key_card_waits_out_a_screenshot_selection`
+  drives the glass loop.
   **The one exemption is the clip bar** (`ClipBar._build` and
   `_build_frame`), and the line is STILL versus MOVING, not ours versus
   theirs. A screenshot has an instant to freeze; a recording does not, so

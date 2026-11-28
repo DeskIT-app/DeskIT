@@ -145,13 +145,14 @@ class HintConfig:
     # The difference matters since 2026-09-08 — a follower goes where he
     # DRAGGED the dot, a card that named a corner stays in it.
     follow_dot: bool = True
-    # Obey a screenshot selection's hush (2026-11-27): while the selector
-    # is up the card is not put up, nor raised by a change, over it. False
-    # = main.py never hushes this card, which is how it behaved before.
+    # Obey capture.py's hush (2026-11-27): while a screenshot's selection
+    # or editor, the camera or a screen recording holds the screen, the
+    # card is off it, and back - the latest one - when it ends. False =
+    # main.py never hushes this card, which is how it behaved before.
     hush: bool = True
 
 
-HINT_CORNERS =("top-right", "top-left", "bottom-right", "bottom-left")
+HINT_CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
 HINT_SCALE_MIN, HINT_SCALE_MAX = 0.6, 1.4
 HINT_UNSET = -100000
 # What a card's `corner` may say in the FILE: a corner, or "dot" for the

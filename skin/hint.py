@@ -795,14 +795,19 @@ def run(hint_card) -> None:
     due = None
     redraw = False
     drag = None                    # the corner drag in progress, or None
-    # A put-up refused while a screenshot selection is on screen
-    # (HintCard.hush). THE HUSH'S LAST HALF (2026-11-27): until then this
-    # loop never read `_hushed`, so a card that became due, or changed
-    # (hold -> latch) and was put up again with raise_(), mapped OVER the
-    # selector and took the drag. A card already up stays where it is —
-    # under the selector, which mapped after it — exactly like the review
-    # card's glass loop; whatever was refused goes up the moment the hush
-    # ends (the unhush rings the queue this loop rests on).
+    # The card kept off the live screen while capture.py holds it
+    # (HintCard.hush): a screenshot's selection and editor, the camera,
+    # and a screen RECORDING for its whole length - a key card up then is
+    # in the mp4, the one place a picture of it cannot be cropped away.
+    # THE HUSH'S LAST HALF (2026-11-27): until then this loop never read
+    # `_hushed`, so a card that became due, or changed (hold -> latch) and
+    # was put up again with raise_(), mapped OVER the selector and took
+    # the drag. Now a card up when the hush starts is taken DOWN (it is in
+    # a screenshot's frozen picture already, which is the owner's rule)
+    # and nothing goes up while it lasts; when it ends the card is put up
+    # again from `pending` - the latest one the queue brought, never the
+    # picture that went down - or not at all if the dictation ended
+    # meanwhile. The unhush rings the queue this loop rests on.
     held = False
     hint_card._alive.set()
 
@@ -1012,12 +1017,16 @@ def run(hint_card) -> None:
                 drag_tick()
             # A card that changed under a drag waits for the drop: drawing
             # it at the old size would fight the corner under the pointer.
+            if (drag is None and glass is not None
+                    and hint_card._hushed.is_set()):
+                take_down()         # off the live screen while capture holds it
+                held = pending is not None
             if drag is None and pending is not None and (
                     (shown is None and due is not None
                      and time.monotonic() >= due) or changed or redraw
                     or held):
                 if hint_card._hushed.is_set():
-                    held = True     # after the selection, not over it
+                    held = True     # after the capture, not over it
                 else:
                     held = redraw = False
                     put_up(pending)

@@ -2230,11 +2230,13 @@ class HintCard:
             except queue.Empty:
                 pass
             due, card = shown["due"], shown["card"]
-            # Not mapped for the first time over a screenshot selection
-            # (hush); the 40 ms pump puts it up once the selection ends.
-            if card is not None and not shown["up"] and due is not None \
-                    and time.monotonic() >= due \
-                    and not self._hushed.is_set():
+            # Off the live screen while capture.py holds it (hush: the
+            # selection, the editor, the camera, a recording); the 40 ms
+            # pump puts the LATEST card back up once it ends.
+            if self._hushed.is_set():
+                hide()
+            elif card is not None and not shown["up"] and due is not None \
+                    and time.monotonic() >= due:
                 draw(card)
             root.after(40, pump)
 

@@ -298,12 +298,15 @@ compact = false               # true = the small card: only the dictation's
                               # card writes it: its corner dragged smaller
                               # than the smallest size turns it on, and
                               # dragged bigger again turns it off
-hush = true                   # true = while a screenshot selection is on
-                              # screen the card is not put up over it, nor
-                              # raised over it by a change (hold -> latch):
-                              # it goes up when the selection ends. Before
-                              # 2026-11-27 this card ignored the hush and could
-                              # map over the selector and take the drag.
+hush = true                   # true = while a capture holds the screen - a
+                              # screenshot's selection and editor, the camera,
+                              # a screen recording for its whole length (a
+                              # card up then would be in the mp4) - this card
+                              # is off it: taken down if it was up, never put
+                              # up or raised over it (hold -> latch), and the
+                              # latest card back when the capture ends. Before
+                              # 2026-11-27 it ignored the hush and could map
+                              # over the selector and take the drag.
                               # false = the old way
 
 [setup]

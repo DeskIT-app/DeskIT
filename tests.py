@@ -5860,9 +5860,13 @@ def test_the_key_card_waits_out_a_screenshot_selection() -> None:
     `_hushed`, so a key card coming due, or changed (hold -> latch) and
     raised again, mapped OVER the screenshot selector and took the drag.
     Driven through the glass loop itself with a stand-in window: while
-    hushed nothing is built, shown, painted or raised; the unhush puts it
-    up at once. And `[hint] hush = false` is the old way: main.py does not
-    hush the key card at all, while every other card still is."""
+    hushed nothing is built, shown, painted or raised; a card UP when the
+    hush starts is taken down (a recording would film it); the unhush puts
+    up the LATEST card, never the one that went down, and nothing at all if
+    the dictation ended meanwhile. And `[hint] hush = false` is the old
+    way: main.py does not hush the key card, while every other card still
+    is - read at the hush only, so a switch flipped before the unhush
+    cannot leave the card hushed for good."""
     import types
     from PIL import Image
     try:
@@ -5911,7 +5915,13 @@ def test_the_key_card_waits_out_a_screenshot_selection() -> None:
     held = (s_hint.Glass, s_hint._frost, s_hint.paint)
     s_hint.Glass = FakeGlass
     s_hint._frost = lambda *_a: None
-    s_hint.paint = lambda *_a, **_k: Image.new("RGBA", (4, 4))
+    painted = []
+
+    def paint(card_dict, *_a, **_k):
+        painted.append(card_dict)
+        return Image.new("RGBA", (4, 4))
+
+    s_hint.paint = paint
     card = overlay_mod.HintCard(after_ms=0)
     cfg = _hint_cfg()
     hold = hint_mod.card_for(cfg, hint_mod.HOLD, main_mod._SCREEN_ACTIONS)
@@ -5931,12 +5941,23 @@ def test_the_key_card_waits_out_a_screenshot_selection() -> None:
         raised = events.count("raise")
         assert raised == 1, events
         card._hushed.set()
-        card._q.put(latched)               # hold -> latch under the selector
+        assert _until(lambda: "close" in events, 2), "the card up stayed up"
+        card._q.put(latched)               # hold -> latch under the capture
         time.sleep(0.3)
-        assert events.count("raise") == raised, f"raised over the selector: {events}"
-        assert "close" not in events, "a card already up stays where it is"
+        assert events.count("raise") == raised, f"raised over the capture: {events}"
+        assert events.count("new") == 1, events
         card._hushed.clear()
         assert _until(lambda: events.count("raise") == raised + 1, 2), events
+        assert events.count("new") == 2 and painted[-1] is latched, \
+            "the latest card came back, not the one that went down"
+        # the dictation ends during a capture: nothing comes back after it
+        card._hushed.set()
+        assert _until(lambda: events.count("close") == 2, 2), events
+        card._q.put(None)
+        time.sleep(0.2)
+        card._hushed.clear()
+        time.sleep(0.4)
+        assert events.count("new") == 2, f"a finished dictation's card came back: {events}"
     finally:
         card._q.put(overlay_mod._DONE)
         worker.join(3)
@@ -5953,7 +5974,7 @@ def test_the_key_card_waits_out_a_screenshot_selection() -> None:
         def unhush(self):
             self.calls.append("unhush")
 
-    for want, calls in ((True, ["hush", "unhush"]), (False, [])):
+    for want, calls in ((True, ["hush", "unhush"]), (False, ["unhush"])):
         app = types.SimpleNamespace(
             cfg=types.SimpleNamespace(hint=types.SimpleNamespace(hush=want)),
             hint=Cardish(), notify_card=Cardish())
@@ -5961,6 +5982,14 @@ def test_the_key_card_waits_out_a_screenshot_selection() -> None:
         main_mod.App._hush_overlays(app, False)
         assert app.hint.calls == calls, (want, app.hint.calls)
         assert app.notify_card.calls == ["hush", "unhush"], want
+    # the switch read again between the hush and the unhush
+    app = types.SimpleNamespace(
+        cfg=types.SimpleNamespace(hint=types.SimpleNamespace(hush=True)),
+        hint=Cardish())
+    main_mod.App._hush_overlays(app, True)
+    app.cfg.hint.hush = False                  # a config reload meanwhile
+    main_mod.App._hush_overlays(app, False)
+    assert app.hint.calls == ["hush", "unhush"], "left hushed for good"
     assert config_mod.load(Path(__file__).resolve().parent
                            / "defaults.toml").hint.hush is True
 
