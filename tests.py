@@ -30776,9 +30776,18 @@ def test_both_presenters_ask_the_line_and_the_app_tells_it() -> None:
         for call in ("_q_take(item, now)", "_q_next(now, hold=",
                      "_q_answered(now)", "timed_out()", "_hushed.is_set()"):
             assert f"{me}.{call}" in body, (me, call)
-        # its own definition, and one call: with what the line handed over
-        assert body.count("put_up(") == 2 and "put_up(nxt)" in body, \
+        # its own definition, and one call: with what the line handed over.
+        # `[review] avoid_notify` (2026-11-28) adds a second road, the card
+        # ALREADY up put up again elsewhere (`put_up(shown)` in step_aside):
+        # the same item, never an arrival, so it is not counted here.
+        again = body.count("put_up(shown)")
+        assert body.count("put_up(") - again == 2 and "put_up(nxt)" in body, \
             "an arrival goes to the line, never straight onto the screen"
+        if again:
+            aside = body.split("def step_aside")[1].split("\n    def ")[0] \
+                if "def step_aside" in body else ""
+            assert aside.count("put_up(shown)") == again, \
+                "only step_aside re-shows the card that is already up"
     src = (here / "main.py").read_text("utf-8")
     assert "still_open=self._review_open" in src
     assert "held=lambda: self._word_prompt.open()" in src
