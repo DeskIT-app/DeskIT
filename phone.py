@@ -966,12 +966,15 @@ def open_firewall(exe: str, port: int) -> str:
 # ------------------------------------------------------------------ the QR
 
 def download_url() -> str:
-    """Where the keyboard comes from: the newest release's page, which
-    exists whatever a release holds. It is only an address and holds no
-    secret; a person's own account does the rest."""
-    import updates
+    """Where the keyboard comes from: the site's keyboard page, one Download
+    button and three lines (2026-11-28 — the release page put 14,000
+    characters of notes above the file, and he called it a horror). The
+    button names the stable DeskIT-keyboard.apk every release carries. It is
+    only an address and holds no secret; a person's own account does the
+    rest."""
+    import paths
 
-    return f"https://github.com/{updates.REPO}/releases/latest"
+    return f"{paths.PAGES_URL}/keyboard"
 
 
 def qr_rows(text: str) -> list[list] | None:

@@ -9261,11 +9261,12 @@ def test_settings_phone_says_it_in_plain_words_and_details_holds_the_numbers() -
     assert len(desk_settings.device_rows({"phone": {}})) == 1
     first = desk_settings.keyboard_card({"phone": {"phones": []}})
     assert "get the DeskIT keyboard" in first["line"]
-    # the code is the latest release's page, and the words say which file on it
-    # is the phone's: the one asset name release.yml gives the keyboard
+    # the code is the site's keyboard page (2026-11-28): one Download button,
+    # never the release page with the notes above the file
+    import paths as paths_mod
     import phone as phone_mod
-    assert phone_mod.download_url().endswith("/releases/latest")
-    assert "DeskIT-keyboard under Assets" in first["said"], first["said"]
+    assert phone_mod.download_url() == f"{paths_mod.PAGES_URL}/keyboard"
+    assert "tap Download" in first["said"] and "Assets" not in first["said"], first["said"]
     google = desk_settings.keyboard_card({"account": {"anonymous": True}})
     assert google["kind"] == "line" and google["buttons"][0]["arg"] == "google"
     assert desk_settings.phone_info({"phone": "an older app's string"}) == {}
@@ -9405,7 +9406,7 @@ def test_phone_api_version_fields() -> None:
     import paths as paths_mod
     import updates as updates_mod
 
-    page = f"https://github.com/{updates_mod.REPO}/releases/latest"
+    page = f"{paths_mod.PAGES_URL}/keyboard"
     v = version_mod.VERSION
     scratch = Path(tempfile.mkdtemp())
     updates_mod._last.clear()
@@ -45211,8 +45212,17 @@ def test_release_workflow_has_every_step():
     assert "needs: [stage, signing]" in by["release"]
     for must in ("dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk",
                  "dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk.sha256",
-                 "name: Attest the keyboard", "On an Android phone:"):
-        assert must in by["release"], must
+                 "name: Attest the keyboard", "On an Android phone:",
+                 # the stable name beside the versioned one (2026-11-28)
+                 'Copy-Item "dist/$name" dist/DeskIT-keyboard.apk',
+                 "dist/DeskIT-keyboard.apk\n"):
+        assert must in by["release"].replace("\r\n", "\n"), must
+    # the notes open with the two direct downloads, the long notes after them
+    notes = by["release"].split("$body = @(")[1]
+    assert notes.lstrip().startswith("$top,"), notes[:80]
+    assert "[DeskIT for Windows]" in by["release"] and "[The keyboard for Android]" in by["release"]
+    # the keyboard's link is its page (one button, three lines), never the bare file
+    assert "[The keyboard for Android](https://deskit-app.github.io/DeskIT/keyboard)" in by["release"]
     import paths
     guide = f"GUIDE_PHONE: {paths.PAGES_URL}/en/06-phone#installing-the-keyboard"
     assert guide in by["release"], guide

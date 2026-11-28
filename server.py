@@ -152,7 +152,8 @@ def api_version() -> dict:
         latest = ime_code(v)
     except ValueError:                         # an unreadable VERSION
         latest = 0
-    apk_url = f"https://github.com/{updates.REPO}/releases/latest"
+    import phone as phone_mod
+    apk_url = phone_mod.download_url()
     apk_sha = ""
     own = own_keyboard(v)
     if own:

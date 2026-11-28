@@ -324,11 +324,10 @@ def keyboard_card(status) -> dict:
     return {"kind": "keyboard", "qr": code[0] if code else "", "n": code[1] if code else 0,
             "line": ("Point your phone's camera here to get the DeskIT keyboard" if first
                      else "Another phone? Point its camera here"),
-            # the code opens the latest release's page (phone.download_url),
-            # where the keyboard is one file among the PC's: say which
-            "said": ("On the page that opens, tap DeskIT-keyboard under Assets and install it, "
-                     "then sign in with Google and press Approve on this PC. For Android "
-                     "phones; the guide's phone chapter says what to allow."
+            # the code opens the site's keyboard page (phone.download_url):
+            # one Download button, then the same three steps as here
+            "said": ("On the page that opens, tap Download and install it, then sign in "
+                     "with Google and press Approve on this PC. For Android phones."
                      + ("" if code else f" The page is {url}"))}
 
 
