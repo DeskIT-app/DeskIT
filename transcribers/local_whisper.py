@@ -388,36 +388,67 @@ REAL_LENGTH_MODES = ("off", "cpu", "always")
 # words. A pass that reached the end of the clip and decoded no text has
 # already looked at everything left, so here it ends the loop the way a pass
 # ending on a lone timestamp always did. [local] stop_empty_passes.
+#
+# ONLY a lone timestamp UNDER faster-whisper's first-timestamp cap
+# (max_initial_timestamp, 1.0 s), and only where the library itself already
+# moved the seek to the clip's end: a lone <|1.00|> can mean "the speech
+# starts later than I may say", and a pass that the old loop would carry on
+# from is not one this may end. Checked 2026-11-28 the way that could lose
+# words: 60 clips cut from his recordings with 0.5/1.0/1.5/2.0 s of real
+# quiet, or tonight's breath, IN FRONT of speech — at a window start, a tail
+# start, inside one VAD chunk, at the clip start — identical with the stop
+# on and off, 60 of 60; every lone timestamp seen there and in tonight's
+# crawl was <|0.10|> on quiet after the last word, never the cap.
 
 _tally = threading.local()
+#: faster-whisper's max_initial_timestamp default, which we never change
+FIRST_TIMESTAMP_CAP_S = 1.0
 
 
-def _without_empty_crawl(split, on):
-    """WhisperModel._split_segments_by_timestamps, which also counts each
-    pass of the decode in progress (_decode's tally) and, while `on()`,
-    ends the loop at a pass that reached the clip's end with no text in
-    it. Anything it does not recognise goes through untouched."""
+def _counting_generate(generate):
+    """WhisperModel.generate_with_fallback, which counts a pass of the
+    decode in progress (_decode's tally) and what it cost since the last
+    pass ended — every pass generates once, the ones the no-speech check
+    then skips included, so a skipped pass's seconds stay its own."""
+    def generate_counted(*args, **kw):
+        stats = getattr(_tally, "now", None)
+        result = generate(*args, **kw)
+        if stats is not None:
+            now = time.perf_counter()
+            stats["passes"] = stats.get("passes", 0) + 1
+            stats["pass_s"] = now - stats.get("mark", now)
+            stats["mark"] = now
+        return result
+    return generate_counted
+
+
+def _without_empty_crawl(split, on, precision: float = 0.02):
+    """WhisperModel._split_segments_by_timestamps, which counts the empty
+    passes of the decode in progress (_decode's tally) and, while `on()`,
+    ends the loop at one: a lone timestamp under FIRST_TIMESTAMP_CAP_S,
+    no text, the seek already at the clip's end. Anything it does not
+    recognise goes through untouched."""
     def split_without_crawl(*args, **kw):
         segments, seek, single = split(*args, **kw)
         try:
-            stats = getattr(_tally, "now", None)
-            now = time.perf_counter()
-            if stats is not None:
-                spent = now - stats.get("mark", now)
-                stats["mark"] = now
-                stats["passes"] = stats.get("passes", 0) + 1
             tokens = kw["tokens"]
-            empty = bool(tokens) and all(
-                t >= kw["tokenizer"].timestamp_begin for t in tokens)
-            if not args and not single and empty \
-                    and kw["segment_size"] < FULL_FRAMES:
+            begin = kw["tokenizer"].timestamp_begin
+            if args or single or not tokens \
+                    or any(t < begin for t in tokens):
+                return segments, seek, single
+            stats = getattr(_tally, "now", None)
+            if stats is not None:
+                stats["empty"] = stats.get("empty", 0) + 1
+                stats["empty_s"] = stats.get("empty_s", 0.0) \
+                    + stats.get("pass_s", 0.0)
+            lone = len(tokens) == 1 and \
+                (tokens[0] - begin) * precision < FIRST_TIMESTAMP_CAP_S
+            at_end = kw["segment_size"] < FULL_FRAMES \
+                and seek >= kw["seek"] + kw["segment_size"]
+            if lone and at_end and on():
                 if stats is not None:
-                    stats["empty"] = stats.get("empty", 0) + 1
-                    stats["empty_s"] = stats.get("empty_s", 0.0) + spent
-                if on():
-                    if stats is not None:
-                        stats["stopped"] = True
-                    return segments, seek, True
+                    stats["stopped"] = True
+                return segments, seek, True
         except Exception:
             pass
         return segments, seek, single
@@ -433,6 +464,7 @@ def _decoder_tally() -> dict:
     stats = dict(getattr(_tally, "last", None) or {})
     _tally.last = None
     stats.pop("mark", None)
+    stats.pop("pass_s", None)
     for key in ("empty_s", "retry_s"):
         if key in stats:
             stats[key] = round(stats[key], 3)
@@ -506,7 +538,11 @@ class LocalWhisperTranscriber:
         split = getattr(model, "_split_segments_by_timestamps", None)
         if callable(split):
             model._split_segments_by_timestamps = _without_empty_crawl(
-                split, lambda: bool(self.stop_empty_passes))
+                split, lambda: bool(self.stop_empty_passes),
+                float(getattr(model, "time_precision", 0.02) or 0.02))
+        generate = getattr(model, "generate_with_fallback", None)
+        if callable(generate):
+            model.generate_with_fallback = _counting_generate(generate)
         return model
 
     def _load_english(self) -> None:
@@ -1062,13 +1098,20 @@ class LocalWhisperTranscriber:
 
         # What this decode did, pass by pass (_without_empty_crawl), for
         # the stages line: read back by _decoder_tally on this thread.
-        stats = {"mark": time.perf_counter()}
+        stats: dict = {"mark": time.perf_counter()}
         _tally.now = stats
         try:
             segs, text = self._decode_and_retry(decode, stats)
         finally:
             _tally.now = None
             _tally.last = stats
+        if stats.get("stopped"):
+            # counted, never a word: so a decode that came back empty
+            # after it says why (D8)
+            log.info("decoder: ended at an empty last pass — %d pass(es), "
+                     "%d empty (%.2f s), %d word(s)",
+                     stats.get("passes", 0), stats.get("empty", 0),
+                     stats.get("empty_s", 0.0), len(text.split()))
         return segs, text
 
     def _decode_and_retry(self, decode, stats: dict):

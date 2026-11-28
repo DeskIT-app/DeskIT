@@ -3471,10 +3471,30 @@ def test_an_empty_last_pass_ends_the_decode_instead_of_crawling():
 
     passes.clear()
     t.stop_empty_passes = True
-    assert t.transcribe(RIFF, language="he") == ""
+    import logging as _logging
+    said: list[str] = []
+
+    class _Said(_logging.Handler):
+        def emit(self, record):
+            said.append(record.getMessage())
+
+    catch = _Said(level=_logging.INFO)
+    app_log = _logging.getLogger("app")
+    level = app_log.level
+    app_log.setLevel(_logging.INFO)
+    app_log.addHandler(catch)
+    try:
+        assert t.transcribe(RIFF, language="he") == ""
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
     assert passes == [0.0], passes
     assert t.last_timing["passes"] == 1 and t.last_timing["stopped"], \
         t.last_timing
+    ended = [m for m in said if m.startswith("decoder: ended at an empty")]
+    assert ended == ["decoder: ended at an empty last pass — 1 pass(es), "
+                     "1 empty " + ended[0].split("1 empty ")[1]], said
+    assert ended[0].endswith("0 word(s)") and not re.search("[֐-׿]", ended[0])
     note = main_mod.decoder_note(t.last_timing)
     assert note.startswith("1 empty ") and note.endswith(", stopped"), note
 
@@ -3504,6 +3524,26 @@ def test_an_empty_last_pass_ends_the_decode_instead_of_crawling():
                  seek=0)[2] is False, "a window that does not reach the end"
     assert split(tokenizer=tok, tokens=[tb + 5], segment_size=300,
                  seek=0)[2] is True
+    # ...and never where the old loop would carry on to speech: a lone
+    # timestamp AT the first-timestamp cap ("it starts later than 1 s"),
+    # a pass of two timestamps, a seek the library did not move to the end
+    assert split(tokenizer=tok, tokens=[tb + 50], segment_size=300,
+                 seek=0)[2] is False, "the 1.0 s cap: speech may follow"
+    assert split(tokenizer=tok, tokens=[tb, tb + 5], segment_size=300,
+                 seek=0)[2] is False, "two timestamps are not a lone one"
+    short = lw._without_empty_crawl(
+        lambda **kw: ([], kw["seek"] + 10, False), lambda: True)
+    assert short(tokenizer=tok, tokens=[tb + 5], segment_size=300,
+                 seek=0)[2] is False, "the library did not move to the end"
+    # a lone timestamp at the cap is crawled exactly as before, on the
+    # real loop: 1.0 s a pass over 3 s
+    model, passes, tb = _crawling_model(lambda offset: [tb + 50])
+    t._model = model
+    t._no_crawl(model)
+    t.stop_empty_passes = True
+    t.transcribe(RIFF, language="he")
+    assert passes == [0.0, 1.0, 2.0], passes
+    assert "stopped" not in t.last_timing, t.last_timing
     assert main_mod.decoder_note({"passes": 1, "decode_s": 0.4}) is None
     assert main_mod.stage_line(
         notes={"decoder": "28 passes, 26 empty 4.31 s"}, queue=0.02,
