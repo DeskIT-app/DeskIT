@@ -653,10 +653,10 @@ TABS: tuple[Tab, ...] = (
                      "reading. Opens only through its card, the first time "
                      "a feature needs it."),
             Friendly("privacy.cloud_audio", "Recordings to the cloud",
-                     "Nothing on this PC sends a recording anywhere: your "
-                     "speech becomes words on this computer. The line "
-                     "stays so a yes given to an earlier version can be "
-                     "withdrawn."),
+                     "Your speech becomes words on this computer; a "
+                     "recording leaves only in a problem report whose "
+                     "Recording switch you turned on. The line stays so a "
+                     "yes given to an earlier version can be withdrawn."),
             Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
                      "The part of the screen you asked about may go to "
                      "Groq or Google. Opens only through its card."),

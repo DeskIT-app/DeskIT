@@ -28,7 +28,7 @@ DeskIT takes half the graphics memory it used to. The two speech models now run 
 
 A muted microphone is noticed in two seconds. When the microphone sends nothing at all, which is what a muted headset sends, the dot turns red after two seconds, moves to the middle of the screen and grows until I see it. It goes back the moment my voice comes through. A microphone that is on but hears only quiet still gets the old ten seconds.
 
-My voice never leaves the PC now, with no exception. The "In Google's cloud" speech engine is gone, and so is the code that sent a recording there; a settings file that still names it gets the model on this computer. My phone's own cloud backup, below, is the phone's choice and is unchanged.
+My voice no longer leaves the PC on its own. The "In Google's cloud" speech engine is gone, and so is the code that sent a recording there; a settings file that still names it gets the model on this computer. The one way a recording still leaves is a problem report I choose to send: its Recording switch is off unless I turn it on, and the preview shows the file first. My phone's own cloud backup, below, is the phone's choice and is unchanged.
 
 The desk is new, and it is fast. Home, Corrections, Said, Keys and Settings are now a page drawn by Microsoft Edge WebView2, a part of Windows. Switching places takes a few thousandths of a second instead of up to a second and a half, and an answered correction leaves at once. Said now searches my whole history, not only the last hundred lines. The window loads only DeskIT's own files and opened no connection in my measurements. It does use more memory than the old window while it is open, and on a PC without WebView2 the old window opens instead.
 
