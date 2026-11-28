@@ -45220,6 +45220,31 @@ def test_release_workflow_has_every_step():
     assert updates.WINGET_ID == "YoavShimron.DeskIT"
 
 
+def test_the_keyboard_builds_on_every_push_that_touches_it():
+    """keyboard.yml: a push that changes android/, VERSION or the file itself
+    builds the release keyboard unsigned and runs jvmChecks, on a read-only
+    token with no secret; the wrapper jar is checked against the same SHA-256
+    release.yml pins, and the distribution's own sum is in the wrapper's
+    properties. A pull request is for forks only, as in ci.yml."""
+    wf = REPO / ".github" / "workflows"
+    kb = (wf / "keyboard.yml").read_text("utf-8")
+    rel = (wf / "release.yml").read_text("utf-8")
+    for must in ('paths: ["android/**", "VERSION", ".github/workflows/keyboard.yml"]',
+                 "bash gradlew --no-daemon assembleRelease jvmChecks",
+                 "permissions:\n  contents: read", "persist-credentials: false",
+                 "java-version: \"17\"",
+                 "github.event.pull_request.head.repo.full_name != github.repository"):
+        assert must in kb, must
+    assert "secrets." not in kb and "write" not in kb
+    sha = re.search(r'GRADLE_WRAPPER_SHA256: "([0-9a-f]{64})"', kb).group(1)
+    assert f'GRADLE_WRAPPER_SHA256: "{sha}"' in rel, "the two workflows pin different wrappers"
+    import hashlib
+    jar = REPO / "android" / "gradle" / "wrapper" / "gradle-wrapper.jar"
+    assert hashlib.sha256(jar.read_bytes()).hexdigest() == sha, "the committed wrapper jar moved"
+    props = (REPO / "android" / "gradle" / "wrapper" / "gradle-wrapper.properties").read_text("utf-8")
+    assert re.search(r"^distributionSha256Sum=[0-9a-f]{64}\r?$", props, re.M), props
+
+
 def test_every_third_party_action_is_pinned_to_a_commit():
     """Every `uses:` of a remote action in .github/workflows names a full
     40-hex commit with the tag in a comment (audit 2026-11-09: a moving

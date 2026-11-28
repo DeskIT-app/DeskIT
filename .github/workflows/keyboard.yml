@@ -1,0 +1,64 @@
+# The phone keyboard on every push that touches it (PHONE_LINK_PLAN.md
+# "Getting the keyboard"): the same unsigned release build release.yml's
+# `keyboard` job makes — the committed wrapper, its jar checked against
+# Gradle 8.9's published SHA-256, JDK 17 — plus `jvmChecks`, the Kotlin
+# formats against what the real vault.py and relay.py wrote. No secret, no
+# signing, nothing kept: a push only learns that the keyboard still builds.
+#
+# A file of its own and not a job in ci.yml because a path filter belongs to
+# a whole workflow: ci.yml runs on every push, this only when android/,
+# VERSION (the versionCode comes from it) or this file changed — about four
+# minutes on ubuntu, nothing on the other pushes.
+name: keyboard
+
+on:
+  push:
+    branches: ["**"]      # not tags: release.yml builds a tag's keyboard
+    paths: ["android/**", "VERSION", ".github/workflows/keyboard.yml"]
+  pull_request:
+    paths: ["android/**", "VERSION", ".github/workflows/keyboard.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # the same value release.yml pins (a test holds the two equal)
+  GRADLE_WRAPPER_SHA256: "498495120a03b9a6ab5d155f5de3c8f0d986a449153702fb80fc80e134484f17"
+
+jobs:
+  build:
+    # pull_request is for forks only, as in ci.yml: one commit of ours is
+    # built once, by its push
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: keyboard-${{ github.sha }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: The Gradle wrapper is Gradle's own
+        run: |
+          set -euo pipefail
+          got=$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | cut -d' ' -f1)
+          if [ "$got" != "${{ env.GRADLE_WRAPPER_SHA256 }}" ]; then
+            echo "::error::gradle-wrapper.jar is $got, not Gradle 8.9's published jar"; exit 1
+          fi
+          grep -q '^distributionSha256Sum=' android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Build the keyboard (unsigned) and check its formats
+        working-directory: android
+        run: |
+          set -euo pipefail
+          bash gradlew --no-daemon assembleRelease jvmChecks
+          ls -l app/build/outputs/apk/release/
+          test -f app/build/outputs/apk/release/app-release-unsigned.apk
