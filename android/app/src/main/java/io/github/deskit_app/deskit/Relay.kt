@@ -56,6 +56,8 @@ object Relay {
     private const val HEARTBEAT_MS = 25_000L
     /** A token with less than this left is refreshed before a socket opens on it. */
     private const val TOKEN_LEFT_S = 90L
+    /** How long a stream's pump may hold the piece it is sending (stage 2). */
+    const val PIECE_WAIT_MS = ACK_MS + 2_000L
 
     /** What the relay can do for the recording now, for [Road.next]. */
     class View(val state: Road.Relay, val target: String? = null, val why: String = "")
@@ -399,27 +401,7 @@ object Relay {
             while (out.isNotEmpty()) if (!settle(out.removeFirst())) return unreached
             val sent = SystemClock.elapsedRealtime()
             Log.i("DeskIT", "relay: ${pieces.size} pieces up in ${sent - t0} ms")
-            var took = false
-            var until = sent + TOOK_MS
-            while (true) {
-                val left = until - SystemClock.elapsedRealtime()
-                if (left <= 0 || (!l.alive && replies.isEmpty())) {
-                    Log.i("DeskIT", "relay: the PC ${if (took) "took it and said nothing" else "did not take it"}")
-                    return unreached
-                }
-                val p = replies.poll(minOf(left, 500L), TimeUnit.MILLISECONDS) ?: continue
-                if (p.from != target) continue
-                if (p.kind == "took" && !took) {
-                    took = true
-                    until = SystemClock.elapsedRealtime() + TEXT_MS
-                    l.lastUse = SystemClock.elapsedRealtime()
-                    moved(true)
-                    Log.i("DeskIT", "relay: the PC took it ${SystemClock.elapsedRealtime() - sent} ms after the last piece")
-                } else if (p.kind == "text") {
-                    Log.i("DeskIT", "relay: the text, ${SystemClock.elapsedRealtime() - t0} ms after the first piece")
-                    return result(app, p)
-                }
-            }
+            return awaitText(app, l, replies, target, t0, sent, moved)
         } catch (e: Account.Failed) {
             return unreached
         } catch (e: Sealed.NotNow) {
@@ -428,6 +410,197 @@ object Relay {
             l.replies.remove(rid)
             l.inFlight.decrementAndGet()
             l.lastUse = SystemClock.elapsedRealtime()
+        }
+    }
+
+    /** After the last piece: the PC's `took`, then its `text`, from [target] alone. */
+    private fun awaitText(app: Context, l: Line, replies: LinkedBlockingQueue<RelayWire.Piece>, target: String,
+                          t0: Long, sent: Long, moved: (took: Boolean) -> Unit): Transcriber.Result {
+        val unreached = Transcriber.Result.Err(app.getString(R.string.unreachable), Transcriber.Why.UNREACHED)
+        var took = false
+        var until = sent + TOOK_MS
+        while (true) {
+            val left = until - SystemClock.elapsedRealtime()
+            if (left <= 0 || (!l.alive && replies.isEmpty())) {
+                Log.i("DeskIT", "relay: the PC ${if (took) "took it and said nothing" else "did not take it"}")
+                return unreached
+            }
+            val p = replies.poll(minOf(left, 500L), TimeUnit.MILLISECONDS) ?: continue
+            if (p.from != target) continue
+            if (p.kind == "took" && !took) {
+                took = true
+                until = SystemClock.elapsedRealtime() + TEXT_MS
+                l.lastUse = SystemClock.elapsedRealtime()
+                moved(true)
+                Log.i("DeskIT", "relay: the PC took it ${SystemClock.elapsedRealtime() - sent} ms after the last piece")
+            } else if (p.kind == "text") {
+                Log.i("DeskIT", "relay: the text, ${SystemClock.elapsedRealtime() - t0} ms after the first piece")
+                return result(app, p)
+            }
+        }
+    }
+
+    // ---- sending while it is spoken (stage 2) ----
+
+    /** A recording on its way through the account while it is spoken ([LiveStream]). */
+    interface Streaming {
+        val target: String
+        val failed: Boolean
+        /** The PCM at [offset] (a whole piece's place), sealed and sent; false: the stream broke. */
+        fun piece(offset: Int, pcm: ByteArray): Boolean
+        /**
+         * The rest from [from], piece 0 (the header, the length known now), the end, then
+         * the PC's `took` and `text`, as [send]. Null: the pieces did not get across, and
+         * the recording goes whole.
+         */
+        fun finish(wav: ByteArray, from: Int, moved: (took: Boolean) -> Unit): Transcriber.Result?
+        /** Let it go: the PC is told (a `cancel`) and holds nothing of it. Any thread. */
+        fun cancel()
+    }
+
+    /** A stream to [target] on the socket open now; null when there is none to stream on. */
+    fun stream(c: Context, target: String): Streaming? {
+        val l = line ?: return null
+        if (!l.alive || l.joinedAt == 0L || target !in l.pcs) return null
+        return StreamLine(c.applicationContext, l, target)
+    }
+
+    private class StreamLine(private val app: Context, private val l: Line,
+                             override val target: String) : Streaming {
+        private val rid = RelayWire.newRid()
+        private val replies = LinkedBlockingQueue<RelayWire.Piece>()
+        private val out = ArrayDeque<Pair<String, LinkedBlockingQueue<RelayWire.Heard.Reply>>>()
+        @Volatile override var failed = false
+        private var released = false
+        private var whileSpoken = 0
+        private val t0 = SystemClock.elapsedRealtime()
+
+        init {
+            l.replies[rid] = replies
+            l.inFlight.incrementAndGet()
+            l.lastUse = t0
+        }
+
+        private fun settle(moved: ((Boolean) -> Unit)?): Boolean {
+            val one = out.removeFirst()
+            val r = one.second.poll(ACK_MS, TimeUnit.MILLISECONDS)
+            l.acks.remove(one.first)
+            if (r == null || !r.ok) {
+                Log.i("DeskIT", "relay: a streamed piece was not taken by the server (${r?.why ?: "no answer"})")
+                return false
+            }
+            l.lastUse = SystemClock.elapsedRealtime()
+            moved?.invoke(false)
+            return true
+        }
+
+        private fun send(sealed: String, moved: ((Boolean) -> Unit)?): Boolean {
+            while (out.size >= WINDOW) if (!settle(moved)) return false
+            if (!l.alive) return false
+            val ref = l.nextRef()
+            val q = LinkedBlockingQueue<RelayWire.Heard.Reply>()
+            l.acks[ref] = q
+            try {
+                l.ws.send(RelayWire.broadcast(l.uid, sealed, ref, l.joinRef))
+            } catch (e: IOException) {
+                l.acks.remove(ref)
+                return false
+            }
+            out.addLast(Pair(ref, q))
+            return true
+        }
+
+        private fun sealed(make: (String, ByteArray) -> String): String? = try {
+            Lock.withKey(app) { uid, key -> make(uid, key) }
+        } catch (e: Account.Failed) {
+            null
+        } catch (e: Sealed.NotNow) {
+            null
+        } catch (e: RelayWire.Refused) {
+            null
+        }
+
+        @Synchronized override fun piece(offset: Int, pcm: ByteArray): Boolean {
+            if (failed || released) return false
+            val s = sealed { uid, key -> RelayWire.streamed(key, uid, l.me, target, rid, offset, pcm) }
+            if (s == null || !send(s, null)) {
+                failed = true
+                giveUp("a piece did not go")
+                return false
+            }
+            whileSpoken++
+            return true
+        }
+
+        @Synchronized override fun finish(wav: ByteArray, from: Int,
+                                          moved: (took: Boolean) -> Unit): Transcriber.Result? {
+            if (failed || released) return null
+            try {
+                val pcm = Recorder.pcm(wav)
+                val rest = ArrayList<String>()
+                var at = from
+                while (at < pcm.size) {
+                    val end = minOf(pcm.size, at + RelayWire.FRAME_BYTES)
+                    val chunk = pcm.copyOfRange(at, end)
+                    val one = at
+                    rest.add(sealed { uid, key -> RelayWire.streamed(key, uid, l.me, target, rid, one, chunk) }
+                                 ?: return fail("a piece was not sealed"))
+                    at = end
+                }
+                rest.add(sealed { uid, key -> RelayWire.header(key, uid, l.me, target, rid, pcm.size) }
+                             ?: return fail("the header was not sealed"))
+                rest.add(sealed { uid, key ->
+                    RelayWire.streamedEnd(key, uid, l.me, target, rid, wav, System.currentTimeMillis())
+                } ?: return fail("the end was not sealed"))
+                val released0 = SystemClock.elapsedRealtime()
+                for (p in rest) if (!send(p, moved)) return fail("a piece did not go")
+                while (out.isNotEmpty()) if (!settle(moved)) return fail("a piece was not taken")
+                val sent = SystemClock.elapsedRealtime()
+                Log.i("DeskIT", "relay: streamed, $whileSpoken pieces while spoken and ${rest.size} at the " +
+                    "release, up ${sent - released0} ms after it")
+                return awaitText(app, l, replies, target, t0, sent, moved)
+            } finally {
+                release()
+            }
+        }
+
+        private fun fail(why: String): Transcriber.Result? {
+            failed = true
+            giveUp(why)
+            return null
+        }
+
+        /** Said to the PC so it lets the request go now, best effort, and never waited on. */
+        private fun giveUp(why: String) {
+            Log.i("DeskIT", "relay: a stream let go ($why)")
+            val s = sealed { uid, key -> RelayWire.cancel(key, uid, l.me, target, rid) }
+            if (s != null && l.alive) {
+                try {
+                    l.ws.send(RelayWire.broadcast(l.uid, s, l.nextRef(), l.joinRef))
+                } catch (e: IOException) {
+                    // the request expires on the PC by itself
+                }
+            }
+            release()
+        }
+
+        private fun release() {
+            if (released) return
+            released = true
+            for ((ref, _) in out) l.acks.remove(ref)
+            out.clear()
+            l.replies.remove(rid)
+            l.inFlight.decrementAndGet()
+            l.lastUse = SystemClock.elapsedRealtime()
+        }
+
+        override fun cancel() {
+            // never on the caller's thread: the keyboard hiding comes here on the main one
+            thread(name = "relay-stream-cancel") {
+                synchronized(this) {
+                    if (!released) giveUp("cancelled")
+                }
+            }
         }
     }
 

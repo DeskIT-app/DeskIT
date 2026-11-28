@@ -29,7 +29,8 @@ line of http.server runs: no unauthenticated byte ever reaches this file.
 There is no bearer on it and no `/notify`; the phone has never called that
 route. It opens only once the account has a phone, the switch is on, this
 PC gave its one yes and the person's yes to the account stands
-(main.App._doors).
+(main.App._doors). It alone has `/stream` (stage 2): the recording written
+while it is spoken, decoded as it arrives (phonestream.py), answered once.
 
 The client is the Android keyboard (android/), and only that. There used
 to be a Hebrew web page at `/` that drove the same routes from a phone
@@ -216,6 +217,137 @@ GET_ROUTES: frozenset[str] = frozenset({"/health", "/api/version", "/review"})
 #: The one route open without the bearer on the loopback door.
 OPEN_ROUTES: frozenset[str] = frozenset({"/health"})
 
+#: The phone door's one route that takes a body still being spoken
+#: (PHONE_LINK_PLAN.md stage 2): a chunked POST the keyboard writes while the
+#: person speaks. It has a handler of its own (`_PhoneHandler._stream`),
+#: because do_POST wants a Content-Length and Routes.handle a finished body,
+#: and it is in no table: only the phone door has it.
+STREAM_ROUTE = "/stream"
+#: A stream is frames: a kind, four bytes of length (big-endian), the bytes.
+#: The head first ({"v", "rate", "bits", "channels"}), then audio (16-bit
+#: little-endian PCM, any size), then exactly one end ({"bytes", "sha256"},
+#: of the PCM) or cancel. An end and a cancel are said, never inferred from
+#: the body stopping, because a cancel and a break look alike otherwise.
+FRAME_HEAD, FRAME_AUDIO, FRAME_END, FRAME_CANCEL = b"H", b"A", b"E", b"C"
+#: What this PC's stream speaks, in the head and in the `link` row.
+STREAM_PROTO = 1
+#: No one frame is bigger: a phone sends a tenth of a second at a time.
+FRAME_MAX = 1 << 20
+
+
+class StreamBroken(Exception):
+    """A stream that is not one: the phone sends the whole recording instead."""
+
+
+class _Fixed:
+    """A body with a Content-Length, read as a file: ``read(n)`` or less at
+    its end."""
+
+    def __init__(self, rfile, length: int) -> None:
+        self._rfile, self._left = rfile, max(0, int(length))
+
+    def read(self, n: int) -> bytes:
+        n = min(n, self._left)
+        data = self._rfile.read(n) if n else b""
+        self._left -= len(data)
+        return data
+
+
+class _Chunked:
+    """An HTTP/1.1 chunked body, read as a file: what the keyboard's
+    HttpURLConnection writes in its chunked streaming mode. ``read(n)``
+    gives fewer bytes only at the body's end (the zero chunk), and raises
+    StreamBroken on a body that is not chunked as RFC 9112 says."""
+
+    def __init__(self, rfile) -> None:
+        self._rfile = rfile
+        self._left = 0
+        self._done = False
+
+    def _next(self) -> None:
+        line = self._rfile.readline(1024)
+        if not line:
+            raise StreamBroken("the stream ended inside a chunk")
+        size = line.split(b";", 1)[0].strip()
+        try:
+            self._left = int(size, 16)
+        except ValueError:
+            raise StreamBroken("a chunk with no size") from None
+        if self._left < 0 or self._left > MAX_BODY:
+            raise StreamBroken("a chunk of a size no phone sends")
+        if self._left == 0:
+            self._done = True
+            while True:                                   # the trailers, if any
+                trailer = self._rfile.readline(1024)
+                if trailer in (b"\r\n", b"\n", b""):
+                    break
+
+    def read(self, n: int) -> bytes:
+        out = bytearray()
+        while len(out) < n and not self._done:
+            if self._left == 0:
+                self._next()
+                continue
+            take = self._rfile.read(min(n - len(out), self._left))
+            if not take:
+                raise StreamBroken("the stream ended inside a chunk")
+            out += take
+            self._left -= len(take)
+            if self._left == 0:
+                self._rfile.readline(4)                   # the chunk's CRLF
+        return bytes(out)
+
+
+def _read_exactly(body, n: int) -> bytes:
+    data = body.read(n)
+    if len(data) != n:
+        raise StreamBroken("the stream ended inside a frame")
+    return data
+
+
+def read_frame(body) -> tuple[bytes, bytes]:
+    """(kind, payload) of the next frame of a stream."""
+    head = _read_exactly(body, 5)
+    kind, length = head[:1], int.from_bytes(head[1:], "big")
+    if length > FRAME_MAX:
+        raise StreamBroken(f"a frame of {length} bytes")
+    return kind, _read_exactly(body, length)
+
+
+def _to_its_end(body, quiet: bool = False) -> None:
+    """The rest of the body, read and dropped: after its end or cancel frame a
+    phone still sends the chunked body's own end (the zero chunk), and a socket
+    closed with bytes unread goes out as a reset, which can take the answer
+    still on its way to the phone with it. Measured 2026-11-27 on the emulator
+    behind a link like mobile data: answered before it, the stream's text was
+    lost every time (ProtocolException on the phone) and the recording went
+    again whole. Nothing is waited for past what the phone sends at once, and
+    the socket's own timeout bounds it. quiet: on the way to saying no
+    already, a body that breaks off is no new news."""
+    try:
+        while body.read(65536):
+            pass
+    except StreamBroken:
+        if not quiet:
+            raise
+    except Exception:                                  # noqa: BLE001 — the socket's
+        pass
+
+
+def frame(kind: bytes, payload: bytes = b"") -> bytes:
+    """One frame, as the keyboard writes it (StreamWire.kt)."""
+    return kind + len(payload).to_bytes(4, "big") + payload
+
+
+def _frame_json(payload: bytes) -> dict:
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise StreamBroken("a frame that is not JSON") from None
+    if not isinstance(value, dict):
+        raise StreamBroken("a frame that is not an object")
+    return value
+
 
 class _Answer(Exception):
     """A route's answer from the middle of it: a body that was not JSON."""
@@ -246,7 +378,8 @@ class Routes:
 
     def __init__(self, transcribe, translate=None, *, punctuate=None, notify=None,
                  review_pending=None, review_decide=None, lookup=None,
-                 max_chars: int = 5000, review_scope: str = "phone") -> None:
+                 max_chars: int = 5000, review_scope: str = "phone",
+                 stream_begin=None) -> None:
         self.transcribe = transcribe
         self.translate = translate
         self.punctuate = punctuate
@@ -256,6 +389,19 @@ class Routes:
         self.lookup = lookup
         self.max_chars = max_chars
         self.review_scope = review_scope
+        #: For a stream (stage 2): ``stream_begin(phonestream.PhoneStream)`` ->
+        #: the rolling transcriber reading it, or None (main.App._stream_roller).
+        #: Without one a stream is still taken, and decoded whole at its end.
+        self.stream_begin = stream_begin
+
+    def stream(self, phone):
+        """One phone dictation arriving while it is spoken (phonestream.py): the
+        phone door's ``/stream`` and the relay's streamed pieces feed it, and its
+        answer is /transcribe's for the whole recording."""
+        import phonestream
+
+        begin = self.stream_begin or (lambda stream: None)
+        return phonestream.Session(begin, lambda wav, rolled: self._answer(wav, phone, rolled))
 
     def handle(self, route: str, body: bytes = b"", phone=None) -> tuple[int, dict]:
         name = (LOOPBACK_ROUTES if phone is None else PHONE_ROUTES).get(route)
@@ -276,13 +422,23 @@ class Routes:
         return 200, api_version()
 
     def _do_transcribe(self, raw: bytes, phone) -> tuple[int, dict]:
+        return self._answer(raw, phone)
+
+    def _answer(self, raw: bytes, phone, rolled=None) -> tuple[int, dict]:
+        """/transcribe's answer for a whole recording. ``rolled`` is the
+        rolling transcriber that read it while it was spoken (a stream, stage
+        2), handed on so only its tail is decoded now; None is the whole
+        decode, as /transcribe has always done."""
         try:
             wav, seconds = to_wav(raw)
         except Exception as e:
+            if rolled is not None:
+                rolled.invalidate()
             log.warning("phone sent audio we could not decode: %s", e)
             return 400, {"error": f"could not decode the audio: {e}"}
         try:
-            result = self.transcribe(wav)
+            result = (self.transcribe(wav) if rolled is None
+                      else self.transcribe(wav, rolled=rolled))
         except Exception as e:
             log.warning("phone transcription failed: %s", e)
             return 503, {"error": str(e)}
@@ -290,8 +446,8 @@ class Routes:
         # later and the test fakes still return pairs.
         text, backend = result[0], result[1]
         warning = result[2] if len(result) > 2 else None
-        log.info("phone: %.1f s -> %d chars via %s", seconds, len(text),
-                 backend)
+        log.info("phone: %.1f s -> %d chars via %s%s", seconds, len(text),
+                 backend, " (streamed)" if rolled is not None else "")
         if phone is not None:
             import phone as phone_mod
 
@@ -611,6 +767,77 @@ class _PhoneHandler(_Handler):
     def _authorised(self) -> bool:
         return True
 
+    def do_POST(self) -> None:
+        if self._route() == STREAM_ROUTE:
+            self._stream()
+            return
+        super().do_POST()
+
+    def _stream(self) -> None:
+        """One dictation, read while it is spoken (stage 2): the head, the
+        audio as it comes, and the end, which is checked against what came
+        before anything is decoded as final. The answer is /transcribe's, once.
+        A stream that breaks or does not check is dropped whole, and the
+        answer says ``whole``: send the recording instead. A stream whose
+        phone just goes away is dropped with no answer at all; the phone still
+        holds the recording."""
+        chunked = "chunked" in (self.headers.get("Transfer-Encoding") or "").lower()
+        if chunked:
+            body = _Chunked(self.rfile)
+        else:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if not 0 < length <= MAX_BODY:
+                self._json(400, {"error": "a stream with no body", "whole": True})
+                return
+            body = _Fixed(self.rfile, length)
+        session = None
+        try:
+            kind, payload = read_frame(body)
+            if kind != FRAME_HEAD:
+                raise StreamBroken("a stream that does not begin with its head")
+            head = _frame_json(payload)
+            if (head.get("v") != STREAM_PROTO or head.get("rate") != 16000
+                    or head.get("bits") != 16 or head.get("channels") != 1):
+                raise StreamBroken("a stream this PC does not read")
+            session = self.server.routes.stream(self.phone)
+            while True:
+                kind, payload = read_frame(body)
+                if kind == FRAME_AUDIO:
+                    session.feed(payload)
+                elif kind == FRAME_END:
+                    end = _frame_json(payload)
+                    size, digest = end.get("bytes"), end.get("sha256")
+                    if not (isinstance(size, int) and isinstance(digest, str)
+                            and session.checks(size, digest)):
+                        raise StreamBroken("the stream's end does not say what came")
+                    _to_its_end(body)
+                    self._json(*session.finish())
+                    return
+                elif kind == FRAME_CANCEL:
+                    session.cancel()
+                    log.info("phone: a stream was cancelled (%.1f s had come)",
+                             session.stream.seconds)
+                    _to_its_end(body)
+                    self._json(200, {"cancelled": True})
+                    return
+                else:
+                    raise StreamBroken("a frame of a kind this PC does not read")
+        except StreamBroken as e:
+            if session is not None:
+                session.cancel()
+            log.info("phone: a stream was dropped (%s)", e)
+            _to_its_end(body, quiet=True)          # the same reset would take this answer too
+            self._json(400, {"error": str(e), "whole": True})
+        except Exception as e:                       # noqa: BLE001 — the socket, a feed past the cap
+            if session is not None:
+                session.cancel()
+            log.info("phone: a stream ended before its end (%s)", type(e).__name__)
+            _to_its_end(body, quiet=True)
+            self._json(400, {"error": "the stream broke", "whole": True})
+
 
 def _review_item(item: dict) -> dict:
     """One pending proposal as the phone wants it: the fields it paints,
@@ -720,7 +947,7 @@ class PhoneServer:
 
     def __init__(self, cfg, transcribe, backend_name, translate=None,
                  punctuate=None, notify=None, review_pending=None,
-                 review_decide=None, lookup=None):
+                 review_decide=None, lookup=None, stream_begin=None):
         self.cfg = cfg
         self._backend_name = backend_name
         # The second reading's queue and its verdicts, and the F8 lookup,
@@ -729,7 +956,8 @@ class PhoneServer:
                              notify=notify, review_pending=review_pending,
                              review_decide=review_decide, lookup=lookup,
                              max_chars=cfg.translate.max_chars,
-                             review_scope=cfg.server.review_scope)
+                             review_scope=cfg.server.review_scope,
+                             stream_begin=stream_begin)
         self._srv: _Server | None = None
         self._thread: threading.Thread | None = None
         #: The port it holds, None while it is shut.

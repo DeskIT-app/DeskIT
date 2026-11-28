@@ -172,17 +172,19 @@ object Backup {
      * One recording, to whichever answers first: a PC of the account, or the person's
      * own key, as [Road.next] says. [askingSince] is when the asking began (the press,
      * or Send again), [toCloudNow] is told when the recording sets out for the cloud.
-     * Blocking: call it from a thread.
+     * [stream] is the same recording on its way while it was spoken (stage 2): on the
+     * road it went it is finished there, and wherever else the recording goes it goes
+     * whole, as before. Blocking: call it from a thread.
      */
     fun dictate(c: Context, item: SpoolFiles.Item, askingSince: Long,
-                toCloudNow: () -> Unit): Transcriber.Result {
+                stream: LiveStream? = null, toCloudNow: () -> Unit): Transcriber.Result {
         val cloudOn = active(c)
         val relayOn = Relay.usable(c)
-        if (!cloudOn && !relayOn) return Link.dictate(c, item)
+        if (!cloudOn && !relayOn) return Link.dictate(c, item, stream)
         val wav = try {
             item.bytes()
         } catch (e: IOException) {
-            return Link.dictate(c, item)
+            return Link.dictate(c, item, stream)
         }
         // A key added on a PC since the last read: look, beside the PC road.
         if (cloudOn && CloudKeys.provider(c) == null && CloudKeys.stale(c)) {
@@ -228,7 +230,10 @@ object Backup {
                     }
                     gate.notifyAll()
                 }
-                Transcriber.send(road, wav)
+                // the stream's own end on the door it went to; the whole of it only while
+                // nothing has landed (a stream given up at the settling sends nothing)
+                stream?.onDoor(road, wav)
+                    ?: (if (synchronized(gate) { settled }) unreached else Transcriber.send(road, wav))
             }
             synchronized(gate) {
                 pcResult = r
@@ -255,7 +260,8 @@ object Backup {
                         silentMs = if (door == Road.Door.ANSWERED) now - doorAt else 0L,
                         pc = pc, cloud = cloud, relay = view.state, run = run,
                         relayQuietMs = if (run == Road.Run.IDLE) 0L else now - relayMoved,
-                        relayPc = relayPc))
+                        relayPc = relayPc,
+                        relayStreaming = view.target != null && stream?.relayTarget == view.target))
                     when (step) {
                         Road.Step.WAIT -> gate.wait(50)
                         Road.Step.LAND_PC -> return pcResult!!
@@ -278,13 +284,18 @@ object Backup {
                             Log.i("DeskIT", "relay: to the PC through the account, the door at home " +
                                 "${door.name.lowercase()}, ${now - askingSince} ms asked")
                             thread(name = "backup-relay") {
-                                val r = Relay.send(c, wav, target) { took ->
+                                val moved = { took: Boolean ->
                                     synchronized(gate) {
                                         relayMoved = SystemClock.elapsedRealtime()
                                         if (took) run = Road.Run.TOOK
                                         gate.notifyAll()
                                     }
                                 }
+                                // the stream's end where it went; the whole of it elsewhere,
+                                // and only while nothing has landed
+                                val r = stream?.onRelay(target, wav, moved)
+                                    ?: (if (synchronized(gate) { settled }) unreached
+                                        else Relay.send(c, wav, target, moved))
                                 synchronized(gate) {
                                     relayResult = r
                                     relayPc = if (r is Transcriber.Result.Ok && !first.offer("relay"))
@@ -314,6 +325,8 @@ object Backup {
             }
         } finally {
             synchronized(gate) { settled = true }
+            // a stream the road it went on did not take: the PC lets it go
+            stream?.cancel()
         }
     }
 

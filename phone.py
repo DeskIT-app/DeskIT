@@ -346,12 +346,17 @@ def rotate() -> str:
 # on and said yes to, a bool; a keyboard older than the backup names none, and
 # the one before it wrote a "backup": true that meant nothing and is not read).
 # A PC: {"v", "kind": "pc", "cert": <SHA-256, hex>, "addrs", "port", "proto",
-# "words_sync", "history_sync"}, the last whether this PC's account keeps what
+# "words_sync", "history_sync", "stream"}: whether this PC's account keeps what
 # was said, which is where a phone writes the text of a dictation the cloud
-# carried. An unknown field is ignored.
+# carried, and the version of the door's /stream (stage 2: the recording sent
+# while it is spoken), which a PC from before it names none of, and one with
+# `[server] stream` off, and a phone then sends it whole. An unknown field is
+# ignored.
 
 #: What this PC's door speaks, in a `link` row.
 PROTO = 1
+#: The door's /stream, in a `link` row: server.STREAM_PROTO.
+STREAM = 1
 #: A row is small and a PC has few adapters; the sealed column is not free.
 MAX_ADDRS = 8
 
@@ -603,7 +608,8 @@ def drop_rows() -> None:
             pass
 
 
-def publish(*, port: int, listening: bool, words_sync: bool, history_sync: bool = False) -> bool:
+def publish(*, port: int, listening: bool, words_sync: bool, history_sync: bool = False,
+            stream: bool = True) -> bool:
     """This PC's ``link`` row, when anything in it changed; True when one
     went out. ``listening`` is whether a phone should try here at all: a
     PC that said no, or has the switch off, names no address.
@@ -622,7 +628,12 @@ def publish(*, port: int, listening: bool, words_sync: bool, history_sync: bool 
 
     ``history_sync`` is whether this PC's account keeps what was said: a phone
     writes the text of a dictation the cloud carried into the history store
-    only where a PC of the account will read it (PHONE_LINK_PLAN.md 2b)."""
+    only where a PC of the account will read it (PHONE_LINK_PLAN.md 2b).
+
+    ``stream`` is ``[server] stream``: the row says this PC's door reads
+    /stream (stage 2), and a phone streams only to a PC whose row says so.
+    Off, the field is not written at all, so the row is one from before
+    stage 2 and the phone sends the recording whole on both roads."""
     import sb
     import vault
 
@@ -642,6 +653,8 @@ def publish(*, port: int, listening: bool, words_sync: bool, history_sync: bool 
             row = {"v": 1, "kind": "pc", "cert": cert, "addrs": addrs, "port": int(port),
                    "proto": PROTO, "words_sync": bool(words_sync),
                    "history_sync": bool(history_sync)}
+            if stream:
+                row["stream"] = STREAM
             here = [r for r in kept.get("rows") or [] if str(r.get("id") or "") == mine]
             opened = _open_rows(key, uid, here, set())
             if opened and opened[0]["link"] == row:

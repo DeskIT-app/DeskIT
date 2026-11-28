@@ -35,6 +35,12 @@ import kotlin.concurrent.thread
  * `--es ime fail:locked|keystore` hands the running keyboard the answer a locked
  * phone's road gives, through its own deliver: the one failure an emulator's
  * keyboard cannot be in front of for real, because a locked phone shows none.
+ *
+ * `--es ime voice` gives the emulator's silent microphone a voice for stage 2's
+ * stream (`novoice` takes it back): four seconds of tone and one of silence, again,
+ * each voiced second at a pitch of its own, 200 + 20 k Hz for the k-th voiced second
+ * of the recording, so the PC's stand-in model (dev\android\flow_stream.py) can read
+ * back exactly which seconds reached it, and in what order, from any window.
  */
 class ProbeReceiver : BroadcastReceiver() {
 
@@ -373,6 +379,36 @@ class ProbeReceiver : BroadcastReceiver() {
         return "$name=${xy[0] + v.width / 2},${xy[1] + v.height / 2}"
     }
 
+    /**
+     * The k-th voiced second at 200 + 20 k Hz, four voiced and one silent in every five,
+     * by the recording's own sample count, so a Continue goes on where it stopped.
+     */
+    private fun voice(k: DictationIme, on: Boolean) {
+        val recorder = held("recorder").get(k)
+        val field = Recorder::class.java.getDeclaredField("voice").apply { isAccessible = true }
+        if (!on) {
+            field.set(recorder, null)
+            return
+        }
+        val speak: (ByteArray, Int, Int) -> Unit = { chunk, n, offset ->
+            val first = offset / 2
+            var i = 0
+            while (i + 1 < n) {
+                val g = first + i / 2
+                val second = g / Recorder.SAMPLE_RATE
+                val v = if (second % 5 == 4) 0 else {
+                    val word = (second / 5) * 4 + second % 5
+                    val hz = 200.0 + 20.0 * word
+                    (9830.0 * Math.sin(2 * Math.PI * hz * g / Recorder.SAMPLE_RATE)).toInt()
+                }
+                chunk[i] = (v and 0xff).toByte()
+                chunk[i + 1] = ((v shr 8) and 0xff).toByte()
+                i += 2
+            }
+        }
+        field.set(recorder, speak)
+    }
+
     /** What a microphone with a voice in it reports: an emulator's hears nothing. */
     private fun loud(k: DictationIme) {
         val recorder = held("recorder").get(k)
@@ -426,6 +462,8 @@ class ProbeReceiver : BroadcastReceiver() {
             "now" -> comeBack(k, "landed-words", false)
             "late" -> comeBack(k, "late-words", true)
             "loud" -> loud(k)
+            "voice" -> voice(k, true)
+            "novoice" -> voice(k, false)
             // The system taking a held touch, as a call or a window over the keyboard takes it:
             // a real ACTION_CANCEL through the mic's own listener.
             "cancel" -> {
