@@ -6,7 +6,7 @@ title: התחלה מהירה
 
 # התחלה מהירה
 
-1. **להשיג.** `winget install YoavShimron.DeskIT`, או להוריד את `DeskIT-Setup-x.y.z.exe`
+1. **להשיג.** מורידים את `DeskIT-Setup-x.y.z.exe`
    מ[הגרסה האחרונה](https://github.com/DeskIT-app/DeskIT/releases/latest). אם חלונות אומר
    "Windows protected your PC": **More info** ואז **Run anyway** ([למה](01-install)).
 2. **להתקין.** בלי סיסמת מנהל. דסק-איט נפתח לבד בסוף.

@@ -12,7 +12,6 @@
 
 - **[להוריד את המתקין](https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe)** — `DeskIT-Setup.exe`, בערך 60 מגה־בייט
   ([דף הגרסה](https://github.com/DeskIT-app/DeskIT/releases/latest): ה־SHA-256, סריקת VirusTotal, ה־attestation). מותקן למשתמש שלך בלבד, בלי סיסמת מנהל.
-- או בטרמינל, אם יש לך winget: `winget install YoavShimron.DeskIT` (אחרי שהחבילה תאושר).
 
 חלונות 10 (1809 ומעלה) או 11, 64 ביט. בהפעלה הראשונה אשף קצר ומודל העברית יורד פעם אחת
 (1.6 ג'יגה־בייט). כרטיס NVIDIA הופך את התמלול למיידי; בלעדיו זה עובד, לאט יותר.
@@ -56,7 +55,6 @@ PC unless you say yes first, and every request can be seen. Open source, Apache-
 
 - **[Download the installer](https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe)** — `DeskIT-Setup.exe`, about 60 MB
   ([the release page](https://github.com/DeskIT-app/DeskIT/releases/latest): SHA-256, the VirusTotal scan, the attestation). Installs for your user only, no admin password.
-- Or, with winget: `winget install YoavShimron.DeskIT` (once the package is accepted).
 
 Windows 10 (1809+) or 11, 64-bit. The installer downloads the Hebrew model (1.6 GB, once, with
 your tick; an NVIDIA card's libraries too); the first start is a short wizard. An NVIDIA card

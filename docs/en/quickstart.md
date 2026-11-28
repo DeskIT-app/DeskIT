@@ -6,8 +6,8 @@ title: Quick start
 
 # Quick start
 
-1. **Get it.** `winget install YoavShimron.DeskIT`, or download `DeskIT-Setup-x.y.z.exe`
-   from the [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). If Windows
+1. **Get it.** Download `DeskIT-Setup-x.y.z.exe` from the
+   [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). If Windows
    says "Windows protected your PC": **More info**, then **Run anyway** ([why](01-install)).
 2. **Install.** No administrator password. DeskIT opens by itself at the end.
 3. **The wizard.** A few pages; most are just **Next**. Talk to the microphone, press
