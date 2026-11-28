@@ -24881,7 +24881,7 @@ def test_the_boot_card_never_echoes_a_line_it_does_not_understand() -> None:
     from skin.boot import Card
     card = Card()
     before = card.line
-    card.status("open this on the phone: https://yoav.example.ts.net/"
+    card.status("open this on the phone: https://pc.example/"
                 "#t=SECRETTOKENSECRETTOKEN")
     assert "SECRETTOKEN" not in card.line, card.line
     card.status("HTTP Request: GET https://huggingface.co/api/models/x")
