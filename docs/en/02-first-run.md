@@ -23,8 +23,9 @@ second — see [The downloads](#the-downloads).
 
 ## Welcome
 
-Three sentences about where your voice goes — it stays on this computer, the words are kept in
-one folder you can delete, nothing you say leaves this PC unless you say yes first — and a link,
+Three sentences about where your voice goes — it stays on this computer, what you said is kept
+on this PC and a copy in your account is locked, nothing you say leaves this PC unless you say
+yes first — and a link,
 **How to check this yourself**, to [chapter 4](04-privacy). **Next**.
 
 ![Your account](../img/02-account.png)

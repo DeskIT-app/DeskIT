@@ -165,7 +165,7 @@ WORDS = {
     "step": "Step {n} of {total}",
     "welcome.title": "Welcome to DeskIT",
     "welcome.lines": ("Your voice stays on this computer.",
-                      "What you said is kept in one folder you can delete.",
+                      "What you said is kept on this PC; a copy in your account is locked.",
                       "Nothing you say leaves this PC unless you say yes first."),
     "welcome.defaults": "The defaults are good. Everything can be changed later in Settings.",
     "welcome.link": "How to check this yourself",

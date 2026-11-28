@@ -6,7 +6,8 @@ title: 4. Privacy, and how to check it yourself
 
 # 4. Privacy, and how to check it yourself
 
-Your voice stays on this computer. The words you say are kept in one folder you can delete.
+Your voice stays on this computer. What you said is kept on this PC; a copy in your account is
+locked.
 Nothing you say leaves this PC unless you say yes first.
 
 Every claim below comes with a way to check it that does not require trusting us. Four of the
