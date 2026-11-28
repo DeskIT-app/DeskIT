@@ -1,6 +1,6 @@
 """Where the cloud keys come from — a thin shim over secretstore.py.
 
-Every cloud client (translate.py, transcribers/gemini.py, visual_qa.py)
+Every cloud client (translate.py, punctuate.py, lookup.py, visual_qa.py)
 asks here with the environment-variable NAMES it always used
 (``GROQ_API_KEY``, ``GEMINI_API_KEY``); this module maps them to the
 secret store's names and the store does the looking: Windows Credential

@@ -16,9 +16,10 @@ owner's business, and a Stop with `stop_hook_active` set is a turn that
 is already being continued by a hook. The event is posted to the
 running app's `/notify` route on 127.0.0.1:[server] port with the
 phone bearer token from the secret store (secretstore.py, a DPAPI blob
-the app writes at start). If the app is not running, the post fails
-and the script exits 0 in silence — a hook must never make Claude wait
-on a card.
+the app writes at start). If the app is not running — its instance
+mutex is not there — nothing is sent at all, so the token never goes to
+whoever else holds the port, and the script exits 0 in silence — a hook
+must never make Claude wait on a card.
 
 Every payload also names the window the notification CAME FROM (`hwnd`
 and `app`), because a click on the card now raises it — see
@@ -359,20 +360,94 @@ def owner_window(depth: int = WALK_DEPTH) -> tuple[int, str]:
 # will not parse, or that has never heard of this session is no link at
 # all — and no link is the behaviour this hook had before: raise the
 # window and let the owner find the tab.
+#
+# THE STORE MOVED (2026-10-21). The desktop app (3.6556) now keeps all
+# of its data — this store included, same `<account>\<org>\local_<id>.json`
+# layout, same field names — in
+#
+#   %LOCALAPPDATA%\Claude-Data\claude_<publisher hash>\claude-code-sessions
+#
+# ("the data Claude keeps for this Windows account", says the README.txt
+# it leaves one level up). That folder is REAL: a cmd started through WMI,
+# outside every container, lists the same 192 files a shell inside Claude
+# Code does (2026-10-24), and neither of the two old places — %APPDATA%
+# here, the package's LocalCache\Roaming copy outside — exists any more
+# from either side. Nothing said so: from 2026-10-21 09:12 every card
+# carried no link (a click raised the window and stopped there) and the
+# engine's arrival watcher logged "found NO session store" 154 times.
+# So the roots are LISTED, new layout first, the old two after it for a
+# machine on an older app, and session_roots() is the one list both
+# this hook and notify.py's watcher read — two copies of it are how one
+# of them stayed broken.
 
-SESSIONS = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
+STORE_UNDER = Path("claude-code-sessions")
 LOCAL = "local_"
 STORE_MAX = 40                    # session files opened before giving up
 UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
                   r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# WHAT A FILE WAS FOUND TO SAY, so a miss is paid once (2026-11-10). An
+# id no file holds — a session run in a terminal, a cloud one — reads all
+# STORE_MAX files: 16 MB on the owner's PC that day, 510 ms cold (the
+# audit's figure; 640 ms in a fresh process here), and on the app's tail
+# thread that stalls every other finish behind it. So each file keeps,
+# against its (mtime_ns, size) — notify.py's _FOCUS_SEEN uses the same
+# mark for the same files — the answer it gave for each id asked: a file
+# that has not changed is not read again for that id. Only a file being
+# written is. The hook is a new process every time and starts empty;
+# for it, the bytes are searched before anything is decoded (40 files,
+# warm: 25.5 ms as text, 10.5 ms as bytes).
+_ANSWERS: dict[str, tuple] = {}   # path -> ((mtime_ns, size), {id: link})
+ANSWERS_PER_FILE = 32             # ids remembered per file, oldest out
+
+
+def _store_bytes(path: Path) -> bytes:
+    """One session file, whole — a function so a test can count reads."""
+    return path.read_bytes()
+
+
+def session_roots(local=None, appdata=None) -> list[Path]:
+    """Every folder the desktop app's session store may be in, that
+    exists, the current layout first (see "THE STORE MOVED"):
+
+        %LOCALAPPDATA%\\Claude-Data\\claude_*\\claude-code-sessions
+        %APPDATA%\\Claude\\claude-code-sessions                (before)
+        %LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude\\…
+                                                              (before, outside)
+
+    The two `*` are the publisher hash, globbed so a reinstall under
+    another identity does not move the store out from under this.
+    `local` and `appdata` stand in for the environment in a test. Never
+    raises; [] when nothing is there."""
+    local = os.environ.get("LOCALAPPDATA", "") if local is None else str(local)
+    appdata = os.environ.get("APPDATA", "") if appdata is None else str(appdata)
+    found: list[Path] = []
+    try:
+        if local:
+            found += [p / STORE_UNDER for p in
+                      sorted((Path(local) / "Claude-Data").glob("claude_*"))]
+        if appdata:
+            found.append(Path(appdata) / "Claude" / STORE_UNDER)
+        if local:
+            found += [p / "LocalCache" / "Roaming" / "Claude" / STORE_UNDER
+                      for p in sorted((Path(local) / "Packages").glob("Claude_*"))]
+    except OSError:
+        pass
+    out: list[Path] = []
+    for root in found:
+        try:
+            if root.is_dir() and root not in out:
+                out.append(root)
+        except OSError:
+            continue
+    return out
 
 
 def session_link(session_id, root=None) -> str:
     """`claude://resume?session=<uuid>` for one CLI session, or "".
 
     `root` is the store's folder, a parameter only so a test can hand
-    over one it built; left None it is the app's own. The files are read
-    newest first — a live session's file is written constantly — and the
+    over one it built; left None it is every folder session_roots()
+    finds, read as one store. The files are read newest first — a live session's file is written constantly — and the
     id is looked for as text before anything is parsed, because these
     are 400 KB documents and the id is a 36-character needle. A text hit
     is not the answer, though: the id can appear anywhere in the file,
@@ -388,33 +463,58 @@ def session_link(session_id, root=None) -> str:
     if not UUID.match(ident):
         return ""
     try:
-        root = Path(root) if root is not None else SESSIONS
-        files = sorted(root.glob(f"*/*/{LOCAL}*.json"),
-                       key=lambda p: p.stat().st_mtime, reverse=True)
-        for path in files[:STORE_MAX]:
+        roots = [Path(root)] if root is not None else session_roots()
+        stats = []
+        for p in (p for r in roots for p in r.glob(f"*/*/{LOCAL}*.json")):
             try:
-                text = path.read_text("utf-8")
+                stats.append((p, p.stat()))
             except OSError:
                 continue
-            if ident not in text:
-                continue
+        stats.sort(key=lambda ps: ps[1].st_mtime_ns, reverse=True)
+        needle = ident.encode("ascii")
+        newest = stats[:STORE_MAX]
+        for path, st in newest:
+            mark = (st.st_mtime_ns, st.st_size)
+            memo = _ANSWERS.get(str(path))
+            if memo is None or memo[0] != mark:
+                memo = _ANSWERS[str(path)] = (mark, {})
+            said = memo[1]
+            if ident in said:
+                if said[ident]:
+                    return said[ident]
+                continue              # read before, unchanged since: no
             try:
-                data = json.loads(text)
-            except ValueError:
-                continue
-            if not isinstance(data, dict):
-                continue
-            prior = data.get("priorCliSessionIds")
-            prior = prior if isinstance(prior, list) else []
-            if data.get("cliSessionId") != ident and ident not in prior:
-                continue              # the id was IN the file, but not as
-                                      # one of this session's own episodes
-            local = str(data.get("sessionId") or "")
-            uuid = local[len(LOCAL):] if local.startswith(LOCAL) else ""
-            if not UUID.match(uuid):
-                continue              # `local_ditto_…` — a cloud session,
-                                      # whose id resume will not take
-            return f"claude://resume?session={uuid}"
+                raw = _store_bytes(path)
+            except OSError:
+                continue              # not remembered: asked again next time
+            link = ""
+            if needle in raw:
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    data = None
+                if isinstance(data, dict):
+                    prior = data.get("priorCliSessionIds")
+                    prior = prior if isinstance(prior, list) else []
+                    # the id can be IN the file without being one of this
+                    # session's own episodes — only these two fields MEAN it
+                    if data.get("cliSessionId") == ident or ident in prior:
+                        local = str(data.get("sessionId") or "")
+                        uuid = local[len(LOCAL):] if local.startswith(LOCAL) \
+                            else ""
+                        # `local_ditto_…` is a cloud session, whose id
+                        # resume will not take
+                        if UUID.match(uuid):
+                            link = f"claude://resume?session={uuid}"
+            if len(said) >= ANSWERS_PER_FILE:
+                said.pop(next(iter(said)))
+            said[ident] = link
+            if link:
+                return link
+        if len(_ANSWERS) > 4 * STORE_MAX:
+            keep = {str(p) for p, _st in newest}
+            for name in [n for n in _ANSWERS if n not in keep]:
+                del _ANSWERS[name]
     except Exception:                 # noqa: BLE001
         return ""
     return ""
@@ -515,15 +615,41 @@ def read_token(path=None) -> str | None:
     return token or None
 
 
+def app_is_here() -> bool:
+    """Is THIS copy's app running in this login session? Its instance
+    mutex (singleton.MUTEX_NAME, `Local\\` and so per session, `.dev` in
+    the checkout) is what says so. Any failure is False.
+
+    Asked before the bearer leaves (2026-11-09 audit, security-local 5):
+    the port in state.json is only where the app WAS. With the app down,
+    whatever holds that port — another Windows user's listener, since a
+    loopback port is shared by every session on the PC — was handed the
+    token on every Claude turn, and the token opens /review's pending
+    dictations. SO_EXCLUSIVEADDRUSE guards the port only while the app
+    holds it, and the mutex exists for exactly that span (it is taken
+    first at start, gone when the process is). What is left: the second
+    or two of a start between the mutex and the door's bind."""
+    try:
+        import singleton
+
+        return singleton.is_running()
+    except Exception:                     # noqa: BLE001
+        return False
+
+
 def post(payload: dict, url: str, token: str, timeout: float = 3.0) -> bool:
     """One POST; True on a 2xx. Any failure — no app, wrong port, bad
-    token, a slow reply — is False, never an exception.
+    token, a slow reply — is False, never an exception. With this copy's
+    app not running nothing is sent at all (`app_is_here`).
 
     Through net.py like every other request in the tree (D12), which is
     also why the bearer travels as a header the caller supplies: net.py
     admits a caller's own bearer for 127.0.0.1 only, and this is the one
     place that has a reason to — the token may have come from a file
-    named on the command line rather than the store."""
+    named on the command line rather than the store. net.py sends it to
+    127.0.0.1 past every proxy (net._LOCAL_OPENER)."""
+    if not app_is_here():
+        return False
     try:
         import net
 

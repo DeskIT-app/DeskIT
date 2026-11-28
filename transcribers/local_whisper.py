@@ -12,8 +12,8 @@ Notes that cost real time to discover, keep them:
 - The ivrit-ai fine-tune DEGRADED Whisper's language detection. language
   must always be pinned to "he"; never let it auto-detect. The model is
   Hebrew-only — English dictation would need a different model.
-- Whisper only transcribes. Gemini also cleans up (fillers, self-
-  corrections, digits) via its system prompt, so local output is rawer.
+- Whisper only transcribes. The Gemini engine (gone since 2026-11-27)
+  also cleaned up fillers, self-corrections and digits; local is rawer.
   `condition_on_previous_text=False` at least stops it looping on
   repetitions, which Whisper is prone to on hesitant speech.
 - It also HALLUCINATES A TAIL: the decoder runs past the end of real
@@ -42,6 +42,7 @@ Notes that cost real time to discover, keep them:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import re
@@ -104,6 +105,8 @@ def _register_cuda_dlls() -> None:
 
 
 DETECT_RATE = 16000        # what detect_language's mel front-end expects
+EARLY_SPEECH_S = 30.0      # what detect_language reads (early_language)
+EARLY_MARGIN_S = 3.0       # ...and the audio after it VAD needs to agree
 
 
 def _decode_pcm(wav_bytes: bytes):
@@ -306,6 +309,175 @@ def _looped(text: str) -> bool:
     return bool(_LOOP_RUN.search(text)) or _word_loop(text)
 
 
+# --- the real length (2026-10-25) -------------------------------------------
+# Whisper's encoder is always handed 30 s: faster-whisper's pad_or_trim pads
+# every window to 3,000 mel frames, so a 3 s sentence costs the encoder what
+# 30 s does. On a card that is hidden; on a processor it IS the wait — night10
+# int8 on 4 threads decoded a 0-5 s FLEURS clip in 7.18 s median whatever its
+# length. Handed only the clip's own frames, an untrained model loses words
+# (night10: +23% / +37% words wrong on fleurs_dev / reversim_dev), and a model
+# trained for it does not: night14b (FUTO's audio-context fine-tuning of
+# night10, DeskIT-training\runs\night14b) scored 1,137 / 818 against night10's
+# full-window 1,133 / 808, and decodes 0-5 s in 1.22 s, 5-10 s in 1.75 s,
+# 10-20 s in 3.07 s on the same 4 threads (notes\DeskIT-light-plan-2026-10-22.md
+# §8). So the window is shortened here, inside the one call that encodes it,
+# and everything around it — VAD, the guards, the loop retry, hotwords, word
+# timestamps, the rolling windows and _trim — is faster-whisper's own code,
+# untouched. ONLY FOR A MODEL TRAINED FOR IT: [local] real_length decides.
+
+#: Whisper's window, in mel frames (10 ms each).
+FULL_FRAMES = 3000
+#: Frames of silence after the clip's own, before rounding up to a hundred:
+#: what night14b was scored with (eval_dynctx.py, +100; the training drew
+#: +0-300).
+MARGIN_FRAMES = 100
+
+
+def real_length_frames(content: int) -> int:
+    """The window a clip of `content` frames is encoded in: its own frames
+    and the margin, rounded up to a hundred, never more than 30 s."""
+    return min(FULL_FRAMES,
+               int(math.ceil((max(0, content) + MARGIN_FRAMES) / 100.0)) * 100)
+
+
+def _content_frames(features) -> int:
+    """How many frames of a padded window are the recording's: everything
+    up to the last frame that is not all zeros. pad_or_trim pads with exact
+    zeros, and a real frame cannot be one — the extractor's floor is
+    (log10 mel + 4) / 4 clamped to 8 below the loudest, so silence is a
+    negative number, never 0.0 in every band."""
+    import numpy as np
+    active = np.any(features != 0, axis=-2)
+    while active.ndim > 1:
+        active = active.any(axis=0)
+    hits = np.flatnonzero(active)
+    return int(hits[-1]) + 1 if hits.size else 0
+
+
+def _at_real_length(encode):
+    """faster-whisper's WhisperModel.encode, handed each window cut back to
+    real_length_frames of its content instead of the 3,000 it was padded
+    to. A window of a full 30 s, or anything that is not a padded numpy
+    window, goes through as it came."""
+    import numpy as np
+
+    def encode_at_real_length(features):
+        if isinstance(features, np.ndarray) \
+                and features.shape[-1] == FULL_FRAMES:
+            want = real_length_frames(_content_frames(features))
+            if want < FULL_FRAMES:
+                features = features[..., :want]
+        return encode(features)
+
+    return encode_at_real_length
+
+
+#: [local] real_length: off | cpu | always.
+REAL_LENGTH_MODES = ("off", "cpu", "always")
+
+
+# --- the empty-pass crawl (2026-11-28) ---------------------------------------
+# faster-whisper's seek loop, with word timestamps on, moves the next pass to
+# the end of the last word unless a pass ends on a lone timestamp — and a pass
+# that decodes NOTHING (one timestamp token, no text) is not that case, so the
+# next pass starts 0.1 s on, and each pass is a whole 30 s encode. Measured
+# 2026-11-28 on the 127.4 s dictation of 2026-11-27 22:17, the one that waited
+# 6.7 s for its paste: its 19.3 s tail ended in 2.6 s of quiet with one breath
+# in it, and with the hotwords in the prompt every pass over that quiet came
+# back as one timestamp — 26 empty passes 0.1 s apart, 5.45 s for the tail,
+# where the same tail without hotwords was one pass, 0.54 s, and the same
+# words. A pass that reached the end of the clip and decoded no text has
+# already looked at everything left, so here it ends the loop the way a pass
+# ending on a lone timestamp always did. [local] stop_empty_passes.
+#
+# ONLY a lone timestamp UNDER faster-whisper's first-timestamp cap
+# (max_initial_timestamp, 1.0 s), and only where the library itself already
+# moved the seek to the clip's end: a lone <|1.00|> can mean "the speech
+# starts later than I may say", and a pass that the old loop would carry on
+# from is not one this may end. Checked 2026-11-28 the way that could lose
+# words: 60 clips cut from his recordings with 0.5/1.0/1.5/2.0 s of real
+# quiet, or tonight's breath, IN FRONT of speech — at a window start, a tail
+# start, inside one VAD chunk, at the clip start — identical with the stop
+# on and off, 60 of 60; every lone timestamp seen there and in tonight's
+# crawl was <|0.10|> on quiet after the last word, never the cap.
+
+_tally = threading.local()
+#: faster-whisper's max_initial_timestamp default, which we never change
+FIRST_TIMESTAMP_CAP_S = 1.0
+
+
+def _counting_generate(generate):
+    """WhisperModel.generate_with_fallback, which counts a pass of the
+    decode in progress (_decode's tally) and what it cost since the last
+    pass ended — every pass generates once, the ones the no-speech check
+    then skips included, so a skipped pass's seconds stay its own."""
+    def generate_counted(*args, **kw):
+        stats = getattr(_tally, "now", None)
+        result = generate(*args, **kw)
+        if stats is not None:
+            now = time.perf_counter()
+            stats["passes"] = stats.get("passes", 0) + 1
+            stats["pass_s"] = now - stats.get("mark", now)
+            stats["mark"] = now
+        return result
+    return generate_counted
+
+
+def _without_empty_crawl(split, on, precision: float = 0.02):
+    """WhisperModel._split_segments_by_timestamps, which counts the empty
+    passes of the decode in progress (_decode's tally) and, while `on()`,
+    ends the loop at one: a lone timestamp under FIRST_TIMESTAMP_CAP_S,
+    no text, the seek already at the clip's end. Anything it does not
+    recognise goes through untouched."""
+    def split_without_crawl(*args, **kw):
+        segments, seek, single = split(*args, **kw)
+        try:
+            tokens = kw["tokens"]
+            begin = kw["tokenizer"].timestamp_begin
+            if args or single or not tokens \
+                    or any(t < begin for t in tokens):
+                return segments, seek, single
+            stats = getattr(_tally, "now", None)
+            if stats is not None:
+                stats["empty"] = stats.get("empty", 0) + 1
+                stats["empty_s"] = stats.get("empty_s", 0.0) \
+                    + stats.get("pass_s", 0.0)
+            lone = len(tokens) == 1 and \
+                (tokens[0] - begin) * precision < FIRST_TIMESTAMP_CAP_S
+            at_end = kw["segment_size"] < FULL_FRAMES \
+                and seek >= kw["seek"] + kw["segment_size"]
+            if lone and at_end and on():
+                if stats is not None:
+                    stats["stopped"] = True
+                return segments, seek, True
+        except Exception:
+            pass
+        return segments, seek, single
+    return split_without_crawl
+
+
+def _decoder_tally() -> dict:
+    """What the last _decode on this thread did, for last_timing: passes
+    (how many times faster-whisper encoded and decoded), empty (passes
+    that found no text) and their seconds, whether the crawl was stopped,
+    and the loop retry's rungs and seconds. Numbers only. Read once: a
+    second read, or one after a call that decoded nothing, is {}."""
+    stats = dict(getattr(_tally, "last", None) or {})
+    _tally.last = None
+    stats.pop("mark", None)
+    stats.pop("pass_s", None)
+    for key in ("empty_s", "retry_s"):
+        if key in stats:
+            stats[key] = round(stats[key], 3)
+    return stats
+
+
+def real_length_on(mode: str, device: str) -> bool:
+    """Whether a model on `device` is decoded at the real length: "cpu"
+    only on the processor (the CPU tier), "always" on a card too."""
+    return mode == "always" or (mode == "cpu" and device == "cpu")
+
+
 class LocalWhisperTranscriber:
     name = "local"
 
@@ -315,11 +487,21 @@ class LocalWhisperTranscriber:
     _beam_size = 5
     #: The English detector's state: "" (none configured), "loading"
     #: (on its thread, english_later), "ready", "failed", "closed" (it
-    #: landed after close() and was dropped).
+    #: landed after close() and was dropped), "aside" (room for a game,
+    #: english_aside).
     english_state = ""
     _said_loading = False
     _closed = False
+    #: Room for a game asked the detector to stand aside (english_aside).
+    _english_aside = False
     _english_thread: threading.Thread | None = None
+    #: The Hebrew model is encoded at the clip's own length, not 30 s
+    #: (real_length_on). The English detector never is: it was not
+    #: trained for it.
+    at_real_length = False
+    #: [local] stop_empty_passes (_without_empty_crawl): set by the
+    #: builder (transcribers._local), asked at every pass.
+    stop_empty_passes = True
     #: Where the seconds went, for the log and the wizard: the ivrit
     #: load, its warm-up, the English load and ITS warm-up — each alone,
     #: so a slow start can be read instead of guessed at.
@@ -333,13 +515,36 @@ class LocalWhisperTranscriber:
         """Second model, loaded lazily and sharing the device we settled on.
         On an installed copy the detector, too, must be on disk and
         verified (models.source); a missing one is Hebrew-only, said
-        once by the caller, never a download."""
+        once by the caller, never a download. In the checkout one the
+        global cache holds whole is its folder too (models.cached): no
+        revision request to huggingface.co at every load."""
         source = models_mod.source(model_name)
         from faster_whisper import WhisperModel
-        compute = "float16" if self.device == "cuda" else "int8"
-        log.info("loading English model %s on %s...", model_name, self.device)
-        return WhisperModel(source, device=self.device,
-                            compute_type=compute)
+        # the Hebrew model's number format, whatever the ladder settled
+        # on: until 2026-10-23 this was float16 on a card whatever the
+        # setting said, 1 GB of the app's graphics memory for nothing
+        # (the detector at int8_float16: +1.4% words wrong over the six
+        # public sets as a Hebrew witness, each set inside the spread)
+        compute = getattr(self, "_compute", None) or \
+            ("float16" if self.device == "cuda" else "int8")
+        log.info("loading English model %s on %s (%s)...", model_name,
+                 self.device, compute)
+        return self._no_crawl(WhisperModel(source, device=self.device,
+                                           compute_type=compute))
+
+    def _no_crawl(self, model):
+        """`model` with the empty-pass crawl stopped while
+        stop_empty_passes is on (_without_empty_crawl). A model without
+        the method (another faster-whisper) is left as it is."""
+        split = getattr(model, "_split_segments_by_timestamps", None)
+        if callable(split):
+            model._split_segments_by_timestamps = _without_empty_crawl(
+                split, lambda: bool(self.stop_empty_passes),
+                float(getattr(model, "time_precision", 0.02) or 0.02))
+        generate = getattr(model, "generate_with_fallback", None)
+        if callable(generate):
+            model.generate_with_fallback = _counting_generate(generate)
+        return model
 
     def _load_english(self) -> None:
         """The detector, loaded and warmed, into self._english — on the
@@ -368,6 +573,11 @@ class LocalWhisperTranscriber:
             log.info("English model loaded after this transcriber was "
                      "closed — dropped")
             return
+        if self._english_aside:
+            self.english_state = "aside"
+            log.info("English model loaded while it was asked to stand "
+                     "aside — dropped")
+            return
         self._english = english
         self.english_state = "ready"
         log.info("English model ready on %s (load %.1f s, warm-up %.1f s)"
@@ -389,6 +599,33 @@ class LocalWhisperTranscriber:
         with the object — only the word to a detector load still on its
         thread that its result is not wanted (see _load_english)."""
         self._closed = True
+
+    def english_aside(self) -> bool:
+        """Room for a game (room.py, rung 2): the English detector off the
+        card, the Hebrew model left where it is. A decode already running
+        keeps its own reference and finishes; the next dictation is
+        Hebrew. A load still on its thread drops what it brings. False
+        when there was no detector to take (none configured, or it failed)."""
+        if not self._english_model_name or self.english_state == "failed":
+            return False
+        self._english_aside = True
+        self._english = None
+        self.english_state = "aside"
+        return True
+
+    def english_back(self) -> None:
+        """The detector back, on a thread of its own (english_later's
+        path): a dictation in the seconds before it lands is Hebrew."""
+        if not self._english_aside:
+            return
+        self._english_aside = False
+        if self._english is not None or self._closed:
+            return
+        self.english_state = "loading"
+        self._said_loading = False
+        self._english_thread = threading.Thread(
+            target=self._load_english, daemon=True, name="english-model")
+        self._english_thread.start()
 
     def _detector(self):
         """The English model, or None — and, while it is still on its
@@ -455,14 +692,18 @@ class LocalWhisperTranscriber:
                  boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE,
                  hotwords=None, beam_size: int = 5,
                  compute_type: str = "auto", cpu_threads: int = 0,
-                 english_later: bool = False):
+                 english_later: bool = False, real_length: str = "off"):
         """`english_later`: load the English detector on a thread of its
         own AFTER this returns, so the app is usable the moment the
         Hebrew model is — measured 2026-09-19, the detector's load is
         4.8-6.6 s of a 13 s construction on the RTX, and every start
         paid it behind the splash. False (the default) loads it here,
         as always: the wizard's test sentence and --benchmark want the
-        whole backend before they time anything."""
+        whole backend before they time anything.
+
+        `real_length` ([local] real_length, REAL_LENGTH_MODES): the
+        Hebrew model encoded at the clip's own length on the device the
+        ladder settles on, when real_length_on says so."""
         self.timing = {}
         self.last_timing = {}
         self._english_thread = None
@@ -489,9 +730,9 @@ class LocalWhisperTranscriber:
                 "local.language must be pinned (the ivrit-ai fine-tune's "
                 "language autodetect is unreliable)")
         self._language = language
-        # Whisper transcribes but does not tidy; Gemini's prompt does both.
-        # Without this, moving to the local backend visibly regresses the
-        # output on real dictation (fillers, restarted sentences).
+        # Whisper transcribes but does not tidy (the Gemini engine's prompt
+        # did both, until it left on 2026-11-27). Without this the output
+        # visibly regresses on real dictation (fillers, restarted sentences).
         self._cleanup = cleanup
         self._fillers = cleanup_mod.DEFAULT_FILLERS + tuple(extra_fillers)
         # The Hebrew fine-tune transliterates short pure-English utterances
@@ -535,25 +776,40 @@ class LocalWhisperTranscriber:
         self.last_windows: list = []
         self._guards = hallucination_guards(guard_hallucinations)
 
-        # The ladder as it always was, unless the probe (hardware.py, plan
-        # 6.3) or the person named a number format: then that format on
-        # the device asked for, and int8 on the processor underneath.
+        # The ladder, unless the probe (hardware.py, plan 6.3) or the
+        # person named a number format: then that format on the device
+        # asked for, and int8 on the processor underneath. On a card it
+        # tries int8_float16 first since 2026-10-23: the same words as
+        # float16 on all six public sets (night10, 6,351 against 6,362
+        # words wrong, every set inside the run-to-run spread), half the
+        # graphics memory (one model 1,214 MB against 2,238 with CUDA's
+        # context, measured), ~12% more decode time — ~0.04 s on a short
+        # dictation. A card that cannot do int8 refuses it at once and
+        # gets float16. notes\DeskIT-light-plan-2026-10-22.md has the table.
         if compute_type and compute_type != "auto":
             first = "cpu" if device == "cpu" else "cuda"
             attempts = [(first, compute_type)]
+            if first == "cuda" and compute_type == "int8_float16":
+                attempts.append(("cuda", "float16"))
             if first != "cpu":
                 attempts.append(("cpu", "int8"))
         else:
-            attempts = ([("cuda", "float16"), ("cpu", "int8")]
-                        if device == "auto" else
-                        [(device, "float16" if device == "cuda" else "int8")])
+            card = [("cuda", "int8_float16"), ("cuda", "float16")]
+            attempts = (card + [("cpu", "int8")] if device == "auto" else
+                        card if device == "cuda" else [(device, "int8")])
         threads = {"cpu_threads": int(cpu_threads)} if cpu_threads else {}
         last: Exception | None = None
-        for dev, compute in attempts:
+        for i, (dev, compute) in enumerate(attempts):
             started = time.perf_counter()
             try:
                 candidate = WhisperModel(source, device=dev,
                                          compute_type=compute, **threads)
+                self._no_crawl(candidate)
+                shorter = real_length_on(real_length, dev)
+                if shorter:
+                    # before the warm-up, so the probe runs the encode
+                    # every dictation will
+                    candidate.encode = _at_real_length(candidate.encode)
                 load_s = time.perf_counter() - started
                 # Constructing on "cuda" succeeds even when the CUDA math
                 # libraries are missing — the failure only surfaces on the
@@ -566,18 +822,24 @@ class LocalWhisperTranscriber:
                 log.info("local model cannot use %s (%s) — %s", dev, compute,
                          str(e).splitlines()[0][:120])
                 if dev == "cuda" and not paths.PORTABLE \
+                        and not any(d == "cuda" for d, _ in attempts[i + 1:]) \
                         and packs_mod.state("gpu") in ("ok", "stale"):
                     # the pack is there and does not run: written down
                     # for the tier and the Home card (6.9), until the
-                    # next install or removal
+                    # next install or removal — and only after the LAST
+                    # card rung, since a card that merely refuses int8
+                    # runs float16 fine
                     packs_mod.note_failure("gpu", str(e))
                 continue
             self._model = candidate
             self.device = dev
+            self._compute = compute
+            self.at_real_length = shorter
             self.timing["load_s"] = round(load_s, 2)
             self.timing["warm_s"] = round(warm_s, 2)
-            log.info("local model %s ready on %s (%s) — load %.1f s, "
-                     "warm-up %.1f s", model, dev, compute, load_s, warm_s)
+            log.info("local model %s ready on %s (%s%s) — load %.1f s, "
+                     "warm-up %.1f s", model, dev, compute,
+                     ", real length" if shorter else "", load_s, warm_s)
             break
         else:
             raise TranscriptionError(
@@ -621,6 +883,18 @@ class LocalWhisperTranscriber:
                               **self._guards)[0])
         list(model.transcribe(audio, language=language,
                               vad_filter=True)[0])
+
+    def rewarm(self) -> float:
+        """The load-time warm-ups again, on the models already loaded —
+        for a person coming back to a machine that pushed them out of
+        memory meanwhile (wake.py has the 11.8 s this paid on 2026-10-20).
+        The detector first, as a dictation runs them. Seconds taken; a
+        failure raises, like the load's probe — the caller logs it."""
+        started = time.perf_counter()
+        if getattr(self, "_english", None) is not None:
+            self._warm_detector()
+        self._warm(self._model, self._language)
+        return time.perf_counter() - started
 
     def _warm_detector(self, detector=None) -> None:
         """Pay the first-inference cost at startup, not on the first
@@ -733,9 +1007,7 @@ class LocalWhisperTranscriber:
         if self._boilerplate:
             text, _removed = cleanup_mod.strip_trailing_boilerplate(
                 text, self._boilerplate)
-        if self._cleanup:
-            text = cleanup_mod.clean(text, self._fillers)
-        return text
+        return self.clean_text(text)
 
     def _choose(self, wav_bytes: bytes, language: str | None):
         """Which model and language a recording gets -> (model, code).
@@ -759,6 +1031,69 @@ class LocalWhisperTranscriber:
             chosen = language
         self.last_timing = {"detect_s": round(detect_s, 3), "decode_s": 0.0}
         return model, chosen
+
+    def early_language(self, wav_bytes: bytes, lock=None) -> str | None:
+        """The release's language decision, made while the key is still
+        held -> "en" / "he", or None when it cannot be made yet.
+
+        The release asks the detector about the WHOLE recording, and
+        faster-whisper's detect_language reads only the first 30 s of the
+        speech its VAD keeps (language_detection_segments = 1). So once
+        the recording so far holds EARLY_SPEECH_S of speech, and
+        EARLY_MARGIN_S of audio after the point where it got there (VAD
+        closes a stretch of speech only after 2 s of quiet and pads it by
+        0.4 s, so a prefix decides that 30 s exactly as the whole
+        recording does), the answer is already the release's — and the
+        release need not spend 0.2-0.4 s asking. Measured 2026-11-28 on
+        479 recordings (the 50 in recent\\, the corpus's 28 English and
+        301 mixed clips, 100 Hebrew ones), replayed through the Roller as
+        they arrived (at most rolling.DECIDE_TRIES asks): it answered
+        early on 75 and agreed with the release on all 75, the 3 English
+        and 65 mixed among them, while every
+        shorter prefix (the first 5/10/15/20 s, the first rolling window,
+        everything before the tail) got English and mixed clips wrong,
+        both ways. [local] early_language. `lock`, when given, is held
+        for the detector's own pass only: the VAD and the count run
+        without it, so nothing waits on them."""
+        # self._english, never _detector(): the one "still loading" line
+        # belongs to the release, which may decide differently
+        if self._english is None:
+            return None
+        audio = _decode_pcm(wav_bytes)
+        if audio is None:
+            return None
+        import numpy as np
+        from faster_whisper.vad import collect_chunks, get_speech_timestamps
+        need, total = EARLY_SPEECH_S * DETECT_RATE, 0
+        speech = get_speech_timestamps(audio)          # detect_language's own
+        for chunk in speech:
+            length = chunk["end"] - chunk["start"]
+            if total + length >= need:
+                break
+            total += length
+        else:
+            return None
+        if len(audio) < chunk["start"] + (need - total) \
+                + EARLY_MARGIN_S * DETECT_RATE:
+            return None
+        # what detect_language(audio, vad_filter=True) would hand its
+        # encoder, made here outside the lock: the same chunks, collected
+        # the same way, so only the detector's own pass holds the model
+        pieces, _ = collect_chunks(audio, speech)
+        with lock if lock is not None else contextlib.nullcontext():
+            detector = self._english
+            if detector is None:
+                return None
+            try:
+                lang, prob, _ = detector.detect_language(
+                    audio=np.concatenate(pieces, axis=0), vad_filter=False)
+            except Exception as e:
+                log.debug("early language check failed (%s)", e)
+                return None
+        # _pick_language's rule, without its log lines: those are said at
+        # the release, and only when this answer is the one it uses
+        return "en" if lang == "en" and prob >= self._english_threshold \
+            else self._language
 
     def _decode(self, model, chosen: str, wav_bytes: bytes):
         """One decode with the live settings, and the retry after a loop
@@ -788,8 +1123,29 @@ class LocalWhisperTranscriber:
             got = list(segments)
             return got, " ".join(s.text.strip() for s in got).strip()
 
+        # What this decode did, pass by pass (_without_empty_crawl), for
+        # the stages line: read back by _decoder_tally on this thread.
+        stats: dict = {"mark": time.perf_counter()}
+        _tally.now = stats
+        try:
+            segs, text = self._decode_and_retry(decode, stats)
+        finally:
+            _tally.now = None
+            _tally.last = stats
+        if stats.get("stopped"):
+            # counted, never a word: so a decode that came back empty
+            # after it says why (D8)
+            log.info("decoder: ended at an empty last pass — %d pass(es), "
+                     "%d empty (%.2f s), %d word(s)",
+                     stats.get("passes", 0), stats.get("empty", 0),
+                     stats.get("empty_s", 0.0), len(text.split()))
+        return segs, text
+
+    def _decode_and_retry(self, decode, stats: dict):
+        """_decode's body: the decode, and the loop retry after it."""
         segs, text = decode()
         if _looped(text):
+            began = time.perf_counter()
             # The words a loop swallows are NOT gone — this file used
             # to say they were, and it was wrong. Measured 2026-09-05
             # on the 57 s clip whose 73-character "Xxxxx…" ate 29 s:
@@ -820,6 +1176,8 @@ class LocalWhisperTranscriber:
                          dict(pen, temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
                                                 1.0])):
                 retry_segs, retry = decode(**rung)
+                stats["retries"] = stats.get("retries", 0) + 1
+                stats["retry_s"] = time.perf_counter() - began
                 if retry and not _looped(retry):
                     log.warning("decoder loop — recovered with %s "
                                 "(%d words for %d)",
@@ -902,6 +1260,7 @@ class LocalWhisperTranscriber:
             segs, text = self._decode(model, chosen, wav_bytes)
             self.last_timing["decode_s"] = round(
                 time.perf_counter() - started, 3)
+            self.last_timing.update(_decoder_tally())
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         window = self._settle(self._words_of(segs), text)
@@ -911,17 +1270,18 @@ class LocalWhisperTranscriber:
         self.last_windows = []
         text = window.text
         if not text:
-            return ""        # treated as "no speech", same as Gemini
+            return ""        # treated as "no speech"
         return self.clean_text(text)
 
     def clean_text(self, text: str) -> str:
         """The filler cleanup a transcript gets on its way out — the same
         one, so a stretch repaired while the key is held (main.App
         ._polish_window) starts from the text the whole recording would
-        have."""
+        have. The bidi controls go whether the cleanup is on or off: they
+        are the decoder's, never something said (cleanup.BIDI_CONTROLS)."""
         if self._cleanup and text:
             return cleanup_mod.clean(text, self._fillers)
-        return text
+        return cleanup_mod.strip_bidi_controls(text)
 
     # -- the rolling transcriber (rolling.py) --
 
@@ -981,8 +1341,17 @@ class LocalWhisperTranscriber:
         before it, which is decoded again in its place.
         """
         from rolling import LEAD_S, MIN_TAIL_S
+        early = None if language else getattr(head, "language", None)
+        if early == "en" and self._english is None:
+            # the English model went aside (room for a game) after it
+            # answered: English to the Hebrew model is the one thing worse
+            # than asking again, so the release decides, as always
+            early = None
         try:
-            model, chosen = self._choose(wav_bytes, language)
+            model, chosen = self._choose(wav_bytes, language or early)
+            if early:
+                self.last_timing["early_language"] = early
+                log.info("language decided while you spoke: %s", early)
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         if model is not self._model or chosen != self._language:
@@ -990,7 +1359,10 @@ class LocalWhisperTranscriber:
             # The whole recording, the old way — these are short.
             log.info("rolling: the recording is not %s — decoding it whole",
                      self._language)
-            return self.transcribe(wav_bytes, language=chosen)
+            text = self.transcribe(wav_bytes, language=chosen)
+            if early:
+                self.last_timing["early_language"] = early
+            return text
         total_s = _wav_seconds(wav_bytes)
         windows = list(head.windows)
         start = float(head.end_s)
@@ -1007,6 +1379,7 @@ class LocalWhisperTranscriber:
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         self.last_timing["decode_s"] = round(time.perf_counter() - began, 3)
+        self.last_timing.update(_decoder_tally())
         self.last_words = [(word, round(begin + w.start_s, 2),
                             round(end + w.start_s, 2), p)
                            for w in windows

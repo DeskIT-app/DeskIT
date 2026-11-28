@@ -11,7 +11,7 @@ launch is refused (single-instance mutex) and "Stop DeskIT.vbs" (i.e.
 
 Flags:
   --fake          use the fake backend (no API key, no speech needed)
-  --check         validate the Gemini key/model with one tiny request, exit
+  --check         validate the Gemini key with one key-test request, exit
   --list-devices  print audio input devices, exit
   --stop          tell a running instance to quit, exit
 """
@@ -53,8 +53,10 @@ import injector
 import awake as awake_mod
 import models as models_mod
 import notify as notify_mod
+import notify_tail as notify_tail_mod
 import notify_watch as notify_watch_mod
 import onecopy
+import phone as phone_mod
 import popup as popup_mod
 import problems as problems_mod
 import reading as reading_mod
@@ -62,13 +64,15 @@ import server as server_mod
 import singleton
 import overlay as overlay_mod
 import vocab as vocab_mod
+import wake as wake_mod
 from config import ConfigError
 import hotkey as hotkey_mod
 from hotkey import (HookThread, PTTStateMachine, parse_binding,
                     parse_chord, vk_for)
 from launch import open_dashboard
-from recorder import (EMPTY_NO_AUDIO, EMPTY_OVERFLOWED, Recorder,
-                      SILENT_AFTER_S, SILENT_PEAK)
+from recorder import (DEAD_AFTER_S, DEAD_PEAK, EMPTY_NO_AUDIO,
+                      EMPTY_OVERFLOWED, Recorder, SILENT_AFTER_S,
+                      SILENT_PEAK)
 from spool import Spool
 from transcribers import RateLimitError, TranscriptionError, get_transcriber
 from transcribers.base import ModelMissing, TooLongForCloud
@@ -162,8 +166,14 @@ LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
                  # reads per request, so the switch acts the moment it is
                  # written; the six gates are not written here at all
                  # (config.save refuses them — privacy.py owns them).
-                 "privacy": None}
+                 "privacy": None,
+                 # [server] since 2026-11-06: the switch starts and stops
+                 # the doors where it stands (App._doors).
+                 "server": None}
 LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
+#: Connect Claude is written from the desk straight into Claude Code's own
+#: settings.json, so nothing tells the app. A stat this often is how it hears.
+HOOK_WATCH_S = 5.0
 
 # The flag that runs a console program with its console never shown —
 # awake.py and visual_qa.py both spawn powershell with it. NOT combined
@@ -199,6 +209,11 @@ AUTO_PUNCTUATE_MIN_WORDS = 3
 # is — and "what is waiting" is a fair question to ask while talking.
 _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
                              "screens", "notify_dismiss", "shelf"})
+
+# The most anything waits for the load a process start runs (a warm-up, the
+# tour, a quit). Two minutes is a cold disk, a slow card and the first start
+# after an update, end to end.
+START_LOAD_WAIT_S = 120.0
 
 # How old the last dictation may be before a report stops blaming it.
 # Five minutes covers "that came out wrong, let me say why" — the press
@@ -279,6 +294,50 @@ def beep(kind: str) -> None:
     cues.play(kind)
 
 
+def stage_line(*, notes: dict | None = None,
+               **spans: float | None) -> str:
+    """The tail of the "pasted" line in app.log: each stage of the wait
+    from the release to the chord, in seconds and in the order given,
+    leaving out what this dictation did not have (no release to start a
+    clock from, no rolling, a backend with no language check). `notes`
+    puts a few words in brackets after a stage — what its seconds went
+    on (decoder_note). Numbers and stage names only, never a word of
+    what was said (D8)."""
+    notes = notes or {}
+    parts = [f"{name.replace('_', ' ')} {value:.2f}"
+             + (f" ({notes[name]})" if notes.get(name) else "")
+             for name, value in spans.items() if value is not None]
+    return f"stages (s): {', '.join(parts)}" if parts else ""
+
+
+def decoder_note(timing: dict) -> str | None:
+    """What the decoder's seconds went on, when it was more than one
+    plain pass (local_whisper._decoder_tally): how many passes
+    faster-whisper made, the empty ones and their seconds ("stopped":
+    [local] stop_empty_passes ended the loop at the first), and the loop
+    retry's rungs and seconds. The 127 s dictation of 2026-11-27 22:17
+    waited 5.98 s in the decoder and the line could not say why; it
+    would have read "decoder 5.98 (28 passes, 26 empty 4.31 s)"."""
+    parts: list[str] = []
+    try:
+        passes = int(timing.get("passes") or 0)
+        empty = int(timing.get("empty") or 0)
+        retries = int(timing.get("retries") or 0)
+        if passes > 1:
+            parts.append(f"{passes} passes")
+        if empty:
+            parts.append(f"{empty} empty "
+                         f"{float(timing.get('empty_s') or 0.0):.2f} s"
+                         + (", stopped" if timing.get("stopped") else ""))
+        if retries:
+            parts.append(f"loop retry {retries} "
+                         f"rung{'s' if retries > 1 else ''} "
+                         f"{float(timing.get('retry_s') or 0.0):.2f} s")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return ", ".join(parts) or None
+
+
 def language_label(language: str | None, shout: bool = False) -> str:
     """What to call a recording in the log. None = nothing was declared and
     the model will decide (Config.auto_language)."""
@@ -316,6 +375,33 @@ def cursor_point() -> tuple[int, int] | None:
     except Exception:
         log.debug("could not read the cursor position", exc_info=True)
     return None
+
+
+class Decoded(tuple):
+    """What App._transcribe answers: ``(text, backend)``, so every caller that
+    unpacks a pair still does, and beside it what that one decode said, read
+    under the model lock off the backend that ran: the decoder's per-word
+    confidence (``words``, for the second reading), the stretches the text was
+    joined from (``windows``, rolling.py, [] for a whole decode), a loop's
+    ``warning``, and what the language check and the decoder each cost
+    (``timing``, local_whisper's last_timing with the decode tally in it:
+    the stages line of the pasted dictation).
+
+    Values and not attributes of the App, because the App is shared: until
+    stage 2 they were ``self._last_words`` / ``self._last_windows`` /
+    ``self._last_timing``, written under the lock and read outside it, and a
+    phone dictation that crossed a desk one could take the other's words
+    into its sidecar, repair against the other's windows, or put the other's
+    seconds on its stages line (PHONE_LINK_PLAN.md stage 2)."""
+
+    def __new__(cls, text: str, backend: str, words=(), windows=(), warning=None,
+                timing=None):
+        self = super().__new__(cls, (text, backend))
+        self.words = list(words or [])
+        self.windows = list(windows or [])
+        self.warning = warning
+        self.timing = dict(timing or {})
+        return self
 
 
 class App:
@@ -373,6 +459,18 @@ class App:
         self.config_path = Path(config_path) if config_path else None
         self._stopping = threading.Event()
         self._watcher: threading.Thread | None = None
+        # Room for a game (room.py): the ladder, built in start(); set
+        # once its first look is in, so a start-up warm-up never loads
+        # the local model under a game that was already running.
+        self._room = None
+        self._room_looked = threading.Event()
+        self._room_took_model = False    # rung 3 unloaded it, so rung 0 loads it
+        self._room_keep_speech = False   # the person pressed Start meanwhile
+        self._room_checked_at = 0.0
+        self._room_noted = 0             # the pid last named under the bar
+        # What a hold key says while the model is off: Stop's sentence,
+        # or the room's while it was the room that took the model.
+        self._model_off_words = self.MODEL_OFF_WORDS
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
         # The str|None is the language the key declared, None meaning it
         # declared nothing — see App.bindings and Config.auto_language.
@@ -417,7 +515,8 @@ class App:
         # the audio that produced it. Without this the app can only be told
         # that a word is wrong, never SHOWN — and no vocabulary change can
         # ever be measured, only assumed. See dev\measure.py.
-        self.recent = (Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio)
+        self.recent = (Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio,
+                             ring=True)
                        if cfg.vocab.keep_audio > 0 else None)
         # His own bug list (problems.py). Next to `recent` because that is
         # where the evidence comes from: a report pins the clip out of the
@@ -434,7 +533,9 @@ class App:
         self.reading = reading_mod.Reading(paths.READ_DIR)
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
-                                 cfg.max_seconds, self._on_overflow)
+                                 cfg.max_seconds, self._on_overflow,
+                                 preroll_s=getattr(cfg.audio, "preroll_ms",
+                                                   0) / 1000.0)
         # A dead microphone ten seconds into a dictation, and the
         # all-clear when sound arrives — both from the PortAudio callback,
         # both handed to the dot (see _on_silent). recorder.SILENT_PEAK.
@@ -502,16 +603,37 @@ class App:
         # dot, the cards and every feature that needs no model keep
         # running, and the hold keys are refused with MODEL_OFF_WORDS.
         self._model_state = "on" if self._model_wanted else "off"
+        # wake.py: the models warmed again when the person comes back to
+        # the machine, so a model Windows pushed out of memory meanwhile
+        # costs that wait then and not on the first dictation (11.8 s on
+        # 2026-10-20). _model_used_at is when a decode last ran, on the
+        # monotonic clock — the load's own warm-up counts as one.
+        self._model_used_at = time.monotonic()
+        self._waker = wake_mod.Waker(60 * float(getattr(
+            getattr(cfg, "local", None), "warm_after_away_min", 0) or 0))
         self._refused_at = 0.0
+        # The load a process start runs behind live keys (start(then_load)):
+        # set while none is ahead. The warm-ups and the tour wait on it.
+        self._load_settled = threading.Event()
+        self._load_settled.set()
+        self._load_thread: threading.Thread | None = None
+        # The splash narrating a load, (splash, its log handler): main()'s
+        # at a process start, _load_work's own at a Start press. Whoever
+        # ends it takes it from here, so it can only be ended once.
+        self._load_splash: tuple | None = None
         if not self._model_wanted:
             self.machine.set_dictation_off(True)
         # awake.py: the machine held awake for as long as this runs (the
         # hold goes up in start()), and the screens off on a key. Built
         # whether or not the key is bound — the dashboard's button goes
         # through the control channel and needs the engine either way.
+        # `on_dark` is how the "Screens off" card hears the mode flip, from
+        # every road that flips it (the key, the desk, the shelf, the
+        # phone, the card's own button, the exit) — see _screens_card.
         self.awake = awake_mod.Engine(paths.DATA_DIR, getattr(cfg, "awake", None),
                                       state_path=paths.AWAKE_STATE,
-                                      log_path=paths.AWAKE_LOG)
+                                      log_path=paths.AWAKE_LOG,
+                                      on_dark=self._screens_card)
         # What the dot is showing, kept here so the dashboard can report the
         # same thing in words. Every set_state goes through _set_state.
         self._activity = "ready"
@@ -578,6 +700,11 @@ class App:
         self.text_queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._translator = None
         self._punctuator = None
+        # A text key pressed with no cloud key to answer it: feature ->
+        # when. status()["needs_key"] carries it to Home's pile, which says
+        # what to add and where (store walk item 13); it goes as soon as a
+        # key is saved (_needs_key_now).
+        self._needs_key: dict[str, float] = {}
         self._text_busy = threading.Event()
         self.text_worker = threading.Thread(
             target=self._text_key_worker, daemon=True, name="text-worker")
@@ -685,7 +812,13 @@ class App:
             keys={"accept": rcfg.accept_key, "reject": rcfg.reject_key,
                   "later": rcfg.later_key,
                   "edit": getattr(rcfg, "edit_key", "e")},
-            on_edit=self._review_edit)
+            on_edit=self._review_edit, still_open=self._review_open,
+            held=lambda: self._word_prompt.open(),
+            # the notify column's rect, read at the moment the card asks:
+            # the column is built further down and may be the NullCard
+            avoid=((lambda: getattr(getattr(self, "notify_card", None),
+                                    "rect", None))
+                   if getattr(rcfg, "avoid_notify", True) else None))
             if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
             else overlay_mod.ReviewCard.off())
         # The consent card (consent_card.py, privacy.py): asks ONCE per
@@ -709,12 +842,22 @@ class App:
         # inert card and everything else (route, store, log, key) works.
         ncfg = getattr(cfg, "notify", None)
         card_cls = getattr(overlay_mod, "NotifyCard", None)
-        if card_cls is not None and ncfg is not None and ncfg.enabled:
+        # THE COLUMN EXISTS FOR TWO REASONS: notifications, and the pinned
+        # "Screens off" card ([awake] screens_card). With notifications
+        # switched off and the screens card on, the window is still built —
+        # but the engine below is handed an inert card, so a person who
+        # turned notifications off still never gets one.
+        notifications = ncfg is not None and ncfg.enabled
+        screens_card = bool(getattr(getattr(cfg, "awake", None),
+                                    "screens_card", True))
+        if card_cls is not None and ncfg is not None and (
+                notifications or screens_card):
             fields = dict(
                 x=ncfg.x, y=ncfg.y, scale=ncfg.scale,
                 on_change=self._save_notify_card,
                 on_dismiss=self._notify_dismissed,
                 on_open=self._notify_opened,
+                on_pin_press=self._screens_card_pressed,
                 seconds=ncfg.card_seconds,
                 anchor=getattr(ncfg, "anchor", "bottom"))
             # `anchor` lands with the card package (2026-09-04) — which
@@ -731,10 +874,15 @@ class App:
                 log.info("notify card: this overlay takes no anchor — the "
                          "column will grow downward")
             self.notify_card = card_cls(ncfg.corner, **fields)
+            if hasattr(self.notify_card, "one_footer"):
+                self.notify_card.one_footer = bool(
+                    getattr(ncfg, "one_footer", True))
         else:
             self.notify_card = notify_mod.NullCard()
         self.notify = notify_mod.Engine(paths.DATA_DIR, ncfg, cue=beep,
-                                        card=self.notify_card,
+                                        card=(self.notify_card
+                                              if notifications
+                                              else notify_mod.NullCard()),
                                         store_path=paths.NOTIFY_FILE,
                                         log_path=paths.NOTIFY_LOG)
         # The half of Claude that cannot knock (notify_watch.py). A Cowork
@@ -748,6 +896,16 @@ class App:
             self._notify_from_outside,
             getattr(ncfg, "watch", "cowork")
             if ncfg is not None and ncfg.enabled else "off")
+        # Claude Code's finish, read off its transcript the moment it is
+        # written (notify_tail.py) — on most turns ~3 s before the Stop
+        # hook knocks with the same finish, which the engine then folds
+        # into the card instead of showing twice. Same road in, and only
+        # while this copy holds Claude Code's door. Off with the door,
+        # or alone with [notify] early = false.
+        self.notify_tail = notify_tail_mod.Tail(
+            self._notify_from_outside,
+            ncfg is not None and ncfg.enabled
+            and bool(getattr(ncfg, "early", True)))
         # The pencil's box: one line, takes the keyboard, on purpose.
         self._word_prompt = overlay_mod.WordPrompt()
         # The report card (problem_card.py, painted; overlay.ProblemCard,
@@ -838,25 +996,42 @@ class App:
         # _shelf_refresh.
         self._shelf_stamp: tuple = ()
         self._review = None
-        # The decoder's per-word confidence for the LAST live transcription,
-        # read under the model lock in _transcribe and written into the
-        # recording's sidecar for the second reading.
-        self._last_words: list = []
-        # And the stretches the LAST live transcription was joined from
-        # (rolling.py), [] when it was decoded whole — for the repair pass
-        # to skip the ones already repaired while the key was held.
-        self._last_windows: list = []
-        self.phone: server_mod.PhoneServer | None = None
-        if cfg.server.enabled:
-            self.phone = server_mod.PhoneServer(
-                cfg, self._transcribe_for_phone,
-                lambda: self.transcriber.name,
-                self._translate_for_phone,
-                self._punctuate_for_phone,
-                self._notify_from_outside,
-                review_pending=self._review_pending_for_phone,
-                review_decide=self._review_decide_for_phone,
-                lookup=self._lookup_for_phone)
+        # The decoder's per-word confidence and the stretches a transcript
+        # was joined from are NOT kept on the App: they come back from
+        # _transcribe as values (Decoded), read under the model lock off the
+        # backend that ran. Until stage 2 they were two attributes written
+        # under the lock and read outside it, which a phone dictation and a
+        # desk one crossing could swap (PHONE_LINK_PLAN.md stage 2).
+        # The two doors, built here and opened by _doors: the loopback one
+        # owns the routes both of them answer with.
+        self.phone = server_mod.PhoneServer(
+            cfg, self._transcribe_for_phone,
+            lambda: self.transcriber.name,
+            self._translate_for_phone,
+            self._punctuate_for_phone,
+            self._notify_from_outside,
+            review_pending=self._review_pending_for_phone,
+            review_decide=self._review_decide_for_phone,
+            lookup=self._lookup_for_phone,
+            stream_begin=self._stream_roller)
+        self.phone_door = server_mod.PhoneDoor(cfg, self.phone.routes)
+        # The phone away from home: the same routes, through the account's
+        # own channel, every piece sealed (relay.py, PHONE_LINK_PLAN.md 3),
+        # and the same stream as the door's while he speaks (stage 2).
+        import relay as relay_mod
+        self.relay = relay_mod.for_app(
+            can_take=self._relay_can_take, allowed=self._relay_allowed,
+            transcribe=lambda wav, peer: self.phone.routes.handle("/transcribe", wav, peer),
+            stream=lambda peer: self.phone.routes.stream(peer))
+        self._doors_lock = threading.RLock()
+        # [Not now] on Home's row: until the next start, like a consent's.
+        self._phone_no = False
+        # The devices Approve was pressed for on this PC, until their rows
+        # arrive. The first listen raises Windows' dialog, so it follows a
+        # press or it does not happen: a phone among these is this PC's yes
+        # (_phone_account), and any other PC asks with a row on Home.
+        self._approved: set[str] = set()
+        self._phone_hook = phone_mod.keyless(self._phone_account)
 
     @property
     def vqa(self):
@@ -926,6 +1101,13 @@ class App:
                      "shelf", "tour_card"):
             card = getattr(self, name, None)
             if card is None:
+                continue
+            # [hint] hush = false: the key card is never hushed, the old
+            # way. Read at the HUSH only - an unhush always goes out (it is
+            # idempotent), so a config reload in between cannot leave the
+            # card's `_hushed` set for good.
+            if name == "hint" and on and not getattr(
+                    getattr(self.cfg, "hint", None), "hush", True):
                 continue
             try:
                 card.hush() if on else card.unhush()
@@ -1421,6 +1603,11 @@ class App:
                     return False
             except Exception:
                 return False
+        # A game holding the card (room.py) is borrowing it already: the
+        # second reading's three decodes wait until it is gone.
+        room = getattr(self, "_room", None)
+        if room is not None and room.rung:
+            return False
         return (self._activity == "ready"
                 and self.queue.empty()
                 and not self._text_busy.is_set()
@@ -1462,7 +1649,11 @@ class App:
         # not grey.
         if getattr(self, "_model_state", "on") == "off":
             self._activity = "paused"
-            self.dot.hide()
+            # The one exception is the dot in his hand: a move shows it
+            # with the model off (_dot_move_begin) and its end hides it.
+            moving = getattr(self.dot, "moving", None)
+            if not (callable(moving) and moving()):
+                self.dot.hide()
             return
         self._activity = state
         self.dot.set_state(state)
@@ -1655,14 +1846,35 @@ class App:
                           "reading")
 
     def _review_show(self, suggestion: dict) -> None:
-        """A reading with something to say — the card goes up. From the
-        review thread; the card only enqueues."""
+        """A reading with something to say — the card goes up, or waits
+        its turn behind the one that is up (overlay.ReviewCard's line).
+        From the review thread; the card only enqueues."""
         self.review_card.show(suggestion)
 
+    def _review_open(self, sid: str) -> bool:
+        """Is this proposal still a question the card may ask? From the
+        card's own thread: before one that waited its turn comes up, and
+        once a second for the one on screen. No — and it leaves the card
+        and the line, shown never or no longer — when the desk or the
+        phone answered it, and when there is no engine to hear an answer
+        (the model is unloaded): a card whose buttons decide nothing is
+        worse than a row in the pile, where the desk answers without the
+        model."""
+        if getattr(self, "_review", None) is None:
+            return False
+        import review as review_mod
+        return review_mod.still_pending(paths.REVIEW_FILE, sid)
+
     def _review_verdict(self, sid: str, verdict: str) -> None:
-        """A button on the card, or one of its keys. From the painter's
-        thread or the hook's — so this only enqueues; the learning runs
-        on the review thread."""
+        """A button on the card, or one of its keys — or the shelf's row.
+        From the painter's thread or the hook's — so this only enqueues;
+        the learning runs on the review thread."""
+        # Out of the card's line at once, whichever door it came through:
+        # the engine may be in the middle of a reading, and until it
+        # writes the verdict the file still says "pending".
+        card = getattr(self, "review_card", None)
+        if card is not None:
+            card.drop(sid)
         engine = getattr(self, "_review", None)
         if engine is not None:
             engine.decide(sid, verdict, by="card")
@@ -1825,6 +2037,14 @@ class App:
             "uptime_s": round(time.monotonic() - self._started_at, 1),
             "backend": self.transcriber.name,
             "model": self._model_state,
+            # Room for a game (room.py): how many models stood aside and
+            # for whom — {"rung": 0} when nothing did.
+            "room": self._room_status(),
+            # The parts downloading in the background (carry_downloads):
+            # the desk's Home row says so instead of offering a button
+            # that would start a second downloader. None when nothing is.
+            "downloads": (self._downloads.status()
+                          if getattr(self, "_downloads", None) is not None else None),
             "mic": self._mic_label,
             "keys": {name: getattr(self.cfg, name)
                      for name, _label in config_mod.HOTKEY_FIELDS},
@@ -1851,7 +2071,8 @@ class App:
                       "hotwords": (len(self.vocab.terms())
                                    if self.cfg.vocab.enabled else 0)},
             "pending": len(self.spool.pending()),
-            "phone": (self.phone.url or "") if self.phone else "",
+            "needs_key": self._needs_key_now(),
+            "phone": self._phone_status(),
             # The sentence the Read aloud tab has up, and what came back
             # for it — text only, and short: one sentence each way.
             "read": self.reading.state(),
@@ -1927,6 +2148,9 @@ class App:
         else:
             self._say("listening again")
             log.info("resumed — hold '%s' and speak", self.cfg.hotkey)
+            waker = getattr(self, "_waker", None)
+            if waker is not None:
+                waker.resumed(time.monotonic())
 
     def set_paused(self, paused: bool, auto: bool = False) -> bool:
         if not paused and self.locked():
@@ -1974,6 +2198,52 @@ class App:
         if getattr(self, "_lock_held", False) and not self.locked():
             self._lock_held = False
             self.machine.set_paused(False)
+
+    def _watch_return(self) -> None:
+        """wake.py's poll: the person back at the machine (or the pause
+        lifted) and the model idle all that time — warm it now, while
+        nobody is waiting on it. The card's free memory is asked only
+        when everything else already says yes."""
+        while not self._stopping.wait(wake_mod.POLL_S):
+            try:
+                reason = self._waker.look(
+                    time.monotonic(), awake_mod.last_input(),
+                    self._model_used_at, self.machine.paused,
+                    free=self._card_free)
+                if reason:
+                    self._rewarm(reason)
+            except Exception:                                # noqa: BLE001
+                log.debug("wake: the poll failed", exc_info=True)
+
+    @staticmethod
+    def _card_free() -> int | None:
+        reading = awake_mod.gpu_memory()
+        return None if reading is None else reading[1] - reading[0]
+
+    def _rewarm(self, reason: str) -> None:
+        """The load-time warm-ups again (local_whisper.rewarm), under the
+        model lock. Skipped, not waited for, when a decode holds the lock
+        — that decode is the warm-up — and when there is no local model
+        on (off, loading, the cloud, a recording on its way)."""
+        backend = getattr(self, "transcriber", None)
+        if self._model_state != "on" or not hasattr(backend, "rewarm") \
+                or self.machine.state != hotkey_mod.IDLE:
+            return
+        if not self._model_lock.acquire(blocking=False):
+            return
+        try:
+            took = backend.rewarm()
+            self._model_used_at = time.monotonic()
+        except Exception as e:                               # noqa: BLE001
+            log.info("could not warm the model %s (%s) — the next "
+                     "dictation pays it instead", reason, e)
+            return
+        finally:
+            self._model_lock.release()
+        log.info("model warmed %s: %.1f s%s", reason, took,
+                 " — it had been pushed out of memory; the next dictation "
+                 "would have waited this long" if took >= wake_mod.SLOW_S
+                 else "")
 
     def _watch_fullscreen(self) -> None:
         """Pause while a game owns the screen; resume when it lets go.
@@ -2140,6 +2410,8 @@ class App:
                 self._dot_power(fresh)
             if section == "privacy":
                 privacy.configure(fresh)
+            if section == "server":
+                self._doors_soon()
             live = True
         message = settings_mod.saved_sentence(name, value, live=live)
         self._say(message)
@@ -2192,15 +2464,24 @@ class App:
         asks by itself; "a notification on the right that opens DeskIT,
         and I press Approve or Not now there"). The desk's Home row and
         banner carry the same without the notification."""
-        name = request.get("name") or "another PC"
+        name = request.get("name") or "another device"
         self._say(f"{name} asks to join your account — open the desk to approve it")
         engine = getattr(self, "notify", None)
         if engine is None:
             return
+        # A Hebrew Samsung's default name mixes Hebrew and Latin, and at the
+        # head of a line it turns the whole line right to left: his S26's
+        # first request read "26 Ultra asks to join your account של Yoav-ה",
+        # the S cut off (2026-11-07). Isolates do not help, because the card's
+        # painter draws them as boxes. So that name stays out of this title,
+        # one line wide, and Home's row, which has the room, says it.
+        rtl = any("\u0590" <= ch <= "\u08ff" for ch in name)
         try:
             engine.receive({"source": "account", "kind": "input",
-                            "title": f"{name} asks to join your account",
+                            "title": ("A device asks to join your account" if rtl
+                                      else f"{name} asks to join your account"),
                             "body": f"Its screen must show {request.get('code') or '?'}. "
+                                    f"Approve only if you are adding it yourself right now. "
                                     f"Open the desk: Approve or Not now on Home.",
                             "app": "DeskIT", "link": notify_mod.DESK_LINK})
         except Exception:                                    # noqa: BLE001
@@ -2253,7 +2534,25 @@ class App:
         log.info("%s", message)
         return message
 
-    def start(self) -> None:
+    def start(self, *, then_load: bool = False, splash=None,
+              splash_log=None) -> None:
+        """Everything that needs no speech model, and then, with
+        `then_load`, the model behind it on its own thread.
+
+        THE KEYS NEVER WAIT FOR THE MODEL (the owner, 2026-11-06: "there
+        are features like taking a screenshot, sleep mode ... that need no
+        model at all, and they are not available until the model loads").
+        The 25 seconds used to happen inside App(), before the hook, the
+        cards and the control channel's answers existed, so every key on
+        the desk was dead through them, whichever way the app was started;
+        only a start with the model switched off escaped it. Now a process
+        start is always a --no-model start, and the load is what Start
+        does. `splash` is main()'s, handed over so the load narrates on
+        the picture the start already put up."""
+        if then_load:
+            self._load_settled.clear()
+            if splash is not None:
+                self._load_splash = (splash, splash_log)
         # The stream runs from here to stop() whatever the model does: a
         # stopped WASAPI stream refused to start again on his headset
         # (AUDCLNT_E_UNSUPPORTED_FORMAT, 2026-09-18 22:36, after the
@@ -2278,16 +2577,6 @@ class App:
         self.consent_card.start()
         self.tour_card.start()
         self.notify_card.start()
-        # backend = "gemini" with the cloud_audio gate shut fell to the
-        # local model at start (transcribers.get_transcriber): that is a
-        # choice the person made in Settings, so the card asks now.
-        if self.cfg.backend == "gemini" and \
-                getattr(self.transcriber, "name", "") != "gemini":
-            with privacy.pressed():
-                try:
-                    privacy.require("cloud_audio")
-                except privacy.ConsentRequired:
-                    pass
         # A consent given under older words is NOT asked here, and not by
         # a card at all (2026-09-21 afternoon, the owner, on the card
         # that came up at start: "I really don't like these messages
@@ -2308,6 +2597,7 @@ class App:
             self.move_frame.start()
         self.notify.start()
         self.notify_watch.start()
+        self.notify_tail.start()
         # The weekly look at GitHub Releases (updates.py, plan 11.4): ten
         # minutes after this start, then weekly; a newer version is one
         # line on the card and a row on the dashboard, never a download.
@@ -2316,7 +2606,7 @@ class App:
         self._start_account()
         if self.locked():
             self._lock()
-        elif self._model_state == "off":
+        elif self._model_state == "off" and not then_load:
             # no dot from the first frame: alive, not listening
             self._set_state("paused")
             log.info("up without the model — every key that needs no model "
@@ -2329,20 +2619,27 @@ class App:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
             self._watcher.start()
+        # Room for a game, before the warm-ups below: they wait for its
+        # first look, so an app started with a game already running does
+        # not load 9 GB of local model onto the card the game is using.
+        self._start_room()
+        if self._waker.away_s > 0:
+            threading.Thread(target=self._watch_return, daemon=True,
+                             name="wake").start()
         if self.cfg.polish.when != "never" and self.cfg.polish.warm_up:
             # In the background and after the hotkey is live: dictation must
             # not wait on a language model it may never need, but the model
             # must not be cold the first time it IS needed.
-            threading.Thread(target=self._warm_polish, daemon=True,
-                             name="polish-warmup").start()
+            threading.Thread(target=self._after_room, args=(self._warm_polish,),
+                             daemon=True, name="polish-warmup").start()
         vqa_cfg = getattr(self.cfg, "visual_qa", None)
         if vqa_cfg is not None and vqa_cfg.enabled and vqa_cfg.warmup:
             # Same bargain, vision edition: the projector behind gemma3's
             # image input costs 22.6 s on the FIRST image of a session
             # (measured 2026-08-25) and ~0.4 s warm, so one dummy-image,
             # num_predict=1 call goes out in the background now.
-            threading.Thread(target=self.vqa.warm, daemon=True,
-                             name="vqa-warmup").start()
+            threading.Thread(target=self._after_room, args=(self.vqa.warm,),
+                             daemon=True, name="vqa-warmup").start()
         # And the IMPORTS themselves, off the hook thread, which is a
         # different problem from either warm-up above and now a sharper
         # one. `self.capture` and `self.vqa` build on first touch, and
@@ -2359,14 +2656,50 @@ class App:
         # costs nothing and takes the whole risk off the table.
         threading.Thread(target=self._warm_feature_keys, daemon=True,
                          name="feature-warmup").start()
-        if self.phone is not None:
-            try:
-                self.phone.start()
-            except Exception as e:      # a busy port must not kill dictation
-                log.warning("phone endpoint could not start (%s) — the "
-                            "hotkey is unaffected", e)
-                self.phone = None
+        self._settle_left()
+        self._doors()
+        threading.Thread(target=self._watch_hook, daemon=True, name="hook-watch").start()
         self._start_learning()
+        if then_load:
+            self.load_model(at_start=True)
+
+    def _review_wanted(self) -> bool:
+        rcfg = getattr(self.cfg, "review", None)
+        return bool(rcfg is not None and rcfg.enabled
+                    and self.recent is not None)
+
+    def _review_engine(self):
+        """The second reading's engine, built and not started."""
+        import review as review_mod
+        return review_mod.Engine(
+            self.cfg, self.transcriber, self.vocab, self.recent,
+            review_mod.Store(paths.REVIEW_FILE),
+            model_lock=self._model_lock,
+            quiet=self._learning_quiet, app_dir=paths.DATA_DIR,
+            # never the moment right after a paste, nor the start
+            # of the next dictation (review.GRACE_S)
+            grace_s=review_mod.GRACE_S,
+            on_suggest=self._review_show,
+            on_accept=self._review_fix,
+            # The local repair as a proposal (polish.py, `when =
+            # "cloud"`): the reading runs it on a dictation the
+            # cloud did not repair before the paste. Under
+            # "always" it already ran there; under "known" and
+            # "never" it is not wanted behind the paste either.
+            repair=(self._local_repair
+                    if self.cfg.polish.when == "cloud" else None))
+
+    def _absorb_decisions(self) -> None:
+        """A proposal answered on the desk, learned now. Reading a
+        dictation takes the model and learning an answer does not — it
+        writes vocab.json — so with the model off (no engine running) one
+        is built for this and never started; a word accepted then is in
+        the list at once and not at the next load."""
+        try:
+            engine = getattr(self, "_review", None) or self._review_engine()
+            engine.absorb_decisions()
+        except Exception:                                    # noqa: BLE001
+            log.exception("the answered proposals were not learned")
 
     def _start_learning(self) -> None:
         """The second reading and the study pass — the two engines that
@@ -2388,25 +2721,10 @@ class App:
         # instead of the study pass: the same three decodes serve both,
         # shown as a card rather than learned in silence. Same guarded
         # shape as the study block under it, for the same reason.
-        rcfg = getattr(self.cfg, "review", None)
-        if rcfg is not None and rcfg.enabled and self.recent is not None \
+        if self._review_wanted() \
                 and hasattr(self.transcriber, "study_decode"):
             try:
-                import review as review_mod
-                self._review = review_mod.Engine(
-                    self.cfg, self.transcriber, self.vocab, self.recent,
-                    review_mod.Store(paths.REVIEW_FILE),
-                    model_lock=self._model_lock,
-                    quiet=self._learning_quiet, app_dir=paths.DATA_DIR,
-                    on_suggest=self._review_show,
-                    on_accept=self._review_fix,
-                    # The local repair as a proposal (polish.py, `when =
-                    # "cloud"`): the reading runs it on a dictation the
-                    # cloud did not repair before the paste. Under
-                    # "always" it already ran there; under "known" and
-                    # "never" it is not wanted behind the paste either.
-                    repair=(self._local_repair
-                            if self.cfg.polish.when == "cloud" else None))
+                self._review = self._review_engine()
                 self._review.start()
             except Exception as e:      # noqa: BLE001 — optional feature
                 log.info("second reading unavailable (%s)", e)
@@ -2440,8 +2758,15 @@ class App:
 
     MODEL_OFF_WORDS = ("the model is off — press Start in the desk to load it "
                        "(about 25 seconds); every other key works")
+    MODEL_LOADING_WORDS = ("the model is still loading — a few more seconds; "
+                           "every other key already works")
+    # Held for one swap (_splash_done), so one lock for every App is plenty.
+    _load_splash_lock = threading.Lock()
+    ROOM_OFF_WORDS = ("the speech model stepped aside for {name} — it comes "
+                      "back by itself after {name} closes; every other key "
+                      "works")
 
-    def unload_model(self) -> dict:
+    def unload_model(self, *, for_room: str = "") -> dict:
         """Stop, as the desk means it: the speech model goes, the process
         stays (the microphone stream too — see start()). "Many things don't need the model —
         screenshot, screen recording and a few more — and they don't work
@@ -2450,7 +2775,10 @@ class App:
         doors, the shelf, translate, lookup and the screen keys all keep
         running; only the hold keys are refused (hotkey.set_dictation_off)
         and the phone's /transcribe says why. The work is on a thread —
-        this is a pipe handler, and dropping a model can take a moment."""
+        this is a pipe handler, and dropping a model can take a moment.
+
+        `for_room`: the program the model is stepping aside for (room.py,
+        rung 3) — the same unload, with words that say it comes back."""
         if self._model_state in ("off", "unloading"):
             return {"ok": False, "error": "the model is already off"}
         if self._model_state == "loading":
@@ -2459,18 +2787,21 @@ class App:
             return {"ok": False, "error": "not while the microphone is live — "
                                           "finish the dictation first"}
         self._model_state = "unloading"
-        threading.Thread(target=self._unload_work, daemon=True,
+        threading.Thread(target=self._unload_work, args=(for_room,), daemon=True,
                          name="model-unload").start()
         return {"ok": True, "message": "unloading the model — every key that needs "
                                        "no model keeps working"}
 
-    def _unload_work(self) -> None:
+    def _unload_work(self, for_room: str = "") -> None:
         import gc
         from transcribers.off import OffTranscriber
+        words = (self.ROOM_OFF_WORDS.format(name=for_room) if for_room
+                 else self.MODEL_OFF_WORDS)
+        self._model_off_words = words
         self.machine.set_dictation_off(True)
         self._stop_learning()
         with self._model_lock:
-            old, self.transcriber = self.transcriber, OffTranscriber(self.MODEL_OFF_WORDS)
+            old, self.transcriber = self.transcriber, OffTranscriber(words)
             self._local = None
         # An English detector still loading on its thread (english_later)
         # is told its result is not wanted; the thread holds the object
@@ -2482,34 +2813,93 @@ class App:
         gc.collect()
         self._model_state = "off"
         self._set_state("paused")          # no dot: alive, not listening
+        if for_room:
+            self._say(f"the speech model stepped aside for {for_room} — it "
+                      f"comes back by itself after it closes")
+            log.info("model unloaded to make room for %s — it loads again "
+                     "when %s is gone", for_room, for_room)
+            return
         self._say("model off — Start loads it again; every other key works")
         log.info("model unloaded — the keys that need no model keep working")
 
-    def load_model(self) -> dict:
+    def carry_downloads(self, queue) -> None:
+        """The parts still coming (downloads.Queue), pumped on a thread of
+        this app until they are all here — the wizard's queue after Start,
+        or what a start found missing. status()["downloads"] is what the
+        desk draws from it; nothing here is a window (the owner,
+        2026-10-03: the parts come by themselves, in the background)."""
+        import downloads as downloads_mod
+        queue.on_landed = self._download_landed
+        self._downloads = queue
+        downloads_mod.carry_on(queue)
+        log.info("background downloads: %s", ", ".join(queue.order))
+
+    def _download_landed(self, kind: str) -> None:
+        """One part arrived while the app runs (the downloads thread).
+        The Hebrew model needs nothing here: the stand-in backend
+        (transcribers/missing.py) builds the real one at the next
+        dictation. PyAV is live at once (packs.activate, no restart);
+        NVIDIA's libraries and the detector are the next start's — the
+        probe runs again now so that start knows the card's tier."""
+        import packs as packs_mod
+        if kind == "recording":
+            packs_mod.activate("recording")
+            self._say("screen recording is ready")
+        elif kind == "pack":
+            try:
+                import hardware as hardware_mod
+                hardware_mod.run_at_start()
+            except Exception:                                # noqa: BLE001
+                log.warning("the hardware probe failed after the pack", exc_info=True)
+            self._say("faster dictation on the NVIDIA card from the next start")
+        elif kind == "model":
+            self._say("the Hebrew model is here — the next dictation loads it")
+
+    def load_model(self, *, for_room: bool = False,
+                   at_start: bool = False) -> dict:
         """Start, with the process already up: the model back (about 25 s,
         narrated by the same splash a process start shows), the learning
-        engines, the hold keys."""
+        engines, the hold keys.
+
+        `for_room`: the room bringing back what it took (room.py) — no
+        splash and no cue, the game has only just closed. A Start the
+        PERSON presses while the model stood aside for a game is theirs
+        to make: it loads, and the room does not take it again until the
+        game is over (room.Ladder.keep_speech).
+
+        `at_start`: the load every process start runs behind live keys
+        (start(then_load)). Nobody pressed anything, so the room keeps
+        its say, and the splash is the one already up."""
         if self._model_state == "on":
             return {"ok": False, "error": "the model is loaded"}
         if self._model_state == "loading":
             return {"ok": True, "message": "still loading"}
         if self._model_state == "unloading":
             return {"ok": False, "error": "the model is still unloading — a moment"}
+        if not for_room and not at_start:
+            # Applied by the room's own thread at its next look: this is a
+            # pipe handler, and the ladder is that thread's to move.
+            self._room_took_model = False
+            self._room_keep_speech = True
         self._model_state = "loading"
+        if not for_room:
+            self._model_off_words = self.MODEL_LOADING_WORDS
         self._set_state("busy")
-        threading.Thread(target=self._load_work, daemon=True,
-                         name="model-load").start()
+        self._load_thread = threading.Thread(
+            target=self._load_work, args=(for_room, at_start), daemon=True,
+            name="model-load")
+        self._load_thread.start()
         return {"ok": True, "message": "loading the model — about 25 seconds"}
 
-    def _load_work(self) -> None:
+    def _load_work(self, quiet: bool = False, at_start: bool = False) -> None:
         # The splash a process start shows — "the animation that the
         # model is loading", his words when Start in the desk loaded it
         # in silence (22:37) — narrating the same log lines, landing in
         # the dot with the ready cue. Never in the way of the load: a
         # splash that cannot be built is skipped, not a failed load.
-        splash, splash_log = None, None
         try:
-            if getattr(self.cfg, "splash", True):
+            if getattr(self.cfg, "splash", True) and not quiet \
+                    and getattr(self, "_load_splash", None) is None:
                 splash = overlay_mod.Splash()
                 _dot = getattr(self.cfg, "dot", None)
                 splash.dot_corner = str(getattr(_dot, "corner", "bottom-right"))
@@ -2518,41 +2908,76 @@ class App:
                 splash.start()
                 splash_log = SplashLog(splash)
                 log.addHandler(splash_log)
+                self._load_splash = (splash, splash_log)
                 splash.status("loading the transcription model…")
         except Exception:                                    # noqa: BLE001
             log.debug("no splash for this load", exc_info=True)
-            splash = None
         self._say("loading the model…")
+        try:
+            self._load_steps(at_start)
+        finally:
+            # getattr: the test suite builds half-initialised Apps
+            settled = getattr(self, "_load_settled", None)
+            if settled is not None:
+                settled.set()
+
+    def _load_steps(self, at_start: bool) -> None:
         try:
             fresh = get_transcriber(self.cfg, self._hotwords,
                                     english_later=True)
         except Exception as e:                               # noqa: BLE001
+            self._model_off_words = self.MODEL_OFF_WORDS
             self._model_state = "off"
             self._set_state("paused")
             self._say(f"the model did not load: {str(e).splitlines()[0][:120]}")
             log.exception("the model did not load")
-            self._splash_done(splash, splash_log, "the model did not load", None)
+            self._splash_done("the model did not load", None)
+            return
+        stopping = getattr(self, "_stopping", None)
+        if stopping is not None and stopping.is_set():
+            # The app quit under the load (stop() waits for this thread):
+            # nothing is left to hand the model to.
+            closer = getattr(fresh, "close", None)
+            if callable(closer):
+                closer()
+            log.info("the app quit while the model loaded — dropped")
             return
         with self._model_lock:
             self.transcriber = fresh
         self._start_learning()
+        self._model_off_words = self.MODEL_OFF_WORDS
         self._model_state = "on"
         self.machine.set_dictation_off(False)
         self.dot.show()                   # before the splash lands in it
-        self._set_state("ready")
-        self._say("listening again")
-        log.info("model loaded again — hold '%s' and speak", self.cfg.hotkey)
+        # The keys were live through the load, so a pause may be standing
+        # (the pause key, a full-screen game): the dot says so.
+        self._set_state("paused" if self.machine.paused else "ready")
+        self._say("listening" if at_start else "listening again")
+        log.info("model loaded — hold '%s' and speak", self.cfg.hotkey)
+        key_source = getattr(fresh, "key_source", None)
+        if key_source:
+            log.info("api key from: %s", key_source)
         ready = f"ready — hold {str(self.cfg.hotkey).title()} and speak"
-        self._splash_done(splash, splash_log, ready, on_land=lambda: beep("ready"))
+        self._splash_done(ready, on_land=lambda: beep("ready"))
 
-    @staticmethod
-    def _splash_done(splash, splash_log, text: str, on_land) -> None:
+    def _splash_done(self, text: str | None, on_land=None,
+                     linger_ms: int | None = None) -> None:
+        """The load's splash ends, once, whoever gets here first — the
+        load's last line or a quit under it."""
+        if getattr(self, "_load_splash", None) is None:
+            return
+        with self._load_splash_lock:
+            pair, self._load_splash = self._load_splash, None
+        if pair is None:
+            return
+        splash, splash_log = pair
         if splash_log is not None:
             log.removeHandler(splash_log)
-        if splash is None:
-            return
         try:
-            splash.finish(text, on_land=on_land)
+            if linger_ms is None:
+                splash.finish(text, on_land=on_land)
+            else:
+                splash.finish(text, linger_ms=linger_ms, on_land=on_land)
         except Exception:                                    # noqa: BLE001
             log.debug("the splash did not finish cleanly", exc_info=True)
 
@@ -2564,10 +2989,192 @@ class App:
         if now - self._refused_at < 2.0:
             return
         self._refused_at = now
-        self._say(self.MODEL_OFF_WORDS)
+        self._say(getattr(self, "_model_off_words", self.MODEL_OFF_WORDS))
+
+    # ---- room for a game (room.py, the owner's ask of 2026-10-17)
+
+    def _start_room(self) -> None:
+        """The ladder and its thread. The first look happens on the thread
+        (PDH's first read costs ~0.4 s); the warm-ups wait for it."""
+        import room as room_mod
+        rcfg = getattr(self.cfg, "room", None)
+        if rcfg is None or not rcfg.enabled or not room_mod.LIVE:
+            self._room_looked.set()
+            return
+        top = room_mod.ENGLISH if rcfg.keep_speech else room_mod.TOP
+        self._room = room_mod.Ladder(
+            competitor_gb=rcfg.competitor_gb, commit_tight=rcfg.commit_tight,
+            spill_gb=rcfg.spill_gb, settle_s=rcfg.settle_s, exit_s=rcfg.exit_s,
+            top=top, game_gb=room_mod.NOTE / room_mod.GB)
+        # Said once, so a log with no "room:" step in it can be told from a
+        # watch that never started (2026-10-23: nine days of silence and
+        # nothing to say which).
+        log.info("room: watching the card — a program holding %.1f GB, or a "
+                 "full-screen one holding %.1f GB, seen twice, holds the "
+                 "local model off; at commit %d%% of the limit the English "
+                 "model follows%s",
+                 rcfg.competitor_gb, room_mod.NOTE / room_mod.GB,
+                 round(100 * rcfg.commit_tight),
+                 "" if rcfg.keep_speech else ", then the speech model")
+        threading.Thread(target=self._room_loop, daemon=True,
+                         name="room").start()
+
+    def _after_room(self, work) -> None:
+        """A start-up warm-up, once the room has had its first look and
+        the start's load is over: the language models have always gone on
+        the card after the speech model, and the measurements were taken
+        in that order. Bounded, so a load that hangs costs a warm-up."""
+        self._room_looked.wait(10)
+        settled = getattr(self, "_load_settled", None)
+        if settled is not None:
+            settled.wait(START_LOAD_WAIT_S)
+        work()
+
+    def _room_loop(self) -> None:
+        import room as room_mod
+        try:
+            self._room_tick(room_mod.reading(), time.monotonic())
+        except Exception:                                    # noqa: BLE001
+            log.exception("room: the first look failed")
+        finally:
+            self._room_looked.set()
+        while not self._stopping.wait(max(1.0, float(self.cfg.room.poll_s))):
+            try:
+                self._room_tick(room_mod.reading(), time.monotonic())
+            except Exception:                                # noqa: BLE001
+                log.exception("room: a look failed")
+
+    def _room_status(self) -> dict:
+        ladder = getattr(self, "_room", None)
+        if ladder is None or not ladder.rung:
+            return {"rung": 0}
+        import room as room_mod
+        return {"rung": ladder.rung, "step": room_mod.NAMES[ladder.rung],
+                "for": ladder.holder}
+
+    def _room_tick(self, reading, now: float) -> None:
+        """One reading in, at most one step taken. A step that cannot be
+        taken yet (a dictation running) is simply asked for again on the
+        next reading; the ladder only moves once a step is done."""
+        ladder = self._room
+        if ladder is None:
+            return
+        import room as room_mod
+        if self._room_keep_speech:
+            self._room_keep_speech = False
+            ladder.keep_speech(now)
+        c = reading.competitor
+        if c is not None and c.total >= room_mod.NOTE \
+                and ladder.pick(reading) is None and c.pid != self._room_noted:
+            # a heavy program under the bar and not full screen, once per
+            # process: what a game that never reached it looked like
+            self._room_noted = c.pid
+            log.info("room: %s — under the %.1f GB that makes room, and not "
+                     "full screen", self._room_numbers(reading),
+                     self.cfg.room.competitor_gb)
+        want = ladder.want(reading, now)
+        if not self.cfg.room.enabled:
+            want = 0
+        if want > ladder.rung:
+            step = ladder.rung + 1
+            if self._room_down(step, ladder.holder or "a game", reading, now):
+                ladder.moved(step, now)
+        elif want < ladder.rung:
+            self._room_up(ladder.rung, ladder.holder or "the game")
+            ladder.moved(0, now)
+        elif ladder.rung >= room_mod.LOCAL and now - self._room_checked_at \
+                >= room_mod.RECHECK_S:
+            # Another program on this PC may load the local model while
+            # the hold stands (the hold is this app's, not Ollama's).
+            self._room_checked_at = now
+            gone = room_mod.ollama_unload(self.cfg.translate.ollama_url)
+            if gone:
+                log.info("room: %s was loaded again by another program — "
+                         "unloaded (%s still holds the card)",
+                         ", ".join(gone), ladder.holder)
+
+    def _room_numbers(self, reading) -> str:
+        parts = []
+        ladder = getattr(self, "_room", None)
+        c = (ladder.pick(reading) if ladder is not None else None) \
+            or reading.competitor
+        if c is not None:
+            parts.append(f"{c.name} holds {c.dedicated / (1 << 30):.1f} GB of "
+                         f"the card and {c.shared / (1 << 30):.1f} GB more")
+        if reading.commit is not None:
+            parts.append(f"commit {100 * reading.commit:.0f}% of the limit")
+        return ", ".join(parts)
+
+    def _room_down(self, step: int, holder: str, reading, now: float) -> bool:
+        """Take one rung. True when it is taken (or there was nothing of
+        ours to take on it)."""
+        import net as net_mod
+        import room as room_mod
+        url = self.cfg.translate.ollama_url
+        if step == room_mod.LOCAL:
+            net_mod.hold(url, f"the local model stepped aside for {holder}")
+            self._room_checked_at = now
+            gone = room_mod.ollama_unload(url)
+            log.info("room: %s — the local model steps aside (%s) and stays "
+                     "off until %s is gone", self._room_numbers(reading),
+                     ", ".join(gone) or "none was loaded", holder)
+            return True
+        if step == room_mod.ENGLISH:
+            aside = getattr(self.transcriber, "english_aside", None)
+            took = False
+            if callable(aside):
+                try:
+                    took = bool(aside())
+                except Exception:                            # noqa: BLE001
+                    log.debug("room: the English model did not step aside",
+                              exc_info=True)
+            if took:
+                import gc
+                gc.collect()
+            log.info("room: %s — the English model steps aside%s",
+                     self._room_numbers(reading),
+                     "" if took else " (none was loaded)")
+            return True
+        if step == room_mod.SPEECH:
+            if self._model_state == "off":
+                return True              # the person's Stop, or never loaded
+            if self._model_state != "on":
+                return False             # loading or unloading: next time
+            if self.machine.state != hotkey_mod.IDLE:
+                return False             # never under a live microphone
+            log.info("room: %s — the speech model steps aside",
+                     self._room_numbers(reading))
+            if self.unload_model(for_room=holder).get("ok"):
+                self._room_took_model = True
+                return True
+            return False
+        return False
+
+    def _room_up(self, rung: int, holder: str) -> None:
+        """Every rung back at once, the last one first."""
+        import net as net_mod
+        import room as room_mod
+        log.info("room: %s is gone — the models come back", holder)
+        if rung >= room_mod.SPEECH and self._room_took_model \
+                and self._model_state == "off":
+            self._room_took_model = False
+            self._model_off_words = "the speech model is coming back — a few seconds"
+            self.load_model(for_room=True)
+        elif rung >= room_mod.ENGLISH:
+            back = getattr(self.transcriber, "english_back", None)
+            if callable(back):
+                try:
+                    back()
+                except Exception:                            # noqa: BLE001
+                    log.debug("room: the English model did not come back",
+                              exc_info=True)
+        self._room_took_model = False
+        net_mod.release(self.cfg.translate.ollama_url)
 
     def stop(self) -> None:
         self._stopping.set()      # ends the fullscreen and question waits
+        # A quit under the start's load: the picture goes with the press.
+        self._splash_done(None, linger_ms=0)
         # The hold first: it is the one thing here that changed the
         # MACHINE (the wake hold, a pinned sleep timer), and the rest of
         # this method cannot fail in a way that should leave that in place.
@@ -2589,6 +3196,8 @@ class App:
         # the shutdown would arm reminders nobody is left to answer.
         if getattr(self, "notify_watch", None) is not None:
             self.notify_watch.stop()
+        if getattr(self, "notify_tail", None) is not None:
+            self.notify_tail.stop()
         # The reminder thread next, then the card it would have shown.
         if getattr(self, "notify", None) is not None:
             self.notify.stop()
@@ -2606,6 +3215,9 @@ class App:
         # first imports Pillow, Tk and a video encoder.
         if self._capture is not None:
             self._capture.stop()
+        door = getattr(self, "phone_door", None)
+        if door is not None:
+            door.stop()
         if self.phone is not None:
             self.phone.stop()
         self.hook.stop()
@@ -2613,6 +3225,12 @@ class App:
         if timer is not None:
             timer.cancel()
         self.recorder.close()
+        # Last, with the keys already gone: the load cannot be interrupted,
+        # and a process that exits under it dies inside the GPU driver.
+        # Waiting is what a quit during a start has always cost.
+        loading = getattr(self, "_load_thread", None)
+        if loading is not None and loading.is_alive():
+            loading.join(START_LOAD_WAIT_S)
 
     def control_command(self, command: str, args: dict) -> dict:
         """One dashboard request -> one reply. Runs on the control thread.
@@ -2660,10 +3278,10 @@ class App:
                 # The dashboard decided a proposal straight in review.json;
                 # learn it now rather than at the engine's next idle tick.
                 # On a thread: the learning writes vocab.json.
-                engine = getattr(self, "_review", None)
-                if engine is None:
+                if getattr(self, "_review", None) is None \
+                        and not self._review_wanted():
                     return {"ok": False, "error": "the second reading is off"}
-                threading.Thread(target=engine.absorb_decisions, daemon=True,
+                threading.Thread(target=self._absorb_decisions, daemon=True,
                                  name="review-absorb").start()
                 return {"ok": True}
             if command == "read":
@@ -2807,6 +3425,9 @@ class App:
                     return {"ok": True, "dot": self.dot.state(),
                             "message": "the dot is back in its corner"}
                 return {"ok": False, "error": f"unknown dot action {do!r}"}
+            if command == "phone":
+                return self._phone_command(str(args.get("do", "")),
+                                           str(args.get("id", "") or ""))
             if command == "account":
                 return self._account_command(str(args.get("do", "status")).strip().lower(),
                                              kind=str(args.get("kind") or ""))
@@ -2855,14 +3476,17 @@ class App:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     def _account_command(self, do: str, kind: str = "") -> dict:
-        """Settings > Privacy > Account (screen 16), over the pipe: the
+        """Settings > Account (screen 16), over the pipe: the
         dashboard is another process and only THIS one holds the
         session (8.6). Nothing here waits on the network — a sign-in
         opens the browser and waits on a thread of its own, a sync is a
         nudge to the worker — so the poll never sees a frozen app; the
         outcome lands in status()["account"] (busy / last_error) and
-        in the log. A shut gate opens its card first, like a key press
-        would (D7), and the person presses the button again after
+        in the log. Sign out of every PC and the lock's verbs are the
+        exceptions, and the reply is their answer: the pipe has four
+        threads, and Home draws no last_error, so a failure sent there
+        looked like success. A shut gate opens its card first, like a key
+        press would (D7), and the person presses the button again after
         [Turn on]."""
         import sb
         if do == "status":
@@ -2895,9 +3519,27 @@ class App:
                                             "here when it says done" if do == "google"
                                             else "creating an anonymous account")}
         if do == "signout":
-            threading.Thread(target=lambda: self._account_try(sb.sign_out, "signed out"),
-                             daemon=True, name="account-signout").start()
-            return {"ok": True, "message": "signing out"}
+            # Sign out is THIS PC (the Store walk, 2026-10-03: "why does
+            # Sign out throw out everyone and not only the one I pressed it
+            # on?" — it locked his Dev copy too). Every PC is its own,
+            # plainly named button, below.
+            threading.Thread(target=lambda: self._account_try(
+                lambda: sb.sign_out(everywhere=False), "signed out on this PC"),
+                daemon=True, name="account-signout").start()
+            return {"ok": True, "message": "signing out on this PC"}
+        if do == "signout_all":
+            # what the changed lock's "It wasn't me" points to, to end a
+            # stranger's session with his own: the reply says whether it did
+            if not sb.signed_in():
+                return {"ok": False, "error": "no account on this PC"}
+            try:
+                sb.sign_out(everywhere=True)
+            except Exception as e:                           # noqa: BLE001
+                sb._status["last_error"] = str(e)[:200]
+                log.info("account: %s", e)
+                return {"ok": False, "error": str(e)[:200]}
+            self._say("signed out of every PC")
+            return {"ok": True, "message": "signed out of every PC"}
         if do == "delete":
             if not sb.signed_in():
                 return {"ok": False, "error": "no account on this PC"}
@@ -2935,12 +3577,24 @@ class App:
         if do == "approve":
             if not kind:
                 return {"ok": False, "error": "which request?"}
+            asking = next((str(r.get("device") or "") for r in sb.lock_status()["pending"]
+                           if r.get("id") == kind), "")
             try:
                 name = sb.approve_pairing(kind)
             except Exception as e:                           # noqa: BLE001
                 return {"ok": False, "error": str(e)[:200]}
+            self._phone_approved(asking)
             self._say(f"{name} is in — your account opens there too")
             return {"ok": True, "message": f"{name} is in"}
+        if do == "same_code":
+            # the joining side's press (PHONE_LINK_PLAN.md stage 1): `kind` is
+            # the code the screen showed, and until this nothing handed over
+            # is opened or kept
+            try:
+                sb.same_code(kind)
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            return {"ok": True, "message": "noted — approve this PC on your other device"}
         if do == "decline":
             if not kind:
                 return {"ok": False, "error": "which request?"}
@@ -2967,7 +3621,8 @@ class App:
                 return {"ok": False, "error": str(e)[:200]}
             if said == "asked":
                 return {"ok": True, "message": "your old key is kept aside — approve this PC "
-                                               "from your other PC, or type the recovery key"}
+                                               "from another device of yours, or type the "
+                                               "recovery key"}
             return {"ok": True, "message": "kept — what you said and your keys stay paused"}
         if do == "lock_restore":
             try:
@@ -3072,7 +3727,9 @@ class App:
             if not sb.configured():
                 return
             sb.start_worker(vocab=self.vocab, on_sent=self._report_sent)
-            for kind in ("settings_sync", "history_sync", "report_upload"):
+            # the account's own Turn on too: with that gate shut nothing
+            # moved, and the rest would wait for the next dictation or 15 min
+            for kind in ("account", "settings_sync", "history_sync", "report_upload"):
                 privacy.on_change(kind, sb.nudge)
             # the session going away — a second 401, Sign out, Delete my
             # account — locks the keys again, from whichever thread saw it
@@ -3084,13 +3741,399 @@ class App:
                 sb.PAIRING_HOOKS.append(self._pairing_asked)
             if self._pairing_settled not in sb.LOCK_HOOKS:
                 sb.LOCK_HOOKS.append(self._pairing_settled)
+            # the phone door follows the account: its rows at every account
+            # pass, what it opened from gone with the session, and a PC that
+            # finds itself forgotten comes back under a new certificate
+            if self._phone_signed_out not in sb.SIGNED_OUT_HOOKS:
+                sb.SIGNED_OUT_HOOKS.append(self._phone_signed_out)
+            if self._phone_hook not in sb.ACCOUNT_HOOKS:
+                sb.ACCOUNT_HOOKS.append(self._phone_hook)
+            if self._phone_forgotten not in sb.FORGOTTEN_HOOKS:
+                sb.FORGOTTEN_HOOKS.append(self._phone_forgotten)
+            # a phone away from home, through the account's channel (relay.py)
+            if self.relay.heard not in sb.LINK_HOOKS:
+                sb.LINK_HOOKS.append(self.relay.heard)
+            # the door hears a Forget through the account, so a person who
+            # withdraws that consent closes it (_doors)
+            privacy.on_change("account", self._doors_soon)
         except Exception:                                    # noqa: BLE001
             log.warning("the account worker did not start", exc_info=True)
 
-    def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str, str | None]:
+    # ---- the doors (server.py, PHONE_LINK_PLAN.md stage 1)
+
+    def _hook_connected(self) -> bool:
+        """Do Claude Code's settings name THIS copy's hook? One settings.json
+        serves every copy on the PC, so another copy's lines are no reason
+        for this one to listen."""
+        try:
+            import notify_hook
+            return notify_hook.hook_state()[0] == "mine"
+        except Exception:                                    # noqa: BLE001
+            log.debug("the Claude hook's state was not read", exc_info=True)
+            return False
+
+    def _loopback_first(self) -> int | None:
+        """The port the loopback door asks for first: the setting's, with
+        state.json's memory of last time left out. Nothing outside this PC
+        caches this one (the hook reads the state file at every knock), and
+        whoever set `tailscale serve` up points it at the setting, so one
+        start beside another copy must not move the door for good. The
+        phone door is the other way round: a phone cached that port."""
+        if self.config_path is not None:
+            return None
+        try:
+            port = (config_mod.read_settings(paths.SETTINGS_FILE).get("server.port")
+                    or config_mod.defaults_flat().get("server.port"))
+            return int(port) if port else None
+        except (ConfigError, OSError, TypeError, ValueError):
+            return None
+
+    def _bound(self, name: str, port: int | None) -> None:
+        """Where a door landed, for whoever has to find it: state.json, and
+        the running Config. A port is a fact about this PC today, so it is
+        never a choice of anybody's (config.STATE_KEYS)."""
+        field = name.partition(".")[2]
+        if port is None or getattr(self.cfg.server, field) == port:
+            return
+        try:
+            self._save({name: port})
+        except Exception as e:                               # noqa: BLE001
+            log.warning("%s could not be written (%s)", name, e)
+        self.cfg = dataclasses.replace(
+            self.cfg, server=dataclasses.replace(self.cfg.server, **{field: port}))
+
+    def _doors(self) -> None:
+        """Make true what should be listening, from where things stand now.
+
+        The loopback door: while the switch is on OR the Claude hook is
+        connected, so a person's hook does not post into nothing with the
+        phone switched off; with the switch off it answers the hook and
+        nothing else (server.HOOK_ROUTES). The phone door: while the switch
+        is on, this PC gave its one yes, the account has a phone and the
+        person's yes to the account stands.
+
+        That last one is the difference between a person's act and a
+        network's state. The door hears a Forget through the account, so
+        with the `account` consent withdrawn it would stand on kept rows,
+        deaf to one, for as long as nobody looked: a person who shut that
+        gate shuts the door. The internet going is not that, nor is Offline
+        mode, which the Phone card promises leaves the phone reaching this
+        PC: the door stays open on its kept rows (privacy.granted).
+
+        Called at start, on a change of [server], when the hook's lines move,
+        when the `account` consent moves and at every account pass; every
+        path through here is the same one, so the answer does not depend on
+        the order things happened in. Never raises: a door that cannot open
+        must not touch dictation."""
+        with self._doors_lock:
+            if self._stopping.is_set():
+                return
+            self.phone.cfg = self.phone_door.cfg = self.cfg
+            server = self.cfg.server
+            self.phone.routes.review_scope = server.review_scope
+            try:
+                if server.enabled or self._hook_connected():
+                    if not self.phone.running:
+                        self.phone.start(self._loopback_first())
+                        self._bound("server.port", self.phone.port)
+                elif self.phone.running:
+                    self.phone.stop()
+            except Exception as e:                           # noqa: BLE001
+                log.warning("phone endpoint could not start (%s) — the "
+                            "hotkey is unaffected", e)
+            try:
+                phones = phone_mod.anchors()
+            except Exception as e:                           # noqa: BLE001
+                log.warning("the phones of the account were not read (%s)", type(e).__name__)
+                phones = {}
+            try:
+                if (server.enabled and server.phone_allowed and phones
+                        and privacy.granted("account")):
+                    self.phone_door.cfg = self.cfg
+                    self._bound("server.phone_port", self.phone_door.start(phones))
+                elif self.phone_door.running:
+                    self.phone_door.stop()
+            except Exception as e:                           # noqa: BLE001
+                log.warning("the phone door could not open (%s) — the hotkey is "
+                            "unaffected", type(e).__name__)
+
+    def _doors_soon(self) -> None:
+        """_doors on a thread of its own, and this PC's row after it: the
+        pipe's handlers must not wait for a socket to close."""
+        def work() -> None:
+            self._doors()
+            self._phone_row()
+        threading.Thread(target=work, daemon=True, name="doors").start()
+
+    def _settle_left(self) -> None:
+        """A leaving the desk or the wizard noticed waits in state.json for a
+        process with hooks (sb.settle_left). It finishes here, before the
+        door binds: the worker's first turn is 30 s off, and until then the
+        door would show the certificate the list names."""
+        try:
+            import sb
+            sb.settle_left()
+        except Exception:                                    # noqa: BLE001
+            log.warning("the account's leaving was not finished", exc_info=True)
+
+    def _watch_hook(self) -> None:
+        """The hook's lines are written by the desk or the wizard, in another
+        process, into a file of Claude Code's: this is how a switch flipped
+        there reaches the loopback door with nothing restarted. A Withdraw
+        on the desk comes the same way: this process hears of it when
+        something reads the consent file, and with Offline mode on nothing
+        does, because `allowed` stops first, and the door would stand."""
+        import notify_hook
+
+        def stamp():
+            try:
+                return Path(notify_hook.DEFAULT_SETTINGS).stat().st_mtime_ns
+            except OSError:
+                return None
+
+        seen = stamp()
+        while not self._stopping.wait(HOOK_WATCH_S):
+            try:
+                privacy.rows()
+            except Exception:                                # noqa: BLE001
+                log.debug("the consent file was not read", exc_info=True)
+            now = stamp()
+            if now != seen:
+                seen = now
+                self._doors()
+
+    def _relay_allowed(self) -> bool:
+        """May a phone away from home reach this PC through the account?
+        Dictate from the phone, Also from outside home, and the account's
+        yes; Offline stops it, because nothing goes out then."""
+        server = self.cfg.server
+        return bool(server.enabled and server.away and not self._stopping.is_set()
+                    and privacy.allowed("account"))
+
+    def _relay_can_take(self) -> str | None:
+        """What a ping is answered with, with no model involved: None when a
+        dictation would be taken now, else this PC's own sentence, the one
+        the phone door would answer it with."""
+        locked = getattr(self, "locked", None)
+        if locked is not None and locked():
+            return self.LOCK_WORDS
+        if getattr(self, "_model_state", "on") != "on":
+            return getattr(self, "_model_off_words", self.MODEL_OFF_WORDS)
+        return None
+
+    def _phone_listening(self) -> bool:
+        """Should a phone try this PC at all? This PC's row names its
+        addresses only then: the switch on, and its yes given, or an Approve
+        pressed here whose row has not come back yet, so the phone that was
+        approved finds them on its first read."""
+        server = self.cfg.server
+        return bool(server.enabled and (server.phone_allowed or self._approved))
+
+    def _phone_streams(self) -> bool:
+        """``[server] stream``: does this PC take a phone dictation while it
+        is spoken (stage 2)? The row says so (_phone_publish) and a stream
+        is rolled (_stream_roller) only then. A config from before the key
+        reads as on, which is what defaults.toml ships."""
+        return bool(getattr(getattr(self.cfg, "server", None), "stream", True))
+
+    def _phone_read(self) -> None:
+        """The devices' rows from the account. This comes before anything
+        that decides on them or on this PC's row: Sign out of every PC clears
+        a PC's `link` from another PC, and the kept copy would go on saying
+        nothing changed. Offline, the kept rows stand."""
+        try:
+            phone_mod.refresh()
+        except Exception as e:                               # noqa: BLE001
+            log.debug("the devices' rows were not read (%s)", type(e).__name__)
+
+    def _phone_row(self) -> None:
+        """A press's way to this PC's row: the rows first, as an account
+        pass does."""
+        self._phone_read()
+        self._phone_publish()
+
+    def _phone_publish(self) -> None:
+        """This PC's `link` row as things stand; phone.publish writes only
+        what changed. Offline, or with no key here yet: the next pass."""
+        try:
+            phone_mod.publish(port=self.phone_door.port or self.cfg.server.phone_port,
+                              listening=self._phone_listening(),
+                              words_sync=privacy.allowed("settings_sync"),
+                              history_sync=privacy.allowed("history_sync"),
+                              stream=self._phone_streams())
+        except Exception as e:                               # noqa: BLE001
+            log.debug("this PC's row did not go out (%s)", type(e).__name__)
+
+    def _phone_yes(self) -> None:
+        """This PC's one yes: it binds at every start from now on, from the
+        kept rows, with no internet. A state key, because the yes is this
+        PC's and Windows' own question is asked per PC."""
+        self._save({"server.phone_allowed": True})
+        self.cfg = dataclasses.replace(
+            self.cfg, server=dataclasses.replace(self.cfg.server, phone_allowed=True))
+
+    def _phone_approved(self, device: str) -> None:
+        """Approve was pressed on this PC for ``device``. If its row turns
+        out to be a phone's, that press is this PC's yes (_phone_account), so
+        the door opens right after it and the dialog Windows raises is one
+        the person is there for. Approving another PC opens nothing."""
+        if device:
+            self._approved.add(device)
+        threading.Thread(target=self._phone_row, daemon=True, name="phone-row").start()
+
+    def _phone_account(self) -> None:
+        """sb.ACCOUNT_HOOKS, through phone.keyless: at every account pass and
+        when a device of the account changed. The rows are read and kept, the
+        certificate is checked against the list, the doors follow, and this
+        PC's own row goes out if anything in it moved."""
+        self._phone_read()
+        self._phone_check_certificate()
+        view = phone_mod.view()
+        phones = {d["id"] for d in view["phones"]}
+        if self._approved & phones:
+            self._phone_yes()
+        self._approved -= phones | {d["id"] for d in view["pcs"]}
+        self._doors()
+        self._phone_publish()
+
+    def _phone_check_certificate(self) -> None:
+        """Replace the certificate if the account's list names it. A lost
+        state.json with the secrets folder intact gives this PC a new id and
+        leaves a stale row with the live certificate in it, and a Forget of
+        that row bans the certificate while this PC stays in the account. sb
+        cannot see inside a row, so the check is here. The pass's publish
+        then says the new one. The worker and the live thread both come
+        through here, so the look and the replacement are one step."""
+        import sb
+        try:
+            with self._doors_lock:
+                if phone_mod.identity() in sb.forgotten():
+                    log.warning("phone: the account forgot this PC's certificate — a new one")
+                    self._phone_reissue()
+        except Exception as e:                               # noqa: BLE001
+            log.warning("phone: the certificate was not checked (%s)", type(e).__name__)
+
+    def _phone_reissue(self) -> None:
+        """A new certificate, and the door follows it (PhoneDoor.start reopens
+        under the key on disk), whichever way the rotation went."""
+        with self._doors_lock:
+            try:
+                phone_mod.rotate()
+            finally:
+                self._doors()
+
+    def _phone_signed_out(self) -> None:
+        """sb.SIGNED_OUT_HOOKS: the door checks a certificate, not a session,
+        so what it opened from goes with the session, and so does any Approve
+        still waiting for its row.
+
+        NOTHING HERE MAY TAKE phone._lock OR _doors_lock, because a refused
+        refresh calls this with sb._lock held (_fresh -> _refresh ->
+        _account_gone), and those two are taken first and sb._lock second by
+        phone.view, anchors, refresh and publish and by _doors. Doing the work
+        here deadlocked with the desk's poll: both threads for ever, status()
+        and locked() behind them, and the hook's thread at the pause key. So
+        the work has a thread of its own. The other two hooks stay on theirs:
+        sb.ACCOUNT_HOOKS and sb.FORGOTTEN_HOOKS never come with sb._lock held,
+        and settle_left needs the second to say whether it worked."""
+        self._approved.clear()
+        threading.Thread(target=self._phone_gone, daemon=True, name="phone-gone").start()
+
+    def _phone_gone(self) -> None:
+        """The session went: its rows go, and the doors follow even if they
+        would not. With nobody signed in the door opens for nobody."""
+        try:
+            phone_mod.drop_rows()
+        except OSError as e:
+            log.warning("phone: the kept rows stayed (%s)", type(e).__name__)
+        self._doors()
+
+    def _phone_forgotten(self) -> None:
+        """sb.FORGOTTEN_HOOKS, through sb.settle_left: this PC is on the
+        account's forgotten list and comes back as a new device, so the
+        certificate goes too, because the list never lets the old one back.
+
+        This can run twice: when it trips, or a hook after it does, the mark
+        stands and every hook runs again next turn. The second run finds
+        nothing left to drop, and its certificate replaces one nobody has
+        seen, because sb.write_link refuses until the mark is gone."""
+        with self._doors_lock:
+            self._approved.clear()
+            try:
+                phone_mod.drop_rows()
+            finally:
+                self._phone_reissue()
+
+    def _phone_status(self) -> dict:
+        """status()["phone"]: what Settings > Phone and Home's row draw.
+        Names and plain facts; no token and no key."""
+        door = getattr(self, "phone_door", None)
+        server = self.cfg.server
+        on = bool(door is not None and door.running)
+        out = {"on": on, "phones": [], "pcs": [], "ask": False, "error": "",
+               "allowed": bool(server.phone_allowed),
+               "port": (door.port if on else None) or server.phone_port,
+               "addrs": [], "program": ""}
+        try:
+            out.update(phone_mod.view())
+            out["addrs"] = phone_mod.addresses(max_age=30.0)
+            out["program"] = phone_mod.program()
+            out["error"] = getattr(self, "_phone_error", "")
+            out["ask"] = bool(server.enabled and not server.phone_allowed and out["phones"]
+                              and not getattr(self, "_phone_no", False))
+            out["account_off"] = bool(server.enabled and server.phone_allowed and out["phones"]
+                                      and not privacy.granted("account"))
+            out["offline"] = privacy.offline()
+        except Exception:                                    # noqa: BLE001
+            log.debug("the phone status tripped", exc_info=True)
+        return out
+
+    def _phone_forget(self, ident: str, cert: str) -> None:
+        """Forget, on a thread: three calls to the account. The list goes
+        first in sb.forget_device and its hooks bring the door along, but a
+        call that fails after the list has moved runs no hook, and the door
+        must not go on admitting a phone this PC already forgot."""
+        import sb
+        try:
+            if sb.forget_device(ident, cert) is False:
+                self._phone_error = sb.OLDER_COPY_WORDS
+        except Exception as e:                               # noqa: BLE001
+            self._phone_error = f"that did not go through ({type(e).__name__}) — try again"
+            log.info("phone: Forget failed (%s)", type(e).__name__)
+        finally:
+            self._doors()
+
+    def _phone_command(self, do: str, ident: str = "") -> dict:
+        """Settings > Phone and Home's row, over the pipe."""
+        if do == "allow":
+            self._phone_no = False
+            self._phone_yes()
+            self._doors_soon()
+            return {"ok": True, "message": "your phone can use this PC"}
+        if do == "notnow":
+            self._phone_no = True
+            return {"ok": True, "message": "not now"}
+        if do == "forget":
+            view = phone_mod.view()
+            found = next((d for d in view["phones"] + view["pcs"] if d["id"] == ident), None)
+            if found is None:
+                return {"ok": False, "error": "that device is not here any more"}
+            self._phone_error = ""
+            threading.Thread(target=self._phone_forget, args=(ident, found["cert"]),
+                             daemon=True, name="phone-forget").start()
+            return {"ok": True, "message": f"forgetting {found['name']}"}
+        return {"ok": False, "error": f"unknown phone action {do!r}"}
+
+    def _transcribe_for_phone(self, wav: bytes, rolled=None) -> tuple[str, str, str | None]:
         """No language is passed: the phone has no per-language key, so it
         goes through the same Hebrew/English detection the desktop uses
         when nothing was specified.
+
+        `rolled` is the rolling transcriber that read this recording while
+        it was spoken (a stream, PHONE_LINK_PLAN.md stage 2): its windows
+        are the head, only the tail is decoded now (transcribe_with_head),
+        and the stretches it already repaired are not repaired again —
+        exactly the desk's release. None is the whole decode, as before.
 
         Logged to transcripts.log like every desktop dictation. Without
         this, "the transcript from my phone looked wrong" has no evidence
@@ -3108,27 +4151,45 @@ class App:
         # getattr: a test hands this method a bare namespace as self
         locked = getattr(self, "locked", None)
         if locked is not None and locked():
+            if rolled is not None:
+                rolled.invalidate()
             raise RuntimeError(self.LOCK_WORDS)
         if getattr(self, "_model_state", "on") != "on":
-            raise RuntimeError(self.MODEL_OFF_WORDS)
+            if rolled is not None:
+                rolled.invalidate()
+            raise RuntimeError(getattr(self, "_model_off_words",
+                                       self.MODEL_OFF_WORDS))
+        head = rolled.finish() if rolled is not None else None
+        if head is not None:
+            log.info("rolling: %d window(s) covering %.1f of %.1f s of a phone "
+                     "dictation were decoded while it was spoken (%.1f s of "
+                     "decoder time) — only the tail is left", len(head.windows),
+                     head.end_s, max(0.0, (len(wav) - 44) / 32000.0), rolled.busy_s)
         started = time.monotonic()
-        text, backend = self._transcribe(wav, language=None)
+        decoded = (self._transcribe(wav, language=None) if head is None
+                   else self._transcribe(wav, None, head))
+        text, backend = decoded[0], decoded[1]
+        # What the decode said beside its text, as values off the decode that
+        # made this text, never off the App: a desk dictation may have run
+        # since (PHONE_LINK_PLAN.md stage 2). A test's own _transcribe may
+        # answer a bare pair, which says none of it.
+        words = list(getattr(decoded, "words", None) or [])
+        windows = list(getattr(decoded, "windows", None) or [])
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
                             backend, time.monotonic() - started, text)
         raw = text.strip()
         # Same blocking pass the desktop runs, under the same ceiling: both
         # have somebody waiting on the other end of it — and the same
         # split: the cloud side here, the local model on the reading.
+        # A stream's stretches repaired while it was spoken are taken as
+        # they are (_improve_rolled), as at the desk.
         receipt: dict = {}
-        text = self._improve(raw, receipt=receipt) if raw else text
+        if raw:
+            text = (self._improve(raw, receipt=receipt) if head is None
+                    else self._improve_rolled(raw, head, receipt, windows=windows))
         # A decoder loop means words are LOST, not garbled — surface that
         # on the phone right away instead of letting reading discover it.
-        warning = None
-        for b in (self.transcriber, self._local or None):
-            found = getattr(b, "last_warning", None)
-            if found:
-                warning = found
-                break
+        warning = getattr(decoded, "warning", None)
         # Kept in recent\ like a desk dictation, and handed to the second
         # reading — WITHOUT the desktop card (card=False): the person who
         # said this is holding a phone, and the phone asks GET /review
@@ -3143,8 +4204,7 @@ class App:
                     wav, max(0.0, (len(wav) - 44) / 32000.0), "",
                     extra={"text": text.strip(), "raw": raw,
                            "backend": backend, "language": "auto",
-                           "words": list(getattr(self, "_last_words", [])
-                                         or []),
+                           "words": words,
                            "source": "phone",
                            "repair": receipt.get("by") or ""})
                 engine = getattr(self, "_review", None)
@@ -3204,7 +4264,7 @@ class App:
         return answer.text, answer.target, answer.backend, answer.seconds
 
     def _translate_for_phone(self, text: str) -> tuple[str, str]:
-        """The same Gemini-then-Ollama translator the F9 key uses. Shares
+        """The same Groq-Gemini-Ollama translator the F9 key uses. Shares
         the instance, so the phone does not pay Ollama's 76 s cold start
         again on its own copy.
 
@@ -3446,13 +4506,17 @@ class App:
         # stretches are not sent to the repair pass either.
         self._roller = self._start_roller(
             polish=not (self._to_card or self._to_prompt or self._to_read))
+        if language and self._roller is not None:
+            # a key that named its language: the release will not ask,
+            # so the rolling thread must not either (early_language)
+            self._roller.decide = None
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
                  f", tap '{self.cfg.latch_hotkey}' to lock it on"
                  if self.cfg.latch_hotkey else "")
 
-    def _start_roller(self, polish: bool = True):
+    def _start_roller(self, polish: bool = True, source=None):
         """The rolling transcriber for the recording just begun, or None.
 
         Only for the local backend, and only when [local] rolling says
@@ -3464,6 +4528,9 @@ class App:
         `polish`: also send each decoded stretch through the repair pass
         (_polish_window) while the key is still held, so the release
         repairs only what came after it.
+
+        `source`: what it reads (``chunks_since``, ``sample_rate``): the
+        microphone when left unsaid, a phone's stream for _stream_roller.
         """
         local = getattr(self.cfg, "local", None)
         if local is None or not getattr(local, "rolling", False):
@@ -3479,6 +4546,7 @@ class App:
                 # The one choke point every decode passes through, the
                 # phone endpoint's included (see _transcribe).
                 with self._model_lock:
+                    self._model_used_at = time.monotonic()
                     window = backend.decode_window(wav, lead_s, keep_s)
                 if polish and window.text:
                     threading.Thread(target=self._polish_window,
@@ -3486,16 +4554,45 @@ class App:
                                      name="rolling-polish").start()
                 return window
 
+            source = self.recorder if source is None else source
             roller = rolling_mod.Roller(
-                self.recorder.chunks_since, self.recorder.sample_rate,
+                source.chunks_since, source.sample_rate,
                 decode, local.rolling_window_s, frames_to_wav,
                 overlap=bool(getattr(backend, "can_overlap", False)))
+            if getattr(local, "early_language", False) \
+                    and getattr(self.cfg, "auto_language", True) \
+                    and hasattr(backend, "early_language"):
+                # the release's language decision, made while he speaks
+                # once it can be (LocalWhisperTranscriber.early_language);
+                # the model lock only for the detector's own pass
+                def decide(wav: bytes):
+                    return backend.early_language(wav, self._model_lock)
+                roller.decide = decide
             roller.start()
             return roller
         except Exception:
             log.exception("could not start the rolling transcriber — this "
                           "recording is decoded whole at the end")
             return None
+
+    def _stream_roller(self, stream):
+        """The rolling transcriber for a phone dictation arriving while it is
+        spoken (PHONE_LINK_PLAN.md stage 2, phonestream.py), or None, and then
+        it is decoded whole at its end as /transcribe always did. The desk's
+        own, on the stream instead of the microphone, its stretches repaired
+        as they settle. None while the app is locked or the model is not on:
+        the answer at the end then says why, in the words /transcribe uses.
+        None too with ``[server] stream`` off: this PC's row then names no
+        /stream and a phone sends whole, and one that streams anyway (it
+        read the row before the switch moved) gets the old whole decode."""
+        if not self._phone_streams():
+            return None
+        locked = getattr(self, "locked", None)
+        if locked is not None and locked():
+            return None
+        if getattr(self, "_model_state", "on") != "on":
+            return None
+        return self._start_roller(polish=True, source=stream)
 
     def _on_stop(self, language: str | None = "he") -> None:
         # The release, for the clock the worker stops at the paste: the
@@ -3541,9 +4638,11 @@ class App:
             log.warning("the microphone stream stopped during this "
                         "recording — %.1f s arrived", seconds)
             self._mic_lost(partial=True)
-        if seconds < self.cfg.min_seconds:
+        # The pre-roll is not held time: a tap stays a tap.
+        held_s = seconds - float(getattr(self.recorder, "lead_s", 0.0) or 0.0)
+        if held_s < self.cfg.min_seconds:
             log.info("discarded: %.2f s hold is under min_seconds=%.2f "
-                     "(accidental tap?)", seconds, self.cfg.min_seconds)
+                     "(accidental tap?)", held_s, self.cfg.min_seconds)
             self._set_state("ready")
             return
         beep("stop")
@@ -3816,6 +4915,49 @@ class App:
                 self._say("screens on")
         threading.Thread(target=work, daemon=True, name="screens-key").start()
 
+    def _screens_card(self, state: dict) -> None:
+        """The screens mode just flipped (awake.Engine's `on_dark`): pin
+        the "Screens off" card, or take it down. The ONE road — the key,
+        the desk, the shelf, the phone, the card's button and the exit all
+        change the mode through the engine, so none of them can leave a
+        stale card or forget to put one up.
+
+        Only enqueues (the engine may call this on the keyboard hook,
+        holding its lock), and never raises: a card that cannot paint must
+        not cost the screens going off or coming back. The model is not
+        involved at all — the column is built whether or not it is on."""
+        try:
+            column = getattr(self, "notify_card", None)
+            if column is None or not hasattr(column, "pin"):
+                return
+            acfg = getattr(self.cfg, "awake", None)
+            if state.get("dark") and getattr(acfg, "screens_card", True):
+                import notify_card as nc
+                key = (hint_mod.pretty(acfg.hotkey)
+                       if acfg is not None and acfg.enabled and acfg.hotkey
+                       else "")
+                column.pin(nc.pinned_card(
+                    since=state.get("since") or time.time(),
+                    keep_s=state.get("keep_screens_off_s", 0), key=key))
+            else:
+                column.unpin()
+        except Exception:                        # noqa: BLE001
+            log.debug("the screens card would not %s",
+                      "go up" if state.get("dark") else "come down",
+                      exc_info=True)
+
+    def _screens_card_pressed(self) -> None:
+        """The pill on the "Screens off" card. Arrives on the card's own
+        thread, so the engine's work goes to one of its own; the card then
+        comes down through `_screens_card`, like every other way out."""
+        def work() -> None:
+            if not self.awake.dark:
+                return
+            self.awake.lighten(by="card")
+            self._say("screens on")
+        threading.Thread(target=work, daemon=True,
+                         name="screens-card").start()
+
     def _tap_notify_dismiss(self) -> None:
         """The notification card down and everything marked seen, from
         the key. On a thread, like every tap: the engine's dismiss writes
@@ -3837,8 +4979,7 @@ class App:
     # — the whole point of putting two buttons on every row is that the
     # pile can be emptied where it stands. One set, so the rule is
     # readable and reversible.
-    _SHELF_LEAVES = frozenset({"notify.open", "problem.open",
-                               "question.answer"})
+    _SHELF_LEAVES = frozenset({"notify.open", "question.answer"})
 
     def _tap_shelf(self) -> None:
         """The panel beside the dot: open it, or close the one that is up.
@@ -4056,8 +5197,7 @@ class App:
         """
         out = []
         for owner, attr in ((getattr(self, "notify", None), "store"),
-                            (getattr(self, "_review", None), "store"),
-                            (self, "problems")):
+                            (getattr(self, "_review", None), "store")):
             store = getattr(owner, attr, None) if owner is not None else None
             stamp = None
             if store is not None:
@@ -4079,8 +5219,13 @@ class App:
         machine = getattr(self, "machine", None)
         mode = _DOT_FOR.get(getattr(machine, "state", None))
         if mode is None:
+            model = getattr(self, "_model_state", "on")
             if getattr(machine, "paused", False):
                 mode = "paused"
+            elif model == "off":
+                mode = "off"          # never "Listening" with nothing to hear
+            elif model != "on":
+                mode = "loading"
             else:
                 mode = "busy" if self._activity == "busy" else "listening"
         note = ""
@@ -4149,25 +5294,20 @@ class App:
                                     or item.get("text") or ""),
                         "at": str(item.get("when") or ""),
                         "pill": str(piece.get("word") or ""),
-                        "answers": [("review.accept", "Keep"),
+                        # The card's and the desk's words, Yes the
+                        # right-hand one of the pair as on both
+                        # (review_card's ONE DECISION, 2026-11-27):
+                        # the first answer is drawn to the right.
+                        "answers": [("review.accept", "Yes"),
                                     ("review.reject", "No")]})
             except Exception:                    # noqa: BLE001
                 log.debug("shelf: could not read the second reading",
                           exc_info=True)
-        store = getattr(self, "problems", None)
-        if store is not None:
-            try:
-                for item in store.items(problems_mod.OPEN):
-                    rows.append({
-                        "kind": "problem",
-                        "id": item.get("id"),
-                        "text": str(item.get("text") or ""),
-                        "at": str(item.get("at") or ""),
-                        "pill": "",
-                        "answers": [("problem.open", "Open"),
-                                    ("problem.close", "Close")]})
-            except Exception:                    # noqa: BLE001
-                log.debug("shelf: could not read the problems", exc_info=True)
+        # NO PROBLEM REPORTS. Reading them back left the product on
+        # 2026-10-01 (MASTER.md §8: the master app reads them), and Home's
+        # pile has none — but this panel kept every open one with Open and
+        # Close, 24 of his on 2026-11-09, so the shelf and Home counted
+        # different piles (the 2026-11-09 audit). The report KEY stays.
         rows.sort(key=lambda r: str(r.get("at") or ""), reverse=True)
         return rows
 
@@ -4272,35 +5412,12 @@ class App:
             self._review_verdict(str(ident),
                                  "accepted" if verb == "accept"
                                  else "rejected")
-        elif source == "problem":
-            if verb == "open":
-                open_dashboard()
-            else:
-                threading.Thread(target=self._shelf_problem_close,
-                                 args=(str(ident),), daemon=True,
-                                 name="shelf-problem").start()
         else:
             return
         if do in self._SHELF_LEAVES:
             self._shelf_close()
         else:
             self._shelf_push()
-
-    def _shelf_problem_close(self, ident: str) -> None:
-        """Answered, and problems.md rewritten. Own thread: the store
-        takes a cross-process lock and the digest is written from scratch
-        every time — the same two steps the dashboard's own Close does
-        (dashboard._write_digest), and forgetting the second one leaves
-        the file the weekly routine reads a week out of date."""
-        store = getattr(self, "problems", None)
-        if store is None:
-            return
-        try:
-            store.resolve(ident, problems_mod.CLOSED, by="shelf")
-            problems_mod.digest(store, paths.PROBLEMS_FILE.with_name(problems_mod.DIGEST_NAME))
-            self._say("report closed")
-        except Exception:                        # noqa: BLE001
-            log.exception("shelf: could not close %s", ident)
 
     def _shelf_chrome(self, name: str) -> None:
         """The panel's own buttons. Pause and Screens change something the
@@ -4379,6 +5496,15 @@ class App:
         if not dot.move(overlay_mod.DOT_FRAME_S, hold=True):
             self._say("there is no dot to move")
             return False
+        if getattr(dot, "hidden", False):
+            # With the model off there is no dot on the screen, and where
+            # it sits needs no model: it comes up for the move, and
+            # _dot_move_end puts it away. The painter maps it on its next
+            # frame; the frame below is drawn around that rectangle.
+            dot.show()
+            until = time.monotonic() + 0.5
+            while dot.rect is None and time.monotonic() < until:
+                time.sleep(0.02)
         self._dot_move_from = (int(dot.x), int(dot.y))
         self._shelf_close()
         frame = getattr(self, "move_frame", None)
@@ -4427,6 +5553,10 @@ class App:
         if name is None:
             return None
         return overlay_mod.corner_spot(name, work, box, margin)
+
+    def wait_for_load(self, timeout: float = 0.0) -> bool:
+        """Until the start's load is over; at once when none is ahead."""
+        return self._load_settled.wait(timeout or START_LOAD_WAIT_S)
 
     def _dot_move_end(self, keep: bool, verb: str = "done") -> None:
         """The framed move is over. `keep` leaves the dot where the last
@@ -4479,6 +5609,9 @@ class App:
             self._say("the dot is back where it was")
         finally:
             dot.end_move()
+            # getattr: the test suite builds half-initialised Apps
+            if getattr(self, "_model_state", "on") == "off":
+                dot.hide()            # it only came up for the move
 
     def _shelf_screens(self) -> None:
         """The screens off or back, then the row says which. Own thread:
@@ -4815,16 +5948,24 @@ class App:
 
     def _on_silent(self) -> None:  # PortAudio callback thread
         """Ten seconds in and the microphone has heard nothing above
-        recorder.SILENT_PEAK: a headset on mute, or unplugged. The dot
-        blinks red and slides to the middle of the screen — where he is
-        looking — and the recording goes on; the alarm is information,
-        not a decision (report 20260910-190110, in his words: "רק שתתריע
-        לי על זה שאני אדע"). Once per recording; the recorder sees to
-        that. Nothing here blocks: alarm() writes one float."""
+        recorder.SILENT_PEAK — or two seconds in and it has sent pure
+        zeros (recorder.DEAD_PEAK): a headset on mute, or unplugged. The
+        dot blinks red, slides to the middle of the screen — where he is
+        looking — and grows while it waits, and the recording goes on;
+        the alarm is information, not a decision (report 20260910-190110,
+        in his words: "רק שתתריע לי על זה שאני אדע"). Once per recording;
+        the recorder sees to that. Nothing here blocks: alarm() writes
+        one float."""
         self.dot.alarm(True)
-        log.warning("no sound for %.0f s into this recording (peak %.4f "
-                    "< %.2f) — is the microphone muted or unplugged?",
-                    SILENT_AFTER_S, self.recorder.peak(), SILENT_PEAK)
+        peak = self.recorder.peak()
+        if peak <= DEAD_PEAK:
+            log.warning("pure silence for %.0f s into this recording (peak "
+                        "%.5f) — is the microphone muted or unplugged?",
+                        DEAD_AFTER_S, peak)
+        else:
+            log.warning("no sound for %.0f s into this recording (peak %.4f "
+                        "< %.2f) — is the microphone muted or unplugged?",
+                        SILENT_AFTER_S, peak, SILENT_PEAK)
 
     def _on_sound(self) -> None:  # PortAudio callback thread
         """Sound arrived after the alarm: the dot goes back to its corner.
@@ -4933,12 +6074,12 @@ class App:
             self._local = False
             return None
         try:
-            from transcribers import local_kwargs
+            from transcribers import configure, local_kwargs
             from transcribers.local_whisper import LocalWhisperTranscriber
             log.info("cloud quota spent — loading the local model (first "
                      "run downloads it; this takes a while)...")
-            self._local = LocalWhisperTranscriber(
-                **local_kwargs(self.cfg, self._hotwords))
+            self._local = configure(LocalWhisperTranscriber(
+                **local_kwargs(self.cfg, self._hotwords)), self.cfg)
             log.info("local backend ready — dictation continues offline")
         except Exception as e:
             log.warning("no local fallback available: %s", e)
@@ -4997,7 +6138,7 @@ class App:
 
     def _transcribe(self, wav: bytes,
                     language: str | None = None,
-                    head=None) -> tuple[str, str]:
+                    head=None) -> Decoded:
         """Cloud first; local only once every cloud model is out of quota.
 
         Serialised: the phone endpoint runs on its own threads and would
@@ -5008,8 +6149,14 @@ class App:
         held (rolling.Head): the backend that made it decodes only the
         tail after it. Any other backend — the cloud, or the local
         fallback under it — was not there and gets the whole recording.
+
+        -> Decoded: (text, backend) as a pair, and the decode's words,
+        windows and warning beside it, read HERE, under the lock, off the
+        backend that ran, so neither another dictation's nor an earlier
+        one's is ever mistaken for this one's.
         """
         with self._model_lock:
+            self._model_used_at = time.monotonic()
             try:
                 if head is not None and hasattr(self.transcriber,
                                                 "transcribe_with_head"):
@@ -5017,15 +6164,18 @@ class App:
                         wav, head, language=language)
                 else:
                     text = self._call(self.transcriber, wav, language)
-                self._last_words = list(
-                    getattr(self.transcriber, "last_words", None) or [])
-                # The windows this text was joined from (rolling), [] for
-                # a whole decode — read HERE, off the backend that ran,
-                # so a stale list from an earlier dictation is never
-                # mistaken for this one's.
-                self._last_windows = list(
-                    getattr(self.transcriber, "last_windows", None) or [])
-                return text, self.transcriber.name
+                # The windows this text was joined from (rolling), [] for a
+                # whole decode, and what its language check and its decoder
+                # each cost (local_whisper's last_timing, the decode tally
+                # of THIS thread in it), for the pasted line — all read
+                # HERE, off the backend that ran, so a stale one from an
+                # earlier dictation is never mistaken for this one's.
+                ran = self.transcriber
+                return Decoded(text, ran.name,
+                               getattr(ran, "last_words", None),
+                               getattr(ran, "last_windows", None),
+                               getattr(ran, "last_warning", None),
+                               getattr(ran, "last_timing", None))
             except (RateLimitError, TooLongForCloud) as e:
                 local = self._local_backend()
                 if local is None:
@@ -5036,10 +6186,10 @@ class App:
                     self._say(str(e))
                     log.info("%s", e)
                 text = self._call(local, wav, language)
-                self._last_words = list(
-                    getattr(local, "last_words", None) or [])
-                self._last_windows = []
-                return text, local.name
+                return Decoded(text, local.name,
+                               getattr(local, "last_words", None), (),
+                               getattr(local, "last_warning", None),
+                               getattr(local, "last_timing", None))
 
     def _worker(self) -> None:
         while True:
@@ -5355,6 +6505,7 @@ class App:
                 beep("error")
                 log.error("translation failed: %s — your text is untouched",
                           e)
+                self._needs_key_check("translate")
                 return
             latency = time.monotonic() - started
             transcript_log.info("TRANSLATE-OUT | %.1fs | %s | %s", latency,
@@ -5390,6 +6541,34 @@ class App:
                     injector.restore(state, "translation", since=kept)
                 except injector.ClipboardBusyError as e:
                     log.warning("could not restore your clipboard: %s", e)
+
+    def _needs_key_check(self, feature: str) -> None:
+        """A text key failed: when no cloud key at all could have answered
+        it, Home says so (store walk item 13: "a key press whose feature
+        needs a missing key must SAY so" — a row on the pile, never a
+        floating card). Presence only; a failure WITH a key (offline, a
+        quota) is the log's, not a row's."""
+        import translate as translate_mod
+        try:
+            missing = translate_mod.Translator.missing_keys()
+        except Exception:                                  # noqa: BLE001
+            return
+        if "groq" in missing and "gemini" in missing:
+            self._needs_key[feature] = time.time()
+            log.info("%s pressed with no cloud key — Home says what to add", feature)
+
+    def _needs_key_now(self) -> dict[str, float]:
+        """What status() carries: gone the moment either key is saved."""
+        if not self._needs_key:
+            return {}
+        import translate as translate_mod
+        try:
+            missing = translate_mod.Translator.missing_keys()
+        except Exception:                                  # noqa: BLE001
+            return dict(self._needs_key)
+        if not ("groq" in missing and "gemini" in missing):
+            self._needs_key.clear()
+        return dict(self._needs_key)
 
     def _punctuate(self, hwnd: int) -> None:
         """Put the punctuation into the selection — or the whole field.
@@ -5479,6 +6658,7 @@ class App:
                 beep("error")
                 self._say(f"could not punctuate: {e}")
                 log.error("punctuation failed: %s — your text is untouched", e)
+                self._needs_key_check("punctuate")
                 return
             latency = time.monotonic() - started
             transcript_log.info("PUNCTUATE-OUT | %.1fs | %s | %s", latency,
@@ -5863,7 +7043,7 @@ class App:
                           "— the release will repair it")
 
     def _improve_rolled(self, cleaned: str, head,
-                        receipt: dict | None = None) -> str:
+                        receipt: dict | None = None, windows=()) -> str:
         """_improve, minus the stretches already repaired while he spoke.
 
         The leading run of windows whose repair has landed is taken as it
@@ -5873,10 +7053,13 @@ class App:
         pass on a 106 s dictation (997 chars) took 2.0 s; on its last
         stretch alone it is the 0.7 s a short dictation pays.
 
+        `windows` are the stretches THIS text was joined from, the tail's
+        included (Decoded.windows of its own decode, never the App's).
+
         `receipt["by"]` says which backend repaired any of it — the
         stretches while he spoke or the rest now — or None.
         """
-        windows = list(getattr(self, "_last_windows", None) or [])
+        windows = list(windows or [])
         done: list = []
         if head is not None:
             for window in windows:
@@ -6159,6 +7342,9 @@ class App:
         last_error = ""
         attempt = 0
         text = backend = None
+        # The decode's own words and windows, as values (Decoded): a phone
+        # dictation decoded meanwhile is never read in their place.
+        decoded = None
         no_model = False     # the model is not on disk: said as such
         # What the rolling transcriber finished while the key was held.
         # finish() waits for the decode it is in the middle of, if any —
@@ -6166,6 +7352,7 @@ class App:
         # IS part of the wait. None means the whole recording is decoded
         # here exactly as it always was.
         head = rolled.finish() if rolled is not None else None
+        head_wait = (time.monotonic() - started) if rolled is not None else None
         if head is not None:
             log.info("rolling: %d window(s) covering %.1f of %.1f s were "
                      "decoded while you spoke (%.1f s of decoder time) — "
@@ -6179,7 +7366,8 @@ class App:
                     text, backend = self._transcribe_pieces(pieces,
                                                             language)
                 else:
-                    text, backend = self._transcribe(wav, language, head)
+                    decoded = self._transcribe(wav, language, head)
+                    text, backend = decoded[0], decoded[1]
                 break
             except TranscriptionError as e:
                 last_error = str(e)
@@ -6206,12 +7394,21 @@ class App:
                 break
 
         latency = time.monotonic() - started
+        # the backend's own split of `latency`, as a value of THIS decode
+        # (Decoded.timing, read under the model lock): a phone dictation
+        # through _transcribe meanwhile cannot replace it. Pieces have one
+        # each, so the whole carries none
+        timing = ({} if (pieces and len(pieces) > 1)
+                  else dict(getattr(decoded, "timing", None) or {}))
+        marker_wait = None
         if marker_up is not None:
             # EVERY door below reads `shown` — the erase, the clear, the
             # clipboard fallback — so none of them may open before the
             # marker is up and its own paste has put the clipboard back.
             # A decode that beat it (2 in 230) waits here for the rest.
+            joined = time.monotonic()
             shown, marker = marker_up()
+            marker_wait = time.monotonic() - joined
 
         if text is None:
             # Nothing to paste. Take the marker back down so the user is not
@@ -6436,7 +7633,8 @@ class App:
         # round trip" and the log read as if the paste had been fast.
         repair_started = time.monotonic()
         receipt: dict = {}
-        cleaned = self._improve_rolled(cleaned, head, receipt)
+        cleaned = self._improve_rolled(cleaned, head, receipt,
+                                       windows=getattr(decoded, "windows", None))
         # And the punctuation, if the box is ticked — after the repair, so
         # it works on the final words; punctuate.max_wait_s bounds it.
         cleaned = self._auto_punctuate(cleaned)
@@ -6445,11 +7643,30 @@ class App:
         # The decoder's per-word confidence belongs to ONE decode; a
         # recording transcribed in pieces has several, so it carries none.
         words = ([] if (pieces and len(pieces) > 1)
-                 else list(getattr(self, "_last_words", []) or []))
-        # A silent recording (a dead microphone, see _on_stop) is not
-        # kept: recent\ is the labelled set every measurement in this repo
-        # is made against, and a wav with nobody in it is not a label.
-        if self.recent is not None and not silent:
+                 else list(getattr(decoded, "words", None) or []))
+        # Remembered before the paste, not after: a transcript that landed
+        # on the clipboard because focus moved is still one worth teaching
+        # the app about. Its recording's path is filled in by keep(),
+        # right after the paste.
+        last = {"raw": text.strip(), "final": cleaned,
+                "when": time.strftime("%Y-%m-%d %H:%M:%S"), "wav": ""}
+        with self._last_lock:
+            self._last = last
+
+        def keep() -> None:
+            """The recording into recent\\ — BEHIND the chord, on every
+            way out of the paste (the `finally` below). It sat in front
+            of it until 2026-11-10: the whole wav, the sidecar and the
+            ring's trim, 6-11 ms p50 and up to 18 ms a dictation on this
+            PC (a full ring of 50, clips of 3-100 s), every one of them
+            inside the wait he feels (2026-11-09 audit, dictation-speed
+            F8). A silent recording (a dead microphone, see _on_stop) is
+            not kept: recent\\ is the labelled set every measurement in
+            this repo is made against, and a wav with nobody in it is not
+            a label."""
+            nonlocal kept
+            if self.recent is None or silent:
+                return
             try:
                 kept = self.recent.save(
                     wav, seconds, "",
@@ -6463,14 +7680,11 @@ class App:
             except OSError as e:
                 log.info("could not keep this recording for later "
                          "measurement: %s", e)
-        # Remembered before the paste, not after: a transcript that landed
-        # on the clipboard because focus moved is still one worth teaching
-        # the app about.
-        with self._last_lock:
-            self._last = {"raw": text.strip(), "final": cleaned,
-                          "when": time.strftime("%Y-%m-%d %H:%M:%S"),
-                          "wav": str(kept.wav_path) if kept else ""}
+                return
+            with self._last_lock:
+                last["wav"] = str(kept.wav_path)
 
+        hands_started = time.monotonic()
         if shown:
             self._hands_off()
         pasting = time.monotonic()
@@ -6535,6 +7749,9 @@ class App:
             beep("error")
             log.error("paste failed: %s — the text is in transcripts.log", e)
             return
+        finally:
+            # after the chord and its restore, whichever way it went
+            keep()
 
         if item:                      # transcribed at last: audio no longer
             item.discard()            # needed, drop it from the spool
@@ -6559,9 +7776,25 @@ class App:
                   f"{to_paste:.1f} s via {backend}"
                   + (f" ({latency:.1f} s decode + {repair_s:.1f} s repair)"
                      if repair_s >= 0.05 else ""))
+        # Where the seconds of that wait went, stage by stage, so the split
+        # is read instead of guessed (2026-11-09 audit, dictation-speed F1:
+        # the language check and the decoder were timed on every dictation
+        # in last_timing and written nowhere). Numbers only (D8).
+        stages = stage_line(
+            notes={"decoder": decoder_note(timing),
+                   "language_check": "decided while speaking"
+                   if timing.get("early_language") else None},
+            queue=None if released is None else started - released,
+            rolling_wait=head_wait,
+            language_check=timing.get("detect_s"),
+            decoder=timing.get("decode_s"),
+            marker_wait=marker_wait,
+            hands_off=pasting - hands_started,
+            paste=landed - pasting)
         log.info("pasted %d chars (%.1f s to the paste via %s: %.1f s "
-                 "decode, %.1f s repair; %s)",
-                 len(cleaned), to_paste, backend, latency, repair_s, status)
+                 "decode, %.1f s repair; %s)%s",
+                 len(cleaned), to_paste, backend, latency, repair_s, status,
+                 f" — {stages}" if stages else "")
         # AFTER the paste, never before: the reading is slower than the
         # text and must not be what the text waits for.
         self._review_submit(kept, hwnd)
@@ -6723,16 +7956,19 @@ def is_elevated() -> bool:
 
 
 def _adopt_downloads() -> int:
-    """The installer's last step (DeskIT.iss, 10.4, 2026-09-19): it
-    downloaded the model files and the packs' wheels itself, with the
-    person's tick and the licences shown, and put them where models.py
-    and packs.py keep theirs. Nothing has hashed the files or run pip.
+    """Finish files placed by hand where models.py and packs.py keep
+    theirs. It was the installer's last step from 2026-09-19 (DeskIT.iss
+    downloaded the model files and the packs' wheels itself); since
+    2026-10-03 the installer downloads nothing — every copy's wizard does
+    it in the background (downloads.py) — and nothing calls this but a
+    person. Nothing has hashed the files or run pip.
     This does both, for every entry of the two locks that is on disk,
     with no window and no network — models.adopt() / packs.adopt()
     fetch nothing when every file is already its size — and prints one
     line per item. Always exit 0: an item that is partial or failed is
-    left to the wizard's computer page, which offers exactly what is
-    still missing; the installer must never fail over a download."""
+    left to the first start, which downloads exactly what is still
+    missing in the background (downloads.py); the installer must never
+    fail over a download."""
     import packs as packs_mod
 
     try:
@@ -6841,8 +8077,8 @@ def main() -> int:
                         help="use the fake backend (no API, no mic quality "
                              "needed)")
     parser.add_argument("--check", action="store_true",
-                        help="validate Gemini key + model with one tiny "
-                             "request, then exit")
+                        help="validate the Gemini key with one key-test "
+                             "request (nothing of yours is sent), then exit")
     parser.add_argument("--list-devices", action="store_true",
                         help="list audio input devices, then exit")
     parser.add_argument("--stop", action="store_true",
@@ -7081,49 +8317,34 @@ def main() -> int:
         except Exception:                     # noqa: BLE001
             log.warning("the hardware probe failed; running as before",
                         exc_info=True)
-    # The Hebrew model (models.py, plan 6.4): an installed copy downloads
-    # it here, once, with the size on the screen and [Not now] — never as
-    # a side effect of loading. Declined or offline, the app still
-    # starts: every key that needs no model works, a dictation says why,
-    # the recording is kept. When the WIZARD is due it hosts this step
-    # and the pack's as pages of its own (chapter 9.2), so the two
-    # standalone windows are for a set-up copy whose model went missing.
+    # The parts an installed copy downloads (the Hebrew model, the
+    # English detector, NVIDIA's libraries, PyAV — models.py, packs.py)
+    # come down BY THEMSELVES, in the background, on every copy
+    # (downloads.py; the owner, 2026-10-03: no page and no button — every
+    # user gets every part this computer can use). The wizard starts them
+    # the moment it opens; a start with a part still missing resumes it
+    # on a thread of the running app (below, after app.start()). The two
+    # windows here are only the desk's explicit buttons now
+    # (--download-model, --install-pack through launch.run_step).
     wizard_due = args.setup or (firstrun.needed(cfg) and not args.fake)
     # The model with the app — [local] load_at_start, on by default —
     # unless this start said --no-model (the tests, a hand start).
     no_model = args.no_model or not bool(getattr(cfg.local, "load_at_start", True))
-    if args.download_model or (not args.fake and not wizard_due
-                               and not no_model
-                               and models_mod.wanted(cfg)):
+    if args.download_model:
         outcome = models_mod.offer(cfg.local.model)
         log.info("model download step: %s", outcome)
-        if args.download_model:
-            return 0 if outcome == "done" else 1
-    # The GPU pack (packs.py, plan 6.5): an NVIDIA card without NVIDIA's
-    # libraries is a cpu tier, so the same step, once, right after the
-    # model — [Not now] is written down and the start stops asking.
-    # Installed, the probe runs again so the tier and its defaults are
-    # the card's before any model loads.
+        return 0 if outcome == "done" else 1
     import packs as packs_mod
     # PyAV, when the Recording pack brought it (13.4): its site goes on
     # sys.path now, before faster_whisper's `import av` at the model's
     # construction, so the vendor stub hands over instead of answering.
     packs_mod.activate("recording")
-    if args.install_pack or (not args.fake and not wizard_due
-                             and packs_mod.wanted(cfg, facts)):
-        outcome = packs_mod.offer(args.install_pack or "gpu")
-        log.info("pack step (%s): %s", args.install_pack or "gpu", outcome)
-        if args.install_pack:
-            return 0 if outcome == "done" else 1
-        if outcome == "done":
-            import hardware as hardware_mod
-            try:
-                facts = hardware_mod.run_at_start()
-                cfg = _load_config(args.config)
-            except Exception:                 # noqa: BLE001
-                log.warning("the hardware probe failed after the pack",
-                            exc_info=True)
+    if args.install_pack:
+        outcome = packs_mod.offer(args.install_pack)
+        log.info("pack step (%s): %s", args.install_pack, outcome)
+        return 0 if outcome == "done" else 1
     open_desk = False
+    carried = None                    # the wizard's queue, when Start left parts coming
     if wizard_due:
         outcome = firstrun.run(cfg, Path(args.config) if args.config else None,
                                facts=facts)
@@ -7143,7 +8364,15 @@ def main() -> int:
             # start shows the wizard again (setup.done was not written).
             log.info("the wizard was closed; nothing started")
             return 0
+        carried = getattr(outcome, "downloads", None)
         if args.setup:
+            if carried is not None:
+                # --setup from a running copy's desk: this process ends
+                # here, so the parts stop where they stand — the threads
+                # are let finish their write first, and the next start
+                # resumes them in the background.
+                carried.pause()
+                carried.join()
             if open_desk:
                 open_dashboard()
             return 0
@@ -7156,18 +8385,21 @@ def main() -> int:
     gc.collect()
 
     if args.check:
+        # The Gemini key, checked the way Settings > Privacy checks it: one
+        # key-test request that carries nothing of the person's. It asked
+        # the Gemini speech engine until that left on 2026-11-27 — under
+        # the cloud_audio gate, for a request that sent no audio.
+        import keyrow
         try:
-            from transcribers.gemini import GeminiTranscriber
-            t = GeminiTranscriber(cfg.gemini.model, cfg.gemini.timeout_s)
-            print(f"key source: {t.key_source}")
-            print(f"checking key + model '{cfg.gemini.model}' with one tiny "
-                  "request...")
-            reply = t.check()
-            print(f"API reply: {reply!r} — key and model look good.")
-            return 0
-        except TranscriptionError as e:
-            print(f"check FAILED: {e}")
+            seen = keyrow.probe("gemini")
+        except keyrow.KeyRefused as e:
+            print(f"check FAILED: Google did not accept the Gemini key ({e})")
             return 1
+        except Exception as e:                               # noqa: BLE001
+            print(f"check FAILED: {type(e).__name__}: {e}")
+            return 1
+        print(f"the Gemini key works — it sees {seen} models.")
+        return 0
 
     if args.translate:
         import translate as translate_mod
@@ -7332,10 +8564,11 @@ def main() -> int:
     if leftover:
         log.warning("%s", leftover)
     try:
-        splash.status("starting…" if no_model else
-                      "loading the transcription model…")
+        splash.status("starting…")
+        # model=False whatever load_at_start says: the load happens behind
+        # the keys, in app.start() below (App.start says why).
         app = App(cfg, config_path=Path(args.config) if args.config else None,
-                  model=not no_model)
+                  model=False)
     except TranscriptionError as e:   # missing key, stub backend, ...
         return fail(str(e))
     except (ValueError, ConfigError) as e:   # unknown hotkey/chord name
@@ -7360,11 +8593,25 @@ def main() -> int:
         lock.release()
         return 0
     try:
-        app.start()
+        app.start(then_load=not no_model, splash=splash, splash_log=splash_log)
     except OSError as e:
         return fail(str(e))
     stage["app"] = app
     stage["stage"] = "running"
+    # The parts still missing, downloading on a thread of this app
+    # (downloads.py): what the wizard handed over at Start, or — at any
+    # other start of an installed copy — whatever the last session did
+    # not finish. Nothing on a portable copy or a --fake start.
+    if not args.fake:
+        try:
+            import downloads as downloads_mod
+            if carried is None:
+                missing = downloads_mod.wanted(cfg, facts)
+                carried = downloads_mod.Queue(missing) if missing else None
+            if carried is not None:
+                app.carry_downloads(carried)
+        except Exception:                     # noqa: BLE001
+            log.warning("the background downloads did not start", exc_info=True)
     # A plain launch — the shortcut, DeskIT.vbs, nothing on the line — is
     # a person who wants to see the app (the owner on his installed
     # copy, 2026-09-20: "the first double-click lights the model, the
@@ -7378,11 +8625,16 @@ def main() -> int:
         open_dashboard()
     if not args.fake and app.tour_due():
         # The tour (D36): the guide itself, four cards beside the dot,
-        # on the first start after the wizard. The dot is up (app.start
-        # mapped it) and the card only enqueues.
-        log.info("the tour: first start, showing it beside the dot")
-        app.tour_card.show(0)
-    log.info("ready — hold '%s' for %s%s, release to paste. %s",
+        # on the first start after the wizard. The dot comes up when the
+        # load lands; with no load ahead, at once (the card only enqueues).
+        def show_tour() -> None:
+            app.wait_for_load()
+            log.info("the tour: first start, showing it beside the dot")
+            app.tour_card.show(0)
+        threading.Thread(target=show_tour, daemon=True, name="tour").start()
+    log.info("%s hold '%s' for %s%s, release to paste. %s",
+             "keys live, the model loading behind them —" if not no_model
+             else "ready —",
              cfg.hotkey,
              "Hebrew or English" if cfg.auto_language else "Hebrew",
              f", '{cfg.english_hotkey}' for English" if cfg.english_hotkey
@@ -7506,9 +8758,6 @@ def main() -> int:
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              paths.TRANSCRIPTS_LOG)
-    key_source = getattr(app.transcriber, "key_source", None)
-    if key_source:
-        log.info("api key from: %s", key_source)
     if not is_elevated():
         log.info("note: running non-elevated — dictation into run-as-admin "
                  "windows will not work (see README)")
@@ -7517,7 +8766,6 @@ def main() -> int:
         log.warning("%d recording(s) from earlier could not be transcribed "
                     "and are waiting in pending\\ — run "
                     'main.py --drain to turn them into text', len(waiting))
-    log.removeHandler(splash_log)
     # THE CUE BELONGS TO THE PICTURE, NOT TO THIS LINE. `beep("ready")`
     # used to be called here, one statement earlier — and finish() only
     # SCHEDULES the release, so the sound arrived 3.63 s before the light
@@ -7532,8 +8780,13 @@ def main() -> int:
     # of milliseconds, and it would be spent on the single frame the skin
     # goes to some length not to stall (skin/boot.py, clock.absorb).
     cues.ensure_files()
-    splash.finish(f"ready — hold {cfg.hotkey.title()} and speak",
-                  on_land=lambda: beep("ready"))
+    if no_model:
+        log.removeHandler(splash_log)
+        splash.finish("ready — every key works, and Start loads the model",
+                      on_land=lambda: beep("ready"))
+    else:
+        # the load's now: its last line lands the light in the dot
+        splash.status("loading the transcription model…")
     try:
         quit_signal.wait()   # released by --stop; Ctrl+C also lands here
         log.info("stop requested")

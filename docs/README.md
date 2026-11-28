@@ -28,11 +28,11 @@ sentence is the app's, no owner words, every screen name is real).
 
 Taken on the hidden desktop, 2026-09-18 (the account page 2026-09-20): the eight wizard pages
 (`02-*.png`), the ask card's three-button state
-(`07-ollama-three-buttons.png`), and the twelve screens of the app itself
+(`07-ollama-three-buttons.png`), and the eleven screens of the app itself
 — the dot's colours, the hint card, the shelf, Corrections, the offline
 switch with its refused row, YOUR CLOUD KEYS, the consent card, Settings >
-Phone / Screen, the picker, the ask card, the report box (`03-*`, `04-offline-
-refused-row`, `05-*`, `06-settings-phone`, `07-*`, `09-report-card`) — every
+Screen, the picker, the ask card, the report box (`03-*`, `04-offline-
+refused-row`, `05-*`, `07-*`, `09-report-card`) — every
 one from a temporary `DESKIT_HOME` with invented content: no transcript,
 no vocabulary and no key of anyone's. The shelf and the move frame
 (`03-shelf`, `03-move`, 2026-09-21) are their own painters on a drawn

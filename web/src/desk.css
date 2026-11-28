@@ -1,0 +1,61 @@
+/* The desk's frame on top of B+ (bplus.css): the font, the page, the sky,
+   the bar's live behaviour, the buttons' press, the toast and the lock's
+   line. Each place's own rules are in places/<place>.css, every one of
+   them under .place-<place>; the kit's in kit.css. */
+
+@font-face {
+  font-family: "Rubik";
+  src: url("../../fonts/Rubik.ttf") format("truetype-variations");
+  font-weight: 300 700;                /* one variable file (AGENTS: the four are one) */
+  font-style: normal;
+  font-display: block;
+}
+
+.page{position:absolute;left:24px;top:56px;width:1112px;height:664px}
+
+/* the sky, placed for Home */
+.sky .indigo{left:-230px;top:-30px;width:800px;height:540px;transform:rotate(-14deg)}
+.sky .blue{left:760px;top:270px;width:660px;height:560px}
+.sky .plum{left:140px;top:590px;width:860px;height:320px;transform:rotate(4deg)}
+.sky .teal{left:640px;top:-110px;width:620px;height:330px;transform:rotate(-6deg)}
+.sky .r1{left:60px;top:300px;width:980px;height:70px;transform:rotate(-13deg)}
+.sky .r2{left:380px;top:470px;width:760px;height:46px;transform:rotate(-9deg)}
+.sky .lamp-light{left:-60px;top:130px;width:640px;height:440px}
+
+/* =================== what a live window needs on top of the picture */
+
+body{user-select:none;cursor:default}
+
+/* the bubble travels instead of jumping — the one thing he named first
+   about this design ("it slides, it does not jump"). Off until it has
+   been placed once, so the first frame does not slide in from nowhere. */
+.seg.sliding .bubble{transition:left .26s cubic-bezier(.22,.61,.36,1), width .26s cubic-bezier(.22,.61,.36,1)}
+.seg .item{cursor:pointer;transition:color .2s ease}
+.seg .item:not(.on):hover{color:var(--ink)}
+
+/* a press is seen the frame it happens */
+.btn{cursor:pointer}
+.btn{transition:filter .12s ease, transform .08s ease}
+.btn:hover{filter:brightness(1.12)}
+.btn:active, .btn.down{transform:translateY(1px);filter:brightness(.92)}
+.bar .btn.gone{visibility:hidden;pointer-events:none}
+
+/* one line about what just happened, and gone again */
+.toast{position:absolute;z-index:4;left:24px;bottom:62px;max-width:640px;height:38px;display:flex;align-items:center;gap:10px;
+  padding:0 16px;border-radius:19px;font-size:12.5px;color:var(--ink);
+  background:linear-gradient(150deg, var(--frost), transparent 45%), rgba(30,35,64,.82);
+  opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .18s ease, transform .18s ease}
+.toast.up{opacity:1;transform:none}
+.toast .ic{font-size:13px;color:var(--iris)}
+
+/* the lock asking for him, over every place but Home (app.tsx LockBanner):
+   a sheet of glass across the head of the page, above the place's title */
+.lockline{position:absolute;z-index:3;left:0;top:8px;width:1112px;min-height:52px;display:flex;align-items:center;gap:14px;
+  padding:8px 10px 8px 12px;border-radius:26px;
+  background:linear-gradient(150deg, var(--frost-2), transparent 46%), var(--glass-sheet);
+  box-shadow:inset 0 1px 0 var(--inner-hi), 0 22px 44px -22px var(--sheet-shade), 0 0 0 1px var(--line-faint);
+  animation:lockline-in .18s cubic-bezier(.22,.61,.36,1)}
+.lockline .mk{width:34px;height:34px;font-size:13px}
+.lockline .lt{flex:1;min-width:0;font-size:13.5px;line-height:19px;color:var(--ink)}
+.lockline .btn{justify-content:center;min-width:88px}
+@keyframes lockline-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}

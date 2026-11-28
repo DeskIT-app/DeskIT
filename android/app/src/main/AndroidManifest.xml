@@ -3,6 +3,12 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Which network is the Wi-Fi, and the right to bind to it: a home door is
+         reached on it even when Android keeps the app on mobile data because that
+         Wi-Fi has no internet. A Wi-Fi in the background refuses an app without
+         the second with EPERM (Link.kt). Android grants both with no prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <!-- The second reading rings the phone: "did you mean…", Keep / No. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -12,6 +18,7 @@
         android:theme="@style/DeskIT"
         android:networkSecurityConfig="@xml/network_security_config"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:supportsRtl="true">
 
         <!-- The home: the link's state, the steps, the second reading,
@@ -26,17 +33,46 @@
             </intent-filter>
         </activity>
 
+        <!-- Where the browser lands after the Google sign-in. Exported so a
+             browser can reach it; a code nobody asked for fails the exchange,
+             for want of the verifier this phone sealed. -->
+        <activity
+            android:name=".AuthActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="deskit" android:host="auth" />
+            </intent-filter>
+        </activity>
+
+        <!-- The road into the account: sign in, approve, ready, the lock. -->
+        <activity
+            android:name=".AccountActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="@string/your_account" />
+
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:label="@string/settings" />
+
+        <!-- The cloud backup, seen once: the switch already on, and Done is the yes. -->
+        <activity
+            android:name=".BackupActivity"
+            android:exported="false"
+            android:label="@string/backup_title" />
 
         <!-- One proposal of the second reading, opened from its
              notification or from the home's list. -->
         <activity
             android:name=".ReviewActivity"
             android:exported="false"
-            android:label="@string/second_reading"
+            android:label="@string/did_you_mean"
             android:launchMode="singleTop" />
 
         <!-- The desktop's F8 key: "DeskIT" in the text-selection menu of
@@ -58,6 +94,12 @@
         <receiver
             android:name=".ReviewReceiver"
             android:exported="false" />
+
+        <!-- The recordings' hour, only while there are some: it deletes, and never sends. -->
+        <service
+            android:name=".SpoolSweep"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <!-- BIND_INPUT_METHOD is what lets this write into other apps'
              text fields. Only the system may bind it. -->

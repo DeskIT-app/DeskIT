@@ -10,19 +10,13 @@ title: 1. Install
 password, and lands in `%LOCALAPPDATA%\Programs\DeskIT`. Windows may warn you once because the
 installer is not signed with a paid certificate; the code is open and every build is attested.
 
-## Three ways in, in the order to try them
+## Where to get it
 
-1. **The Microsoft Store** — coming in a later version. It is the door with no warning at all.
-2. **winget**, if you have it (Windows 11 has it built in). Open a terminal and run:
+**GitHub Releases.** Download `DeskIT-Setup-x.y.z.exe` from the
+[latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). Beside it on the
+release page: the file's SHA-256, a VirusTotal link and the build attestation.
 
-   ```
-   winget install YoavShimron.DeskIT
-   ```
-
-   winget downloads the same installer and skips the SmartScreen download dialog.
-3. **GitHub Releases.** Download `DeskIT-Setup-x.y.z.exe` from the
-   [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). Beside it on the
-   release page: the file's SHA-256, a VirusTotal link and the build attestation.
+The Microsoft Store, the door with no warning at all, is coming in a later version.
 
 ## "Windows protected your PC"
 
@@ -44,45 +38,45 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
 
 - Installs for your user only: no UAC prompt, no administrator password.
 - Speaks Hebrew or English by your Windows display language, with no question; only a
-  Windows in a third language is asked which of the two to use. Three pages: **Install**,
-  **Downloads**, then **Finish** with "Start DeskIT now" ticked. The app itself is English
+  Windows in a third language is asked which of the two to use. Two pages: **Install**, then
+  **Finish** with "Start DeskIT now" ticked. The app itself is English
   chrome with Hebrew text.
-- **Downloads**: a few big files DeskIT needs, fetched now so the first start is ready — the
-  boxes are ticked; untick what you do not want and DeskIT offers it again later. What each
-  one is, its exact size and its licence: [below](#downloads).
+- Downloads nothing itself: the big files DeskIT needs come down by themselves on the first
+  start, in the background — the same on every copy, from here or the Microsoft Store.
+  What each one is, its exact size and its licence: [below](#downloads).
 - Puts the program in `%LOCALAPPDATA%\Programs\DeskIT`, the downloads in
   `%LOCALAPPDATA%\DeskIT\models` and `\packs`, and a shortcut in the Start menu and on the
   desktop. The shortcut opens the desk, with DeskIT starting behind it (the dot, the model);
   when DeskIT is already running it only brings the desk up.
-- Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)), whose
-  computer page is skipped when the downloads all landed.
-- Never bundles a speech model or NVIDIA's libraries: they are downloaded, with your tick,
-  by the installer — or, if you unticked them, by the wizard on the first run.
+- Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)), which
+  downloads whatever is still missing in the background.
+- Never bundles a speech model or NVIDIA's libraries: DeskIT downloads them in the background
+  from the first start.
 
 ## Downloads {#downloads}
 
-The installer's Downloads page, in full. Every file comes from the address DeskIT itself
-would download it from and is checked against the same SHA-256; nothing is packed inside the
-installer. Ticking a box is your acceptance of that item's licence.
+What DeskIT downloads by itself on the first start, in full — the bar at the top of the
+first-run wizard, **Downloading app parts**, opens this table. Every file is checked against
+the SHA-256 DeskIT ships with; nothing is packed inside the installer.
 
-| Box | What it is | Size | Licence |
+| Part | What it is | Size | Licence |
 |---|---|---|---|
 | Hebrew speech | The Hebrew speech model, [ivrit-ai/whisper-large-v3-turbo-ct2](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) — without it there is no dictation | 1.62 GB | Apache-2.0 |
 | English detection | A second, general model, [deepdml/faster-whisper-large-v3-turbo-ct2](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2), that notices when you spoke English and transcribes it as English. Offered on an NVIDIA card with 6 GB of video memory | 1.62 GB | MIT |
 | Faster with your NVIDIA card | NVIDIA's own CUDA libraries (cuBLAS, cuDNN, NVRTC) from PyPI. Offered on an NVIDIA card with 4 GB and a driver from 545.84; without them the card runs like a CPU | 1.37 GB | [NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html), [cuDNN SLA](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/eula.html) |
 | Screen recording | PyAV with FFmpeg, for the record key, the photo key and the phone's audio | 28 MB | [PyAV (BSD-3)](https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt), [FFmpeg — this build is GPL: x264, x265](https://ffmpeg.org/legal.html) |
 
-Anything already on the PC is not offered again. A download that fails asks to retry or is left
-for the first start, which offers exactly what is still missing — it never fails the install.
-The files land in `%LOCALAPPDATA%\DeskIT\models` and `\packs`. A silent install (winget,
-`/VERYSILENT`) and `/NODOWNLOAD` download nothing; the first start offers everything instead.
+Anything already on the PC is not downloaded again. A download that fails is tried again by
+itself; one that keeps failing is left for the next start. The files land in
+`%LOCALAPPDATA%\DeskIT\models` and `\packs`. A part you removed by hand (Settings > Dictation,
+Settings > Screen) is not downloaded again.
 
 ## Updating
 
 DeskIT looks for a newer version once a week (one request to github.com, no identifier; the
 switch is under **Settings > Privacy**). When there is one, **Settings > General** shows it with
 a **Download and install** button; the download is checked against its SHA-256 before the
-installer runs. winget users can also run `winget upgrade YoavShimron.DeskIT`.
+installer runs.
 
 ## Uninstalling
 

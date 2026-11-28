@@ -6,10 +6,11 @@ title: 8. Your data
 
 # 8. Your data
 
-**The two-sentence version.** Everything DeskIT keeps about you is in one folder,
+**The two-sentence version.** Everything DeskIT keeps about you on this PC is in one folder,
 `%LOCALAPPDATA%\DeskIT`, and the only things outside it are your cloud keys in Windows
 Credential Manager and, if you chose it, the Start-with-Windows entry. Delete the folder and
-DeskIT has forgotten you.
+this PC has forgotten you; what your account keeps, locked, goes with **Delete my account** on
+**Settings > Account**.
 
 ## The folder
 

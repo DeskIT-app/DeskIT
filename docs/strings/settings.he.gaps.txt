@@ -9,7 +9,6 @@ awake.hold
 privacy.update_check
 capture.folder
 capture.clip_folder
-backend
 auto_language
 punctuate.auto
 punctuate.nikud
@@ -34,6 +33,7 @@ notify.interrupt
 notify.summarize
 notify.cue
 server.enabled
+server.away
 privacy.account
 privacy.settings_sync
 privacy.history_sync

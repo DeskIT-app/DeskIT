@@ -30,8 +30,9 @@ audio, not the clock:
 - the LATEST such pause, so windows come out as long as the config
   allows (window_s) rather than as short as the speech permits;
 - never past MAX_WINDOW_S without a cut: faster-whisper would break the
-  audio at 30 s itself, and a quiet chunk chosen here beats a hard edge
-  chosen there.
+  audio at 30 s itself, and the longest quiet run chosen here beats a
+  hard edge chosen there — the longest, not the quietest chunk, which in
+  unbroken speech is a consonant inside a word (cut_at says what it cost).
 
 HOW LONG A WINDOW MUST BE was measured, not chosen (2026-09-13, the 69
 gold clips in corpus\\, 2,881 labelled words, the roller simulated over
@@ -101,6 +102,17 @@ MIN_TAIL_S = 2.0       # a tail shorter than this is decoded with the
 # recording would have shown it at that point.
 LEAD_S = 1.0
 EXT_S = 0.8
+# The early language check (Roller.decide): first asked once this much of
+# the recording exists — the release's decision reads 30 s of SPEECH, so
+# nothing shorter can answer — and again every DECIDE_EVERY_S of audio
+# until it does.
+DECIDE_FROM_S = 33.0
+DECIDE_EVERY_S = 5.0
+# ...and asked at most this many times: each try reads the whole recording
+# so far (VAD, no model), so a sparse one that never reaches 30 s of speech
+# would otherwise pay more on every try. Six reach 58 s of audio; past that
+# the release decides, as it always did.
+DECIDE_TRIES = 6
 
 
 @dataclass
@@ -132,6 +144,9 @@ class Head:
     order, and how far into the recording the last one reaches."""
     windows: list[Window]
     end_s: float
+    # The language, decided while the key was held (Roller.decide), or
+    # None: then the release decides on the whole recording, as always.
+    language: str | None = None
 
 
 def loud_level(peaks: Sequence[float]) -> float:
@@ -200,8 +215,46 @@ def cut_at(peaks: Sequence[float], sizes: Sequence[int], rate: int,
             return k if k > 0 else None
         i = j - 1
     if total >= max_window_s * rate:
-        # No pause at all in nearly half a minute: the quietest chunk of
-        # the last five seconds that is still LAG_S behind the microphone.
+        # No pause at all in nearly half a minute: the LONGEST run of quiet
+        # in the last five seconds that is still LAG_S behind the
+        # microphone, cut through its middle like a pause. Only when there
+        # is not one quiet chunk there, the quietest chunk.
+        #
+        # It was the quietest chunk alone until 2026-10-04, and in unbroken
+        # speech the quietest 10 ms is as likely as not the closure of a
+        # stop consonant INSIDE a word. Measured on the Store walk's 34.5 s
+        # dictation (read aloud, no 0.5 s pause in 27 s): the cut went to a
+        # chunk at peak 0.0001 at 28.32 s, the closure of the last ט of
+        # "מייקרוסופט", and the word after it ("הפגישה") fell between the
+        # two decodes and never reached the paste, while all three
+        # whole-recording witnesses had it.
+        # The longest run in the same five seconds was 0.18 s at
+        # 25.31-25.49, between "עברה" and "ונשלח". Over the 55 kept
+        # recordings that day (both copies' recent\), 55 cuts: 54 in a
+        # pause, none of them short of a word where a witness could tell,
+        # and this one forced.
+        lo = next((i for i in range(1, len(peaks))
+                   if starts[i] >= total - 5.0 * rate), len(peaks))
+        best, best_len, i = None, 0, lo
+        while i < len(peaks) and starts[i] <= latest:
+            if peaks[i] >= threshold:
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(peaks) and starts[j + 1] <= latest \
+                    and peaks[j + 1] < threshold:
+                j += 1
+            run_start = starts[i]
+            run_len = min(starts[j] + sizes[j], latest) - run_start
+            if run_len >= best_len:          # a tie: the later, longer window
+                middle = run_start + run_len / 2
+                k = i
+                while k < j and starts[k + 1] <= middle:
+                    k += 1
+                best, best_len = k, run_len
+            i = j + 1
+        if best is not None:
+            return best
         quietest, best = None, None
         for i in range(len(peaks) - 1, 0, -1):
             if starts[i] > latest:
@@ -242,6 +295,16 @@ class Roller:
         self.windows: list[Window] = []
         self.decodes = 0
         self.busy_s = 0.0           # decoder time spent while recording
+        # The release's language decision made early: `decide(wav of the
+        # recording so far)` -> "he" / "en" / None (not enough speech yet),
+        # set by the owner after construction and asked from DECIDE_FROM_S
+        # of audio every DECIDE_EVERY_S until it answers ([local]
+        # early_language; LocalWhisperTranscriber.early_language says why
+        # the answer is the release's own).
+        self.decide: Callable[[bytes], str | None] | None = None
+        self.language: str | None = None
+        self._decide_at = DECIDE_FROM_S
+        self.decide_tries = 0
         self._stop = threading.Event()
         self._invalid = False
         self._thread = threading.Thread(target=self._run, daemon=True,
@@ -286,15 +349,19 @@ class Roller:
                 self._invalid = True
         if self._invalid or not self.windows:
             return None
-        return Head(list(self.windows), self.done_s)
+        return Head(list(self.windows), self.done_s, self.language)
 
     # -- the thread --
 
     def _run(self) -> None:
         try:
             while not self._stop.is_set():
-                time.sleep(POLL_S)
-                if self._stop.is_set():
+                # wait, not sleep: the release (close) ends the wait at once, so
+                # finish() does not sit out the rest of a poll. A sleep here cost
+                # every rolled release up to POLL_S (app.log's "rolling wait",
+                # 0.03-0.17 s on 2026-11-27; 0.17 s on a phone stream's 10 s
+                # dictation on the emulator the same day)
+                if self._stop.wait(POLL_S):
                     break
                 self._step()
         except Exception:
@@ -306,6 +373,20 @@ class Roller:
         chunks = self._chunks_since(self._cursor)
         if not chunks:
             return
+        if self.decide is not None and self.language is None:
+            heard = self._offset + sum(len(c) for c in chunks)
+            if heard >= self._decide_at * self._rate:
+                self._decide_at = heard / self._rate + DECIDE_EVERY_S
+                self.decide_tries += 1
+                try:
+                    self.language = self.decide(self._to_wav(
+                        self._chunks_since(0), self._rate))
+                except Exception:
+                    log.debug("rolling: the early language check failed — "
+                              "the release decides", exc_info=True)
+                    self.decide = None
+                if self.decide_tries >= DECIDE_TRIES:
+                    self.decide = None
         for chunk in chunks[len(self._peaks):]:
             self._peaks.append(_peak(chunk))
             self._sizes.append(len(chunk))

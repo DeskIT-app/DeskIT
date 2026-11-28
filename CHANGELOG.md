@@ -14,7 +14,81 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 
 ## 1.0.7
 
-Dictation gets more of my words right. Since August every dictation was decoded with a setting that makes the speech model avoid writing anything it has already written; it went in to stop the model getting stuck on one sound and repeating it. But Hebrew repeats its small words and prefixes all the time, so the setting kept pushing real words out and putting a wrong one in their place. Measured on public recordings, none of them mine, turning it off cuts the mistakes by about a quarter on everyday voice messages, a sixth on long podcast recordings and a twelfth on read-out sentences. The protection is not gone: when a dictation does come out stuck on one word, DeskIT now notices and decodes it again the old way. Without the setting that happened on two recordings out of almost two thousand.
+The keys no longer wait for the speech model. A screenshot, Screens off and every other key that needs no model now work within two seconds of starting DeskIT, while the model loads behind them for about 25 seconds. They work the same with the model on, loading or off.
+
+Dictation gets more of my words right. A setting meant to stop the speech model from repeating itself was also pushing real Hebrew words out, because Hebrew repeats its small words all the time. It is off now, and on public recordings (none of them mine) the mistakes fell by a twelfth to a quarter. If a dictation does get stuck on one word, DeskIT decodes it again the old way.
+
+A long dictation no longer loses a word where DeskIT cut it in two. While I speak, DeskIT already transcribes in pieces cut at pauses. When I read without ever pausing, it used to cut inside a word and lose the one after it. Now it cuts in the longest silence between two words. An invisible character that flips the direction of Hebrew text is also always taken out before anything is typed.
+
+Dictation no longer waits on a busy Groq. On a busy day, the cloud fix for misheard words could hold the paste for up to 12 seconds in Groq's queue. Now the paste waits for it at most 2 seconds; after that the text lands as I said it, and the model on this PC still offers its corrections afterwards.
+
+The first dictation after a long break is quick again. After hours of rest, Windows could move the speech model off the graphics card, and my first dictation once waited 12 seconds for it to come back. Now DeskIT brings it back as soon as I touch the keyboard or the mouse after 20 minutes away.
+
+DeskIT takes half the graphics memory it used to. The two speech models now run in a lighter number format: about 2.2 GB instead of 4.5 GB. On six public Hebrew test sets they make no more mistakes than before, and a dictation still arrives in about 0.6 seconds. A graphics card with 4 to 6 GB now keeps the English model too.
+
+A muted microphone is noticed in two seconds. When the microphone sends nothing at all, which is what a muted headset sends, the dot turns red after two seconds, moves to the middle of the screen and grows until I see it. It goes back the moment my voice comes through. A microphone that is on but hears only quiet still gets the old ten seconds.
+
+My voice no longer leaves the PC on its own. The "In Google's cloud" speech engine is gone, and so is the code that sent a recording there; a settings file that still names it gets the model on this computer. The one way a recording still leaves is a problem report I choose to send: its Recording switch is off unless I turn it on, and the preview shows the file first. My phone's own cloud backup, below, is the phone's choice and is unchanged.
+
+The desk is new, and it is fast. Home, Corrections, Said, Keys and Settings are now a page drawn by Microsoft Edge WebView2, a part of Windows. Switching places takes a few thousandths of a second instead of up to a second and a half, and an answered correction leaves at once. Said now searches my whole history, not only the last hundred lines. The window loads only DeskIT's own files and opened no connection in my measurements. It does use more memory than the old window while it is open, and on a PC without WebView2 the old window opens instead.
+
+Everything wears the new look: the dot, the panel beside it, the cards, the setup, the installer and the small windows.
+
+The desk tells the truth about today. "The rest of the day" on Home shows only today's picture, dictation and look-up, or "Nothing yet today." The title counts only what asks me something. The Keys and Settings doors count what is really there, instead of the same numbers every day. And a few screens speak plainly, like "on for 2 days" instead of "up 60h 22m".
+
+Fewer correction cards, and they wait their turn. Only a correction that involves an English name, a term or a number comes up as a card beside the dot; those are the ones I said Yes to two times in three. A Hebrew word swapped for another goes straight to Home and Corrections. That is about five fewer cards a day. A new card no longer pushes the one on screen away: it waits until I answer or close the first, and the first shows a small "+1". The answer reads Yes / No everywhere, with Yes always on the right.
+
+Screenshots and recordings go where I can find them. Screenshots and camera photos now go to Pictures\DeskIT and recordings to Videos\DeskIT, ordinary folders that stay when DeskIT is uninstalled. They used to sit inside DeskIT's own data folder, and uninstalling the Store copy deleted them. The setup has a page for these keys and folders, and Settings > General shows the full paths.
+
+Drawing on a screenshot is smooth, in any colour. A stroke no longer blinks when I let go of the mouse, long marks have smooth edges instead of a staircase, and Undo is instant. The colour button opens a palette: eighteen colours, a rainbow strip for any other shade, a pipette that takes a colour from the screen, and four line widths. The next screenshot starts with the colour and width I used last.
+
+Screen recordings play back in the colours that were on the screen. Recordings used to be saved with the colour recipe of old standard-definition video, with nothing in the file saying so, so players showed reds brighter and more orange. Now they are converted and labelled as HD video, at no cost in speed or size. Screenshots were checked as well: they hold exactly the screen's pixels.
+
+While the screens are off, a card says so. When I turn the screens off with Ctrl+Alt+N, a card at the bottom-right says they are off on purpose, since when, and how to bring them back. It goes away the moment they come back on. The screens key also works while dictation is paused, so the way back is never a dead key.
+
+DeskIT makes room for a game. A game I started with DeskIT running once ran my whole computer out of memory. Now, when a game needs the graphics card, DeskIT steps aside by itself: first the local language model behind look-up and ask-the-screen, then the English model. The Hebrew model stays, so I can still dictate while I play. A program that fills the whole screen counts as a game from 1 GB of the graphics card. A minute after the game closes, everything comes back by itself.
+
+The notification cards are live glass. Windows now blurs whatever is behind each card as it moves, where it used to be a photograph taken when the card appeared. Closing one card closes just that card, and when two or more are waiting, Clear all closes them all.
+
+Claude's "finished" cards come sooner, and only when they help. A card now comes up the moment Claude writes its answer, about three seconds sooner on most turns. No card flashes up for the conversation I am already looking at. A click on a card opens that conversation again, which a Claude update had broken. And when Groq cannot be reached, the cards stop waiting for their one-line summary for two minutes.
+
+The dot stays on top. Something outside DeskIT could push the dot under a maximised window, and it then stayed buried for days. Now it checks every second and climbs back on top.
+
+The panel beside the dot stays beside the dot. It can no longer be dragged off into the middle of the screen. Move, at its top, moves the dot, and the panel always opens next to it.
+
+One logo, everywhere. The setup, the title bars, the desk, the Store copy's taskbar button, the phone app and the guide's pictures all show the corner with the gold dot now, drawn from the same file as the icon. The Store copy also puts "DeskIT App" on the desktop, and uninstalling takes the shortcut with it.
+
+DeskIT downloads what it needs by itself. Setup no longer stops on a Download page. The moment it opens, every part this computer can use starts downloading in the background: the Hebrew speech model, screen recording, and on an NVIDIA card what makes it fast. A slim bar at the top of setup is the only sign. Whatever is still coming when I press Start keeps downloading in the app, and Home shows how far it is.
+
+The free cloud keys have a page of their own in the setup. Two cards, Groq and Gemini, say what each key unlocks and what I do without it. A saved key stays on screen as a row of dots with Change key beside it, instead of an empty field. One Groq key is now enough to translate: Groq goes first, and Gemini answers when Groq cannot. If I press a key that needs a cloud key and none is saved, Home says which one to add.
+
+Look-up answers in about a second. It asks Groq first, then Gemini, and the model on this PC last, so it no longer waits half a minute for the local model to load.
+
+Signing out means what it says. Sign out on Settings > Account is this PC only. Sign out of every PC is a separate button that asks first, and it now locks every other PC within a second, where they used to keep working for up to an hour. When it cannot reach the others, it says so.
+
+Requests to join my account are clearer. A request shows once on Home, says which DeskIT is asking, and says to approve it only if I am adding that device myself right now. A PC left waiting no longer rings my other devices every fifteen minutes, and its code stays the same while I walk to the other screen.
+
+My phone is a device of my account. The keyboard app signs in with Google and joins the way a second PC does: both screens show one code, and I press Approve on one and Same code on the other. Settings > Phone lists every device I have, and Forget takes one off the list and ends its session at once. Any other PC of mine asks once on its Home whether the phone may use it too. Signing out of a phone leaves nothing of mine on it.
+
+My phone's keyboard reaches my PC by itself. At home it goes straight over the Wi-Fi, with no Tailscale and nothing typed. Away from home it goes through my account, locked, so the server carries only bytes it cannot open. Either way my PC writes it down with its own model. A long dictation lands about a second after I let go, as it does at the desk: the keyboard sends the recording while I speak, and my PC writes it down as it arrives. If no PC answers, the keyboard can send that one recording to Groq with my own key, and the line says so. A recording the keyboard closes in the middle of is kept, and the mic then says Continue.
+
+The phone keyboard comes with the release now. DeskIT-keyboard-1.0.7.apk sits beside the installer, and the code on Settings > Phone opens that page on the phone. Every keyboard from this one on is signed with the same key, so each update installs over the one before and keeps my sign-in. The guide's phone chapter says what Android, Play Protect and a Galaxy's Auto Blocker ask the first time.
+
+DeskIT asks me once more about my account, because a signed-in copy now stays connected and a phone I approve holds the key too. Until I press Turn on, the account is off on that PC, and dictation does not change at all.
+
+Two accounts on one PC stay apart. When a different account signs in on this PC, nothing the last one said, learned or set, and none of its keys or unsent reports, goes up to the new account.
+
+Delete my account tells the truth. If it cannot remove my report files from the server, it now stops before deleting anything, keeps me signed in and says so. A few settings that delete things, like how long the history is kept, now stay on each PC instead of following me to the others.
+
+Every update is checked against a key that lives only on my own PC, never on GitHub. Someone who broke into my GitHub account still could not push a version of their own to everyone's computer. An update that cannot be checked is not installed: Home says so and sends you to the website instead.
+
+My learned words travel locked, like what I say. They used to sit on the account server in plain text, where whoever ran it could read them, and a stolen session could add a word swap to everything I dictate. Now each word leaves the PC locked with my account's own key, and a word the server makes up or changes does not open. A copy not updated yet keeps every word it has.
+
+One account can no longer fill the account server everyone shares. Every account now has room for many times what I use, and an anonymous one much less. If mine ever fills up, Settings > Account says so, nothing on my PC is lost, and DeskIT tries again later.
+
+A few doors are tighter. What I dictate no longer lands in Windows' clipboard history or the cloud clipboard on its way to the cursor. Claude Code's note to DeskIT is never sent through a proxy, and is not sent at all while DeskIT is not running. Copy diagnostics no longer shows my Windows user name. And an update is downloaded only from DeskIT's own releases on GitHub.
+
+DeskIT rests when nothing happens. Its windows no longer wake hundreds of times a second while idle, and an idle PC talks to my account about a quarter as often, because the live connection already brings every change from my other devices.
 
 ## 1.0.6
 

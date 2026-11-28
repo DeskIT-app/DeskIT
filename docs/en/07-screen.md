@@ -15,9 +15,9 @@ with your clipboard that DeskIT does not.
 
 | key | does | where the file goes |
 |---|---|---|
-| Win+Shift+S (or Ctrl+F11 if you left the Snipping-Tool switch off) | screenshot: drag a region, or tap for the window under the mouse; an editor with a pencil opens | `%LOCALAPPDATA%\DeskIT\captures` |
-| Ctrl+F12 | record the screen; tap again to stop | `captures` as well, `clip-*.mp4` |
-| Ctrl+F6 | a photo from the camera — the light beside the lens goes off at the shutter, and that is a real promise | `captures` |
+| Win+Shift+S (or Ctrl+F11 if you turned the Snipping-Tool switch off) | screenshot: drag a region, or tap for the window under the mouse; an editor with a pencil opens | your **Pictures\DeskIT** folder |
+| Ctrl+F12 | record the screen; tap again to stop | your **Videos\DeskIT** folder, `clip-*.mp4` |
+| Ctrl+F6 | a photo from the camera — the light beside the lens goes off at the shutter, and that is a real promise | **Pictures\DeskIT**, with the screenshots |
 | Ctrl+F10 | ask about the screen: select a region, a card opens, ask in Hebrew by voice or by typing | nothing saved; the picture lives in memory while the card is open |
 
 ![The picker](../img/07-picker.png)

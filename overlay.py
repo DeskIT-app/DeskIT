@@ -71,16 +71,19 @@ GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TRANSPARENT = 0x00000020   # click-through
+WS_EX_TOPMOST = 0x00000008
+GW_HWNDPREV = 3                  # GetWindow: the window just above
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
-# LAMPLIGHT, spelled out. This module is imported before ui.py has built
+# B+ (2026-10-23), spelled out. This module is imported before ui.py has built
 # anything, so it cannot read the palette — it carries the four names the
 # splash and the word prompt need. skin\palette.py is the source; these are
 # PANE / FG / DIM / ACCENT from it.
-BG = "#1c1813"
-FG = "#f1ece2"
-DIM = "#b2a896"
-ACCENT = "#e3a63c"
-TROUGH = "#3a342a"      # the splash bar's channel — LINE, one step over BG
+BG = "#121527"
+FG = "#efedf7"
+DIM = "#c0c3d8"
+ACCENT = "#a597ff"
+TROUGH = "#30365a"      # the splash bar's channel — LINE, one step over BG
 
 _DONE = object()   # sentinel: close the window
 _HIDE = object()   # sentinel: the window off the screen, the thread kept
@@ -95,21 +98,196 @@ TICK_S = 0.015
 # failure is how a missing window looks exactly like a working one.
 _log = logging.getLogger("app")
 
+# THE IDLE FOOTPRINT (2026-11-10, the whole-app audit's F1). Every
+# painter's loop used to turn over on a fixed tick whether it had anything
+# to show or not — the dot at 45 Hz, the notify and review cards at 33,
+# the hint card and the shelf at 50, its outside-press watch at 40, the
+# consent and tour cards' Tk loops at 66 plus a 30 ms poll — so an app
+# doing nothing woke to find nothing to do: measured on the hidden desktop
+# over 15 s, the eight painters' threads (and the shelf's two helpers) took
+# 909 context switches a second, 586 of them the two Tk cards, and 1.7 %
+# of a core; after this, 35 a second and under 0.1 %. An idle loop now RESTS
+# instead: `_Queue.rest`, one MsgWaitForMultipleObjectsEx on an event the
+# queue owns, which returns the moment something is put on the queue, a
+# change that does not travel on it rings (`ring`), or a message arrives
+# for one of the thread's windows — a hover, a click, the start of a drag,
+# Windows' own messages — and otherwise after IDLE_S. A loop with
+# something to animate keeps exactly the tick it had. The measurements are
+# in reports\2026-11-09\fix-quiet-idle.md and beside each loop.
+IDLE_S = 1.0
+QS_ALLINPUT = 0x04FF
+WAIT_TIMEOUT = 0x00000102
+# Private handles: argtypes declared on ctypes.windll's shared objects
+# change them for every module (AGENTS.md).
+try:
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32.CreateEventW.restype = ctypes.c_void_p
+    _k32.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.wintypes.BOOL,
+                                  ctypes.wintypes.BOOL, ctypes.c_wchar_p]
+    _k32.SetEvent.argtypes = [ctypes.c_void_p]
+    _k32.SetEvent.restype = ctypes.wintypes.BOOL
+    _k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    _k32.CloseHandle.restype = ctypes.wintypes.BOOL
+    _wait32 = ctypes.WinDLL("user32", use_last_error=True)
+    _wait32.MsgWaitForMultipleObjectsEx.argtypes = [
+        ctypes.wintypes.DWORD, ctypes.c_void_p, ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+    _wait32.MsgWaitForMultipleObjectsEx.restype = ctypes.wintypes.DWORD
+    _wait32.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                     ctypes.c_uint, ctypes.c_uint,
+                                     ctypes.c_uint]
+    _wait32.PeekMessageW.restype = ctypes.wintypes.BOOL
+except (OSError, AttributeError):        # not Windows: the old tick
+    _k32 = _wait32 = None
 
-def _pump_until(root, closing: threading.Event) -> None:
+
+class _Queue(queue.Queue):
+    """A painter's queue that can also WAKE the painter (see IDLE_S).
+
+    `put` (and so `put_nowait`) rings after it puts; `ring()` is for a
+    change that does not travel on the queue — a move deadline, the alarm,
+    a hush, a new position. `rest(seconds)` is the painter's sleep, on the
+    painter's thread only: it returns early for a ring or for any message
+    to a window of that thread, so a loop that rests is never slower to
+    react than one that ticks, and costs nothing while nothing happens.
+
+    The event is auto-reset and made with the queue, BEFORE any thread can
+    put on it, so a ring can never land in a gap before the painter's first
+    rest; a ring nobody was waiting for leaves the event set, and the next
+    rest returns at once and finds the reason. MsgWaitForMultipleObjectsEx
+    is called WITHOUT MWMO_INPUTAVAILABLE, so it wakes for messages that
+    are NEW since the thread last looked at its queue — and returning does
+    NOT count as looking. Measured 2026-11-10: a posted message nobody
+    removes makes every following wait return in 0.0 ms, a spin, until any
+    PeekMessage runs (one filtered on another window is enough). So a wake
+    for a message ends with one PeekMessage(PM_NOREMOVE) on the whole
+    thread: it delivers any message SENT to the thread's windows, marks the
+    queue looked at, and leaves every posted message where it is for the
+    painter's own pump. A message for a window nobody pumps (a GL context's
+    hidden window, the notify column's blur windows) then wakes the loop
+    once, not forever. A test's plain queue.Queue has neither method; the
+    loops ask with getattr and keep their old tick.
+    """
+
+    def __init__(self, maxsize: int = 0) -> None:
+        super().__init__(maxsize)
+        self._event = None
+        if _k32 is not None:
+            try:
+                self._event = _k32.CreateEventW(None, False, False, None)
+            except Exception:
+                self._event = None
+
+    def put(self, item, block: bool = True, timeout=None) -> None:
+        super().put(item, block, timeout)
+        self.ring()
+
+    def ring(self) -> None:
+        """Wake the painter if it is resting. Safe from any thread — the
+        keyboard hook and the PortAudio callback included: one SetEvent."""
+        event = self._event
+        if event:
+            try:
+                _k32.SetEvent(event)
+            except Exception:
+                pass
+
+    def rest(self, seconds: float) -> bool:
+        """Sleep up to `seconds`, or until a ring or a window message.
+        True when something woke it before the time was up."""
+        event = self._event
+        if not event or _wait32 is None:
+            time.sleep(max(0.0, min(float(seconds), TICK_S)))
+            return False
+        ms = max(1, int(float(seconds) * 1000.0 + 0.5))
+        handles = (ctypes.c_void_p * 1)(event)
+        try:
+            got = _wait32.MsgWaitForMultipleObjectsEx(1, handles, ms,
+                                                      QS_ALLINPUT, 0)
+            if got == 1:                       # WAIT_OBJECT_0 + 1: input
+                _wait32.PeekMessageW(ctypes.byref(ctypes.wintypes.MSG()),
+                                     None, 0, 0, 0)     # PM_NOREMOVE
+        except Exception:
+            time.sleep(TICK_S)
+            return False
+        return got != WAIT_TIMEOUT
+
+    def __del__(self) -> None:
+        # Only here: while anything can still reach this queue to ring
+        # it, the queue — and so the handle — is alive.
+        event, self._event = self._event, None
+        if event and _k32 is not None:
+            try:
+                _k32.CloseHandle(event)
+            except Exception:
+                pass
+
+
+class _Signal(threading.Event):
+    """A threading.Event that rings `queue` when it is set or cleared, so
+    a painter resting on that queue sees the flag at once. For the flags
+    other threads write straight into — `_hushed` from the screenshot
+    flow, `_replace` from main.App._dot_power — without a method of ours
+    in between."""
+
+    def __init__(self, ring_queue) -> None:
+        super().__init__()
+        self._ring_queue = ring_queue
+
+    def set(self) -> None:
+        super().set()
+        ring = getattr(self._ring_queue, "ring", None)
+        if ring is not None:
+            ring()
+
+    def clear(self) -> None:
+        super().clear()
+        ring = getattr(self._ring_queue, "ring", None)
+        if ring is not None:
+            ring()
+
+
+def rest(q, seconds: float, tick: float) -> None:
+    """The idle sleep of a painter's loop: `q.rest(seconds)` when the
+    queue can wake it, and the loop's own old `tick` when it cannot (a
+    test's stand-in queue)."""
+    resting = getattr(q, "rest", None)
+    if resting is None:
+        time.sleep(tick)
+    else:
+        resting(seconds)
+
+
+def _pump_until(root, closing: threading.Event, tick=None,
+                rest_on=None) -> None:
     """Run one interpreter's event loop until asked to stop.
 
     Deliberately update() in a loop rather than mainloop(): see the module
     docstring. update() drains this interpreter's queue — timers, redraws,
     window messages — and touches no state shared with any other Tk in the
     process, so one overlay closing can no longer close the other.
+
+    `tick` and `rest_on` are the quiet loop (see IDLE_S), for a card with
+    nothing that moves by itself: `tick()` reads its queue BEFORE each
+    update(), so whatever it puts up is laid out and painted by that same
+    update() — Tk's idle callbacks are not window messages, and a redraw
+    queued after the update would wait out the rest — and the loop then
+    rests on `rest_on` (a _Queue) instead of sleeping a tick. Without them
+    it is the loop it always was.
     """
     while not closing.is_set():
+        if tick is not None:
+            tick()
+            if closing.is_set():
+                return
         try:
             root.update()
         except Exception:
             return          # window destroyed underneath us: nothing to do
-        time.sleep(TICK_S)
+        if rest_on is not None:
+            rest(rest_on, IDLE_S, TICK_S)
+        else:
+            time.sleep(TICK_S)
 
 
 class Splash:
@@ -437,6 +615,101 @@ def _no_activate(root, click_through: bool = False) -> bool:
         return False
 
 
+_Z_USER32 = None
+
+
+def _z_user32():
+    """A PRIVATE user32 with the z-order calls declared, built once —
+    dig_out runs every second for as long as the app does. Private for
+    skin\\glass.py's reason, and a HWND is c_void_p because a 64-bit
+    handle does not fit the c_int ctypes would assume."""
+    global _Z_USER32
+    if _Z_USER32 is None:
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        u.GetWindow.restype = ctypes.c_void_p
+        u.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        u.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        u.IsWindowVisible.restype = ctypes.c_int
+        u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_uint]
+        u.SetWindowPos.restype = ctypes.c_int
+        u.GetParent.argtypes = [ctypes.c_void_p]
+        u.GetParent.restype = ctypes.c_void_p
+        _Z_USER32 = u
+    return _Z_USER32
+
+
+def dig_out(hwnd) -> int:
+    """Put the dot back on top if an ordinary window has got above it.
+
+    THE OWNER'S REPORT, 2026-10-10: "sometimes the dot disappears behind
+    the windows" — with two screenshots, Claude maximised and no dot, the
+    desktop shown and the dot right where it should be. Walked live, the
+    dot's window still carried WS_EX_TOPMOST and sat at z-order #121,
+    under the maximised Claude window at #38; the first window without
+    the bit was #36. Something had moved it BELOW the ordinary windows
+    and left the bit on. Not us: none of SetWindowPos' own doors does
+    that — HWND_BOTTOM, HWND_NOTOPMOST and "after an ordinary window"
+    all clear the bit, measured on throwaway windows the same day — and
+    it was not only us: about fifteen topmost windows of other programs
+    (Vanguard, EarTrumpet, Tailscale, the Start feed, Explorer's own)
+    sat down there with the bit on as well, while the taskbar and the
+    rest had evidently put themselves back. Every other window of ours
+    is raised each time it is shown; the dot is shown once and lives for
+    days, so it was the one that stayed buried. SetWindowPos(HWND_TOPMOST)
+    from outside brought it back at once (#121 -> #15, over Claude).
+
+    So the painters call this every DOT_ON_TOP_S. It walks UP from the
+    dot and raises it the moment it meets a visible window WITHOUT the
+    topmost bit — which, above a topmost window, can only mean the dot
+    was put where it does not belong. Topmost windows above it are left
+    alone: among topmost windows the newest is on top by Windows' own
+    rule, and the screenshot selector, the move frame (which goes UNDER
+    the dot on its own), the shelf and the cards all count on that.
+
+    Returns the ordinary window it found over the dot (0 for none, and
+    nothing was done), so the caller can say once who it was. Never
+    raises: a dot that cannot check its z-order is still a dot.
+    """
+    if not hwnd:
+        return 0
+    try:
+        u = _z_user32()
+        above = u.GetWindow(int(hwnd), GW_HWNDPREV)
+        for _ in range(4096):              # a desktop has hundreds, at most
+            if not above:
+                return 0
+            if (u.IsWindowVisible(above)
+                    and not u.GetWindowLongPtrW(above, GWL_EXSTYLE)
+                    & WS_EX_TOPMOST):
+                u.SetWindowPos(int(hwnd), ctypes.c_void_p(-1), 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                return int(above)
+            above = u.GetWindow(above, GW_HWNDPREV)
+    except Exception:
+        _log.debug("could not check the dot's z-order", exc_info=True)
+    return 0
+
+
+def window_owner(hwnd) -> str:
+    """'explorer.exe (Progman)' for a window: who it was, for the log. The
+    program and the class only — never the title, which is a browser
+    tab or a document name and has no business in app.log."""
+    try:
+        import os
+        import foreground
+        u32, k32 = foreground._handles()
+        pid = ctypes.c_ulong(0)
+        u32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
+        exe = os.path.basename(foreground._exe_of(k32, pid.value)) or "?"
+        return "%s (%s)" % (exe, foreground._class(u32, int(hwnd)))
+    except Exception:
+        return "?"
+
+
 # NO `_hide_from_capture` IN THIS MODULE ANY MORE. It was eleven lines
 # that set WDA_EXCLUDEFROMCAPTURE on an overlay window, all four of our
 # windows called it, and it was deleted on 2026-09-04 at the owner's
@@ -513,20 +786,20 @@ _CHROMA = "#0b0c0d"
 # The five states, as skin\palette.DOT_STATES spells them — kept here as
 # literals for the same reason as the four above: this module runs before
 # ui.py exists, and it is the path with skin\ deleted. Measured against
-# #1A1A1A, the darkest wallpaper the dot has to survive: 9.09 / 5.68 /
-# 7.62 / 10.36 / 3.46, and every pair separates by light or by hue.
+# #1A1A1A, the darkest wallpaper the dot has to survive: 7.97 / 5.84 /
+# 7.89 / 10.12 / 5.65, and every pair separates by light or by hue.
 STATES = {
     # state:      (fill,      ring,      pulses)
-    "ready":      ("#8fc0f0", "#16232f", False),   # cool: running, listening
-    "recording":  ("#ff5b4e", "#3a140f", False),   # red: capturing now
-    "locked":     ("#ff8a7e", "#3a140f", True),    # red, breathing: latched
-    "busy":       ("#f5c043", "#33260a", False),   # the lamp at full
+    "ready":      ("#4db8ff", "#0f2438", False),   # blue: running, listening
+    "recording":  ("#ff5d6e", "#3a1219", False),   # red: capturing now
+    "locked":     ("#ff8d99", "#3a1219", True),    # red, breathing: latched
+    "busy":       ("#ffb84d", "#33260f", False),   # amber: working
     # Neutral grey: loaded and alive, but the keys are inert. Deliberately
     # still VISIBLE — a paused app that showed nothing would be
     # indistinguishable from one that was never started, which is the whole
     # problem the dot exists to solve. It is also the only state with NO
     # HALO on the glass path, so it reads by absence and not by hue alone.
-    "paused":     ("#6f6f6f", "#1e1e1e", False),
+    "paused":     ("#8a93a8", "#1e2130", False),
 }
 
 # Where the dot may sit: a corner of the primary monitor's WORK AREA.
@@ -559,9 +832,19 @@ DOT_MOVE_S = 45.0
 # had to be asked for twice. The dashboard's own backstop
 # (dashboard.DOT_WAIT_S) is longer than this on purpose.
 DOT_FRAME_S = 180.0
+# How long a notification closed on the column stays off it whatever the
+# engine's next list says (NotifyCard._gone). The engine's dismissal is a
+# JSON write on a thread of its own, tens of milliseconds; two seconds is
+# room for a slow disk and short enough that a dismissal which failed
+# shows its card again rather than hiding it for good.
+NOTIFY_GONE_S = 2.0
 # A release that travelled less than this is a click, not a drag —
 # NotifyCard's rule and its number, kept the same everywhere.
 DOT_CLICK_PX = 4
+# How often the dot checks that no ordinary window has got above it
+# (`dig_out`). Once a second: the check is a few dozen GetWindow calls,
+# and a dot that took longer than that to come back would read as gone.
+DOT_ON_TOP_S = 1.0
 
 # THE ALARM: a dead microphone ten seconds into a dictation (recorder.
 # SILENT_PEAK). The owner's words for what he wants to see: "הנקודה
@@ -573,7 +856,22 @@ DOT_CLICK_PX = 4
 # middle of the window he is typing in is not ignorable. The blink is a
 # hard on/off at DOT_ALARM_BLINK_HZ — distinct from "locked"'s slow
 # breath, which is the same red and means nothing is wrong.
+#
+# AND IT GROWS WHILE IT WAITS (2026-10-25, his words: "שהנקודה תגדל עם
+# הזמן... תלך גם למרכז ותגדל. ואחרי תחזור"). A 10 px disc in the
+# middle of the screen was still a 10 px disc: he had seen the alarm and
+# still read it as coming half a minute late. So the dot swells from its
+# own size to DOT_ALARM_SCALE times it over DOT_ALARM_GROW_S, fastest at
+# first — about 2.6 times by the time it arrives — and when sound comes,
+# or the recording ends, it shrinks and travels home over
+# DOT_ALARM_BACK_S instead of jumping there. Only the glass painter grows
+# (the window is resized while it travels); the Tk fallback travels at
+# its own size. The blink stays at 2.5 Hz, under the 3-a-second line the
+# photosensitivity guidance draws, and the disc at full size is 50 px.
 DOT_ALARM_TRAVEL_S = 1.4       # corner → centre, eased
+DOT_ALARM_GROW_S = 6.0         # its own size → DOT_ALARM_SCALE, easing out
+DOT_ALARM_SCALE = 5.0
+DOT_ALARM_BACK_S = 0.6         # centre → corner, when the alarm ends
 DOT_ALARM_BLINK_HZ = 2.5
 DOT_ALARM_FILL = "#ff2e1f"     # brighter than "recording", so the two read
 DOT_ALARM_DIM = "#5a1a14"      # apart even when the blink is on its "off"
@@ -581,16 +879,31 @@ DOT_ALARM_DIM = "#5a1a14"      # apart even when the blink is on its "off"
 
 def dot_alarm_spot(rest: tuple[int, int], box: int,
                    work: tuple[int, int, int, int],
-                   progress: float) -> tuple[int, int]:
-    """Where an alarming dot is, `progress` of the way (0..1, eased) from
-    its resting spot to the centre of the work area. Pure, and shared by
-    both painters so the two paths travel the same line."""
+                   progress: float, size: int | None = None
+                   ) -> tuple[int, int]:
+    """Where an alarming dot's window is, `progress` of the way (0..1,
+    eased) from its resting spot to the centre of the work area. `rest`
+    is the top-left of the `box`-sided window at rest; the answer is the
+    top-left of a window `size` on a side (`box` when not given) whose
+    CENTRE is on that line, so a dot that grows grows about its middle.
+    Pure, and shared by both painters so the two paths travel the same
+    line."""
     k = max(0.0, min(1.0, float(progress)))
     k = k * k * (3.0 - 2.0 * k)                 # smoothstep
-    cx = (work[0] + work[2]) / 2.0 - box / 2.0
-    cy = (work[1] + work[3]) / 2.0 - box / 2.0
-    return (int(round(rest[0] + (cx - rest[0]) * k)),
-            int(round(rest[1] + (cy - rest[1]) * k)))
+    size = box if size is None else size
+    rx, ry = rest[0] + box / 2.0, rest[1] + box / 2.0
+    cx = (work[0] + work[2]) / 2.0
+    cy = (work[1] + work[3]) / 2.0
+    return (int(round(rx + (cx - rx) * k - size / 2.0)),
+            int(round(ry + (cy - ry) * k - size / 2.0)))
+
+
+def dot_alarm_scale(seconds: float) -> float:
+    """How many times its own size an alarming dot is, `seconds` into the
+    alarm: 1 at the start, DOT_ALARM_SCALE from DOT_ALARM_GROW_S on,
+    eased out so most of the growing happens while it travels."""
+    u = max(0.0, min(1.0, float(seconds) / DOT_ALARM_GROW_S))
+    return 1.0 + (DOT_ALARM_SCALE - 1.0) * (1.0 - (1.0 - u) ** 2)
 
 
 def _work_area():
@@ -878,7 +1191,10 @@ class StatusDot:
                  margin_y: int = 6, corner: str = "bottom-right",
                  x: int = HINT_UNSET, y: int = HINT_UNSET,
                  on_change=None) -> None:
-        self._q: queue.Queue = queue.Queue()
+        # A _Queue: the glass painter rests on it while the dot is still
+        # (IDLE_S), and every change below that is not a queue item —
+        # move(), rest(), end_move(), alarm(), _replace — rings it.
+        self._q: queue.Queue = _Queue()
         self._size = size
         self._margin = (margin_x, margin_y)
         self.corner = corner if corner in DOT_CORNERS else "bottom-right"
@@ -914,9 +1230,14 @@ class StatusDot:
         # alarm". One float, written from the PortAudio callback and read
         # by the painter's next frame — see alarm().
         self._alarm_since = 0.0
+        # An alarm that ended and a dot still on its way home: (when it
+        # ended, how far it had travelled, how big it was), or None. One
+        # tuple, swapped whole, for the same reason.
+        self._alarm_back: tuple[float, float, float] | None = None
         # "the position changed under you — go there". Set by placed()
         # and to_corner(); the painter clears it and moves the window.
-        self._replace = threading.Event()
+        # A _Signal, because main.App._dot_power sets it from outside too.
+        self._replace = _Signal(self._q)
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
         self._closing = threading.Event()
@@ -957,6 +1278,7 @@ class StatusDot:
             return False
         self._move_until = time.monotonic() + max(1.0, float(seconds))
         self._move_hold = bool(hold)
+        self._ring()
         return True
 
     def rest(self) -> None:
@@ -967,12 +1289,21 @@ class StatusDot:
         if self._move_hold:
             return
         self._move_until = 0.0
+        self._ring()
 
     def end_move(self) -> None:
         """The framed move is over — Done, Enter, Esc, or the deadline
         found by the frame. Clears the hold and the deadline together."""
         self._move_hold = False
         self._move_until = 0.0
+        self._ring()
+
+    def _ring(self) -> None:
+        """Wake a painter resting on the queue: something it reads off
+        this object, not off the queue, has changed."""
+        ring = getattr(self._q, "ring", None)
+        if ring is not None:
+            ring()
 
     def held(self) -> bool:
         """Is a framed move standing? The painter does not read this —
@@ -983,43 +1314,78 @@ class StatusDot:
 
     def alarm(self, on: bool) -> None:
         """Start or stop the alarm: red blink, travel to the centre of the
-        screen, back to the corner when it ends (DOT_ALARM_*).
+        screen growing as it goes, and shrink back to the corner when it
+        ends (DOT_ALARM_*).
 
         Safe from the PortAudio callback, which is where recorder.py
-        calls it from: one float written, nothing waited for. Idempotent
-        in both directions — a second `on` does not restart the travel,
-        and `off` with no alarm running is nothing.
+        calls it from: a float or a tuple written, nothing waited for.
+        Idempotent in both directions — a second `on` does not restart
+        the travel, and `off` with no alarm running is nothing.
         """
         if on:
             if not self._alarm_since:
+                self._alarm_back = None
                 self._alarm_since = time.monotonic()
+                self._ring()
         else:
+            since = self._alarm_since
+            if since:
+                now = time.monotonic()
+                self._alarm_back = (
+                    now, min(1.0, (now - since) / DOT_ALARM_TRAVEL_S),
+                    dot_alarm_scale(now - since))
             self._alarm_since = 0.0
+            if since:
+                self._ring()
 
     def alarming(self) -> float | None:
         """None when there is no alarm; otherwise how far along the travel
         is, 0..1 — a clock the painter reads, so the picture is a function
         of time and not of how many frames it happened to draw."""
-        if not self._alarm_since:
+        since = self._alarm_since
+        if not since:
             return None
-        return min(1.0, (time.monotonic() - self._alarm_since)
-                   / DOT_ALARM_TRAVEL_S)
+        return min(1.0, (time.monotonic() - since) / DOT_ALARM_TRAVEL_S)
+
+    def alarm_busy(self) -> bool:
+        """Whether the dot is anywhere but at rest: alarming, or still on
+        its way home from an alarm. The painters ask this before they ask
+        for a frame, so a dot at rest costs nothing."""
+        if self._alarm_since:
+            return True
+        back = self._alarm_back
+        return (back is not None
+                and time.monotonic() - back[0] < DOT_ALARM_BACK_S)
 
     def alarm_frame(self, rest: tuple[int, int], box: int,
                     work: tuple[int, int, int, int]
-                    ) -> tuple[tuple[int, int], str | None]:
-        """One frame of the dot's position and alarm colour: where the
-        window goes, and the fill to paint if the alarm is on (None when
-        it is not, and the state's own colour applies). The blink is
-        computed from the clock, so both painters blink in step with
-        each other and with themselves after a dropped frame."""
-        k = self.alarming()
-        if k is None:
-            return rest, None
-        at = dot_alarm_spot(rest, box, work, k)
-        phase = (time.monotonic() - self._alarm_since) * DOT_ALARM_BLINK_HZ
-        return at, (DOT_ALARM_FILL if int(phase * 2) % 2 == 0
+                    ) -> tuple[tuple[int, int], int, str | None]:
+        """One frame of the alarm: where the window goes, how big it is
+        (`box` at rest), and the fill to paint if the alarm is on (None
+        when it is not, and the state's own colour applies — on the way
+        home too). The blink and the size are computed from the clock, so
+        both painters blink in step with each other and with themselves
+        after a dropped frame."""
+        now = time.monotonic()
+        since = self._alarm_since
+        if since:
+            size = 2 * int(round(box * dot_alarm_scale(now - since) / 2.0))
+            k = min(1.0, (now - since) / DOT_ALARM_TRAVEL_S)
+            phase = (now - since) * DOT_ALARM_BLINK_HZ
+            return (dot_alarm_spot(rest, box, work, k, size), size,
+                    DOT_ALARM_FILL if int(phase * 2) % 2 == 0
                     else DOT_ALARM_DIM)
+        back = self._alarm_back
+        if back is None:
+            return rest, box, None
+        ended, k0, s0 = back
+        u = (now - ended) / DOT_ALARM_BACK_S
+        if u >= 1.0:
+            return rest, box, None
+        e = u * u * (3.0 - 2.0 * u)                 # smoothstep
+        size = 2 * int(round(box * (s0 + (1.0 - s0) * e) / 2.0))
+        return (dot_alarm_spot(rest, box, work, k0 * (1.0 - e), size), size,
+                None)
 
     def placed(self, x: int, y: int) -> None:
         """Remember where a drag left it, and write it down.
@@ -1168,6 +1534,14 @@ class StatusDot:
         # fallback is the path with skin\ deleted.
         on_click = self.on_click
         _no_activate(root, click_through=on_click is None)
+        # The real top-level, for dig_out: Tk's winfo_id is the client
+        # window inside it (see _no_activate).
+        try:
+            top_hwnd = (_z_user32().GetParent(int(root.winfo_id()))
+                        or int(root.winfo_id()))
+        except Exception:
+            top_hwnd = 0
+        on_top = {"next": 0.0, "buried": False}
         if on_click is not None:
             centre = box / 2.0
             reach = self._size / 2.0 + 2.0
@@ -1256,17 +1630,19 @@ class StatusDot:
                 k = 0.55 + 0.45 * (0.5 + 0.5 * math.cos(state["phase"]))
                 fill = _mix(fill, _CHROMA, k)
             # The dead-microphone alarm: the window itself travels toward
-            # the middle of the work area and the fill blinks. Off, the
-            # window is put back where it rests — once, on the frame the
-            # alarm ends, which is what `alarm["was"]` remembers.
-            alarm_fill = None
-            if self.alarming() is not None or alarm["was"]:
-                at, alarm_fill = self.alarm_frame(where(), box, work)
+            # the middle of the work area and the fill blinks — at its own
+            # size here; only the glass painter grows. Off, the window goes
+            # back where it rests, and the frame after it gets there is
+            # one more move to the same place, which is what `alarm["was"]`
+            # remembers.
+            busy = self.alarm_busy()
+            if busy or alarm["was"]:
+                at, _size, alarm_fill = self.alarm_frame(where(), box, work)
                 root.geometry(f"+{at[0]}+{at[1]}")
                 self.rect = (at[0], at[1], at[0] + box, at[1] + box)
                 if alarm_fill is not None:
                     fill = alarm_fill
-            alarm["was"] = alarm_fill is not None
+            alarm["was"] = busy
             canvas.itemconfig(dot, fill=fill)
             # WHILE IT IS WAITING TO BE DRAGGED, the containing ring goes
             # white. The control window has hidden itself by then, so the
@@ -1293,11 +1669,23 @@ class StatusDot:
                         root.geometry(f"+{at[0]}+{at[1]}")
                         root.deiconify()
                         self.rect = (at[0], at[1], at[0] + box, at[1] + box)
+                        on_top["next"] = 0.0      # check at once
                         continue
                     state["name"] = item
                     state["phase"] = 0.0
             except queue.Empty:
                 pass
+            # Pushed under the ordinary windows by something outside the
+            # app? Back on top — the glass painter's check, every
+            # DOT_ON_TOP_S (see dig_out for the whole story).
+            now = time.monotonic()
+            if not self.hidden and now >= on_top["next"]:
+                on_top["next"] = now + DOT_ON_TOP_S
+                over = dig_out(top_hwnd)
+                if over and not on_top["buried"]:
+                    _log.info("the dot was under %s — put back on top",
+                              window_owner(over))
+                on_top["buried"] = bool(over)
             # Somebody moved it from somewhere else — a drop that had to
             # be clamped, or "Back to the corner" from the dashboard.
             if self._replace.is_set():
@@ -1388,7 +1776,9 @@ class HintCard:
                  scale: float = 1.0, on_change=None,
                  dot_corner: str = "bottom-right", dot_at=None,
                  compact: bool = False) -> None:
-        self._q: queue.Queue = queue.Queue()
+        # A _Queue: the painter rests on it while there is nothing to show
+        # (IDLE_S); every card built on this class inherits it.
+        self._q: queue.Queue = _Queue()
         self._after = max(0, int(after_ms)) / 1000.0
         self._corner = corner
         self._dot_corner = dot_corner
@@ -1418,8 +1808,9 @@ class HintCard:
         # SET WHILE A SELECTION IS ON SCREEN, by whoever is taking the
         # screen. An Event and not a flag because it is written from the
         # keyboard hook and read from the card's own loop, and because
-        # setting one touches no Tk at all — see hush().
-        self._hushed = threading.Event()
+        # setting one touches no Tk at all — see hush(). A _Signal, so a
+        # painter resting on the queue hears the hush and its end at once.
+        self._hushed = _Signal(self._q)
         # The X and the box (2026-09-24). `_shut` is "closed by hand until
         # the next dictation": set by the X on the card's thread, cleared
         # by recording_began() from the keyboard hook — an Event for the
@@ -1839,7 +2230,12 @@ class HintCard:
             except queue.Empty:
                 pass
             due, card = shown["due"], shown["card"]
-            if card is not None and not shown["up"] and due is not None \
+            # Off the live screen while capture.py holds it (hush: the
+            # selection, the editor, the camera, a recording); the 40 ms
+            # pump puts the LATEST card back up once it ends.
+            if self._hushed.is_set():
+                hide()
+            elif card is not None and not shown["up"] and due is not None \
                     and time.monotonic() >= due:
                 draw(card)
             root.after(40, pump)
@@ -2346,7 +2742,8 @@ class ProblemCard(WordPrompt):
             # side on 2026-09-04, because growing the field was a change
             # of widget and a change of widget is a change of bidi. Every
             # character is right; only the drawing lies.
-            field = tk.Text(root, bg=pc.hex_of("EDGE"), fg=pc.hex_of("FG"),
+            field = tk.Text(root, bg=pc.hex_of(pc.FIELD_BG),
+                            fg=pc.hex_of("FG"),
                             insertbackground=pc.hex_of("ACCENT"),
                             selectbackground=pc.hex_of("ACCENT_SOFT"),
                             selectforeground=pc.hex_of("FG"),
@@ -2791,6 +3188,8 @@ def _open_origin(bounds, screen, saved, size, near, keep: int = 60):
 
 
 _REVIEW_BUTTONS = ("accept", "reject", "later")
+# Daylight between the review card and the notify column it steps around.
+AVOID_GAP = 12
 
 
 class ReviewCard(HintCard):
@@ -2820,21 +3219,71 @@ class ReviewCard(HintCard):
     Verdicts go out through `on_verdict(id, verdict)` on whichever thread
     pressed the button — the painter's or the hook's — so that callback
     must only enqueue (main.py hands it to the review engine).
+
+    ONE AT A TIME, IN THE ORDER THEY CAME (2026-11-10). Until then a new
+    proposal REPLACED the card on screen: two dictations one after the
+    other, a proposal for each, and the second took the first one's
+    place before it had been read — the first was left in the desk's
+    pile and nowhere else (the owner's report). Now the card on screen
+    is never replaced. A proposal that arrives while one is up waits
+    behind it, and comes up when that one leaves — answered, closed,
+    answered somewhere else, or out of time — oldest first, with its own
+    whole clock, after a beat of `GAP_S` with nothing there. The card on
+    screen says how many are behind it ("+1"). At most `WAIT_MAX` wait;
+    one past that is not carded at all, and like every proposal it is in
+    the desk's pile. The line is `_up` and `_waiting`, and THE CARD'S
+    OWN THREAD IS THE ONLY ONE THAT TOUCHES THEM (`_q_take`, `_q_next`,
+    `_q_left`, `_q_answered`, called by both presenters' loops): every
+    other thread puts something on `_q` and returns.
     """
 
     CORNERS = ("right", "left", "top-right", "top-left",
                "bottom-right", "bottom-left")
 
+    # How many proposals may wait for the card. Three behind the one on
+    # screen is a minute and a half of cards at the shipped twenty seconds
+    # each; past that it stops being a notification and becomes a list,
+    # and the list is the desk's.
+    WAIT_MAX = 3
+    # The beat between one card leaving and the next coming up. Longer
+    # than Windows' double-click time (500 ms) on purpose: the next card
+    # lands exactly where the last one was, its buttons under the same
+    # pointer, and the second half of a double click on "נכון" must not
+    # be an answer to a proposal nobody has read.
+    GAP_S = 0.6
+    # How often the line asks `still_open` about the card on screen and
+    # the ones behind it: the desk and the phone answer straight into
+    # review.json, and nothing tells this process when they do.
+    ASK_S = 1.0
+
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_verdict=None, seconds: float = 20.0,
-                 keys: dict | None = None, on_edit=None) -> None:
+                 keys: dict | None = None, on_edit=None, still_open=None,
+                 held=None, avoid=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
+        # avoid() -> the notify column's card rect on screen, or None
+        # (`[review] avoid_notify`, 2026-11-27): both cards default to
+        # mid-height on the right, and a finish card landing a few seconds
+        # after a dictation covered the proposal. Called on the card's own
+        # thread; must be quick. None = never step aside (the old way).
+        self._avoid = avoid
         self._on_verdict = on_verdict
         # The pencil: on_edit(id, row, rect) — the owner wants to type the
         # word himself. The card is down by the time it is called.
         self._on_edit = on_edit
+        # still_open(id) -> bool: is this proposal still a question? False
+        # takes it off the screen or out of the line. held() -> bool: is
+        # something of ours standing where the card goes (the pencil's
+        # box)? True keeps the next one waiting. Both are called on the
+        # card's own thread and must be quick; None means yes and no.
+        self._still_open = still_open
+        self._held = held
+        self._up: dict | None = None      # the card the loop has up
+        self._waiting: list = []          # the ones behind it, oldest first
+        self._gap_until = 0.0             # no next card before this
+        self._asked = 0.0                 # when still_open was last asked
         self.seconds = float(seconds)
         self._keys = {"accept": "v", "reject": "x", "later": "l",
                       "edit": "e"}
@@ -2865,29 +3314,46 @@ class ReviewCard(HintCard):
                      for n in _REVIEW_BUTTONS + ("edit",))
 
     def show(self, suggestion: dict) -> None:
-        """Put a proposal up. Only enqueues, so safe from the engine
-        thread. A new proposal replaces the one on screen — that one is
-        still in the dashboard, undecided."""
+        """A proposal for the card. Only enqueues, so safe from the engine
+        thread. It goes up at once when nothing is up, and BEHIND the card
+        on screen when one is — never in its place. `visible()` and
+        `current()` speak of the card the loop has put up, so they follow
+        this call by a tick."""
         if self._thread is None or not self._enabled:
             return
         import review_card as rc
-        card = rc.card_for(suggestion, seconds=self.seconds,
-                           keys=self.key_labels())
-        with self._state_lock:
-            self._current = card["id"]
-        self._q.put(card)
+        self._q.put(rc.card_for(suggestion, seconds=self.seconds,
+                                keys=self.key_labels()))
 
     def hide(self) -> None:
+        """The card down, and the ones waiting behind it let go. Every
+        one of them is still in the desk's pile, undecided."""
         with self._state_lock:
             self._current = None
         if self._thread is not None:
             self._q.put(None)
+
+    def drop(self, sid) -> None:
+        """This proposal was answered somewhere else — the shelf, the
+        desk, the phone. It leaves: off the screen if it is the one up
+        (and the next gets its turn), out of the line if it is waiting,
+        so it is never shown after it was answered. Only enqueues."""
+        if self._thread is None or not self._enabled or sid is None:
+            return
+        with self._state_lock:
+            if self._current == sid:
+                self._current = None
+        self._q.put(("gone", sid))
 
     def visible(self) -> bool:
         return self._current is not None
 
     def current(self):
         return self._current
+
+    def waiting(self) -> int:
+        """How many proposals are behind the card on screen."""
+        return len(self._waiting)
 
     def hovering(self) -> bool:
         """Is the pointer on the card right now? Asked by the hook for a
@@ -2940,10 +3406,12 @@ class ReviewCard(HintCard):
         with self._state_lock:
             sid, self._current = self._current, None
         rect = self.rect
-        if self._thread is not None:
-            self._q.put(None)
         if sid is None:
+            # Nothing up to answer. And nothing to enqueue: a bare None is
+            # hide(), which lets go of everyone waiting.
             return
+        if self._thread is not None:
+            self._q.put(("gone", sid))
         if pencil:
             if self._on_edit is None:
                 return
@@ -2967,16 +3435,129 @@ class ReviewCard(HintCard):
                       exc_info=True)
 
     def timed_out(self) -> None:
-        """The clock ran out: no verdict. The painter takes it down."""
+        """The clock ran out: no verdict. The painter takes it down, and
+        the next in line gets its turn. The card's own thread."""
+        self._q_left(time.monotonic())
+
+    # -- the line: the card's own thread, and nothing else --
+
+    def _q_take(self, item, now: float) -> bool:
+        """One thing off `_q`: a proposal (a card dict), ("gone", id) for
+        one that was answered or closed, or None for hide(). True when
+        the card ON SCREEN has to come down — the loop owns the window,
+        this owns who is next."""
+        if item is None:
+            self._waiting.clear()
+            return self._q_left(now)
+        if isinstance(item, tuple):
+            sid = item[1]
+            self._waiting = [c for c in self._waiting if c.get("id") != sid]
+            if self._up is not None and self._up.get("id") == sid:
+                return self._q_left(now)
+            self._q_count()
+            return False
+        sid = item.get("id")
+        if self._up is not None and self._up.get("id") == sid:
+            return False                  # the one on screen, told twice
+        self._waiting = [c for c in self._waiting if c.get("id") != sid]
+        # With nothing up, the head of the line is the next card and not
+        # one that waits behind it: WAIT_MAX is counted behind the card.
+        room = self.WAIT_MAX + (1 if self._up is None else 0)
+        if len(self._waiting) < room:
+            self._waiting.append(item)
+        else:
+            # Not lost: review.Store.add put it in the pile before the
+            # card ever heard of it. Counts only — app.log quotes no
+            # dictated text (D8).
+            _log.info("review card: %d already waiting — this proposal "
+                      "stays in the desk's pile", len(self._waiting))
+        self._q_count()
+        return False
+
+    def _q_left(self, now: float) -> bool:
+        """The card on screen is leaving, whatever the reason. True when
+        there was one. Starts the beat before the next."""
+        was = self._up is not None
+        self._up = None
         with self._state_lock:
             self._current = None
+        if was:
+            self._gap_until = now + self.GAP_S
+        return was
+
+    def _q_next(self, now: float, hold: bool = False):
+        """The proposal to put up NOW, or None: nothing is up, the beat
+        is over, nobody is holding the place — `hold` is the loop's own
+        reason (a screenshot selection on screen), `held` the app's (the
+        pencil's box) — and it is still a question. One that was answered
+        while it waited is passed over without ever being shown."""
+        if self._up is not None or not self._waiting:
+            return None
+        if hold or now < self._gap_until:
+            return None
+        if self._held is not None:
+            try:
+                busy = bool(self._held())
+            except Exception:
+                busy = False
+            if busy:
+                self._gap_until = now + self.GAP_S    # a beat after it, too
+                return None
+        while self._waiting:
+            item = self._waiting.pop(0)
+            if not self._open(item.get("id")):
+                continue
+            self._up = item
+            with self._state_lock:
+                self._current = item.get("id")
+            self._asked = now
+            self._q_count()
+            return item
+        return None
+
+    def _q_answered(self, now: float) -> bool:
+        """Once every ASK_S: was the card on screen, or one behind it,
+        answered where this process was not told — the desk, the phone?
+        True when the one ON SCREEN was, and the loop takes it down."""
+        if self._still_open is None or now - self._asked < self.ASK_S:
+            return False
+        if self._up is None and not self._waiting:
+            return False
+        self._asked = now
+        self._waiting = [c for c in self._waiting
+                         if self._open(c.get("id"))]
+        if self._up is not None and not self._open(self._up.get("id")):
+            return self._q_left(now)
+        self._q_count()
+        return False
+
+    def _open(self, sid) -> bool:
+        if self._still_open is None:
+            return True
+        try:
+            return bool(self._still_open(sid))
+        except Exception:
+            # Cannot tell is not "answered": a card too many is a click,
+            # a card taken away is a question he never saw.
+            _log.debug("review card: could not ask whether a proposal is "
+                       "still open", exc_info=True)
+            return True
+
+    def _q_count(self) -> None:
+        """How many wait, written on the card on screen where the painter
+        reads it (review_card.compose, `waiting`)."""
+        if self._up is not None:
+            self._up["waiting"] = len(self._waiting)
 
     # -- placement --
 
     def origin(self, width: int, height: int, screen: tuple,
-               inset: int = 0, bounds=None) -> tuple:
+               inset: int = 0, bounds=None, work=None) -> tuple:
         """Mid-height on the right (or left) edge by default; the four
-        corners and a saved position exactly as the hint card does them."""
+        corners and a saved position exactly as the hint card does them.
+        `work` is the primary's work area (x, y, w, h), read from Windows
+        when not given: where a card stepping round the notify column may
+        go, so it never lands on the taskbar."""
         if self.moved() or self._corner not in ("right", "left"):
             return super().origin(width, height, screen, inset, bounds)
         sw, sh = screen
@@ -2984,7 +3565,75 @@ class ReviewCard(HintCard):
         x = (m - inset) if self._corner == "left" \
             else (sw - m - width + inset)
         y = (sh - height) // 2
+        if self._column() is not None:
+            work = work or _work_area() or (0, 0, sw, sh)
+            spot = self._aside(x, y, width, height, inset, work)
+            if spot is not None:
+                x, y = spot
         return int(x), int(y)
+
+    def _column(self):
+        """The notify column's rect on screen, or None."""
+        try:
+            return self._avoid() if self._avoid is not None else None
+        except Exception:                 # noqa: BLE001 — decoration
+            return None
+
+    def _aside(self, x: int, y: int, width: int, height: int, inset: int,
+               work: tuple):
+        """Where the window goes to be out of the notify column's way:
+        ABOVE it when the whole card fits inside the work area, else BELOW
+        it, else BESIDE it (on the screen's side of a column at the edge),
+        at the same height. None when it is not in the way, or when there
+        is nowhere to go — the caller then keeps what it has. Only for the
+        default spot: a card he dragged stays where he put it, and so does
+        one in a corner of its own. Pure arithmetic, so a test drives it
+        with numbers."""
+        col = self._column()
+        if not col or not self.covers(col, x, y, width, height, inset):
+            return None
+        ax0, ay0, ax1, ay1 = col
+        wx, wy, ww, wh = work
+        card_w, card_h = width - 2 * inset, height - 2 * inset
+        m = self._margin
+        above = ay0 - AVOID_GAP - card_h
+        if above >= wy + m:
+            return x, above - inset
+        below = ay1 + AVOID_GAP
+        if below + card_h <= wy + wh - m:
+            return x, below - inset
+        if self._corner == "left":
+            beside = ax1 + AVOID_GAP
+            if beside + card_w <= wx + ww - m:
+                return beside - inset, y
+        else:
+            beside = ax0 - AVOID_GAP - card_w
+            if beside >= wx + m:
+                return beside - inset, y
+        return None
+
+    @staticmethod
+    def covers(col, x: int, y: int, width: int, height: int,
+               inset: int = 0) -> bool:
+        """Would a window at (x, y) of this size put its CARD on `col`?"""
+        cx0, cy0 = x + inset, y + inset
+        cx1, cy1 = x + width - inset, y + height - inset
+        return not (cx1 <= col[0] or col[2] <= cx0
+                    or cy1 <= col[1] or col[3] <= cy0)
+
+    def in_the_way(self) -> bool:
+        """Is the notify column standing on the card that is up?"""
+        rect, col = self.rect, self._column()
+        if not rect or not col:
+            return False
+        return self.covers(col, rect[0], rect[1], rect[2] - rect[0],
+                           rect[3] - rect[1])
+
+    def would_cover(self, x: int, y: int, width: int, height: int,
+                    inset: int = 0) -> bool:
+        """Would the card, put at (x, y), stand on the notify column?"""
+        col = self._column()
+        return bool(col) and self.covers(col, x, y, width, height, inset)
 
     # -- overlay thread --
 
@@ -3035,6 +3684,9 @@ class ReviewCard(HintCard):
 
         def hide() -> None:
             st["card"], st["deadline"], st["hover"] = None, None, None
+            # A card can leave under a drag now (answered on the desk
+            # while he holds it); the next one must not inherit the grip.
+            st["drag"] = None
             self.rect = None
             cache.clear()
             if st["up"]:
@@ -3151,26 +3803,34 @@ class ReviewCard(HintCard):
         canvas.bind("<ButtonRelease-1>", on_release)
 
         def pump() -> None:
+            now = time.monotonic()
             try:
                 while True:
                     item = self._q.get_nowait()
                     if item is _DONE:
                         self._closing.set()
                         return
-                    if item is None:
+                    # The line decides (see the class): an arrival waits
+                    # its turn, and only the card on screen leaving —
+                    # answered, closed, hide() — brings the window down.
+                    if self._q_take(item, now):
                         hide()
-                    else:
-                        put_up(item)
             except queue.Empty:
                 pass
-            # Read once a tick, AFTER the queue, so a card that arrived in
-            # this same frame is already in `st` and gets held rather than
-            # mapped. Thirty milliseconds is well inside the time the
-            # desktop freeze takes, so the window is off the live screen
-            # before the selector maps over it.
+            # Read once a tick, AFTER the queue and BEFORE the next card is
+            # asked for, so a proposal that arrived in this same frame
+            # stays in the line rather than being mapped. Thirty
+            # milliseconds is well inside the time the desktop freeze
+            # takes, so the window is off the live screen before the
+            # selector maps over it.
             set_hushed(self._hushed.is_set())
-            now = time.monotonic()
             dt, st["tick"] = now - st["tick"], now
+            if self._q_answered(now):
+                hide()                    # answered on the desk or the phone
+            if st["card"] is None:
+                nxt = self._q_next(now, hold=st["hushed"])
+                if nxt is not None:
+                    put_up(nxt)
             if st["card"] is not None:
                 if st["deadline"] is not None and (self.hovering()
                                                    or st["hushed"]):
@@ -3383,6 +4043,9 @@ class ConsentCard(HintCard):
             root.update_idletasks()
             if not st["up"]:
                 _no_activate(root)
+                # B+ has no square corner anywhere (2026-10-23): Windows'
+                # own, the one a frameless Tk window can have
+                _round_corners(root, CARD_LINE)
             st["up"] = True
 
         def put_up(card: dict) -> None:
@@ -3463,11 +4126,14 @@ class ConsentCard(HintCard):
             except queue.Empty:
                 pass
             set_hushed(self._hushed.is_set())
-            root.after(30, pump)
 
-        pump()
+        # No root.after(30, pump) chain since 2026-11-10: nothing on this
+        # card moves by itself, so the loop reads the queue before each
+        # update() and RESTS on it in between (_pump_until, IDLE_S). A
+        # card that is not up costs nothing; one that is put on the queue,
+        # a hush and its end, a hover and a drag all wake it at once.
         try:
-            _pump_until(root, self._closing)
+            _pump_until(root, self._closing, tick=pump, rest_on=self._q)
         finally:
             import gc                       # see Splash: same Tcl teardown
             try:
@@ -3779,11 +4445,14 @@ class TourCard(HintCard):
             except queue.Empty:
                 pass
             set_hushed(self._hushed.is_set())
-            root.after(30, pump)
 
-        pump()
+        # No root.after(30, pump) chain since 2026-11-10: nothing on this
+        # card moves by itself, so the loop reads the queue before each
+        # update() and RESTS on it in between (_pump_until, IDLE_S). A
+        # card that is not up costs nothing; one that is put on the queue,
+        # a hush and its end, a hover and a drag all wake it at once.
         try:
-            _pump_until(root, self._closing)
+            _pump_until(root, self._closing, tick=pump, rest_on=self._q)
         finally:
             import gc                       # see Splash: same Tcl teardown
             try:
@@ -3861,19 +4530,37 @@ class NotifyCard(HintCard):
     NEVER `dismissed()`: that is the hint card's "don't show this again"
     and writes `enabled = false` into config.toml. Dismissing a
     notification means "seen", not "never again".
+
+    THE PIN (2026-10-07). The "Screens off" card (awake.py's mode) is not
+    a notification and sits BESIDE the column rather than in it: `pin()` /
+    `unpin()` put it up and take it down, and what is on screen is always
+    `notifications + [pin]` — the pin LAST, which is the bottom of the
+    column and the edge the window is anchored by, so it never moves while
+    notifications come and go. `visible()` / `current()` / `hovering()` /
+    Esc / the dismiss key all keep meaning "notifications" and never see
+    it, so the engine's reminders behave as they always did; nothing can
+    dismiss the pin, a click on its body does nothing, and its one pill
+    calls `on_pin_press`. See notify_card.pinned_card.
     """
 
     CORNERS = ("right", "left", "top-right", "top-left",
                "bottom-right", "bottom-left")
+    # "Esc / click to dismiss" on the top card of a stack only
+    # (`[notify] one_footer`, set by main.py; design-ux.md 12: the same
+    # line on every card of a three-card column). False = every card.
+    one_footer = False
 
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_dismiss=None, on_open=None,
-                 seconds: float = 0.0, anchor: str = "bottom") -> None:
+                 seconds: float = 0.0, anchor: str = "bottom",
+                 on_pin_press=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
         self._on_dismiss = on_dismiss
         self._on_open = on_open
+        self._on_pin_press = on_pin_press
+        self._pin = None          # the pinned card's dict, or None
         # ZERO BY DEFAULT SINCE 2026-09-04: "I want you to remove the time
         # of each card, the card will not disappear". Nothing here was
         # deleted for it — a non-zero `seconds` still runs a clock, still
@@ -3884,6 +4571,9 @@ class NotifyCard(HintCard):
         self.rect = None          # screen rect of the visible column, or None
         self._current = None      # the NEWEST item id on screen
         self._cards: list = []    # the column as drawn, newest first
+        # id -> monotonic second, for a card closed HERE whose dismissal
+        # the engine may not have written yet (see `pressed`)
+        self._gone: dict = {}
         self._state_lock = threading.Lock()
 
     def start(self) -> None:
@@ -3897,8 +4587,50 @@ class NotifyCard(HintCard):
                                         name="notify-card")
         self._thread.start()
         self._alive.wait(timeout=3)
+        with self._state_lock:
+            drawn = self._drawn()
+        if self._pin is not None:         # pinned before the thread existed
+            self._q.put(drawn)
 
     # -- caller's threads --
+
+    def _footers(self, cards: list) -> list:
+        """The footer on the TOP card only (`one_footer`): every card under
+        it footless, the top one never. Applied wherever the column is
+        decided - show() and pressed()'s own redraw - so a dismissed top
+        card hands its footer to the next one at once, and the engine's
+        answer a moment later draws the same picture (no second jump)."""
+        if not self.one_footer:
+            return cards
+        return [dict(c, footless=i > 0) for i, c in enumerate(cards)]
+
+    def _drawn(self) -> list:
+        """What is on the window: the notifications, newest first, then
+        the pin. Caller holds `_state_lock`."""
+        return self._cards + ([self._pin] if self._pin is not None else [])
+
+    def pin(self, card: dict) -> None:
+        """Put the pinned card up at the bottom of the column. Only
+        enqueues — it is called from the screens mode's flip, on the
+        keyboard hook's thread."""
+        with self._state_lock:
+            self._pin = dict(card)
+            drawn = self._drawn()
+        if self._thread is not None and self._enabled:
+            self._q.put(drawn)
+
+    def unpin(self) -> None:
+        """Take the pinned card down; the notifications stay."""
+        with self._state_lock:
+            if self._pin is None:
+                return
+            self._pin = None
+            drawn = self._drawn()
+        if self._thread is not None and self._enabled:
+            self._q.put(drawn or None)
+
+    def pinned(self) -> bool:
+        return self._pin is not None
 
     def show(self, items) -> None:
         """Put the whole unread COLUMN up, newest first.
@@ -3923,6 +4655,19 @@ class NotifyCard(HintCard):
         if isinstance(items, dict):
             items = [items]
         import notify_card as nc
+        with self._state_lock:
+            # A card closed on this column a moment ago is not put back by
+            # a list the engine built before it heard of the close — the
+            # engine answers every press with show(live()), and two quick
+            # closes can cross: the answer to the first still names the
+            # second. GONE_S later the engine is the truth again, so a
+            # dismissal that never landed cannot hide a card for good.
+            now = time.monotonic()
+            self._gone = {k: t for k, t in self._gone.items()
+                          if now - t < NOTIFY_GONE_S}
+            gone = set(self._gone)
+        if gone:
+            items = [i for i in items if i.get("id") not in gone]
         cards = []
         for item in items:
             try:
@@ -3934,20 +4679,29 @@ class NotifyCard(HintCard):
         if not cards:
             self.hide()
             return
+        cards = self._footers(cards)
         with self._state_lock:
             # The NEWEST id: `current()` is what the dashboard and the
             # dismiss key mean by "the one on screen", and the newest is
             # the one at the top of the pile.
             self._current = cards[0]["id"]
             self._cards = cards
-        self._q.put(cards)
+            drawn = self._drawn()
+        self._q.put(drawn)
 
     def hide(self) -> None:
+        """The notifications down. The pin, if there is one, stays."""
         with self._state_lock:
+            had = self._current is not None
             self._current = None
             self._cards = []
-        if self._thread is not None:
+            drawn = self._drawn()
+        if self._thread is None:
+            return
+        if not drawn:
             self._q.put(None)
+        elif had:                  # nothing to take down means no rebuild
+            self._q.put(drawn)
 
     def visible(self) -> bool:
         return self._current is not None
@@ -3996,21 +4750,69 @@ class NotifyCard(HintCard):
         for a missing one here would quietly turn the dismiss key into a
         one-card dismissal.
 
-        The whole column comes down on any press, whichever card was hit.
-        The engine answers with `show(live())` — or `hide()` when nothing
-        is left — so what goes back up is the truth about the store rather
-        than this thread's guess at it.
+        A press that names nobody (Esc, the dismiss key, the Clear-all
+        pill) takes the whole column down. A press on ONE card of several
+        takes only that card off, at once, and leaves the others standing
+        (2026-10-18 — until then every press took the column down and the
+        owner watched all of them blink out and come back). Either way the
+        engine answers with `show(live())` — or `hide()` when nothing is
+        left — so what stays up is the truth about the store rather than
+        this thread's guess at it; `_gone` keeps an answer that crossed a
+        second close from putting that card back.
 
         Neither is HintCard.dismissed() — that writes enabled=false into
         config.toml, and this is "seen", not "never again".
         """
-        if name not in ("dismiss", "open"):
+        import notify_card as nc
+        if name == "button":
+            # The pill on the pinned card, the only thing on it that takes
+            # a click. Not a notification, so nothing is taken down here:
+            # the callback ends the screens mode and the mode's flip
+            # unpins, one road for every way out.
+            if item_id == nc.PIN_ID and self._on_pin_press is not None:
+                try:
+                    self._on_pin_press()
+                except Exception:
+                    _log.info("notify card: the pin's button failed",
+                              exc_info=True)
             return
-        with self._state_lock:
-            was, self._current, self._cards = self._current, None, []
-        if self._thread is not None:
-            self._q.put(None)
+        if name not in ("dismiss", "open") or item_id == nc.PIN_ID:
+            return                 # the pin is never dismissed or opened
         callback = self._on_open if name == "open" else self._on_dismiss
+        defer = False
+        with self._state_lock:
+            if item_id is not None:
+                self._gone[item_id] = time.monotonic()
+            if item_id is None or len(self._cards) <= 1:
+                was, self._current, self._cards = self._current, None, []
+            else:
+                # ONE CARD OF SEVERAL (2026-10-18): only that card leaves,
+                # now, and the rest stay exactly where they are. This used
+                # to take the whole column down and wait for the engine's
+                # show(live()) to put the others back — the owner's "all
+                # the cards vanish for a second and come back without the
+                # one I closed". A card that is not on the column any more
+                # is a second click on one already gone: no report.
+                keep = [c for c in self._cards if c.get("id") != item_id]
+                if len(keep) == len(self._cards):
+                    return
+                # A column cut short ("+N earlier" on its last card) is
+                # NOT redrawn here: the engine's answer, milliseconds
+                # behind, brings the next one up from underneath, and
+                # drawing the column one card short first would make it
+                # jump twice — shrink, then grow back. The picture stays
+                # as it is until that answer replaces it in place.
+                defer = (callback is not None
+                         and int(self._cards[-1].get("more") or 0) > 0)
+                was = self._current
+                self._cards = self._footers(keep)
+                self._current = keep[0]["id"]
+            drawn = self._drawn()
+        if self._thread is not None and not defer:
+            if not drawn:
+                self._q.put(None)
+            elif was is not None:
+                self._q.put(drawn)
         if was is None or callback is None:
             return
         try:
@@ -4029,6 +4831,11 @@ class NotifyCard(HintCard):
         with self._state_lock:
             self._current = None
             self._cards = []
+            drawn = self._drawn()
+        if drawn and self._thread is not None:
+            # The presenter is about to take the window down; the pin
+            # goes straight back up behind it.
+            self._q.put(drawn)
 
     # -- placement --
 
@@ -4037,7 +4844,7 @@ class NotifyCard(HintCard):
         import notify_card as nc
         if cards is None:
             with self._state_lock:
-                cards = list(self._cards)
+                cards = self._drawn()
         return nc.stack_measure(cards, self.scale)
 
     def placed(self, x: int, y: int) -> None:
@@ -4201,7 +5008,12 @@ class NotifyCard(HintCard):
         def put_up(cards: list) -> None:
             st["cards"], st["hover"] = list(cards), None
             st["press"] = None
-            cache.clear()
+            # The text cache is KEPT across columns (2026-10-18): the
+            # cards that stayed are the same strings, and drawing them all
+            # again through DrawTextW is the pause that made a closed card
+            # take the others with it for a moment. hide() still empties it.
+            if len(cache) > 400:
+                cache.clear()
             seconds = float(cards[0].get("seconds") or 0) if cards else 0
             st["deadline"] = ((time.monotonic() + seconds)
                               if seconds > 0 else None)
@@ -4297,6 +5109,11 @@ class NotifyCard(HintCard):
                 # The × of ONE card, named by its own id: everything else
                 # in the column stays unread.
                 self.pressed("dismiss", ident(where[0]))
+            elif code == nc.HTCLIENT and what == nc.CLEAR:
+                # Clear all: no id, which is "every unread one".
+                self.pressed("dismiss", None)
+            elif code == nc.HTCLIENT and what == nc.BUTTON:
+                self.pressed("button", ident(where[0]))
             elif code == nc.HTCAPTION:
                 st["drag"] = (event.x_root - root.winfo_x(),
                               event.y_root - root.winfo_y())
@@ -4413,22 +5230,22 @@ class NotifyCard(HintCard):
             gc.collect()
 
 
-# The fallback card's palette — LAMPLIGHT, spelled out rather than
+# The fallback card's palette — B+ (2026-10-23), spelled out rather than
 # imported: ui.py builds Tk styles at import and this module is imported
 # before any of that exists. skin\ repaints its own copy and never reads
 # these. A key chip is a KEY CAP and not a button: this card is a legend
 # with fifteen keys on it, and fifteen accent chips would be fifteen
 # primary actions competing for one glance. So the chips take ui.KeyCap's
 # own face and the only lit thing on the card is the state dot.
-CARD_BG = "#24201a"
-CARD_LINE = "#3a342a"
-CARD_FG = "#f1ece2"
-CARD_DIM = "#b2a896"
-CARD_FAINT = "#7e7564"
-CARD_KEY_BG = "#29241d"
-CARD_KEY_EDGE = "#4e4737"
-CARD_KEY_FG = "#f1ece2"
-CARD_DOT = {"recording": "#ff5b4e", "locked": "#ff8a7e"}
+CARD_BG = "#1e233e"      # palette.GLASS_FLAT: the glass with nothing behind
+CARD_LINE = "#30365a"
+CARD_FG = "#efedf7"
+CARD_DIM = "#c0c3d8"
+CARD_FAINT = "#70758e"
+CARD_KEY_BG = "#1b2036"
+CARD_KEY_EDGE = "#3a4068"
+CARD_KEY_FG = "#efedf7"
+CARD_DOT = {"recording": "#ff5d6e", "locked": "#ff8d99"}
 
 _HINT_PAD = 14
 _HINT_ROW = 26

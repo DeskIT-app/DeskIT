@@ -835,12 +835,31 @@ class Polisher:
         in front of it, ("local",) behind it (the module docstring); None
         asks every backend in order, as before.
         """
+        limit = (self._cfg.polish.max_wait_s if max_wait_s is None
+                 else max_wait_s)
+        started = time.monotonic()
         backends = (self._backends(text) if kinds is None
                     else self._backends(text, kinds))
         for backend in backends:
+            # One budget for the whole pass, and a cloud backend gets only
+            # cloud_wait_s of it: its work is ~0.35 s and the rest is its
+            # queue (defaults.toml has the measurement). When it runs out,
+            # whatever is left goes to the next backend, if there is one.
+            left = limit - (time.monotonic() - started)
+            if left <= 0:
+                break
+            wait = left
+            cloud = kind_of(backend.name) == "cloud"
+            if cloud:
+                wait = min(left, getattr(self._cfg.polish, "cloud_wait_s",
+                                         left))
             try:
-                candidate = self._within_deadline(backend, text, max_wait_s)
+                candidate = self._within_deadline(backend, text, wait)
             except TimeoutError as e:
+                if cloud and wait < left:
+                    log.info("repair via %s did not answer within %.1f s — "
+                             "not waiting for it", backend.name, wait)
+                    continue
                 # The text was pasted seconds ago and is fine; this only
                 # means it will not be improved. Still worth a warning: a
                 # model that never answers is a model doing nothing but

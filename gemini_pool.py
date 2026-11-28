@@ -1,9 +1,11 @@
 """Shared Gemini plumbing: the REST client, 429 parsing and model rotation.
 
 The free tier counts generate_content requests PER MODEL PER DAY (measured
-2026-08-12: gemini-2.5-flash allows 20). Transcription and translation both
-spend from those same buckets, so they share one rotation policy here
-rather than each growing its own drifting copy.
+2026-08-12: gemini-2.5-flash allows 20). Translation, punctuation, lookup
+and the screen question all spend from those same buckets, so they share
+one rotation policy here rather than each growing its own drifting copy.
+Nothing here carries a recording: the dictation engine that did left on
+2026-11-27, and its inline-size cap with it.
 
 The rotation state (cooldown/strikes dicts) stays on the caller, not in
 this module: each feature keeps its own view of which models are spent, and
@@ -24,6 +26,10 @@ log = logging.getLogger("app")
 # without restarting the app.
 PER_DAY_COOLDOWN_S = 30 * 60
 MAX_COOLDOWN_S = 60 * 60
+# Answers that say "not this model, try another" (rotate's docstring): a
+# retired model (404) does not come back, so it rests for the life of the
+# process in practice; an overloaded one (503) is asked again a minute on.
+PASS_OVER_S = {404: 24 * 60 * 60, 503: 60}
 
 
 def parse_429(e) -> tuple[float, bool, int | None]:
@@ -86,10 +92,21 @@ def rotate(models: list[str], cooldown: dict[str, float],
     turns a hard stop after 20 requests into a much longer runway at no
     cost. Raises RateLimitError only once EVERY model is spent, so callers
     can treat that as "the cloud is done for today" and fall back locally.
+
+    A model Google has RETIRED (404) or that is overloaded right now (503)
+    is passed over the same way — rested, the next one tried. Measured
+    2026-10-03 with a key made that month: gemini-2.5-flash and
+    gemini-2.5-flash-lite answer 404 "no longer available to new users",
+    and with the 404 raised at once a stranger's Translate never reached
+    the two models on the list that worked; gemini-flash-latest answered
+    503 "high demand" on 5 of 16 requests the same hour. When every model
+    was passed over for one of these and none for quota, the last error
+    is what the caller sees, not "out of free-tier quota".
     """
     now = time.monotonic()
     soonest = None
     tried = False
+    passed_over: TranscriptionError | None = None
     for model in models:
         resting = cooldown.get(model, 0.0)
         if resting > now:
@@ -100,6 +117,14 @@ def rotate(models: list[str], cooldown: dict[str, float],
             return attempt(model)
         except APIError as e:
             code = getattr(e, "code", None)
+            if code in PASS_OVER_S:
+                cooldown[model] = time.monotonic() + PASS_OVER_S[code]
+                log.warning("%s answered %s — resting it %.0f min, trying "
+                            "next model", model, code, PASS_OVER_S[code] / 60)
+                passed_over = TranscriptionError(
+                    f"Gemini API error {code} on {model}: "
+                    f"{getattr(e, 'message', e)}")
+                continue
             if code != 429:
                 raise TranscriptionError(
                     f"Gemini API error {code} on {model}: "
@@ -128,6 +153,8 @@ def rotate(models: list[str], cooldown: dict[str, float],
             raise TranscriptionError(
                 f"Gemini {what} failed on {model}: {e}") from e
 
+    if passed_over is not None and soonest is None:
+        raise passed_over
     wait_s = max(0.0, (soonest or 0.0) - time.monotonic())
     raise RateLimitError(
         f"all {len(models)} Gemini models are out of free-tier quota "
@@ -145,11 +172,6 @@ def rotate(models: list[str], cooldown: dict[str, float],
 # from the environment on its own, hid its transport from the chokepoint
 # and weighed 50 MB in the wheelhouse; this is ~100 lines and one row in
 # network.log per call (D12, D19).
-
-#: Google's cap on a request whose parts are inline (base64 in the JSON):
-#: 20 MB in all. 16 kHz mono 16-bit is ~32 KB a second and base64 adds a
-#: third, so a single dictation fits up to roughly seven minutes.
-INLINE_CAP_BYTES = 20 * 1024 * 1024
 
 
 class APIError(Exception):
@@ -171,15 +193,10 @@ def text_part(text: str) -> dict:
 
 
 def blob_part(data: bytes, mime_type: str) -> dict:
-    """An inline part: audio or an image, base64 in the JSON."""
+    """An inline part: an image (ask-the-screen), base64 in the JSON."""
     import base64
     return {"inlineData": {"mimeType": mime_type,
                            "data": base64.b64encode(data).decode("ascii")}}
-
-
-def inline_size(data: bytes) -> int:
-    """What `data` weighs once it is base64 inside the request."""
-    return (len(data) + 2) // 3 * 4
 
 
 def thinking_config(model: str, cache: dict[str, str]) -> dict | None:
@@ -228,7 +245,7 @@ class Client:
     """generateContent and the model catalog, for one purpose and timeout.
 
     `purpose` is the word net.py logs for every call this client makes
-    (transcribe, translate, ask-screen, ...); the secret is always the
+    (translate, punctuate, ask-screen, ...); the secret is always the
     Gemini key by NAME. Construction touches nothing; the constructors
     that build one have already passed the consent gate and checked the
     key exists (apikey.find_api_key)."""

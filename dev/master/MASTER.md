@@ -240,8 +240,10 @@ the passage of time. His words, 2026-09-23: *"תוסיף לי כזה צ'קבוק
 and hands it `api.Api` — six calls and no others (`rows`, `tick`,
 `preview`, `take`, `open_folder`, `ping`).
 
-- **The shell is the product's**: `webdesk.py` from the `web-ui` spike,
-  kept at `dev\master\webdesk.py` until that branch puts it at the root.
+- **The shell is the product's**: `webdesk.py` at the root, the file the
+  desk itself runs in (the copy at `dev\master\webdesk.py` went on
+  2026-10-24, so the master carries every flag the desk does —
+  `msOneAuthWAM` included).
   It brings the registry pre-check (pywebview falls back to MSHTML
   *silently* and writes HKCU on the way), the virtual host instead of a
   server or `file://`, our own CoreWebView2 environment with crash
@@ -343,7 +345,7 @@ in `defaults.toml`, where the developer edits them), and
 **Stays (what he does not see, and must not change):** the portable data
 layout (`DATA_DIR == APP_DIR` in the checkout), `OWNER_DATA` — the checkout
 keeps every transcript line and every clip because they are training data —
-the `.dev` mutex, pipe and AppUserModelID, port 8757, autostart refusing in a
+the `.dev` mutex, pipe and AppUserModelID, autostart refusing in a
 checkout, and updates that look but never install. Those are what make it safe
 to run Dev beside the released copy; they are not surfaces.
 

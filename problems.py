@@ -280,6 +280,34 @@ def _consents() -> list[dict]:
 
 DIAGNOSE_LINES = 50
 
+#: Where a path ends: a separator, a quote, a space or a bracket.
+_PATH_END = r"(?=[\\/\s\"'`:;,)\]}>]|$)"
+#: Any other `X:\Users\<name>` — a short 8.3 name (`ABCDEF~1`) in a Temp
+#: path, another profile. The folders every PC has stay as they are.
+_PROFILE = re.compile(r"(?i)\b([a-z]:[\\/]+users[\\/]+)"
+                      r"(?!(?:public|default|default user|all users)" + _PATH_END + ")"
+                      r"([^\\/\s\"'`:*?<>|]+)" + _PATH_END)
+
+
+def no_profile(text: str) -> str:
+    """`text` with the Windows profile folder said as `%USERPROFILE%`,
+    and the name in any other `X:\\Users\\<name>` taken out, so a pasted
+    diagnostics block does not carry the Windows user name (2026-11-09
+    audit, security-local 10: 5 of the last 2,860 lines of the owner's
+    app.log held his profile path, and an installed copy's Setup log
+    holds it on most lines). Every separator spelling of the profile is
+    matched — backslash, doubled backslash (a repr), forward slash — and
+    case is ignored, as Windows ignores it. Paths, not prose: the bare
+    name alone in a sentence is not touched."""
+    if not text:
+        return text
+    home = os.path.expanduser("~")
+    parts = [p for p in re.split(r"[\\/]+", home) if p]
+    if len(parts) >= 2:
+        text = re.sub(r"(?i)" + r"[\\/]+".join(re.escape(p) for p in parts)
+                      + _PATH_END, "%USERPROFILE%", text)
+    return _PROFILE.sub(r"\1<user>", text)
+
 #: A Hebrew letter or point (the block, and the presentation forms): an
 #: app.log line holding one quotes words, and diagnose() leaves it out.
 HEBREW = re.compile("[֐-׿יִ-ﭏ]")
@@ -343,7 +371,7 @@ def diagnose(cfg=None) -> str:
             lines.extend(tail)
     except Exception:                     # noqa: BLE001
         pass
-    return redact.redact("\n".join(lines), stored=False)
+    return redact.redact(no_profile("\n".join(lines)), stored=False)
 
 
 def env(cfg=None) -> dict:
@@ -1304,8 +1332,9 @@ def sync_outbox(store, *, app_dir) -> int:
     """Read the outbox's verdicts back into the rows: a QUEUED report
     whose payload is gone was sent (sb.py unlinks it, and the app's
     process may have done that while this one was not looking); one
-    with a .failed beside it failed, with the reason the file holds.
-    Returns how many rows changed. Never raises."""
+    with a .failed beside it failed, with the reason the file holds; one
+    moved aside for its account (sb._reports_wait) is still waiting, and
+    says so. Returns how many rows changed. Never raises."""
     changed = 0
     box = outbox_dir(app_dir)
     for item in store.items():
@@ -1319,7 +1348,8 @@ def sync_outbox(store, *, app_dir) -> int:
                 if mark_failed(store, rid, why):
                     changed += 1
             elif not (box / f"{rid}.json").exists():
-                if mark_sent(store, rid):
+                waiting = any(box.glob(f"{paths.OUTBOX_WAITING}/*/{rid}.json"))
+                if not waiting and mark_sent(store, rid):
                     changed += 1
         except OSError:
             continue

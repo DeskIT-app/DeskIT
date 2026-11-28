@@ -90,7 +90,7 @@ The owner's words were "only the top bar moves it, and everything else I
 can just select and copy whatever I choose from it", and that is how every
 other window on his screen behaves.
 
-So there is a bar: 30 px, a ground a quarter of the way from BG to EDGE,
+So there is a bar: 30 px, the box's sky darkened under BAR_BG,
 a hairline under it, and the buttons in it. A press on the bar takes hold
 of the box. A press anywhere below it takes TEXT instead — see the next
 section — and the two can never turn into one another, because _zone_at()
@@ -424,7 +424,7 @@ DT_END_ELLIPSIS = 0x00008000
 DT_RTLREADING = 0x00020000
 TRANSPARENT, LWA_ALPHA = 1, 0x02
 DEFAULT_CHARSET, CLEARTYPE_QUALITY = 1, 5
-FW_NORMAL, FW_SEMIBOLD = 400, 600
+FW_NORMAL, FW_MEDIUM, FW_SEMIBOLD = 400, 500, 600
 PS_SOLID, NULL_BRUSH, NULL_PEN = 0, 5, 8
 TME_LEAVE = 0x0002
 MONITOR_DEFAULTTONEAREST = 2
@@ -696,12 +696,23 @@ for _fn, _args, _res in [
     getattr(user32, _fn).restype = _res
 
 for _fn, _args, _res in [
+    ("CreateCompatibleDC", [w.HDC], w.HDC),
+    ("DeleteDC", [w.HDC], w.BOOL),
+    ("CreateDIBSection", [w.HDC, ctypes.c_void_p, w.UINT,
+                          ctypes.POINTER(ctypes.c_void_p), w.HANDLE, w.DWORD],
+     w.HBITMAP),
+    ("StretchBlt", [w.HDC] + [ctypes.c_int] * 4 + [w.HDC] + [ctypes.c_int] * 4
+     + [w.DWORD], w.BOOL),
+    ("SetStretchBltMode", [w.HDC, ctypes.c_int], ctypes.c_int),
+    ("SetBrushOrgEx", [w.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_void_p],
+     w.BOOL),
     ("CreateFontW", [ctypes.c_int] * 8 + [w.DWORD] * 5 + [w.LPCWSTR],
      w.HFONT),
     ("CreateSolidBrush", [w.COLORREF], w.HBRUSH),
     ("CreatePen", [ctypes.c_int, ctypes.c_int, w.COLORREF], w.HANDLE),
     ("CreateRoundRectRgn", [ctypes.c_int] * 6, w.HANDLE),
     ("RoundRect", [w.HDC] + [ctypes.c_int] * 6, w.BOOL),
+    ("Ellipse", [w.HDC] + [ctypes.c_int] * 4, w.BOOL),
     ("MoveToEx", [w.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_void_p],
      w.BOOL),
     ("LineTo", [w.HDC, ctypes.c_int, ctypes.c_int], w.BOOL),
@@ -901,49 +912,81 @@ def _rgb(r: int, g: int, b: int) -> int:
     return r | (g << 8) | (b << 16)
 
 
-# LAMPLIGHT, as COLORREFs, so the app looks like one app. The names are
-# skin\palette.py's; this box is raw Win32 and cannot import ui.py, so the
-# values are spelled out and the ratios are given beside them.
-BG = _rgb(0x14, 0x11, 0x0C)         # palette.BG        #14110c  L* 5.2
-FG = _rgb(0xF1, 0xEC, 0xE2)         # palette.FG        15.99:1 on BG
-DIM = _rgb(0xB2, 0xA8, 0x96)        # palette.DIM        8.01:1
+# B+, as COLORREFs, so the app looks like one app (2026-10-24; LAMPLIGHT
+# before). The names are skin\palette.py's; this box is raw Win32 and
+# cannot import ui.py, so the values are spelled out and the ratios are
+# given beside them. GDI cannot draw glass, so the box is B+'s glass with
+# nothing behind it — the opaque face a Tk window gets (GLASS_FLAT) — with
+# Windows' own round corner and a rim-coloured border.
+BG = _rgb(0x12, 0x15, 0x27)         # palette.PANE: under the sky (below), and where it cannot be drawn
+FG = _rgb(0xEF, 0xED, 0xF7)         # palette.FG        13.0:1 on BG
+DIM = _rgb(0xC0, 0xC3, 0xD8)        # palette.DIM        8.6:1
+MUTED = _rgb(0xA4, 0xA9, 0xC2)      # palette.MUTED      6.5:1 — the bar's caption, the grip
 # The one lit thing on this surface: the term you looked up, and the word
-# the bar says after a copy. ACCENT is the fill a pressed button takes;
-# TERM is the same colour at TEXT weight, 10.66:1 on BG, because the
-# accent itself is a fill colour and reads thin as a headline.
-ACCENT = _rgb(0xE3, 0xA6, 0x3C)     # palette.ACCENT     8.77:1 on BG
-ACCENT_ON = _rgb(0x1A, 0x14, 0x09)  # palette.ACCENT_ON  8.52:1 ON the fill
-TERM = _rgb(0xF0, 0xBA, 0x5C)       # palette.ACCENT_TEXT
-# The border, the hairline under the headline, and the close button's
-# hover fill: the ladder's own steps rather than shades picked to look
-# right next to whatever they happened to sit beside. EDGE is palette.LINE
-# (L* 22.0) and HOVER is palette.CARD (L* 12.5) — the same +7 L* lift over
-# the ground the old pair had.
-EDGE = _rgb(0x3A, 0x34, 0x2A)
-HOVER = _rgb(0x24, 0x20, 0x1A)
-# The title bar's ground: palette.PANE, L* 8.5. It has to be visible as a
-# different surface and still be quieter than HOVER, or a button under the
-# cursor would stop lighting up the moment it moved into the bar.
-BAR_BG = _rgb(0x1C, 0x18, 0x13)
-# The band behind a selected line: palette.ACCENT_SOFT, the accent taken
-# down until it sits UNDER text rather than in front of it. The system's
-# own COLOR_HIGHLIGHT is a bright blue slab that would be the loudest
-# thing in a dark box, and a selection is not an announcement — it is a
-# note of what you are about to copy. It costs contrast, which is why a
-# selected line is also lifted to FG: DIM on this ground computes to
-# 6.21:1 against the 8.01:1 it had on BG, while FG on it is 12.39:1 —
-# better than the sense line had unselected. So the band never makes
-# anything harder to read, and the lift is the same sentence the band is
-# saying twice.
-SEL = _rgb(0x33, 0x27, 0x11)
-# Pressed. The app's one "this is destructive" colour, and the same
-# convention every close button on Windows follows. Deeper than the
-# palette's danger red because this one is a FILL with the ✕ drawn over
-# it: FG on it is 3.61:1, which is what a graphic needs. DANGER_TEXT is
-# the same message at text weight, 7.56:1 on BG, for the one line that
-# says a copy did not work.
-PRESSED = _rgb(0xD9, 0x48, 0x3C)
-DANGER_TEXT = _rgb(0xF1, 0x86, 0x7A)  # palette.RED
+# the bar says after a copy. ACCENT is the iris a held copy button takes;
+# TERM is the iris at TEXT weight (palette.ACCENT_TEXT), 8.3:1 on BG.
+ACCENT = _rgb(0xA5, 0x97, 0xFF)     # palette.ACCENT     6.0:1 on BG
+ACCENT_ON = _rgb(0x14, 0x0F, 0x33)  # palette.ACCENT_ON  7.4:1 ON the fill
+TERM = _rgb(0xC2, 0xB9, 0xFF)       # palette.ACCENT_TEXT
+# The border and the hairline under the headline: the rim's colour where
+# the light is (white .26 composited on the face, taken down a step so a
+# one-pixel line is not the loudest thing in the box); HOVER is the round
+# control's disc (bplus.css `.acts .x`, white .10 on the face).
+EDGE = _rgb(0x46, 0x4B, 0x6B)
+HOVER = _rgb(0x35, 0x39, 0x51)
+# The title bar's ground: the face's own foot (palette.GLASS_BOT) — a
+# different surface the hand knows to take hold of, still quieter than
+# HOVER so a button under the cursor lights up in it.
+BAR_BG = _rgb(0x19, 0x1D, 0x33)
+# The band behind a selected line: palette.ACCENT_SOFT, the iris taken
+# down until it sits UNDER text rather than in front of it, and a selected
+# line is lifted to FG on it (11.5:1).
+SEL = _rgb(0x39, 0x39, 0x61)
+# Pressed close. The app's one "this is destructive" colour as a FILL with
+# the X over it; DANGER_TEXT is the same message at text weight
+# (palette.RED, 6.4:1 on BG), for the one line that says a copy did not
+# work.
+PRESSED = _rgb(0xE0, 0x4A, 0x5C)
+DANGER_TEXT = _rgb(0xFF, 0x6E, 0x7E)  # palette.RED
+
+# THE SKY. The owner's ask of 2026-10-24, on seeing the desk's night behind
+# the installer and the wizard: "maybe put those skies there too". The box
+# is raw GDI and cannot blend a layer, so the sky is ONE picture, made
+# once (look.sky, the desk's fields of light on PANE) at _SKY_SIZE and
+# stretched to whatever size the box is with HALFTONE — a smooth picture
+# scales without a seam, and a resize drag pays a StretchBlt, never a new
+# picture. It is made on the box's thread right after its window, before
+# anything is shown, so no first answer waits for it (at 960 x 720 it was
+# 135-340 ms, measured 2026-10-24; at this size 44). The bar is the same sky darkened, through AlphaBlend (msimg32,
+# its own handle). Text is drawn transparent over it, as it always was.
+_SKY_SIZE = (480, 360)          # 44 ms to make; it is smooth, so it stretches clean
+SRCCOPY = 0x00CC0020
+HALFTONE = 4
+msimg32 = ctypes.WinDLL("msimg32", use_last_error=True)
+
+
+class BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                ("SourceConstantAlpha", ctypes.c_ubyte),
+                ("AlphaFormat", ctypes.c_ubyte)]
+
+
+msimg32.AlphaBlend.argtypes = ([w.HDC] + [ctypes.c_int] * 4 + [w.HDC]
+                               + [ctypes.c_int] * 4 + [BLENDFUNCTION])
+msimg32.AlphaBlend.restype = w.BOOL
+BAR_SHADE = 120                    # how much of BAR_BG lies over the sky in the bar
+
+
+def _sky_bits() -> tuple[bytes, int, int] | None:
+    """The sky as top-down BGRA bytes at _SKY_SIZE, or None without Pillow."""
+    try:
+        import look
+        picture = look.sky(_SKY_SIZE, base="#121527").convert("RGBA")
+    except Exception:                                      # noqa: BLE001
+        log.debug("the lookup box draws without its sky", exc_info=True)
+        return None
+    return picture.tobytes("raw", "BGRA"), picture.width, picture.height
+
 
 # Brushes and pens for the fixed colours live for the life of the process
 # rather than per Popup. They are immutable, they are shared with the
@@ -1325,23 +1368,31 @@ class Popup:
     # bigger and semibold because it is the answer; the senses are smaller
     # and dimmer because they are the footnotes to it.
     _FACE = {
-        "title": (3, FW_SEMIBOLD, TERM),
+        "title": (3, FW_MEDIUM, TERM),
         "body": (0, FW_NORMAL, FG),
         "wait": (0, FW_NORMAL, DIM),
         "sense": (-3, FW_NORMAL, DIM),
         # The bar's label. Smaller than the smallest thing in the answer,
         # because it is a caption on the box and must never be read
         # before the box's contents are.
-        "bar": (-5, FW_NORMAL, DIM),
+        "bar": (-5, FW_NORMAL, MUTED),
     }
 
     def __init__(self, *, max_width: int = 460, max_height: int = 520,
-                 font: str = "Segoe UI", size_px: int = 19, pad: int = 16,
+                 font: str = "Rubik", size_px: int = 19, pad: int = 16,
                  margin: int = 24, alpha: int = 255, corner: int = 10,
                  gap: int = 18, min_font_px: int = _FONT_FLOOR) -> None:
         self.max_width = max(160, int(max_width))
         self.max_height = max(64, int(max_height))
         self.font_name, self.size_px = font, int(size_px)
+        # B+ draws in Rubik, and a face GDI has not been handed is Arial
+        # without a word (fonts.py, AGENTS.md): hand it over first. The
+        # app has done it already at ui.py's import; this is for the CLI.
+        try:
+            import fonts as _fonts
+            _fonts.load()
+        except Exception:                                  # noqa: BLE001
+            pass
         # The auto-fit floor. Nothing below this is reading any more; see
         # _FONT_FLOOR above for where the line comes from.
         self.min_font_px = max(9, int(min_font_px))
@@ -1360,6 +1411,8 @@ class Popup:
 
         self._hwnd: int | None = None
         self._fonts: dict[tuple[str, int], int] = {}
+        self._sky = None                 # (memory DC, bitmap, old bitmap, w, h), its thread's
+        self._shade = None               # (memory DC, 1x1 bitmap, old) for the bar
         # Chunk-width memo for ONE auto-fit descent at a time; see
         # _run_width. None whenever a layout is not running.
         self._wcache: dict[tuple[int, str], int] | None = None
@@ -1720,6 +1773,7 @@ class Popup:
                                           max(0, min(255, self.alpha)),
                                           LWA_ALPHA)
         self._rounded_by_dwm = self._ask_dwm_to_round(self._hwnd)
+        self._sky_ready = _sky_bits()          # the sky's pixels, before any answer
 
     def _ask_dwm_to_round(self, hwnd: int) -> bool:
         """Rounded corners and a 1 px border, drawn by the compositor.
@@ -1869,6 +1923,12 @@ class Popup:
                 for handle in self._fonts.values():
                     gdi32.DeleteObject(handle)
                 self._fonts.clear()
+            for held in (self._sky, self._shade):
+                if held:
+                    gdi32.SelectObject(held[0], held[2])
+                    gdi32.DeleteObject(held[1])
+                    gdi32.DeleteDC(held[0])
+            self._sky = self._shade = None
         except Exception:
             log.exception("lookup popup teardown")
         finally:
@@ -3747,7 +3807,8 @@ class Popup:
         try:
             r = w.RECT()
             user32.GetClientRect(hwnd, ctypes.byref(r))
-            user32.FillRect(hdc, ctypes.byref(r), _brush(BG))
+            if not self._paint_sky(hdc, r):
+                user32.FillRect(hdc, ctypes.byref(r), _brush(BG))
             if not self._rounded_by_dwm:
                 # Only when the compositor is not drawing one for us: its
                 # border sits outside the client area, one drawn here sits
@@ -3764,6 +3825,70 @@ class Popup:
                 user32.FillRect(hdc, ctypes.byref(lay.rule), _brush(EDGE))
         finally:
             user32.EndPaint(hwnd, ctypes.byref(ps))
+
+    def _paint_sky(self, hdc: int, r: w.RECT) -> bool:
+        """The sky stretched over the client area; False when it cannot be
+        made (no Pillow), and the caller fills BG instead."""
+        if self._sky is None:
+            bits = getattr(self, "_sky_ready", None) or _sky_bits()
+            self._sky_ready = None
+            if bits is None:
+                self._sky = False
+            else:
+                data, sw, sh = bits
+                info = (ctypes.c_uint32 * 10)(40, sw, (-sh) & 0xFFFFFFFF, 1 | (32 << 16), 0,
+                                              0, 0, 0, 0, 0)
+                mem = gdi32.CreateCompatibleDC(hdc)
+                ptr = ctypes.c_void_p()
+                bmp = gdi32.CreateDIBSection(mem, ctypes.byref(info), 0, ctypes.byref(ptr),
+                                             None, 0)
+                if not mem or not bmp or not ptr.value:
+                    if bmp:
+                        gdi32.DeleteObject(bmp)
+                    if mem:
+                        gdi32.DeleteDC(mem)
+                    self._sky = False
+                else:
+                    ctypes.memmove(ptr.value, data, len(data))
+                    old = gdi32.SelectObject(mem, bmp)
+                    self._sky = (mem, bmp, old, sw, sh)
+        if not self._sky:
+            return False
+        mem, _bmp, _old, sw, sh = self._sky
+        gdi32.SetStretchBltMode(hdc, HALFTONE)
+        gdi32.SetBrushOrgEx(hdc, 0, 0, None)
+        return bool(gdi32.StretchBlt(hdc, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                                     mem, 0, 0, sw, sh, SRCCOPY))
+
+    def _shade_bar(self, hdc: int, bar: w.RECT) -> bool:
+        """The bar: BAR_BG laid over the sky at BAR_SHADE, so it reads as
+        the box's handle and the sky still shows through it."""
+        if not self._sky:
+            return False
+        if self._shade is None:
+            info = (ctypes.c_uint32 * 10)(40, 1, (-1) & 0xFFFFFFFF, 1 | (32 << 16), 0,
+                                          0, 0, 0, 0, 0)
+            mem = gdi32.CreateCompatibleDC(hdc)
+            ptr = ctypes.c_void_p()
+            bmp = gdi32.CreateDIBSection(mem, ctypes.byref(info), 0, ctypes.byref(ptr),
+                                         None, 0)
+            if not mem or not bmp or not ptr.value:
+                if bmp:
+                    gdi32.DeleteObject(bmp)
+                if mem:
+                    gdi32.DeleteDC(mem)
+                self._shade = False
+                return False
+            r_, g_, b_ = BAR_BG & 0xFF, (BAR_BG >> 8) & 0xFF, (BAR_BG >> 16) & 0xFF
+            ctypes.memmove(ptr.value, bytes((b_, g_, r_, 255)), 4)
+            old = gdi32.SelectObject(mem, bmp)
+            self._shade = (mem, bmp, old)
+        if not self._shade:
+            return False
+        blend = BLENDFUNCTION(0, 0, BAR_SHADE, 0)
+        return bool(msimg32.AlphaBlend(hdc, bar.left, bar.top, bar.right - bar.left,
+                                       bar.bottom - bar.top, self._shade[0], 0, 0, 1, 1,
+                                       blend))
 
     def _paint_body(self, hdc: int, lay: _Layout) -> None:
         """Every line, in the rectangle _layout() measured for it.
@@ -3813,7 +3938,7 @@ class Popup:
         which corner was live depended on the answer's language and the
         same grab grew one box and did nothing to the next.
         """
-        old_pen = gdi32.SelectObject(hdc, _pen(DIM))
+        old_pen = gdi32.SelectObject(hdc, _pen(MUTED))
         try:
             for b in (lay.resizer_r, lay.resizer_l):
                 for k in range(3):
@@ -3919,24 +4044,26 @@ class Popup:
         it, the buttons, and one line of caption.
 
         Quiet on purpose. This is a 300 px box and not an application
-        window, so the bar is BG a quarter of the way to EDGE — enough
-        that the eye reads a separate surface and knows where to take
+        window, so the bar is the box's sky darkened under BAR_BG at
+        BAR_SHADE (B+, 2026-10-24) — enough that the eye reads a separate
+        surface and knows where to take
         hold, not so much that it competes with the answer three
         millimetres below it. The hairline is the same EDGE the headline
         separator uses, which is the box saying "a rule means a division"
         in one voice.
 
-        The label goes DIM, and smaller than the smallest line of the
+        The label goes MUTED, and smaller than the smallest line of the
         answer. While a flash is up it is replaced by what the copy
         button just did, in the colour that says which: ACCENT for a copy
         that landed, the app's red for a clipboard that would not open.
         """
-        user32.FillRect(hdc, ctypes.byref(lay.bar), _brush(BAR_BG))
+        if not self._shade_bar(hdc, lay.bar):
+            user32.FillRect(hdc, ctypes.byref(lay.bar), _brush(BAR_BG))
         line = w.RECT(lay.bar.left, lay.bar.bottom - 1, lay.bar.right,
                       lay.bar.bottom)
         user32.FillRect(hdc, ctypes.byref(line), _brush(EDGE))
 
-        text, colour = lay.label, DIM
+        text, colour = lay.label, MUTED
         if self._flash is not None:
             text, colour = self._flash_words(lay.rtl)
         if text:
@@ -3968,15 +4095,15 @@ class Popup:
         docstring), and this is the app talking, so it says it in the
         language the answer is in."""
         if self._flash == "copied":
-            return ("הועתק" if rtl else "copied"), ACCENT
+            return ("הועתק" if rtl else "copied"), TERM
         return ("הלוח תפוס" if rtl else "clipboard busy"), DANGER_TEXT
 
     def _chip(self, hdc: int, b: w.RECT, fill: int) -> None:
         """The rounded slab under a button that the mouse is on."""
         old_pen = gdi32.SelectObject(hdc, gdi32.GetStockObject(NULL_PEN))
         old_brush = gdi32.SelectObject(hdc, _brush(fill))
-        gdi32.RoundRect(hdc, b.left, b.top, b.right + 1, b.bottom + 1,
-                        7, 7)
+        # B+'s round control (bplus.css `.acts .x`): a disc, not a slab
+        gdi32.Ellipse(hdc, b.left - 2, b.top - 2, b.right + 3, b.bottom + 3)
         gdi32.SelectObject(hdc, old_brush)
         gdi32.SelectObject(hdc, old_pen)
 

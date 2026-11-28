@@ -86,6 +86,16 @@ ENGINE = 1
 
 STORE_NAME = "review.json"
 
+# Seconds of unbroken quiet before a reading STARTS (Engine grace_s, passed
+# by main.py). Without it the reading began within one 0.2 s poll of the
+# paste, and its first decode (beam 8, whole clip) is p50 1.8 s, max 6.5 s
+# on a 30-60 s clip — a short phrase released inside it waits for it
+# (2026-11-09 audit, dictation-speed F7). Counted 2026-11-10 off app.log:
+# of 416 pastes followed by a press, the next press came within 2 s of the
+# "pasted" line 26 times, within 3 s 41 times, within 5 s 52 times; 3 s
+# holds the reading back for 41 of those 52, and costs the card 3 s.
+GRACE_S = 3.0
+
 # A proposal touches at most this many words on either side. Beyond it a
 # change is a different sentence, not a misheard word — vocab.py draws the
 # same line for what a correction may teach.
@@ -106,6 +116,26 @@ WHY_REPAIR = "מודל התיקון המקומי מציע"
 
 PENDING, ACCEPTED, REJECTED = "pending", "accepted", "rejected"
 VERDICTS = (ACCEPTED, REJECTED)
+
+# Every family a change can carry: vocab.family's two (validate, and a
+# replacement from the local repair), the dropped tail (tail_drop) and the
+# local repair's own drop (changes_from_repair). What [review]
+# card_families may name; config.py spells the same four out.
+FAMILIES = ("term", "context", "tail", "repair")
+
+
+def carded(suggestion: dict, families) -> bool:
+    """Does this proposal go up as a card beside the dot, or only to the
+    pile on Home and Corrections? ([review] card_families, 2026-11-27.)
+
+    A card when ANY of its changes is of a family named there: the card
+    shows the whole proposal, and one strong change in it is reason
+    enough to ask. A change with no family is "context", as
+    Store.summary counts it. The rest wait in the pile exactly as a card
+    left to run out does, and are answered there the same way."""
+    want = {str(f).strip().lower() for f in families or ()}
+    return any(str(c.get("family") or "context") in want
+               for c in suggestion.get("changes") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -960,6 +990,22 @@ class Store:
             self._save(data)
 
 
+def still_pending(path, sid: str) -> bool:
+    """Is proposal `sid` still a question? What the card asks before it
+    shows a proposal that waited its turn, and once a second about the
+    one on screen: the desk and the phone answer straight into this
+    file, from another process or another thread, and tell nobody.
+
+    A Store of its own on purpose. The card's loop is where a click has
+    to feel immediate, and the engine's store holds its lock across the
+    lock file's wait (up to five seconds when another process has it);
+    a read needs neither. False ONLY for a proposal that is there and
+    answered: one that is not in the file, or a file that would not
+    read, is not an answer."""
+    item = Store(path).get(str(sid))
+    return item is None or item.get("status", PENDING) == PENDING
+
+
 def suggestion_from(item, result: dict, *, hwnd: int = 0) -> dict:
     """The store's record of one reading with changes in it."""
     meta = item.meta
@@ -993,7 +1039,8 @@ class Engine:
 
     def __init__(self, cfg, transcriber, vocab, recent, store: Store, *,
                  model_lock, quiet, app_dir: Path, on_suggest=None,
-                 on_accept=None, reader=None, corpus=None, repair=None):
+                 on_accept=None, reader=None, corpus=None, repair=None,
+                 grace_s: float = 0.0):
         import study as study_mod
 
         self._cfg = cfg
@@ -1004,6 +1051,9 @@ class Engine:
         self.store = store
         self._model_lock = model_lock
         self._quiet = quiet
+        # How long quiet must hold before a reading starts (GRACE_S from
+        # the app; 0, the old way, for a caller that drives _read itself)
+        self._grace_s = max(0.0, float(grace_s))
         self._on_suggest = on_suggest
         self._on_accept = on_accept
         # The local context pass behind the paste (read_one's `repair`);
@@ -1084,16 +1134,28 @@ class Engine:
         return self._spent["llm"] < self._rcfg.llm_per_day
 
     def _wait_quiet(self, limit_s: float = 90.0) -> None:
-        """Give a dictation in flight the GPU first. Bounded: the lock
-        protects correctness, this only protects latency."""
+        """Give a dictation in flight the GPU first — and, before a
+        reading STARTS, the moment after one (`grace_s`): quiet must have
+        held that long without a break, so a press inside it starts the
+        count again. Bounded: the lock protects correctness, this only
+        protects latency. The checks between the reading's decodes
+        (read_one's `pause`) are the same quiet as ever, with no grace."""
         deadline = time.monotonic() + limit_s
+        since = None
         while not self._stop.is_set() and time.monotonic() < deadline:
             try:
-                if self._quiet():
-                    return
+                quiet = self._quiet()
             except Exception:             # noqa: BLE001
                 return
-            time.sleep(0.2)
+            now = time.monotonic()
+            if not quiet:
+                since = None
+            else:
+                since = now if since is None else since
+                if now - since >= self._grace_s:
+                    return
+            time.sleep(0.2 if not quiet else
+                       max(0.0, min(0.2, since + self._grace_s - now)))
 
     # No "the sentences before this one" for the model, deliberately: the
     # first live card (2026-09-02) flipped a correct word because the
@@ -1160,6 +1222,19 @@ class Engine:
         log.info("second reading of %s proposes %d change(s)",
                  item.wav_path.name, len(suggestion["changes"]))
         if card and self._on_suggest is not None:
+            # Only the strong family pops up ([review] card_families):
+            # the rest are in the pile already (store.add above), as a
+            # card he let run out would be. Family names only (D8).
+            families = getattr(self._rcfg, "card_families", FAMILIES)
+            if not carded(suggestion, families):
+                # the family NAMES, worked out before the call, so the log
+                # line is handed names and never the changes themselves
+                # (test_app_log_never_quotes_text reads every log call)
+                kinds = ", ".join(sorted({str(c.get("family") or "context")
+                                          for c in suggestion["changes"]}))
+                log.info("second reading of %s: in the pile, no card (%s)",
+                         item.wav_path.name, kinds)
+                return
             try:
                 self._on_suggest(suggestion)
                 self.store.mark_shown(suggestion["id"])
@@ -1327,11 +1402,11 @@ def review_all(cfg, app_dir: Path, pause_s: float = 4.0) -> int:
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=getattr(cfg.vocab,
                                                   "hebrew_after_hits", 3))
-    from transcribers import local_kwargs
+    from transcribers import configure, local_kwargs
     from transcribers.local_whisper import LocalWhisperTranscriber
     print(f"{len(labelled)} labelled clip(s). Loading the models...")
-    transcriber = LocalWhisperTranscriber(
-        **local_kwargs(cfg, v.hotwords if cfg.vocab.enabled else None))
+    transcriber = configure(LocalWhisperTranscriber(
+        **local_kwargs(cfg, v.hotwords if cfg.vocab.enabled else None)), cfg)
     reader = Reader(cfg, local=bool(getattr(cfg.review, "local_model",
                                             False)))
 

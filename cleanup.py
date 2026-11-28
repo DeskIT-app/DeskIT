@@ -1,10 +1,10 @@
 """Light local cleanup for raw Whisper output.
 
-Gemini transcribes AND cleans in one call (its system prompt removes
-fillers, resolves self-corrections, writes digits). Whisper only
-transcribes, so switching to the local backend would otherwise regress
-output quality on real dictation — which is full of "אה", "אמ" and
-restarted sentences.
+The Gemini engine this app had until 2026-11-27 transcribed AND cleaned
+in one call (its system prompt removed fillers, resolved
+self-corrections, wrote digits). Whisper only transcribes, so without
+this the local output would read rawer on real dictation — which is full
+of "אה", "אמ" and restarted sentences.
 
 This is deliberately CONSERVATIVE. It only removes things that are not
 words, and only collapses repetitions that are exact. Anything ambiguous
@@ -248,6 +248,21 @@ def collapse_repeats(text: str, max_phrase: int = 4) -> str:
     return text
 
 
+# The Unicode Bidi_Control characters: ALM, LRM, RLM, the embeddings and
+# overrides (LRE..RLO, PDF) and the isolates (LRI..PDI). Nobody can SAY one,
+# so in a transcript each is the decoder's token and never the person's
+# word — and an invisible one, pasted into a text field, quietly flips how
+# the line around it is laid out. Seen 2026-10-03 on the Store copy: the
+# decoder's word was U+202B (RIGHT-TO-LEFT EMBEDDING) + "שפצי"; the repair
+# happened to drop it, and with the repair off it would have been pasted.
+BIDI_CONTROLS = re.compile("[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+
+
+def strip_bidi_controls(text: str) -> str:
+    """The text without a single Bidi_Control character in it."""
+    return BIDI_CONTROLS.sub("", text) if text else text
+
+
 def tidy_spacing(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"\s+([,.!?:;])", r"\1", text)
@@ -260,6 +275,7 @@ def clean(text: str, fillers: tuple[str, ...] = DEFAULT_FILLERS,
     """Full pass. Returns "" unchanged for empty input."""
     if not text or not text.strip():
         return ""
+    text = strip_bidi_controls(text)
     out = collapse_char_runs(text)   # before fillers: 'אהההה…' -> 'אהה'
     out = strip_fillers(out, fillers)
     if collapse:

@@ -153,18 +153,15 @@ from size and from the accent, never from a Medium that does not exist.
 The dashboard can start *and* stop the app, so it can replace both Desktop
 shortcuts on its own; autostart is a separate shortcut in the Startup
 folder and is unaffected either way. Its icon is `icon.ico` — run
-`make_icon.py` (needs Pillow) to regenerate it. **The mark is a dalet
-drawn as a desk**: a tabletop with one leg hanging from its right end,
-the top's edge just past the leg, and the lamp — the same gold dot the
-status dot is — sitting above the left of the top, with two light arcs to
-its right. It is the app in one letter: a desk with a lamp on it, and the
-lamp is the part that is lit. There are **two cuts** of that one drawing
-in the file, because 16 px cannot hold what 256 px can: at 48 px and up
-the lamp keeps its glow and the two arcs; below 48 both go, and what is
-left is the desk and the dot. The whole thing is solved on the design's
-own 64-unit grid, drawn at 4× and downsampled with LANCZOS, into
-`icon.ico` at 16/24/32/48/64/128/256 and `icon.png`. The alef that used
-to be knocked out of a microphone is gone with the microphone.
+`dev\make_logo.py --app-only` to redraw it, which writes `icon.png` and
+the site's `docs\assets\icon.png` from the same frame in the same call
+(SKIN.md, "The mark"). **The mark is Corner** (since 2026-09-23): one
+rounded corner cut flat at both ends, with the lamp — the same gold the
+status dot is — at the exact centre of its curve. The dalet drawn as a
+desk that came before it, and the alef knocked out of a microphone before
+that, are gone; `make_icon.py`, which drew the dalet and would have
+written it back over `icon.ico` the next time anyone ran it, went on
+2026-10-03, together with the dalet `icon.png` it had left behind.
 
 Because there is no window, the app enforces one instance at a time
 (launching twice would paste every transcript twice) and writes its status
@@ -2731,8 +2728,11 @@ showing to that session. The uuid in the link is NOT the `session_id` a
 hook is handed (that names the current CLI transcript, and a resume
 starts a new one); it is the desktop app's own id, joined to ours
 through the app's own store —
-`%APPDATA%\Claude\claude-code-sessions\<account>\<org>\local_<id>.json`,
-which names `sessionId`, `cliSessionId` and every `priorCliSessionIds`,
+`%LOCALAPPDATA%\Claude-Data\claude_<hash>\claude-code-sessions\<account>\<org>\local_<id>.json`
+since the app moved it on 2026-10-21 (before that
+`%APPDATA%\Claude\claude-code-sessions\…`, still looked at; the list of
+places is `notify_hook.session_roots()`, which the arrival watcher reads
+too), which names `sessionId`, `cliSessionId` and every `priorCliSessionIds`,
 so a notification from the fourth episode of a session still opens that
 session. Nothing is written there and nothing is asked of the app. A
 notification that named no session, a store that has moved or will not
@@ -4412,9 +4412,10 @@ for `מבשרים`, all of which the local model got right.
 | `[lookup] hebrew_share` | `0.34` | share of Hebrew **words** — not letters — at or above which a selection is sent to English rather than to Hebrew |
 | `[lookup] both_ways` | `true` | off, a Hebrew selection gets the soft "nothing to do" note instead of coming back as English |
 | `[lookup] max_chars` | `20000` | above this it refuses and spends nothing. WAS 5000, which select-all kept hitting ("it didn't translate") — long selections now reach the local model in ~3800-char parts with the box naming each part, so a page translates in visible stages. Still minutes of local time at the cap; a whole document is Ctrl+F9's job |
-| `[lookup] prefer` | `ollama` | `ollama` \| `gemini`, and deliberately the **opposite** of the other two keys: this one is tapped while reading and would eat the whole 20/day/model tier that Ctrl+F9 and F2 depend on |
+| `[lookup] prefer` | `groq` | `groq` \| `gemini` \| `ollama` — the other cloud next, the local model last (`ollama` = local first, clouds after). Was `ollama` until 2026-10-17, when the only cloud was Gemini's 20/day/model tier; then a lookup waited 34 s on a cold gemma3:12b because his Gemini key answered 401. Groq gpt-oss-120b measured 0.5-1.1 s against warm gemma's 2.5-7.1 s on 14 selections, with the headline right where gemma wrote `ביצוע` for `commit` |
+| `[lookup] groq_model` | `openai/gpt-oss-120b` | the Groq model. `qwen/qwen3.8-27b` is 3x quicker and was rejected on the same 14: `התחייבות` for `commit`, one sentence garbled |
 | `[lookup] model` | `gemma3:12b` | the Ollama model. Already resident for `[polish]`, so it costs no extra VRAM. Not `qwen2.5:7b` — measured, it answered `?");` for `brittle` |
-| `[lookup] cold_to_gemini` | `true` | when the local model is not loaded, send *that one* lookup to the cloud and warm the local one in the background rather than make you wait 24.4 s |
+| `[lookup] cold_to_gemini` | `true` | read only with `prefer = "ollama"` (any cloud, despite the name): when the local model is not loaded, send *that one* lookup to the clouds and warm the local one in the background rather than make you wait 24.4 s |
 | `[lookup] keep_alive` | `"30m"` | how long Ollama keeps the model in VRAM after a lookup. The 5-minute default expired mid-reading-session and cost 23.19 s on the next tap. Shared with `[polish]`, Ctrl+F9 and F2 — it belongs to the loaded model, not to this key — so raising it pins 7.6 GB of the card for that long |
 | `[lookup] strip_niqqud` | `true` | drop the vowel points the model sometimes decorates its Hebrew with (8 marks in 4 runs out of 4 on one input). Combining marks only: the maqaf is left alone, or `בית־הספר` would come back welded into `ביתהספר` |
 | `[lookup] dwell_ms` | `12000` | **dead — nothing reads it.** The box waits to be closed, by its `×` or by `Esc`. A box that took itself away on a timer was the complaint this key's rewrite answered, and a timer you cannot tell from a bug is worse than no timer |
@@ -4473,6 +4474,7 @@ for `מבשרים`, all of which the local model got right.
 | `[notify] interrupt` | `input` | `all` \| `input` \| `none`. Which arrivals may **pull you out** — play the cue and keep reminding. `input` is only what is waiting on you (a permission, a question, an idle session) and what went wrong; a plain finish lands as a quiet card and waits there. `all` is the door as it was; `none` never makes a sound. Counted 2026-09-05: 87 of the last 100 cards were per-turn finishes, each rung and reminded twice |
 | `[notify] quiet_s` | `0` | `0` = a finish (`done`) is a card the moment it lands — the shipped value since the afternoon of 2026-09-05, when the morning's 60 held 28 finishes and showed 26 of them exactly 60 s late. Any other number holds a finish that many seconds for the **session** that sent it to go quiet first; a second arrival from the same session inside the window retires the first unseen and waits in its place. A permission or a question never waits either way |
 | `[notify] watch` | `cowork` | `off` \| `cowork` \| `all`. Which of the **desktop app's own** Windows notifications get a card here too — the only road in for Cowork, which runs in the cloud and has no hook to install. `cowork` leaves the app's Claude Code sessions to the `Stop` hook that already cards them; `all` takes those too; `off` never looks. Claude Chat is in none of them: a finished chat reply is announced to nothing on this machine |
+| `[notify] early` | `true` | A **Claude finished** card the moment the answer is written: the app reads the finish off Claude Code's own transcript (`~/.claude/projects/*/*.jsonl`, `notify_tail.py`) instead of waiting for the `Stop` hook, which on most turns starts 2-5 s after the answer is on disk (measured 2026-10-24). Same card, same one sentence; the hook's copy that follows is folded into it (window and link) instead of shown twice. Only while this copy holds Claude Code's door. `false` = the hook alone |
 | `[notify] corner` | `right` | `right` \| `left` \| `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where the card appears before you have dragged it; `right` is mid-height on the right edge, like the second reading's card |
 | `[notify] anchor` | `bottom` | `bottom` \| `top`. Which edge of the column stays put as it grows. `bottom` grows a long message **upward**, so a column kept in the bottom-right corner never runs off the screen; `top` pins the top edge and grows downward, as it used to |
 | `[notify] x` | `-100000` | the top-left of the card where you last dragged it, in screen pixels. `-100000` = never moved: use `corner`. Negative is real on a monitor to the left of the primary |

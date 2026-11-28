@@ -76,9 +76,12 @@ log = logging.getLogger("inbox")
 SECRET_VAR = "DESKIT_SUPABASE_SECRET"
 #: Where the key lives once moved: Credential Manager, the store the product
 #: keeps Groq's and Gemini's keys in, under a target of the owner's own —
-#: not "DeskIT/", so the product's Delete everything never touches it, and
-#: not "DeskIT.test/", so no test does. A user environment variable is read
-#: by every process he starts; a credential only by one that asks for it.
+#: not "DeskIT/", and not "DeskIT.test/", so no test touches it. The Dev
+#: copy keeps its own keys under "DeskIT.dev/" too since 2026-10-04, but
+#: the product reads, writes and deletes only its own names there
+#: (secretstore.CRED_NAMES, groq and gemini), so its Delete everything
+#: never reaches this one. A user environment variable is read by every
+#: process he starts; a credential only by one that asks for it.
 CRED_TARGET = "DeskIT.dev/supabase_secret"
 URL_VAR = "DESKIT_SUPABASE_URL"
 #: The consented columns (7.7). Nothing else is ever selected.

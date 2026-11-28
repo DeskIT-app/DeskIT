@@ -161,6 +161,12 @@ POLL_MS = 800
 # deadline on purpose: shorter, and the desk would come back over a
 # light that is still up.
 DOT_WAIT_S = 210.0
+# Under every request to join that has an Approve (Home, the Account card;
+# deskweb.JOIN_ONLY_IF holds the same words): the name on a request is the
+# asker's own word, and the code protects only a person who is looking at
+# the new device (audit 2026-11-09, security-server F10).
+JOIN_ONLY_IF = ("Approve only if you are adding this device yourself, right now, "
+                "and its screen shows the same code.")
 # THE PILE IS AS TALL AS ITS ROWS. It was a fixed 286 px card with a
 # scroller inside it and "+N more", and the owner's photograph of it
 # on 2026-09-07 was rows in the middle of an empty card: the card grew
@@ -236,6 +242,11 @@ CORR_TABS = (("words", "Words"),)
 WORD_ROW_H = 44          # one learned pair in the Words list
 WORD_EDIT_H = 64         # the card a pair is typed or changed on
 WORD_FIELD_W = 300       # each of its two fields
+# How much of the Corrections column is drawn before the place is shown
+# (a proposal weighs 3, a learned row 1: six proposals and a dozen pairs,
+# more than the page holds), and how long each later tick may draw for.
+CORR_FIRST = 30
+CORR_TICK_S = 0.012
 
 
 def corr_tabs() -> tuple:
@@ -364,6 +375,11 @@ NAV = (("home", "Home"), ("corrections", "Corrections"),
 #: Every screen `_show` can draw: the six places and the one behind
 #: Settings > Privacy. What a test that walks every screen walks.
 SCREENS = tuple(name for _key, name in NAV) + ("Network",)
+
+#: The places kept built between visits (_show): the five on the bar.
+#: Network and the landing are built on every visit — one is a table of
+#: today's requests and the other is up once per sign-out.
+KEPT = tuple(name for _key, name in NAV)
 
 # A place takes its glyph from ui.ICON[key] where there is one. Home,
 # Corrections and Said are new words for old screens, and ui.py
@@ -994,6 +1010,18 @@ def _shown(value) -> str:
     return str(value)
 
 
+def _shown_for(path: str, value) -> str:
+    """`_shown`, except that a save folder is shown as the FULL path it
+    resolves to — "{pictures}/DeskIT" or a bare "captures" told nobody
+    where the files are (the owner's Store walk, 2026-10-03, item 17)."""
+    if path in FOLDER_SETTINGS and value:
+        try:
+            return str(paths.resolve_folder(str(value)))
+        except Exception:                                    # noqa: BLE001
+            pass
+    return _shown(value)
+
+
 def _parse(raw: str, kind: str):
     """What was typed, as the kind the file holds. An int field refuses a
     fraction rather than rounding it: config.py would int() it silently,
@@ -1055,6 +1083,13 @@ class Dashboard:
                                    # back for one frame
         self.screen = "Home"
         self.parts: dict = {}      # the widgets of whichever screen is up
+        # The places kept built between visits (_show): each one's sheet,
+        # its parts, what its builder read (_place_sig), and how wide its
+        # rows are.
+        self._sheets: dict = {}
+        self._kept: dict = {}
+        self._sigs: dict = {}
+        self._row_ws: dict = {}
         self.log: list[history.Event] = []
         self._log_stamp: tuple[int, float] = (0, 0.0)
         self._filter: str | None = None
@@ -1088,6 +1123,13 @@ class Dashboard:
         self._landing_up = False
         self._rows_after = None
         self._rows_left: list = []
+        # The Corrections column still to be drawn, and the tick that
+        # draws the next of it (_corr_draw).
+        self._corr_after = None
+        self._corr_left: list = []
+        # Notifications ✕'d here and not yet written seen by the app: off
+        # the pile already (_notify_one).
+        self._notify_gone: set = set()
         # How wide a drawn row is on the place that is up. The Said list
         # shares its place with the vocabulary panel, so it is narrower
         # than the sheet; every other list is the full width.
@@ -1218,9 +1260,10 @@ class Dashboard:
         # Screens are built onto a SHEET inside the pane, not onto the pane
         # itself, so a new screen can slide into place — the pane stays
         # put, the sheet moves. The toast lives on the pane and does not.
-        self.sheet = tk.Frame(self.pane, bg=ui.BG, width=W, height=H - TOP)
+        # One sheet per place since 2026-10-23 (_sheet_for): `self.sheet`
+        # is whichever is up.
+        self.sheet = self._sheet_for("Home")
         self.sheet.place(x=0, y=0)
-        self.sheet.pack_propagate(False)
         # The cover a switch holds over the pane (_show). Its window and
         # its two pictures go with the pane — a test's window is destroyed
         # without _close — and the binding holds the hold, not self,
@@ -1361,8 +1404,9 @@ class Dashboard:
         self._show(name)
 
     def _show(self, name: str, then=None) -> None:
-        """Swap screens. Everything the old one registered goes with it, so
-        _refresh has to ask for a widget rather than assume one.
+        """Swap screens. Everything the old one registered leaves
+        `self.parts` with it (kept in its own dict, below), so _refresh
+        has to ask for a widget rather than assume one.
 
         `then` runs once the new screen is built, under the same cover,
         before it is painted and photographed: for a door that lands on a
@@ -1402,6 +1446,23 @@ class Dashboard:
         A window that is not on the screen (withdrawn for the dot, not
         mapped yet, GitHub's runner) gets no cover and switches the way
         it did before: the sheet unmapped for the build, then the slide.
+
+        A PLACE IS BUILT ONCE AND KEPT (2026-10-23). Each of the five on
+        the bar has a sheet of its own (_sheet_for) and a parts dict of
+        its own; a switch to one already built raises its sheet over the
+        others and redraws only what can have changed since it was up
+        (_place_back, then the poll's own repaint through _refresh) —
+        unless what its builder read has moved (_place_sig), and then it
+        is built again the way every switch used to be. A return to a
+        place, measured back to back on copies of his data on the hidden
+        desktop (2026-10-23), wall / Tk-thread CPU ms, building every
+        widget again before and kept since: Corrections 874/320 ->
+        204/55, Said 699/258 -> 177/70, Keys 839/258 -> 255/94, Settings
+        449/125 -> 150/31, Home 684/227 -> 207/70. What is left is the
+        raised sheet repainting — a raw-Tk frame of 65 widgets cost
+        214/47 on the same desktop that afternoon. The place that is up,
+        asked for again, is still built again: the Corrections chips and
+        `then=` doors mean it.
         """
         if self._landing_up and name != "Landing":
             # Nothing but the landing until a sign-in: not a door on
@@ -1413,29 +1474,48 @@ class Dashboard:
             # events): the newest wish, once that one is on the screen.
             self._show_next = (name, then)
             return
+        again = name == self.screen
+        self._leave()
         self.screen = name
-        self._stop_rows()
         held, _step = self._hold_for()
         self._switching = True
         try:
-            self.sheet.place_forget()
+            old, sheet = self.sheet, self._sheet_for(name)
+            kept = not again and self._place_fresh(name)
+            if old is not None and old is not sheet and old.winfo_exists():
+                # Over the place that was up — and so under the toast and
+                # the banner, which are over that one. The place left
+                # stays where it is, mapped, underneath (_sheet_for).
+                sheet.tkraise(old)
+            if not kept:
+                sheet.place_forget()      # a builder works off the glass
+            self.sheet = sheet
             try:
-                for child in self.sheet.winfo_children():
-                    child.destroy()
-                keep = {k: self.parts[k] for k in
-                        ("hint", "lamp", "state", "uptime", "chip", "run",
-                         "bar_screens", "stop_bar", "tests_stop")
-                        if k in self.parts}
-                self.parts = keep
                 self._hide_toast()
-                {"Home": self._screen_home,
-                 "Corrections": self._screen_corrections,
-                 "Said": self._screen_said,
-                 "Keys": self._screen_keys,
-                 "Settings": self._screen_settings,
-                 "Network": self._screen_network,
-                 "Landing": self._screen_landing}[name]()
-                self._refresh(self.status or None)
+                if kept:
+                    if not sheet.place_info():
+                        sheet.place(x=0, y=0)
+                    bar = self._bar_parts()
+                    self.parts = self._kept[name]
+                    self.parts.update(bar)
+                    self._row_w = self._row_ws.get(name, CW)
+                    try:
+                        self._place_back(name)
+                    except Exception:     # noqa: BLE001
+                        # A kept place that cannot catch up is built
+                        # again, as every switch used to; said in the log.
+                        import logging
+                        logging.getLogger("app").warning(
+                            "the kept %s place did not catch up; building it "
+                            "again", name, exc_info=True)
+                        kept = False
+                        sheet.place_forget()
+                if kept:
+                    if not self._refresh(self.status or None) \
+                            and not self.closing:
+                        self._paint_place()
+                else:
+                    self._build_place(name)
                 # The first screenful of Settings' cards, before the
                 # reveal; the rest one per tick below the fold.
                 self._settings_first_view()
@@ -1445,7 +1525,9 @@ class Dashboard:
                 # A builder that died must not leave a blank window behind,
                 # nor a picture of the old one standing over a window that
                 # no longer holds it: whatever it managed to draw goes back
-                # on, in place, and the cover comes off.
+                # on, in place, and the cover comes off — and the next
+                # visit builds it again.
+                self._sigs.pop(name, None)
                 self._show_next = None
                 self.sheet.place(x=0, y=0)
                 self._paint_nav()
@@ -1470,10 +1552,235 @@ class Dashboard:
         if wish is not None:
             self._show(*wish)
 
+    # -- the places, kept
+
+    #: The parts the bar owns, carried into every place's parts dict:
+    #: _refresh writes the state through them whichever place is up.
+    BAR_PARTS = ("hint", "lamp", "state", "uptime", "chip", "run",
+                 "bar_screens", "stop_bar", "tests_stop")
+
+    def _bar_parts(self) -> dict:
+        return {k: self.parts[k] for k in self.BAR_PARTS if k in self.parts}
+
+    def _sheet_for(self, name: str):
+        """The sheet a place is drawn on, made the first time it is
+        asked for, at the bottom of the pane's stack: under the toast and
+        the lock's banner, which live on the pane too and may be older
+        than it, and under every other sheet until _show raises it.
+
+        A PLACE LEFT IS COVERED, NOT TAKEN DOWN. Every sheet stays placed
+        at the pane's origin, and the one up is the one on top. Taking a
+        sheet off with place_forget unmapped every window under it — the
+        packer and the placer unmap their slaves with their master — and
+        putting it back mapped them all again a level at a time:
+        Corrections, 383 windows, was 326 Map events and 243 ms on a
+        remap (probe, 2026-10-23); raised over the other sheets instead,
+        59 events and 162 ms, the rest of it the visible part repainting.
+        A covered sheet takes no click: the sheet over it is the same
+        size and opaque."""
+        sheet = self._sheets.get(name)
+        if sheet is None or not sheet.winfo_exists():
+            sheet = tk.Frame(self.pane, bg=ui.BG, width=W, height=H - TOP)
+            sheet.pack_propagate(False)
+            sheet.lower()
+            self._sheets[name] = sheet
+            self._sigs.pop(name, None)
+        return sheet
+
+    def _leave(self) -> None:
+        """What the place going off the glass leaves behind, settled
+        before another sheet covers it: its drawing paused (_pause_rows),
+        a search that had not run yet dropped (the box keeps the words;
+        _place_back reads them), and the keyboard focus off it — a kept
+        Entry that kept the focus would take the next place's typing: a
+        key pressed on Keys would land in the Said search behind it."""
+        self._pause_rows()
+        for name in ("_search_after", "_words_search_after",
+                     "_settings_after"):
+            pending = getattr(self, name, None)
+            setattr(self, name, None)
+            if pending is not None:
+                try:
+                    self.root.after_cancel(pending)
+                except Exception:         # noqa: BLE001
+                    pass
+        # focus_lastfor and not focus_get: with the desk not in front,
+        # focus_get is None and the Entry is still the one Tk hands the
+        # keyboard back to when he clicks into the window.
+        sheet = self.sheet
+        try:
+            focus = self.root.focus_lastfor()
+        except (KeyError, tk.TclError):
+            focus = None
+        if focus is not None and sheet is not None \
+                and str(focus).startswith(str(sheet) + "."):
+            self.root.focus_set()
+
+    def _build_place(self, name: str) -> None:
+        """A place built from nothing, on its own sheet — every switch,
+        until places were kept."""
+        for child in self.sheet.winfo_children():
+            child.destroy()
+        self.parts = self._bar_parts()
+        self._kept[name] = self.parts
+        self._sigs.pop(name, None)
+        self._drop_rows(name)
+        {"Home": self._screen_home,
+         "Corrections": self._screen_corrections,
+         "Said": self._screen_said,
+         "Keys": self._screen_keys,
+         "Settings": self._screen_settings,
+         "Network": self._screen_network,
+         "Landing": self._screen_landing}[name]()
+        if name in KEPT:
+            self._sigs[name] = self._place_sig(name)
+            self._row_ws[name] = self._row_w
+        self._refresh(self.status or None)
+
+    def _place_fresh(self, name: str) -> bool:
+        """Can this place be shown as it was left? Built, whole, and
+        built from what its builder would read now. A Settings search
+        is closed by a visit, as it always was."""
+        if name not in KEPT or name not in self._kept \
+                or name not in self._sigs:
+            return False
+        sheet = self._sheets.get(name)
+        if sheet is None or not sheet.winfo_exists() \
+                or not sheet.winfo_children():
+            return False
+        if name == "Settings" and self._settings_searching:
+            return False
+        return self._sigs[name] == self._place_sig(name)
+
+    def _place_sig(self, name: str):
+        """What a place's builder read that nothing repaints while it is
+        up — taken when it is built and again when it is asked for. The
+        same answer: the place stands, and the switch is a remap. Another
+        one: it is built again. What its poll repaints (the pile, the
+        day's lines, the caps, the account and the lock, the dot) and
+        what _place_back redraws (the Said rows, the Corrections column,
+        the Settings tab) is not in here, or every change would cost a
+        whole build."""
+        try:
+            keys = self.status.get("keys") or self._read_keys()
+            teach = pretty_key(keys.get("correct_hotkey", ""))
+            if name == "Home":
+                return ()
+            if name == "Keys":
+                return repr(sorted((str(k), str(v)) for k, v in keys.items()))
+            if name == "Corrections":
+                return (self._corr_tab, teach, self._vocab_cap())
+            if name == "Said":
+                # the vocabulary panel beside the rows: the count, the
+                # teach key, the last pairs (eight: more than it shows),
+                # the decoder's cap
+                return (teach, self._vocab_cap(), self._vocab_stat(),
+                        tuple(self._recent_pairs(8)))
+            if name == "Settings":
+                return self._settings_sig()
+        except Exception:                 # noqa: BLE001 — unreadable: build
+            return object()
+        return object()
+
+    def _settings_sig(self) -> tuple:
+        """Settings' builder reads the three layers of the file and the
+        consent record for its rows, and the app's word for the cards
+        that are not repainted by a poll: the phone's link, the model,
+        the downloads, whether there is an app at all — and the models'
+        and packs' folders, which a step run from here fills. Small files
+        by their bytes (a same-length rewrite in the same tick keeps its
+        stat), defaults.toml by its stat (only a new version moves it)."""
+        files = []
+        for path in (paths.SETTINGS_FILE, paths.STATE_FILE,
+                     paths.CONSENT_FILE):
+            try:
+                files.append(hash(Path(path).read_bytes()))
+            except OSError:
+                files.append(None)
+        for path in (DEFAULTS_PATH, paths.MODELS_DIR, paths.PACKS_DIR):
+            try:
+                st = Path(path).stat()
+                files.append((st.st_size, st.st_mtime_ns))
+            except OSError:
+                files.append(None)
+        status = self.status or {}
+        return (tuple(files), self.running, status.get("model"),
+                repr(status.get("phone")), repr(status.get("downloads")))
+
+    @staticmethod
+    def _vocab_cap():
+        try:
+            return config_mod.load_layered().vocab.max_terms
+        except Exception:                 # noqa: BLE001 — unreadable config
+            return None
+
+    def _place_back(self, name: str) -> None:
+        """A kept place on the glass again: what can have changed while
+        it was away, redrawn — and only that. The poll's own repaint
+        (_refresh) follows it."""
+        p = self.parts
+        if name == "Home":
+            # The pile's poll redraws it when one of its five stores
+            # moved; two rows read no store (a release found, a text key
+            # pressed with no cloud key) and the held line reads the app.
+            self._paint_held()
+            if self._pile_extra(self._waiting_update()
+                                + self._waiting_keys()) \
+                    != getattr(self, "_pile_extra_drawn", None):
+                self._fill_waiting()
+        elif name == "Corrections":
+            box = p.get("words_search")
+            if box is not None and box.winfo_exists():
+                self._words_query = box.get()
+            use = p.get("words_use")
+            if use is not None and use.winfo_exists():
+                use.set(self._words_enabled())
+            refill = self._words_editing is not None
+            self._words_editing = None    # a visit closes the editor
+            if refill \
+                    or self._words_query != getattr(self, "_corr_drawn", None):
+                self._fill_corrections()
+        elif name == "Said":
+            entry = p.get("search")
+            if entry is not None and entry.winfo_exists():
+                self._query = entry.get()
+            drawn = getattr(self, "_said_drawn", None)
+            if drawn is None or drawn[0] is not self.log \
+                    or drawn[1:] != (self._filter, self._query,
+                                     getattr(self, "_said_shown", SAID_PAGE)):
+                self._fill_history()
+        elif name == "Keys":
+            if self._cap_selected is not None:
+                self._cap_clicked(None)   # a visit opens on no cap, as before
+        elif name == "Settings":
+            if getattr(self, "_settings_drawn", None) != self._settings_tab:
+                for tab_name, chip in (p.get("settings_tabs") or {}).items():
+                    chip.set(tab_name == self._settings_tab)
+                self._fill_settings()
+            # the Awake card reads the app and no poll repaints it; its
+            # parts outlive a tab that no longer draws it
+            awake = p.get("awake_state")
+            if awake is not None and awake.winfo_exists():
+                self._paint_awake()
+        # a list the last visit left half drawn goes on from where it was
+        self._resume_rows(name)
+
+    @staticmethod
+    def _pile_extra(rows: list) -> tuple:
+        """The pile rows no stamp watches, as what they say."""
+        return tuple(sorted((str(row.get("kind")), str(row.get("text")),
+                             str(row.get("note"))) for row in rows
+                            if row.get("kind") in ("update", "keys")))
+
     #: The arrival: how far below its place the new screen is on each
-    #: frame, 18 ms apart — a cubic ease-out baked into a table, because
-    #: computing an easing curve for six integers is showing off.
-    SLIDE = (16, 10, 6, 3, 1, 0)
+    #: frame, SLIDE_MS apart. It was six frames, 16 px up to 0 — and in
+    #: the owner's clip of 2026-10-23 every switch was a page landing
+    #: 16 px low and climbing: "everything feels laggy and jumpy". A
+    #: place kept since that afternoon is ready the moment it is asked
+    #: for, so it arrives where it belongs, in one frame, with its word
+    #: in the bar. The machinery stays: a table of one zero is the slide
+    #: that does not move.
+    SLIDE = (0,)
     SLIDE_MS = 18
     #: How many rounds of window events and idle work _settle may take.
     #: Measured 2026-09-22 on the hidden desktop: on every screen one
@@ -1668,12 +1975,12 @@ class Dashboard:
             self._show(*wish)
 
     def _slide_in(self, step: int = 0) -> None:
-        """The new screen eases up into place — six frames, ~100 ms.
+        """The new screen put in place, on a window with no cover.
 
-        Movement, not decoration: the slide is what says "this is a new
-        page" when the palette is identical from screen to screen. The
-        offsets are a cubic ease-out baked into a table, because computing
-        an easing curve for six integers is showing off.
+        It used to ease up from 16 px low over six frames, ~100 ms, as
+        the "this is a new page" a same-coloured screen does not say by
+        itself; the owner's clip of 2026-10-23 read it as the page
+        jumping (see SLIDE), and the lit word in the bar says it now.
         """
         if self.closing:
             # No animation while the window is going away — but the sheet
@@ -1685,7 +1992,7 @@ class Dashboard:
             self.sheet.place(x=0, y=0)
             self._slide_after = None
             return
-        offsets = (16, 10, 6, 3, 1, 0)
+        offsets = self.SLIDE
         self.sheet.place(x=0, y=offsets[step])
         if step + 1 < len(offsets):
             self._slide_after = self.root.after(
@@ -1967,11 +2274,11 @@ class Dashboard:
                              cursor="hand2")
         p["more"].bind("<Button-1>", lambda _e: self._said_more())
 
-        tk.Label(self.sheet, text="Everything older is still in "
-                                 "transcripts.log, untouched.",
+        tk.Label(self.sheet, text="Everything older is still on this PC, "
+                                 "untouched.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8)).place(x=PAD, y=624)
-        wide = widgets.button_width("Open transcripts.log", icon=True)
-        ui.Button(self.sheet, "Open transcripts.log",
+        wide = widgets.button_width("Open the file", icon=True)
+        ui.Button(self.sheet, "Open the file",
                   lambda: launch.open_path(history.LOG), w=wide, h=30,
                   quiet=True, bg=ui.BG,
                   icon=ui.ICON["file"]).place(x=PAD + SAID_W - wide, y=616)
@@ -2023,6 +2330,11 @@ class Dashboard:
           Pause, where it used to be 8.
         - Stop is not there at all while there is nothing to stop.
 
+        SCREENS OFF ASKS FOR NO MODEL, so since 2026-11-06 it no longer
+        leaves with Stop: his word, "features like taking a screenshot,
+        sleep mode ... need no model at all". With the model off the bar
+        is Screens off and Start; it goes only when no app answers.
+
         STOP TESTS USED TO BE HERE — in the bar for exactly as long
         as a nightly run had something to stop, with the uptime
         stepping aside for its 108 px. It left with the rest of the
@@ -2040,9 +2352,10 @@ class Dashboard:
         # available at the same moment, so three buttons would be two
         # lies — and it is the same key in the same pixels either way.
         model = self.status.get("model") or "on"
-        run.configure_text("Start" if not self.status or model == "off" else
-                           "Loading…" if model in ("loading", "unloading") else
-                           "Resume" if self.status.get("paused")
+        run.configure_text("Start" if not self.status else
+                           "Resume" if self.status.get("paused") else
+                           "Start" if model == "off" else
+                           "Loading…" if model in ("loading", "unloading")
                            else "Pause")
         # `awake` only ever comes back from a running app, so the word is
         # "Screens off" through a startup whatever the screens are doing.
@@ -2054,17 +2367,18 @@ class Dashboard:
         x = W - PAD
         run.place(x=x, y=12, anchor="ne")
         x -= BAR_RUN_W + BAR_GAP
-        # HIS RULE AGAIN with the model off and the process up: one
-        # button, Start. Stop has nothing left to unload, and Screens off
-        # goes with it so the bar reads the same way it does with nothing
-        # running — the key still works, and Settings > General has it.
-        if self.status and model not in ("off", "unloading"):
+        # HIS RULE AGAIN with the model off and the process up: Stop has
+        # nothing left to unload. Screens off stays while an app answers.
+        has_stop = bool(self.status) and model not in ("off", "unloading")
+        if has_stop or self.running:
             screens.place(x=x, y=12, anchor="ne")
             x -= self._screens_w + BAR_KEEP
+        else:
+            screens.place_forget()
+        if has_stop:
             stop.place(x=x, y=12, anchor="ne")
             x -= BAR_STOP_W + BAR_GAP
         else:
-            screens.place_forget()
             stop.place_forget()
         chip.show_meta(True)
         chip.place(x=x, y=TOP // 2, anchor="e")
@@ -2160,10 +2474,8 @@ class Dashboard:
             foot, bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
             text=("teaches it a word from what it just wrote  ·  " if teach
                   else "")
-            + ("the best of them go into the decoder's prompt before it "
-               f"listens — {cap} at a time" if cap else
-               "the best of them go into the decoder's prompt before it "
-               "listens")
+            + (f"it listens for the best {cap} of them as you speak" if cap
+               else "it listens for the best of them as you speak")
             + "  ·  a word corrected twice is fixed on every dictation")
         p["vocab_hot"].pack(side="left", padx=(10 if teach else 0, 0))
         self._corr_stamp = None
@@ -2185,7 +2497,7 @@ class Dashboard:
         if self._words_editing is not None:
             return          # never rebuild the list under his typing
         if self._corr_stat() != getattr(self, "_corr_stamp", None):
-            self._fill_corrections()
+            self._redraw(self._fill_corrections)
 
     def _corr_stat(self):
         return (self._review_stat(), self._vocab_stat())
@@ -2239,12 +2551,14 @@ class Dashboard:
                     f"\u201c{self._words_query.strip()}\u201d")
         elif entries:
             head = (f"{len(entries)} word{'' if len(entries) == 1 else 's'} "
-                    f"it has learned to hear your way  ·  {len(hot)} in the "
-                    f"decoder's prompt  ·  {ready} fixed on every dictation")
+                    f"it has learned to hear your way  ·  {len(hot)} listened "
+                    f"for as you speak  ·  {ready} fixed on every dictation")
         else:
             head = "Nothing learned yet."
         p["corr_head"].config(text=head)
 
+        self._corr_stop()
+        self._corr_drawn = self._words_query     # what _place_back compares
         column = p["corr_list"]
         column.clear()
         p["corr_empty"].place_forget()
@@ -2258,34 +2572,45 @@ class Dashboard:
             lab.pack(anchor="w", pady=(4, 8))
             column.bind_wheel(lab)
 
-        if items:
-            eyebrow(f"W A I T I N G   O N   Y O U  \u00b7  {len(items)}")
-            for spec in items:
-                card = ui.Card(column.inner, CW, PILE_ROW_H + 20,
-                               fill=ui.CARD, bg=ui.BG, pad=10)
-                card.pack(anchor="w", pady=(0, 8))
-                row = widgets.PileRow(
-                    card.body, CW - 20, bg=ui.CARD,
-                    mark=spec.get("mark", ""),
-                    mark_colour=spec.get("mark_colour"),
-                    eyebrow=spec.get("eyebrow", ""),
-                    eyebrow_right=spec.get("eyebrow_right", True),
-                    text=spec.get("text", ""), runs=spec.get("runs"),
-                    note=spec.get("note", ""),
-                    buttons=spec.get("buttons", ()),
-                    height=PILE_ROW_H)
-                row.pack(fill="x")
-                column.bind_wheel(card)
-                column.bind_wheel(row)
-                column.bind_wheel(row.canvas)
+        def proposal(spec: dict) -> None:
+            card = ui.Card(column.inner, CW, PILE_ROW_H + 20,
+                           fill=ui.CARD, bg=ui.BG, pad=10)
+            card.pack(anchor="w", pady=(0, 8))
+            row = widgets.PileRow(
+                card.body, CW - 20, bg=ui.CARD,
+                mark=spec.get("mark", ""),
+                mark_colour=spec.get("mark_colour"),
+                eyebrow=spec.get("eyebrow", ""),
+                eyebrow_right=spec.get("eyebrow_right", True),
+                text=spec.get("text", ""), runs=spec.get("runs"),
+                note=spec.get("note", ""),
+                buttons=spec.get("buttons", ()),
+                height=PILE_ROW_H)
+            row.pack(fill="x")
+            column.bind_wheel(card)
+            column.bind_wheel(row)
+            column.bind_wheel(row.canvas)
+
+        def rule() -> None:
             line = widgets.rule(column.inner, CW - 10, bg=ui.BG,
                                 colour=ui.LINE)
             line.pack(fill="x", pady=(6, 12))
             column.bind_wheel(line)
 
-        eyebrow("L E A R N E D")
+        # The column as pieces, in order, each with what it weighs: a
+        # proposal is a card of widgets, a learned row one canvas. They are
+        # drawn by _corr_draw, a screenful now and the rest a tick at a
+        # time, because all of them at once (eleven proposals and 136
+        # pairs) held the window 2.8-3.5 s on every visit (2026-10-23).
+        pieces: list = []
+        if items:
+            pieces.append((0, lambda n=len(items): eyebrow(
+                f"W A I T I N G   O N   Y O U  \u00b7  {n}")))
+            pieces += [(3, lambda s=spec: proposal(s)) for spec in items]
+            pieces.append((0, rule))
+        pieces.append((0, lambda: eyebrow("L E A R N E D")))
         if self._words_editing == "":
-            self._words_editor(column, None)
+            pieces.append((3, lambda: self._words_editor(column, None)))
         elif self._words_editing and not any(
                 c["heard"].lower() == self._words_editing.lower() for c in shown):
             # the row he is editing is not in the search's answer (or is
@@ -2293,7 +2618,7 @@ class Dashboard:
             held = next((c for c in entries if c["heard"].lower()
                          == self._words_editing.lower()), None)
             if held is not None:
-                self._words_editor(column, held)
+                pieces.append((3, lambda h=held: self._words_editor(column, h)))
             else:
                 self._words_editing = None
         if not entries:
@@ -2312,9 +2637,46 @@ class Dashboard:
         for entry in shown:
             if (self._words_editing and self._words_editing.lower()
                     == entry["heard"].lower()):
-                self._words_editor(column, entry)
+                pieces.append((3, lambda e=entry: self._words_editor(column, e)))
                 continue
-            self._word_row(column, entry, hot, ready_at)
+            pieces.append((1, lambda e=entry: self._word_row(
+                column, e, hot, ready_at)))
+        self._corr_left = pieces
+        self._corr_draw(first=True)
+
+    def _corr_draw(self, first: bool = False) -> None:
+        """The next pieces of the Corrections column (_fill_corrections):
+        the first call draws CORR_FIRST of weight — more than the page
+        shows — and every tick after it as many as fit in CORR_TICK_S,
+        so the window answers between two of them."""
+        self._corr_after = None
+        if "corr_list" not in self.parts or self.closing:
+            self._corr_left = []
+            return
+        left = self._corr_left
+        weight, started = 0, time.perf_counter()
+        while left:
+            if first:
+                if weight + left[0][0] > CORR_FIRST:
+                    break
+            elif weight and time.perf_counter() - started > CORR_TICK_S:
+                break
+            heavy, draw = left.pop(0)
+            weight += heavy
+            draw()
+        if left:
+            self._corr_after = self.root.after(16, self._corr_draw)
+
+    def _corr_stop(self) -> None:
+        """Whatever of the Corrections column is still to be drawn, not."""
+        self._corr_left = []
+        pending = getattr(self, "_corr_after", None)
+        self._corr_after = None
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:             # noqa: BLE001
+                pass
 
     # ------------------------------------------------------ the Words list
 
@@ -2417,7 +2779,7 @@ class Dashboard:
                             WORD_ROW_H / 2 + 3, fill=ui.ACCENT, width=0,
                             tags="hot")
             row.create_text(CW - 196, WORD_ROW_H / 2, anchor="w",
-                            text="in the prompt", fill=ui.DIM,
+                            text="listened for", fill=ui.DIM,
                             font=(ui.UI, 9), tags="hot")
         pen = row.create_text(CW - 56, WORD_ROW_H / 2, text="\ue70f",
                               fill=ui.BG, font=(ui.ICONS, 11), tags="pen")
@@ -2486,16 +2848,19 @@ class Dashboard:
         if "corr_list" not in self.parts:
             return
         self._words_editing = heard
-        self._fill_corrections()
-        if not heard:
-            try:
-                self.parts["page"].to_top()
-            except Exception:             # noqa: BLE001 — no such method
-                pass
+
+        def fill() -> None:
+            self._fill_corrections()
+            if not heard:
+                try:
+                    self.parts["page"].to_top()
+                except Exception:         # noqa: BLE001 — no such method
+                    pass
+        self._redraw(fill)
 
     def _words_cancel(self) -> None:
         self._words_editing = None
-        self._fill_corrections()
+        self._redraw(self._fill_corrections)
 
     def _words_save(self, heard: str, meant: str) -> None:
         heard, meant = " ".join(heard.split()), " ".join(meant.split())
@@ -2511,11 +2876,11 @@ class Dashboard:
         else:
             self._vocab_change("learn", heard=heard, meant=meant)
         self._words_editing = None
-        self._fill_corrections()
+        self._redraw(self._fill_corrections)
 
     def _words_forget(self, heard: str) -> None:
         self._vocab_change("forget", heard=heard)
-        self._fill_corrections()
+        self._redraw(self._fill_corrections)
 
     def _vocab_change(self, do: str, **args) -> None:
         """One of the three doors, through the running app — it owns
@@ -2606,8 +2971,20 @@ class Dashboard:
                  self._hardware_stat(), self._lock_stat(),
                  self._consent_stat())
         if stamp != getattr(self, "_pile_stamp", None):
-            self._fill_waiting()
+            self._redraw_pile()
         self._paint_rest()
+
+    def _redraw(self, fill) -> None:
+        """A list redrawn in place where it is seen — the pile after an
+        answer, the Corrections column when its files move — under the
+        switch's cover (_held), so the page goes from what it was to
+        what it is in one frame. Drawn in the open, the clear and the
+        rows coming back one by one were the "jumpy" of his clip of
+        2026-10-23."""
+        self._held(fill)
+
+    def _redraw_pile(self) -> None:
+        self._redraw(self._fill_waiting)
 
     # -- the pile
 
@@ -2620,10 +2997,23 @@ class Dashboard:
         items: list[dict] = []
         items += self._waiting_consent()
         items += self._waiting_lock()
+        items += self._waiting_phone()
         items += self._waiting_update()
+        items += self._waiting_keys()
         items += self._waiting_hardware()
         items += self._waiting_notify()
         items += self._waiting_review()
+        if self._lock_asks():
+            # The app's own knock for the same question (main._pairing_asked,
+            # the changed lock in _pairing_settled) is the card at the edge of
+            # the screen; on Home it was a second row under the lock's own —
+            # "asks to join your account [Go there]" right under "asks to
+            # join … [Approve] [Not now]" (the Store walk, 2026-10-03). The
+            # lock row answers it; the notification comes down with the
+            # answer (sb.LOCK_HOOKS). With no app to read the lock from, the
+            # knock stays the one row there is.
+            items = [row for row in items
+                     if not (row.get("kind") == "notify" and row.get("source") == "account")]
         items.sort(key=lambda row: row.get("at", 0.0), reverse=True)
         # ONE GOLD BUTTON PER SURFACE, across the whole pile and not per
         # row: with three proposals waiting, three lit Yes buttons are three
@@ -2681,6 +3071,18 @@ class Dashboard:
         mb = rel.size / 1_048_576
         when = f", {rel.published[:10]}" if rel.published else ""
         buttons: list = []
+        if not getattr(rel, "checked", False) and not s.get("winget_command"):
+            # the feed's signature did not verify (updates.py): news, never
+            # a download — the website is the way to it
+            return [{
+                "at": time.time(), "kind": "update", "mark": "version",
+                "mark_colour": ui.AMBER, "eyebrow": "A newer version",
+                "eyebrow_right": False,
+                "text": f"DeskIT {rel.version} is out. {updates.UNCHECKED_WORDS}",
+                "note": "Your copy keeps working as it is.",
+                "buttons": [("Open the website", "gold",
+                             lambda: self._open_url(updates.WEBSITE))],
+            }]
         if self._too_old_for(rel):
             return [{
                 "at": time.time(), "kind": "update", "mark": "version",
@@ -2709,6 +3111,51 @@ class Dashboard:
             "buttons": buttons,
         }]
 
+    #: The text keys a missing cloud key leaves dead, as Home names them.
+    NEEDS_KEY_WORDS = {"translate": ("Translate", "translate_hotkey"),
+                       "punctuate": ("Punctuate", "punctuate_hotkey")}
+
+    def _waiting_keys(self) -> list[dict]:
+        """A text key pressed with no cloud key to answer it (store walk
+        item 13, 2026-10-03: a person who skipped the keys page must learn
+        on the first press exactly what to add and where — a row here,
+        never a floating card). status()["needs_key"] is feature -> when;
+        it empties itself once either key is saved. [Add a key] opens
+        Settings > Privacy, where YOUR CLOUD KEYS is; Not now keeps the
+        row down until the next such press."""
+        needs = (self.status.get("needs_key") or {}) if self.running else {}
+        later = float(getattr(self, "_needs_key_later", 0.0))
+        pressed = {f: float(t) for f, t in needs.items()
+                   if f in self.NEEDS_KEY_WORDS and float(t) > later}
+        if not pressed:
+            return []
+        keys = self.status.get("keys") or {}
+        named = []
+        for feature in ("translate", "punctuate"):
+            if feature in pressed:
+                word, field = self.NEEDS_KEY_WORDS[feature]
+                binding = str(keys.get(field) or "")
+                named.append(f"{word} ({pretty_key(binding)})" if binding else word)
+        when = max(pressed.values())
+        verb = "needs" if len(named) == 1 else "need"
+        return [{
+            "at": when, "kind": "keys", "mark": "keys", "mark_colour": ui.AMBER,
+            "eyebrow": "Your cloud keys", "eyebrow_right": False,
+            "text": f"{' and '.join(named)} {verb} a free cloud key — Gemini or Groq",
+            "note": (f"Pressed at {time.strftime('%H:%M', time.localtime(when))}; your text "
+                     "was left as it was. A key takes a minute, with no credit card."),
+            "buttons": [("Add a key", "gold", self._needs_key_go),
+                        ("Not now", "quiet", lambda w=when: self._needs_key_dismiss(w))],
+        }]
+
+    def _needs_key_go(self) -> None:
+        self._show("Settings")
+        self._settings_go("Privacy")
+
+    def _needs_key_dismiss(self, when: float) -> None:
+        self._needs_key_later = when
+        self._redraw_pile()
+
     def _waiting_hardware(self) -> list[dict]:
         """The rows of chapter 9's screen 10 and 6.9, on the pile rather
         than a card of their own: Home is a summary (the owner, three
@@ -2721,6 +3168,27 @@ class Dashboard:
         model, pack, changed = self._hardware_words()
         rows: list[dict] = []
         now = time.time()
+        # The parts downloading in the background on the running app
+        # (downloads.py, 2026-10-03 — no page, no button): one quiet row
+        # with how far it is, in place of a Download that would only
+        # start a second downloader on the same part.
+        dl = (self.status or {}).get("downloads") if self.running else None
+        if dl and dl.get("state") in ("running", "waiting"):
+            parts = dl.get("parts") or {}
+            pct = int(round(float(dl.get("fraction") or 0) * 100))
+            rows.append({
+                "at": now, "kind": "hardware", "mark": "engine",
+                "mark_colour": ui.ACCENT, "eyebrow": "This computer",
+                "eyebrow_right": False,
+                "text": (f"Downloading app parts — {pct}%" if not dl.get("offline")
+                         else "Downloading app parts — waiting for the connection"),
+                "note": ("Once, in the background. Dictation starts the moment the "
+                         "Hebrew model lands." if parts.get("model") not in (None, "done")
+                         else "Once, in the background — nothing to press."),
+                "buttons": [],
+            })
+            if "model" in parts:
+                model = "downloading"     # the row above says it; no second Download
         if not paths.PORTABLE and model in ("absent", "incomplete", "stale"):
             size = ""
             try:
@@ -2776,16 +3244,18 @@ class Dashboard:
     def _hardware_retry(self) -> None:
         packs_mod.clear_failure("gpu")
         self._note("GPU speed will be tried again at the next start")
-        self._fill_waiting()
+        self._redraw_pile()
 
     def _hardware_remove(self) -> None:
         packs_mod.remove("gpu")
+        # turned off by hand: the background downloads never fetch it again
+        packs_mod.decline("gpu")
         self._note("faster dictation is off — Settings > Dictation offers it again")
-        self._fill_waiting()
+        self._redraw_pile()
 
     def _hardware_seen(self) -> None:
         hardware_mod.clear_change()
-        self._fill_waiting()
+        self._redraw_pile()
 
     @staticmethod
     def _stamp_of(text: str, fmt: str) -> float:
@@ -2801,6 +3271,12 @@ class Dashboard:
                       if not i.get("seen")]
         except Exception:                 # noqa: BLE001 — a broken file
             return []
+        # A ✕ pressed here is gone from the pile at once, before the app
+        # has written it seen; the id is forgotten once the file agrees.
+        gone = getattr(self, "_notify_gone", None)
+        if gone:
+            gone &= {i.get("id") for i in unread}
+            unread = [i for i in unread if i.get("id") not in gone]
         rows = []
         for item in unread:
             ident = item.get("id")
@@ -2817,7 +3293,7 @@ class Dashboard:
             # out of, so neither ends mid-word.
             rows.append({
                 "at": self._stamp_of(item.get("at", ""), "%Y-%m-%dT%H:%M:%S"),
-                "kind": "notify", "mark": "notify",
+                "kind": "notify", "mark": "notify", "source": str(item.get("source") or ""),
                 "mark_colour": {"done": ui.GREEN, "input": ui.ACCENT,
                                 "error": ui.RED}.get(
                     str(item.get("kind") or "info"),
@@ -2860,10 +3336,13 @@ class Dashboard:
         rows = []
         for item in pending:
             sid = str(item.get("id", ""))
-            buttons = [("Yes", "gold",
-                        lambda s=sid: self._review_decide(s, "accepted")),
-                       ("No", "quiet",
-                        lambda s=sid: self._review_decide(s, "rejected"))]
+            # No, then Yes: PileRow packs them left to right, so Yes is
+            # the right-hand one, as on the card, the shelf and the web
+            # desk (review_card's ONE DECISION, 2026-11-27)
+            buttons = [("No", "quiet",
+                        lambda s=sid: self._review_decide(s, "rejected")),
+                       ("Yes", "gold",
+                        lambda s=sid: self._review_decide(s, "accepted"))]
             said = self._change_bands(item, self._row_room(buttons))
             rows.append({
                 "at": self._stamp_of(item.get("when", ""),
@@ -3013,6 +3492,7 @@ class Dashboard:
                 return measure(heard) + measure(meant) + 70
 
         gap = 7
+        space, ellipsis = measure(" "), measure(" …")
 
         def stop(word: str) -> bool:
             return bool(word) and word[-1] in summary.STOPS
@@ -3048,10 +3528,22 @@ class Dashboard:
                                          + (" …" if was_cut else ""))
                 return total
 
-            # the outer contexts first, a word at a time from the far
-            # ends, the longer first; then the inner ones from their
-            # middles
-            while width_of() > room:
+            def guess() -> int:
+                # width_of() off each word's own width: a few pixels from
+                # the real line (1,548 of 14,696 lines off, by 3 px at
+                # most, 2026-10-23) and no Tk call for a word seen before
+                total = fixed
+                for words_, was_cut in zip(ctx, cut):
+                    if words_:
+                        total += (sum(measure(w) for w in words_)
+                                  + space * (len(words_) - 1)
+                                  + (ellipsis if was_cut else 0))
+                return total
+
+            def trim() -> bool:
+                # the outer contexts first, a word at a time from the far
+                # ends, the longer first; then the inner ones from their
+                # middles. False: nothing left to take.
                 outer = [(len(ctx[0]), 0), (len(ctx[-1]), len(ctx) - 1)]
                 outer = [o for o in outer if o[0] > 0]
                 if outer:
@@ -3061,15 +3553,28 @@ class Dashboard:
                     else:
                         ctx[-1] = ctx[-1][:-1]
                     cut[k] = True
-                    continue
+                    return True
                 inner = [(len(ctx[k]), k) for k in range(1, len(ctx) - 1)
                          if len(ctx[k]) > 0]
                 if not inner:
-                    break
+                    return False
                 n, k = max(inner)
                 mid = len(ctx[k]) // 2
                 ctx[k] = ctx[k][:mid] + ctx[k][mid + 1:]
                 cut[k] = True
+                return True
+
+            # Every step a real measure of every context was ~0.9 ms a
+            # call, and a sentence with no full stop is a context of the
+            # whole dictation: hundreds of steps, half a second for one
+            # row. So the steps that are plainly still too wide go on the
+            # guess, with room to spare for its error, and only the last
+            # few are measured — the same cut, a word at a time, as ever.
+            slack = 12 + sum(len(c) for c in ctx) // 4
+            while guess() > room + slack and trim():
+                pass
+            while width_of() > room and trim():
+                pass
             if width_of() <= room or len(kept) == 1:
                 break
             kept.pop()                    # the last change goes to the note
@@ -3140,6 +3645,7 @@ class Dashboard:
                             self._consent_stat())
         p = self.parts
         items = self._waiting_items()
+        self._pile_extra_drawn = self._pile_extra(items)
         count = len(items)
         p["waiting_head"].config(
             text="Nothing is waiting." if not count else
@@ -3330,10 +3836,35 @@ class Dashboard:
         frame = self.parts.get("elsewhere")
         if frame is None or not frame.winfo_exists():
             return
+        doors = self._door_counts(items)
+        # THE TILES ARE KEPT and their words changed where they stand. A
+        # Yes, a No or a ✕ redraws the pile, and building the four tiles
+        # again with it — some thirty widgets destroyed, made and laid
+        # out — was the larger part of the 0.35 s the window then did not
+        # answer (2026-10-23). The tiles only ever change their numbers,
+        # and the one line that carries a count.
+        bits = getattr(self, "_door_bits", None)
+        if (bits and getattr(self, "_door_frame", None) is frame
+                and [b[0] for b in bits] == [d[0] for d in doors]
+                and all(b[2].winfo_exists() for b in bits)):
+            moved = False
+            for (_place, glyph_w, number_w, line_w, note_w), \
+                    (_p, _g, number, line, note_text) in zip(bits, doors):
+                glyph_w.configure(fg=ui.ACCENT if number else ui.FAINT)
+                number_w.configure(text=str(number),
+                                   fg=ui.FG if number else ui.FAINT)
+                for widget, text in ((line_w, line), (note_w, note_text)):
+                    if widget.cget("text") != text:
+                        widget.configure(text=text)
+                        moved = True
+            if moved:
+                self._measure_doors(frame)
+            return
         for child in frame.winfo_children():
             child.destroy()
         self._door_tiles: list[tuple] = []
-        doors = self._door_counts(items)
+        self._door_bits: list[tuple] = []
+        self._door_frame = frame
         # The band fills the row exactly. The remainder of the division
         # is handed out a pixel at a time to the tiles on the left rather
         # than left as a gap at the right edge, where it would read as
@@ -3370,25 +3901,28 @@ class Dashboard:
             # on a short tile and marooned on a tall one — the band is
             # 200 px when nothing is waiting, and an icon three lines
             # above the words it belongs to is an icon about nothing.
-            widgets.icon(head, glyph, bg=ui.CARD,
-                         colour=ui.ACCENT if number else ui.FAINT,
-                         size=12).pack(side="left", padx=(0, 9))
-            tk.Label(head, text=str(number), bg=ui.CARD,
-                     fg=ui.FG if number else ui.FAINT,
-                     font=(ui.DISPLAY, 18, "bold")).pack(side="left")
+            glyph_w = widgets.icon(head, glyph, bg=ui.CARD,
+                                   colour=ui.ACCENT if number else ui.FAINT,
+                                   size=12)
+            glyph_w.pack(side="left", padx=(0, 9))
+            number_w = tk.Label(head, text=str(number), bg=ui.CARD,
+                                fg=ui.FG if number else ui.FAINT,
+                                font=(ui.DISPLAY, 18, "bold"))
+            number_w.pack(side="left")
             # anchor "s" and 5 px of ground: it sits on the number's
             # baseline rather than at the top of the taller line.
-            tk.Label(head, text=line, bg=ui.CARD, fg=ui.DIM,
-                     font=(ui.UI, 10), anchor="w").pack(side="left",
-                                                        anchor="s",
-                                                        padx=(7, 0),
-                                                        pady=(0, 5))
+            line_w = tk.Label(head, text=line, bg=ui.CARD, fg=ui.DIM,
+                              font=(ui.UI, 10), anchor="w")
+            line_w.pack(side="left", anchor="s", padx=(7, 0), pady=(0, 5))
             note = tk.Label(block, text=note_text, bg=ui.CARD, fg=ui.FAINT,
                             font=(ui.UI, 9), anchor="w", justify="left",
                             wraplength=tile_w - 2 * DOOR_PAD)
             self._door_tiles.append((tile, block, note))
+            self._door_bits.append((place, glyph_w, number_w, line_w, note))
             self._make_door(tile, place)
+        self._measure_doors(frame)
 
+    def _measure_doors(self, frame) -> None:
         # HOW SHORT THE BAND MAY GET IS ASKED, NOT TYPED. A Card CLIPS —
         # its body is a create_window with a height on it — so a band one
         # pixel too short cuts "corrections waiting" through the middle
@@ -3455,6 +3989,13 @@ class Dashboard:
             self._busy_until = time.monotonic() + 1
             self._ask("notify", then=lambda r: self._notify_answered(r, do),
                       do=do, id=ident)
+            if do == "dismiss" and ident is not None:
+                # THE ROW GOES WITH THE PRESS, not with the app's answer.
+                # The answer is a round trip down the pipe and then a turn
+                # of the 80 ms pump before anything moved: in his clip of
+                # 2026-10-23 a ✕ was a click that seemed not to land.
+                self._notify_gone.add(ident)
+                self._redraw_pile()
             return
         if do == "open":
             self._note("nothing is running — start it to reach what sent "
@@ -3466,7 +4007,7 @@ class Dashboard:
                 store.mark_seen([ident])
         except Exception as e:            # noqa: BLE001
             self._note(f"could not mark that seen: {e}")
-        self._fill_waiting()
+        self._redraw_pile()
 
     # -- the rest of the day
 
@@ -3479,9 +4020,6 @@ class Dashboard:
         frame = p.get("rest")
         if frame is None or not frame.winfo_exists():
             return
-        for child in frame.winfo_children():
-            child.destroy()
-        self._rest_keep: list = []
         today = time.strftime("%Y-%m-%d")
         lines = []
 
@@ -3494,14 +4032,6 @@ class Dashboard:
                           said.text or "", f"{count} today",
                           ui.is_rtl(said.text or ""),
                           lambda: self._show("Said")))
-        else:
-            # The one sentence a first run has to say. Kept as its own
-            # part because a test reads it: an empty history that says
-            # nothing at all reads as a broken screen.
-            p["last_text"] = tk.Label(frame, text="Nothing dictated yet.",
-                                      bg=ui.BG, fg=ui.FAINT,
-                                      font=(ui.UI, 10), anchor="w")
-            p["last_text"].place(x=0, y=10)
 
         took = self._last_capture()
         if took is not None:
@@ -3517,6 +4047,30 @@ class Dashboard:
                           looked.text or looked.source or "", "",
                           ui.is_rtl(looked.text or ""),
                           lambda: self._show("Said")))
+
+        # THE SAME THREE LINES ARE NOT DRAWN AGAIN. This runs on every
+        # poll while Home is up, and tearing the rows down and building
+        # them back — and the update_idletasks that lays them out — was
+        # 45-60 ms of a window that did not answer, every 800 ms
+        # (measured 2026-10-23). Drawn again only when what they say
+        # changed, or the page under them is a new one.
+        drawn = (frame, said is None, str(took[0]) if took else "",
+                 tuple(line[:5] for line in lines))
+        if drawn == getattr(self, "_rest_drawn", None):
+            self._paint_strip()
+            return
+        self._rest_drawn = drawn
+        for child in frame.winfo_children():
+            child.destroy()
+        self._rest_keep: list = []
+        if said is None:
+            # The one sentence a first run has to say. Kept as its own
+            # part because a test reads it: an empty history that says
+            # nothing at all reads as a broken screen.
+            p["last_text"] = tk.Label(frame, text="Nothing dictated yet.",
+                                      bg=ui.BG, fg=ui.FAINT,
+                                      font=(ui.UI, 10), anchor="w")
+            p["last_text"].place(x=0, y=10)
 
         y = 0
         for label, when, text, meta, rtl, command in lines:
@@ -3544,19 +4098,33 @@ class Dashboard:
             return None
         if not folder or not folder.is_dir():
             return None
+        # The folder is listed again only when it changed (a file added,
+        # removed or renamed moves its own mtime) or the day did: this is
+        # asked on every poll while Home is up, and the listing is three
+        # stat()s a picture.
+        try:
+            seen = (str(folder), folder.stat().st_mtime_ns,
+                    time.strftime("%Y-%m-%d"))
+        except OSError:
+            return None
+        last = getattr(self, "_capture_seen", None)
+        if last is not None and last[0] == seen:
+            return last[1]
         try:
             shots = [f for f in folder.iterdir()
                      if f.is_file() and f.suffix.lower() in CAPTURE_SUFFIXES]
         except OSError:
             return None
-        if not shots:
-            return None
-        shots.sort(key=lambda f: f.stat().st_mtime)
-        newest = shots[-1]
-        midnight = time.mktime(time.strptime(time.strftime("%Y-%m-%d"),
-                                             "%Y-%m-%d"))
-        today = sum(1 for f in shots if f.stat().st_mtime >= midnight)
-        return newest, newest.stat().st_mtime, today
+        found = None
+        if shots:
+            stamps = {f: f.stat().st_mtime for f in shots}
+            newest = sorted(shots, key=stamps.__getitem__)[-1]
+            midnight = time.mktime(time.strptime(time.strftime("%Y-%m-%d"),
+                                                 "%Y-%m-%d"))
+            today = sum(1 for f in shots if stamps[f] >= midnight)
+            found = (newest, stamps[newest], today)
+        self._capture_seen = (seen, found)
+        return found
 
     def _paint_strip(self) -> None:
         p = self.parts
@@ -3583,19 +4151,23 @@ class Dashboard:
             sentence = ("The model is off — every key that needs no model works; "
                         "Start loads it again." if model == "off" else
                         "The model is loading — about 25 seconds.")
-        p["strip_awake"].config(text=sentence)
-        p["strip_awake"].update_idletasks()
+        # Every poll asks; only a changed line is written and laid out.
+        if p["strip_awake"].cget("text") != sentence:
+            p["strip_awake"].config(text=sentence)
+            p["strip_awake"].update_idletasks()
 
         bits = []
         phone = (self.status or {}).get("phone")
-        bits.append("phone live" if phone else "phone off")
+        bits.append("phone live" if isinstance(phone, dict) and phone.get("on") else "phone off")
         bits.append(f"DeskIT {paths.DEV_TAG} {version.VERSION}".replace("  ", " "))
         if getattr(self, "branch", ""):
             bits.append(f"running {self.branch}")
         learned = _words_learned()
         if learned is not None:
             bits.append(f"{learned} words learned")
-        p["strip_facts"].config(text="   ·   ".join(bits))
+        facts = "   ·   ".join(bits)
+        if p["strip_facts"].cget("text") != facts:
+            p["strip_facts"].config(text=facts)
 
     def _vocab_panel(self, parent=None) -> None:
         """What saying things has taught it: the count, the last pairs it
@@ -3672,10 +4244,8 @@ class Dashboard:
         p["vocab_hot"] = tk.Label(
             body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=inner,
             justify="left",
-            text=("The best of them go into the decoder's prompt before it "
-                  f"listens — {cap} at a time." if cap
-                  else "The best of them go into the decoder's prompt "
-                       "before it listens."))
+            text=(f"It listens for the best {cap} of them as you speak." if cap
+                  else "It listens for the best of them as you speak."))
         p["vocab_hot"].place(x=0, y=436)
 
     def _recent_pairs(self, limit: int) -> list:
@@ -3758,11 +4328,13 @@ class Dashboard:
         """
         if "list" not in self.parts:
             return
-        self._stop_rows()
+        self._drop_rows("Said")
+        limit = getattr(self, "_said_shown", SAID_PAGE)
+        # what the rows are drawn from, for _place_back to compare
+        self._said_drawn = (self.log, self._filter, self._query, limit)
         scroller = self.parts["list"]
         scroller.clear()
         found = history.filtered(self.log, self._filter, self._query)
-        limit = getattr(self, "_said_shown", SAID_PAGE)
         shown = found[:limit]
         self.parts["empty"].pack_forget()
         if not found:
@@ -3807,17 +4379,55 @@ class Dashboard:
         else:
             self._rows_after = None
 
+    #: The lists drawn a tick at a time, by the place that owns each:
+    #: (what is still to draw, the pending tick, what draws the next).
+    ROWS = {"Said": ("_rows_left", "_rows_after", "_draw_more_rows"),
+            "Corrections": ("_corr_left", "_corr_after", "_corr_draw"),
+            "Settings": ("_settings_left", "_settings_tick", "_draw_settings")}
+
+    def _draw_more_rows(self) -> None:
+        self._draw_rows(25)
+
     def _stop_rows(self) -> None:
-        self._rows_left = []
-        self._settings_left = []
-        for name in ("_rows_after", "_settings_tick"):
-            pending = getattr(self, name)
+        """Every list still being drawn a tick at a time, dropped — for
+        a sign-out, after which every place is built again."""
+        for name in self.ROWS:
+            self._drop_rows(name)
+
+    def _drop_rows(self, name: str) -> None:
+        """One place's list dropped: its tick cancelled and the rest of
+        it forgotten — its own refill, or the place built again."""
+        self._pause_rows(name)
+        if name in self.ROWS:
+            setattr(self, self.ROWS[name][0], [])
+
+    def _pause_rows(self, name: str | None = None) -> None:
+        """The tick of one place's list — or of all of them — cancelled,
+        what is still to draw kept. A place switched away from mid-list
+        is finished when it is shown again (_resume_rows) rather than
+        drawn again from the top: Corrections takes seconds to draw its
+        136 rows a tick at a time, and a visit shorter than that used to
+        start the whole column over on every return."""
+        for place in ([name] if name else self.ROWS):
+            if place not in self.ROWS:
+                continue
+            tick = self.ROWS[place][1]
+            pending = getattr(self, tick, None)
+            setattr(self, tick, None)
             if pending is not None:
                 try:
                     self.root.after_cancel(pending)
-                except Exception:
+                except Exception:         # noqa: BLE001
                     pass
-                setattr(self, name, None)
+
+    def _resume_rows(self, name: str) -> None:
+        """A kept place's list, carried on from where its last visit left
+        it."""
+        if name not in self.ROWS:
+            return
+        left, tick, draw = self.ROWS[name]
+        if getattr(self, left, None) and getattr(self, tick, None) is None:
+            setattr(self, tick, self.root.after(16, getattr(self, draw)))
 
     def _history_row(self, scroller: ui.Scroller, event: history.Event) -> None:
         """One event, one canvas — drawn, not built out of widgets.
@@ -3929,7 +4539,14 @@ class Dashboard:
             self._note("accepted — the app will learn it"
                        if verdict == "accepted" else "rejected")
             self._ask("review_absorb")
-        self._fill_waiting()
+        # The answered row goes NOW, on the place it was answered on. On
+        # Corrections it used to stay up until the next poll (up to
+        # 0.8 s) and then the whole column was cleared and drawn again
+        # in plain sight, row by row: his clip of 2026-10-23.
+        if self.screen == "Corrections":
+            self._redraw(self._fill_corrections)
+        else:
+            self._redraw_pile()
 
     # ----------------------------------------------------------- problems
 
@@ -5333,6 +5950,16 @@ class Dashboard:
         self._busy_until = time.monotonic() + 1
         self._ask("notify", then=lambda r: self._notify_answered(r, do),
                   do=do)
+        if do == "dismiss":
+            # every row goes with the press, as a single ✕ does (_notify_one)
+            try:
+                store = self._notify_store()
+                self._notify_gone |= {i.get("id") for i in
+                                      (store.recent(30) if store else [])
+                                      if not i.get("seen")}
+            except Exception:             # noqa: BLE001 — a broken file
+                pass
+            self._redraw_pile()
 
     def _notify_answered(self, reply: dict | None, do: str) -> None:
         self._announce(reply, {"dismiss": "all marked seen",
@@ -5344,7 +5971,9 @@ class Dashboard:
         if reply and reply.get("ok") and isinstance(reply.get("notify"),
                                                     dict):
             self.status["notify"] = reply["notify"]
-        self._fill_waiting()
+        if reply is None or not reply.get("ok"):
+            self._notify_gone.clear()     # not dismissed after all: back
+        self._redraw_pile()
 
     def _notify_open_log(self) -> None:
         path = paths.NOTIFY_LOG
@@ -5911,6 +6540,14 @@ class Dashboard:
         if not caps:
             return
         keys = self.status.get("keys") or self._read_keys()
+        # Painted already with these keys: nothing to do. This runs on
+        # every poll while Keys is up and on every visit to it, and it
+        # was 23 ms of the Tk thread each time (2026-10-23).
+        said = repr(sorted((str(k), str(v)) for k, v in keys.items()))
+        seen = getattr(self, "_keys_painted", None)
+        if seen is not None and seen[0] is caps and seen[1] == said:
+            return
+        self._keys_painted = (caps, said)
         for field, cap in caps.items():
             if cap.winfo_exists():
                 cap.set(pretty_key(keys.get(field, "")))
@@ -6103,7 +6740,10 @@ class Dashboard:
         # widget still sitting in `parts`.
         if scroller is None or not scroller.winfo_exists():
             return
-        self._stop_rows()
+        self._drop_rows("Settings")
+        # the tab the cards are of, for _place_back to compare
+        self._settings_drawn = (None if self._settings_searching
+                                else self._settings_tab)
         scroller.clear()
         p["rows"] = {}
         sections = p["sections"]
@@ -6170,7 +6810,7 @@ class Dashboard:
     LAYOUT: dict[str, tuple[str, ...]] = {
         settings_mod.GENERAL: ("dot", "ON THE SCREEN", "THIS COMPUTER",
                                "WHERE FILES ARE SAVED", "updates", "awake"),
-        settings_mod.DICTATION: ("WHERE YOUR SPEECH BECOMES WORDS", "model",
+        settings_mod.DICTATION: ("model",
                                  "WHEN YOU DICTATE", "WORDS IT LEARNS",
                                  "THE TRANSLATE KEY"),
         settings_mod.SCREEN: ("recording", "SCREENSHOTS AND RECORDINGS",
@@ -6178,7 +6818,7 @@ class Dashboard:
                               "voice"),
         settings_mod.MESSAGES: ("MESSAGES FROM OTHER PROGRAMS", "claude",
                                 "sounds"),
-        settings_mod.PHONE: ("phone", "DICTATING FROM THE PHONE"),
+        settings_mod.PHONE: ("THE PHONE", "devices", "backup", "keyboard", "trouble"),
         settings_mod.ACCOUNT: ("account", "WHAT THE ACCOUNT MAY DO", "lock"),
         settings_mod.PRIVACY: ("keys", "WHAT MAY LEAVE THIS PC",
                                "connections", "said_file", "KEPT ON THIS PC"),
@@ -6408,7 +7048,7 @@ class Dashboard:
                 card.create_window(right, y - 1, window=browse, anchor="ne")
                 self.parts.setdefault("browse", {})[setting.path] = browse
                 x = right - BROWSE_W - 8
-            field = ui.Field(card, _shown(value),
+            field = ui.Field(card, _shown_for(setting.path, value),
                              w=ENTRY_W + (60 if folder else 0), h=ENTRY_H,
                              bg=ui.CARD)
             card.create_window(x, y - 1, window=field, anchor="ne")
@@ -6437,7 +7077,14 @@ class Dashboard:
             row = next(s for s in privacy.status() if s["kind"] == kind)
         except Exception:
             row = {"open": False, "stale": False, "when": "", "gate": False}
-        if row["open"]:
+        # A retired gate (privacy.RETIRED, cloud_audio since 2026-11-27):
+        # nothing on this PC asks it, so no Turn on of any kind — only the
+        # record, and Withdraw while a yes from before is on file.
+        retired = kind in privacy.RETIRED
+        if retired:
+            text, colour = ((settings_mod.RETIRED_GATE_WORDS[1] if row.get("when")
+                             else settings_mod.RETIRED_GATE_WORDS[0]), ui.FAINT)
+        elif row["open"]:
             when = str(row.get("when", ""))[:10]
             text, colour = f"On since {when}", ui.FG
         elif row.get("stale"):
@@ -6447,21 +7094,21 @@ class Dashboard:
         else:
             text, colour = "Off — its card opens on first use", ui.FAINT
         x = right
-        if row["open"]:
+        if row["open"] or (retired and row.get("when")):
             button = ui.Button(card, "Withdraw",
                                lambda k=kind, s=setting: self._withdraw(k, s),
                                w=widgets.button_width("Withdraw"), h=30,
                                quiet=True)
             card.create_window(right, y - 2, window=button, anchor="ne")
             x = right - widgets.button_width("Withdraw") - 12
-        elif kind in privacy.SYNC_KINDS:
+        elif kind in privacy.SYNC_KINDS and not retired:
             button = ui.Button(card, "Turn on",
                                lambda k=kind: self._account_do("sync", "asking", kind=k),
                                w=widgets.button_width("Turn on"), h=30,
                                quiet=True)
             card.create_window(right, y - 2, window=button, anchor="ne")
             x = right - widgets.button_width("Turn on") - 12
-        elif row.get("stale"):
+        elif row.get("stale") and not retired:
             # The same yes Home's row gives (_consent_do), here too.
             button = ui.Button(card, "Turn on",
                                lambda k=kind, s=setting: self._turn_on(k, s),
@@ -6497,7 +7144,9 @@ class Dashboard:
             self._note(str(e))
             return
         self.parts["values"][setting.path] = False
-        self._note(f"{kind}: withdrawn — the local path answers from the "
+        self._note(f"{kind}: withdrawn — the old yes is gone"
+                   if kind in privacy.RETIRED else
+                   f"{kind}: withdrawn — the local path answers from the "
                    f"next press; the card will ask again when a feature "
                    f"needs the cloud")
         self._draw_settings()
@@ -6802,9 +7451,9 @@ class Dashboard:
                     "leave it, it gives up on its own and the dot goes "
                     "back to being a button.")
         elif moved:
-            where = f"at {info.get('x')}, {info.get('y')}"
-            said = ("Where you dropped it, and the panel opens beside it "
-                    "there. Move the dot picks it up again; Back to the "
+            where = "where you dropped it"
+            said = ("The panel opens beside it there. Move the dot picks "
+                    "it up again; Back to the "
                     "corner sends it home to the "
                     f"{info.get('corner', 'bottom-right')} of your main "
                     "screen.")
@@ -6881,109 +7530,240 @@ class Dashboard:
         else:
             self._note("the dot did not move")
 
-    def _phone_block(self, scroller) -> None:
-        """The endpoint the Android keyboard talks to. 39 dictations and
-        228 notification relays came through it in ten days, announced at
-        every startup, with no screen of its own until now."""
-        card = ui.Card(scroller.inner, CW, 132, bg=ui.BG, pad=18)
+    def _devices_block(self, scroller) -> None:
+        """Your devices (desk_settings.device_rows, the web desk's words):
+        Forget asks in its own row."""
+        import desk_settings
+
+        rows = desk_settings.device_rows(self.status, getattr(self, "_phone_asking", ""))
+        error = str(desk_settings.phone_info(self.status).get("error") or "")
+        if len(rows) < 2 and not error:
+            return
+        card = ui.Card(scroller.inner, CW, 36 + 46 * len(rows) + (44 if error else 0), bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
-        tk.Label(body, text="T H E   P H O N E", bg=ui.CARD, fg=ui.FAINT,
+        tk.Label(body, text="Y O U R   D E V I C E S", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).place(x=0, y=0)
-        url = (self.status or {}).get("phone", "")
-        self.parts["phone_url"] = tk.Label(
-            body, text=url or "DeskIT is not running, or the switch below "
-                              "is off",
-            bg=ui.CARD, fg=ui.FG if url else ui.DIM,
-            font=(ui.UI, 12 if url else 10))
-        self.parts["phone_url"].place(x=0, y=24)
-        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=CW - 200, justify="left",
-                 text="Put the DeskIT keyboard on your phone, give it this "
-                      "address once, and the phone dictates into this "
-                      "computer over your own private network. It is also "
-                      "how a message from another program reaches this "
-                      "desk."
-                 ).place(x=0, y=54)
-        ui.Button(body, "Copy link", self._copy_phone, h=32, quiet=True,
-                  w=widgets.button_width("Copy link", icon=True),
-                  icon=ui.ICON["link"]).place(x=CW - 36, y=20, anchor="ne")
+        for i, row in enumerate(rows):
+            y = 24 + i * 46
+            tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                     text=f"Forget {row['name']}?" if row["asking"] else row["name"]
+                     ).place(x=0, y=y)
+            tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     text=desk_settings.FORGET_ASK if row["asking"] else row["meta"]
+                     ).place(x=0, y=y + 20)
+            if row["asking"]:
+                ui.Button(body, "Keep", self._phone_keep, h=32, quiet=True,
+                          w=widgets.button_width("Keep")).place(x=CW - 36, y=y, anchor="ne")
+                ui.Button(body, "Forget", lambda i=row["id"]: self._phone_forget(i), h=32,
+                          w=widgets.button_width("Forget")).place(x=CW - 120, y=y, anchor="ne")
+            elif row["forget"]:
+                ui.Button(body, "Forget", lambda i=row["id"]: self._phone_ask(i), h=32,
+                          quiet=True, w=widgets.button_width("Forget")
+                          ).place(x=CW - 36, y=y, anchor="ne")
+        if error:
+            tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), justify="left",
+                     wraplength=CW - 60, text=error).place(x=0, y=24 + 46 * len(rows))
         scroller.bind_wheel(card)
+
+    def _phone_ask(self, ident: str) -> None:
+        self._phone_asking = ident
+        self._fill_settings()
+
+    def _phone_keep(self) -> None:
+        self._phone_asking = ""
+        self._fill_settings()
+
+    def _phone_forget(self, ident: str) -> None:
+        self._phone_asking = ""
+        self._ask("phone", then=lambda r: self._announce(r, "forgetting"), do="forget", id=ident)
+        self._fill_settings()
+
+    def _backup_block(self, scroller) -> None:
+        """The phone's cloud backup, read from its row (desk_settings.backup_card,
+        the web desk's words): read-only, with Add a key when there is none."""
+        import desk_settings
+
+        said = desk_settings.backup_card(self.status)
+        if said is None:
+            return
+        buttons = said.get("buttons") or []
+        card = ui.Card(scroller.inner, CW, 96 + (44 if buttons else 0), bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), wraplength=CW - 80,
+                 justify="left", text=said["line"]).place(x=0, y=0)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 80,
+                 justify="left", text=said.get("small") or "").place(x=0, y=26)
+        if buttons:
+            ui.Button(body, "Add a key", lambda: self._settings_go(settings_mod.PRIVACY), h=32,
+                      w=widgets.button_width("Add a key")).place(x=0, y=84)
+        scroller.bind_wheel(card)
+
+    def _keyboard_block(self, scroller) -> None:
+        """The QR of the keyboard's download, or, on an anonymous account,
+        Sign in with Google first (desk_settings.keyboard_card)."""
+        import desk_settings
+        import phone as phone_mod
+
+        said = desk_settings.keyboard_card(self.status)
+        card = ui.Card(scroller.inner, CW, 150, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        x = 0
+        if said["kind"] == "keyboard" and said["n"]:
+            photo = self._qr_photo(body, phone_mod.qr_rows(phone_mod.download_url()))
+            if photo is not None:
+                self.parts["phone_qr"] = photo
+                tk.Label(body, image=photo, bg=ui.CARD, bd=0).place(x=0, y=0)
+                x = photo.width() + 20
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), wraplength=CW - 80 - x,
+                 justify="left", text=said["line"]).place(x=x, y=4)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 80 - x,
+                 justify="left", text=said.get("said") or said.get("small") or ""
+                 ).place(x=x, y=30)
+        if said["kind"] == "line":
+            ui.Button(body, "Sign in with Google", lambda: self._account_do("google", "opening the browser"), h=32,
+                      w=widgets.button_width("Sign in with Google")).place(x=0, y=74)
+        scroller.bind_wheel(card)
+
+    @staticmethod
+    def _qr_photo(master, rows):
+        """A QR as a picture on this window's own interpreter (master=, the
+        PhotoImage trap in AGENTS.md)."""
+        if not rows:
+            return None
+        from PIL import Image, ImageTk
+
+        n = len(rows)
+        margin = 3
+        img = Image.new("L", (n + 2 * margin, n + 2 * margin), 255)
+        for y, row in enumerate(rows):
+            for x, dark in enumerate(row):
+                if dark:
+                    img.putpixel((x + margin, y + margin), 0)
+        side = img.width * 3
+        return ImageTk.PhotoImage(img.resize((side, side), Image.NEAREST), master=master)
+
+    def _trouble_block(self, scroller) -> None:
+        """The phone can't connect? (desk_settings.trouble_card)."""
+        import desk_settings
+
+        said = desk_settings.trouble_card(self.status)
+        if said is None:
+            return
+        card = ui.Card(scroller.inner, CW, 104 + 22 * len(said["details"]), bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10), text=said["line"]).place(x=0, y=0)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 240,
+                 justify="left", text=said["said"]).place(x=0, y=24)
+        if said["button"]:
+            ui.Button(body, said["button"], self._phone_firewall, h=32, quiet=True,
+                      w=widgets.button_width(said["button"])).place(x=CW - 36, y=0, anchor="ne")
+        lines = "\n".join(f"{d['k']}:  {d['v']}" for d in said["details"])
+        more = tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), justify="left",
+                        wraplength=CW - 80, text=lines)
+
+        def flip() -> None:
+            if more.winfo_ismapped():
+                more.place_forget()
+            else:
+                more.place(x=0, y=76)
+        ui.Button(body, "Details", flip, h=26, quiet=True,
+                  w=widgets.button_width("Details")).place(x=0, y=46)
+        scroller.bind_wheel(card)
+
+    def _phone_firewall(self) -> None:
+        """Waits for the person's answer to Windows, so on a thread of its
+        own, and the sentence comes back to this one."""
+        import desk_settings
+
+        status = self.status
+
+        def work() -> None:
+            said = desk_settings.let_it_through(status)
+            self._events.put(lambda: self._note(said))
+        threading.Thread(target=work, daemon=True, name="phone-firewall").start()
 
     # --------------------------------------------------- your cloud keys
 
     KEY_PROVIDERS = (("groq", "Groq", "https://console.groq.com",
                       "recommended first: one key unlocks the repair pass, punctuation, "
-                      "lookup and, without an NVIDIA card, cloud transcription"),
+                      "lookup and translation"),
                      ("gemini", "Gemini", "https://aistudio.google.com",
-                      "for translation and ask-the-screen"))
+                      "for translation when Groq cannot answer, and ask-the-screen"))
 
     def _keys_block(self, scroller) -> None:
         """YOUR CLOUD KEYS on Settings > Privacy (chapter 9 screen 3, D10-
-        D12): a row per provider — a masked field that takes a paste and
-        never shows the value again, [Save and test] (the key into
-        Windows Credential Manager through secretstore, then one
-        `key-test` call through net.py that lists the provider's models),
-        [Remove] — and under each the fixed storage sentence the guide
-        quotes. The gates on the rows below open only through their
-        cards; a key is what lets a card's [Turn on] mean anything."""
+        D12): a row per provider — keyrow.KeyRow, the wizard's own row
+        (store walk item 14, 2026-10-03): a saved key LOCKS, a fixed row
+        of dots and [Change key]; Change opens the empty field with Save
+        and Cancel, Cancel keeps the saved key, and a key the provider
+        refuses gives the saved one back. [Remove] beside it, and under
+        each the fixed storage sentence the guide quotes. The check is one
+        `key-test` call through net.py by name; the value is never read
+        back. The gates on the rows below open only through their cards;
+        a key is what lets a card's [Turn on] mean anything."""
+        import keyrow
         import secretstore
-        present = {}
-        try:
-            present = secretstore.present()
-        except Exception:                 # noqa: BLE001
-            pass
-        # Each provider is as tall as its storage sentence wraps to —
-        # two lines of the small face at this width — plus the row above
-        # it; a flat 132 per provider left the last sentence's second
-        # line behind the card's edge ("swallowed", the owner, 2026-09-18).
-        sentences = {name: ui.clamp(secretstore.storage_sentence(name),
-                                    ui.UI, 8, CW - 40, 3)
-                     for name, _l, _u, _w in self.KEY_PROVIDERS}
-        heights = {name: 82 + lines * LINE + 14
-                   for name, (_text, lines) in sentences.items()}
-        card = ui.Card(scroller.inner, CW, 36 + 24 + sum(heights.values()),
-                       bg=ui.BG, pad=18)
+        card = ui.Card(scroller.inner, CW, 40, bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
         tk.Label(body, text="Y O U R   C L O U D   K E Y S", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+                 font=(ui.MEDIUM, 8), anchor="w").pack(fill="x")
         self.parts["key_fields"] = {}
         self.parts["key_lines"] = {}
-        y = 24
+        self.parts["key_rows"] = {}
+        remove_w = widgets.button_width("Remove")
         for name, label, url, why in self.KEY_PROVIDERS:
-            tk.Label(body, text=label, bg=ui.CARD, fg=ui.FG,
-                     font=(ui.UI, 11, "bold")).place(x=0, y=y)
-            link = tk.Label(body, text="Get a free key", bg=ui.CARD, fg=ui.ACCENT_TEXT,
+            head = tk.Frame(body, bg=ui.CARD)
+            head.pack(fill="x", pady=(10, 6))
+            tk.Label(head, text=label, bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 11, "bold")).pack(side="left")
+            link = tk.Label(head, text="Get a free key", bg=ui.CARD, fg=ui.ACCENT_TEXT,
                             font=(ui.UI, 9, "underline"), cursor="hand2")
-            link.place(x=80, y=y + 2)
+            link.pack(side="left", padx=(14, 14))
             link.bind("<Button-1>", lambda _e, u=url: self._open_url(u))
-            tk.Label(body, text=why, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                     wraplength=CW - 360, justify="left").place(x=190, y=y + 2)
-            field = ui.Field(body, "", w=320, h=30, justify="left",
-                             placeholder="paste the key here", bg=ui.CARD, pt=10)
-            field.entry.configure(show="•")
-            field.place(x=0, y=y + 28)
-            self.parts["key_fields"][name] = field
-            x = 332
-            for text, command in (("Save and test", lambda n=name: self._key_save(n)),
-                                  ("Remove", lambda n=name: self._key_remove(n))):
-                w = widgets.button_width(text)
-                ui.Button(body, text, command, h=30, w=w, quiet=True,
-                          bg=ui.CARD).place(x=x, y=y + 28)
-                x += w + 8
-            stored = name in present
-            line = tk.Label(body, text=(f"Stored in {present[name]}" if stored
-                                        else "no key"),
-                            bg=ui.CARD, fg=ui.FG if stored else ui.FAINT,
-                            font=(ui.UI, 9), anchor="w")
-            line.place(x=0, y=y + 64)
-            self.parts["key_lines"][name] = line
-            tk.Label(body, text=sentences[name][0], bg=ui.CARD,
-                     fg=ui.FAINT, font=(ui.UI, 8),
-                     justify="left").place(x=0, y=y + 82)
-            y += heights[name]
+            tk.Label(head, text=why, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     anchor="w").pack(side="left")
+            line = tk.Frame(body, bg=ui.CARD)
+            line.pack(fill="x")
+            row = keyrow.KeyRow(line, name, width=CW - 40 - remove_w - 120, bg=ui.CARD,
+                                on_state=lambda state, _v, n=name: self._key_state(n, state, card),
+                                show_link=False)          # the head carries the link here
+            row.pack(side="left", anchor="n")
+            ui.Button(line, "Remove", lambda n=name: self._key_remove(n), h=34, w=remove_w,
+                      quiet=True, bg=ui.CARD).pack(side="left", anchor="n", padx=(8, 0))
+            self.parts["key_rows"][name] = row
+            self.parts["key_fields"][name] = row.field
+            self.parts["key_lines"][name] = row.note
+            # Only where it is true: a key read from the environment or
+            # .env is not in Credential Manager, and its row already says
+            # where it is (desk_settings_keys._storage, the 2026-11-09 audit)
+            there, source = keyrow.stored(name)
+            if there and not source.startswith("Windows Credential Manager"):
+                continue
+            sentence, _lines = ui.clamp(secretstore.storage_sentence(name),
+                                        ui.UI, 8, CW - 40, 3)
+            tk.Label(body, text=sentence, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     justify="left", anchor="w").pack(fill="x", pady=(8, 0))
+        self._key_fit(card)
         scroller.bind_wheel(card)
+
+    @staticmethod
+    def _key_fit(card) -> None:
+        if card.winfo_exists():
+            card.body.update_idletasks()
+            card.resize(card.body.winfo_reqheight() + 2 * 18)
+
+    def _key_state(self, name: str, state: str, card) -> None:
+        """A row changed: the card follows its height, and a key just
+        stored is sent on to the account's other PCs, sealed
+        (sb._sync_vault) — at the save, as it always was."""
+        self._key_fit(card)
+        if state == "testing" and self.running:
+            self._ask("account", do="nudge", kind="vault")
 
     # ------------------------------------------- every connection (D12's window)
 
@@ -7035,16 +7815,17 @@ class Dashboard:
     # ------------------------------------------------ the account (screen 16)
 
     def _account_block(self, scroller) -> None:
-        """ACCOUNT on Settings > Privacy (chapter 9 screen 16, D17, D31):
+        """ACCOUNT on Settings > Account (chapter 9 screen 16, D17, D31):
         who is signed in, when the last sync ran, and the buttons — Sign
-        in with Google, an anonymous account, Sign out, Delete
-        my account. Every press is a command to the RUNNING app over the
+        in with Google, an anonymous account, Sign out (this PC), Sign
+        out of every PC, Delete my account. Every press is a command to the RUNNING app over the
         pipe: this window is another process, and only the app holds the
         session (8.6). The line and the buttons follow status()["account"]
         on every poll (_paint_account), so a sign-in finishing in the
-        browser shows up here without a click. Delete asks first, the way
-        the Problems ✕ does — the question grows out of the card, and the
-        answer sits at the far end from the button that raised it."""
+        browser shows up here without a click. Delete and Sign out of every
+        PC ask first, the way the Problems ✕ did — the question grows out of
+        the card, and the answer sits at the far end from the button that
+        raised it."""
         # 36 above the strip for the two text lines, 30 for the buttons,
         # 18 of pad each side: the first build was 132 and cut the buttons
         # in half (his screenshot, 2026-09-18).
@@ -7065,7 +7846,7 @@ class Dashboard:
         self.parts["account_sub"] = sub
         self.parts["account_strip"] = strip
         self._account_seen = None
-        self._account_asking = False
+        self._account_asking = ""      # "" | "delete" | "everywhere": the question the card asks
         self._paint_account(force=True)
         scroller.bind_wheel(card)
 
@@ -7116,7 +7897,14 @@ class Dashboard:
             said_sub = " · ".join(bits)
             if info.get("last_error"):
                 said_sub = f"{info['last_error']}  ·  {said_sub}"
-            if self._account_asking:
+            if self._account_asking == "everywhere":
+                said = "Sign out of every PC? Each one, this one too, stops dictating " \
+                       "until you sign in on it again."
+                colour = ui.AMBER
+                buttons = [("Stay signed in", self._account_keep),
+                           ("Sign out of every PC",
+                            lambda: self._account_do("signout_all", "signing out of every PC"))]
+            elif self._account_asking:
                 said = "Delete your account on the server? Your reports, synced words, " \
                        "settings and history go with it. Your data on this PC stays."
                 colour = ui.AMBER
@@ -7131,7 +7919,11 @@ class Dashboard:
                 if info.get("anonymous"):
                     buttons.append(("Sign in with Google",
                                     lambda: self._account_do("google", "opening the browser")))
-                buttons += [("Sign out", lambda: self._account_do("signout", "signing out")),
+                # Sign out is THIS PC, the way Google's and Microsoft's is;
+                # every PC is its own button and asks first (the Store walk,
+                # 2026-10-03: one Sign out on the Store copy locked his Dev).
+                buttons += [("Sign out", lambda: self._account_do("signout", "signing out on this PC")),
+                            ("Sign out of every PC", self._account_ask_everywhere),
                             ("Delete my account", self._account_ask)]
         else:
             said = "none — sign in to keep your learned words, settings and history " \
@@ -7164,6 +7956,15 @@ class Dashboard:
         if not self.running:
             return {}
         return dict(((self.status.get("account") or {}).get("lock") or {}))
+
+    def _lock_asks(self) -> bool:
+        """Does the pile carry a lock row that asks — another device waiting
+        to join, or the lock changed somewhere else? Those are the two
+        questions the app also knocks for (source "account")."""
+        lock = self._lock_info()
+        if not lock or not (self.status.get("account") or {}).get("signed_in"):
+            return False
+        return bool(lock.get("pending")) or lock.get("state") == "changed"
 
     def _lock_stat(self):
         """What the pile watches: the lock's state, the requests, and the
@@ -7208,58 +8009,77 @@ class Dashboard:
 
         rows: list[dict] = []
         now = time.time()
-        for kind in self._consent_stale():
-            words = cc.TEXTS.get(kind) or {}
-            blocks = dict(words.get("blocks") or ())
-            what = str(blocks.get(cc.WHAT, "")).rstrip(".")
-            # The receiver alone ("Groq and/or Google"), not the list of
-            # features after the dash: a note is one line.
-            whom = str(blocks.get(cc.WHOM, "")).split(" — ")[0].rstrip(".")
-            off = str(blocks.get(cc.OFF, "")).rstrip(".")
-            changed = str(words.get("changed") or "")
+        for asked in cc.asked_again(self._consent_stale()):
+            kinds = tuple(asked["kinds"])
             rows.append({
                 "at": now + 3, "kind": "consent", "mark": "globe",
                 "mark_colour": ui.AMBER,
-                "eyebrow": f"{words.get('title', kind)}   ·   the words changed",
+                "eyebrow": f"{asked['title']}   ·   the words changed",
                 "eyebrow_right": False,
-                "text": f"Say yes again? {changed}" if changed
-                        else f"Say yes again? What leaves: {what}.",
-                "note": f"To {whom}, on your own key. Off again: {off}.",
+                "text": asked["text"],
+                "note": asked["note"],
                 "buttons": [("Turn on", "gold",
-                             lambda k=kind: self._consent_do(k, True)),
+                             lambda k=kinds: self._consent_do(k, True)),
                             ("Not now", "quiet",
-                             lambda k=kind: self._consent_do(k, False))],
+                             lambda k=kinds: self._consent_do(k, False))],
             })
         return rows
 
-    def _consent_do(self, kind: str, yes: bool) -> None:
-        """Turn on writes the row (privacy.grant: the consent file and
+    def _consent_do(self, kinds, yes: bool) -> None:
+        """Turn on writes the rows (privacy.grant: the consent file and
         the settings mirror — the running app sees the file's mtime on
         its next gate check, no pipe message needed); Not now keeps the
-        row off this desk until it opens again."""
+        row off this desk until it opens again. One Home row may answer
+        for more than one gate (consent_card.ASK_TOGETHER)."""
         import privacy
 
+        kinds = (kinds,) if isinstance(kinds, str) else tuple(kinds)
         if yes:
             try:
-                privacy.grant(kind)
+                for kind in kinds:
+                    privacy.grant(kind)
             except Exception as e:        # noqa: BLE001
                 logging.getLogger("app").warning(
-                    "could not record the consent for %s: %s", kind, e)
+                    "could not record the consent for %s: %s", kinds, e)
                 return
         else:
             later = getattr(self, "_consent_later", None)
             if later is None:
                 later = self._consent_later = set()
-            later.add(kind)
-        self._fill_waiting()
+            later.update(kinds)
+        self._redraw_pile()
+
+    def _waiting_phone(self) -> list[dict]:
+        """A further PC of the account: "Your phone can use this PC too", and
+        the door binds on Allow, so Windows' dialog follows a press. A row
+        on Home and not a card, the owner's rule for every question."""
+        info = (self.status or {}).get("phone")
+        if not isinstance(info, dict) or not info.get("ask"):
+            return []
+        name = (info.get("phones") or [{}])[0].get("name") or "Your phone"
+
+        def press(verb: str) -> None:
+            self._busy_until = time.monotonic() + 2
+            self._ask("phone", then=lambda r: self._announce(r, ""), do=verb)
+
+        return [{"at": time.time() + 1, "kind": "phone", "mark": "keys", "mark_colour": ui.AMBER,
+                 "eyebrow": name, "eyebrow_right": False,
+                 "text": "Your phone can use this PC too",
+                 "note": "It joined your account on your other PC. Allow it, and at home it "
+                         "dictates straight to this PC. Windows will ask you once.",
+                 "buttons": [("Allow", "gold", lambda: press("allow")),
+                             ("Not now", "quiet", lambda: press("notnow"))]}]
 
     def _waiting_lock(self) -> list[dict]:
         """The lock on the pile (the owner, 2026-09-21, meeting the
         approve card beside the dot: "not outside DeskIT — inside, on
-        Home"): another PC asking to join, with its code and Approve /
-        Not now; this PC waiting for its other PC, with the code it
-        shows; a fresh recovery key, until Done; and — while the account
-        has none — the one thing worth doing before a PC is lost."""
+        Home"): another device asking to join, with its code and Approve /
+        Not now; this PC waiting for another device of the account, with
+        the code it shows and Same code, the joining side's own press; a
+        fresh recovery key, until Done; and — while
+        the account has none, and once a sync is on or the account has a
+        phone (a lock held with both syncs off asks nothing: ``quiet``) —
+        the one thing worth doing before a PC is lost."""
         lock = self._lock_info()
         if not lock or not (self.status.get("account") or {}).get("signed_in"):
             return []
@@ -7270,13 +8090,13 @@ class Dashboard:
                 "at": now + 2, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your recovery key", "eyebrow_right": False,
                 "text": f"{self._lock_fresh}  —  keep it somewhere safe, it is shown once",
-                "note": "With it, a PC with no other PC of yours at hand can open your "
+                "note": "With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.",
                 "buttons": [("Copy", "gold", self._lock_copy), ("Done", "quiet", self._lock_done)],
             })
         rows += self._lock_changed_rows(lock, now)
         for ask in lock.get("pending") or []:
-            name = ask.get("name") or "Another PC"
+            name = ask.get("name") or "Another device"
             if ask.get("twins"):
                 # two open requests from one PC: one of them is somebody
                 # else's copy (the audit's A74) — nothing to approve
@@ -7284,9 +8104,10 @@ class Dashboard:
                     "at": now + 1, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
                     "eyebrow": "Your account", "eyebrow_right": False,
                     "text": f"Two requests say they are {name} — neither can be approved",
-                    "note": f"One of them is not your PC. On {name}, sign out and sign in again to "
-                            "ask afresh. Nobody of yours asking right now? Sign out in Settings > "
-                            "Account — it signs out every PC and anyone else in your account.",
+                    "note": f"One of them is not yours. On {name}, sign out and sign in again to "
+                            "ask afresh. Nobody of yours asking right now? Settings > Account > "
+                            "Sign out of every PC — it ends every session of your account, "
+                            "anyone else's too.",
                     "buttons": [("Not now", "quiet",
                                  lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))],
                 })
@@ -7296,35 +8117,46 @@ class Dashboard:
                 "eyebrow": "Your account", "eyebrow_right": False,
                 "text": f"{name} asks to join your account — its screen must show "
                         f"{ask.get('code') or '?'}",
-                "note": "Approve only if the code is exactly that. It then gets your account's "
-                        "key: your cloud keys and what you said open there too, and the key "
-                        "crosses sealed — the server cannot read it.",
+                # two lines on Home: the rule first, what it hands over after
+                "note": f"{JOIN_ONLY_IF} It then opens what you said and your cloud keys.",
                 "buttons": [("Approve", "gold",
                              lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                             ("Not now", "quiet",
                              lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))],
             })
         if lock.get("state") == "waiting":
+            code = lock.get("code") or "…"
+            same = bool(lock.get("same"))
+            buttons = [("Type the recovery key", "quiet", self._lock_go_type)]
+            if not same:
+                buttons.insert(0, ("Same code", "gold",
+                                   lambda c=lock.get("code"): self._lock_do("same_code", "noted", kind=c)))
             rows.append({
                 "at": now, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your account", "eyebrow_right": False,
-                "text": f"Waiting for your other PC to approve this one — Home there "
-                        f"must show {lock.get('code') or '…'}",
-                "note": "Open the desk on your other PC and press Approve. Until then this PC "
-                        "has your words and settings; what you said and your cloud keys stay "
-                        "locked. No other PC at hand? Type the recovery key DeskIT made for you.",
-                "buttons": [("Type the recovery key", "quiet", self._lock_go_type)],
+                "text": (f"You pressed Same code for {code} — waiting for your other device to "
+                         "approve this PC" if same else
+                         f"Waiting for another device of yours to approve this PC — its "
+                         f"screen must show {code}"),
+                "note": ("Now press Approve there: the desk on your other PC, or DeskIT on your "
+                         "phone. Until then what you said and your cloud keys stay locked."
+                         if same else
+                         "Open the desk on your other PC, or open DeskIT on your phone. If it "
+                         "shows this code, press Approve there and Same code here, in either "
+                         "order."),
+                "buttons": buttons,
             })
         elif lock.get("state") == "have" and lock.get("recovery") is False \
-                and getattr(self, "_lock_mode", "") != "shown":
+                and getattr(self, "_lock_mode", "") != "shown" and not lock.get("quiet"):
             rows.append({
                 "at": 0.0, "kind": "lock", "mark": "keys", "mark_colour": ui.ACCENT,
                 "eyebrow": "Your account", "eyebrow_right": False,
                 "text": "Make a recovery key — so a new PC of yours can open your account "
                         "when this one is gone",
                 "note": "DeskIT makes it (24 characters) and shows it once; you keep it. What "
-                        "you said and your cloud keys are locked with a key only your PCs "
-                        "hold — without another PC or the recovery key, a new PC cannot open them.",
+                        "you said and your cloud keys are locked with a key only your devices "
+                        "hold — without another device or the recovery key, a new PC cannot "
+                        "open them.",
                 "buttons": [("Make a recovery key", "gold", self._lock_new_recovery)],
             })
         return rows
@@ -7338,8 +8170,8 @@ class Dashboard:
         the conversation, nothing trusted silently. [It was me] asks to
         join the new lock (the old key is set aside, not deleted); [It
         wasn't me] keeps everything as it is and then offers the way
-        out: Sign out (every session, a stolen one too) and Put my lock
-        back."""
+        out: Sign out of every PC (every session, a stolen one too) and
+        Put my lock back."""
         ch = lock.get("changed") or {}
         if lock.get("state") != "changed":
             return []
@@ -7350,14 +8182,14 @@ class Dashboard:
                 "text": "The lock of your account changed — not on this PC. Was it you?",
                 "note": "Until you answer, what you said and your cloud keys stop syncing, both "
                         "ways; this PC keeps its key. It was you: this PC asks to join the new "
-                        "lock — approve it from your other PC or type the recovery key. It "
-                        "wasn't: nothing here changes.",
+                        "lock — approve it from another device of yours or type the recovery "
+                        "key. It wasn't: nothing here changes.",
                 "buttons": [("It wasn't me", "gold",
                              lambda: self._lock_do("lock_answer", "kept", kind="no")),
                             ("It was me", "quiet",
                              lambda: self._lock_do("lock_answer", "asked", kind="yes"))],
             }]
-        buttons = [("Sign out", "quiet", self._lock_go_account)]
+        buttons = [("Sign out of every PC", "quiet", self._lock_go_account)]
         if ch.get("mine"):                 # a key here to put back (not one set aside already)
             buttons.insert(0, ("Put my lock back", "gold",
                                lambda: self._lock_do("lock_restore", "put back")))
@@ -7365,18 +8197,25 @@ class Dashboard:
             "at": now + 3, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
             "eyebrow": "Your account", "eyebrow_right": False,
             "text": "Not you — this PC kept its key. What you said and your keys stay paused",
-            "note": "Sign out in Settings > Account: it signs out every PC of yours and anyone "
-                    "else in your account. Sign in again here, then put your lock back — "
-                    "syncing starts again under this PC's key.",
+            "note": "Sign out of every PC ends every session of your account, anyone else's "
+                    "too. Sign in again here, then put your lock back — syncing starts again "
+                    "under this PC's key.",
             "buttons": buttons,
         }]
 
     def _lock_go_account(self) -> None:
-        """The changed-lock row's [Sign out]: Settings > Account, where
-        Sign out is — one press away, never pressed for him."""
-        self._show("Settings")
-        self._settings_go("Account")
-        self._finish_settings()
+        """The changed-lock row's [Sign out of every PC]: Settings >
+        Account with the card already asking "Sign out of every PC?" —
+        one press away, never pressed for him. ONE switch, the tab set
+        before it and the question put up under its cover, the way
+        _lock_go_type does it (two rebuilds in one press flash a third
+        screen)."""
+        self._settings_tab = settings_mod.ACCOUNT
+
+        def then() -> None:
+            self._finish_settings()
+            self._account_ask_everywhere()
+        self._show("Settings", then=then)
 
     def _lock_go_type(self) -> None:
         """The pile's [Type the recovery key]: the lock card with its
@@ -7400,7 +8239,7 @@ class Dashboard:
     def _lock_banner(self, lock: dict) -> None:
         """One line at the top of every screen while the lock needs the
         person (the owner, 2026-09-21: "something on every screen, up
-        top"): another PC asking, with Approve / Not now; this PC waiting,
+        top"): another device asking, with Approve / Not now; this PC waiting,
         with its code. On the pane, above the sheet, like the toast —
         gone the moment nothing waits."""
         # kept on self, not in parts: _show() replaces the parts dict on
@@ -7417,22 +8256,22 @@ class Dashboard:
             key = ("changed", (lock.get("changed") or {}).get("server"))
         elif pending and pending[0].get("twins"):
             ask = pending[0]
-            text = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            text = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     f"neither can be approved. See Home.")
             buttons = [("Home", lambda: self._show("Home"))]
             key = ("twins", ask.get("id"))
         elif pending:
             ask = pending[0]
-            text = (f"{ask.get('name') or 'Another PC'} asks to join your account — "
-                    f"its screen must show  {ask.get('code') or '?'}")
+            text = (f"{ask.get('name') or 'Another device'} asks to join your account — only if "
+                    f"you are adding it right now: its screen shows  {ask.get('code') or '?'}")
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                        ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
             key = ("pending", ask.get("id"), ask.get("code"))
         elif waiting:
-            text = (f"Waiting for your other PC to approve this one — Home there must "
-                    f"show  {lock.get('code') or '…'}")
-            buttons = []
-            key = ("waiting", lock.get("code"))
+            text = (f"Waiting for another device of yours to approve this PC — its screen "
+                    f"must show  {lock.get('code') or '…'}")
+            buttons = [] if lock.get("same") else [("Home", lambda: self._show("Home"))]
+            key = ("waiting", lock.get("code"), bool(lock.get("same")))
         else:
             text, buttons, key = "", [], None
         if key == getattr(self, "_lock_banner_key", None):
@@ -7464,7 +8303,7 @@ class Dashboard:
 
     def _lock_block(self, scroller) -> None:
         """THE LOCK under the account card: one key per account, held by
-        its own PCs, never by the server (vault.py, sb.py's lock). The
+        its own devices, never by the server (vault.py, sb.py's lock). The
         card says where this PC stands — it holds the key; it waits for
         another PC to approve it and shows the code that PC must see;
         another PC asks to join and this one can approve it — and
@@ -7542,7 +8381,7 @@ class Dashboard:
         elif self._lock_mode == "shown":
             said = "Your recovery key. Keep it somewhere safe — it is shown once."
             said_code = self._lock_fresh
-            said_sub = ("With it, a PC with no other PC of yours at hand can open your "
+            said_sub = ("With it, a PC with no other device of yours at hand can open your "
                         "account. Making a new one replaces it.")
             colour = ui.AMBER
             buttons = [("Copy", self._lock_copy), ("Done", self._lock_done)]
@@ -7558,41 +8397,47 @@ class Dashboard:
                            ("It was me", lambda: self._lock_do("lock_answer", "asked", kind="yes"))]
             else:
                 said = "Not you — this PC kept its key; what you said and your keys stay paused."
-                said_sub = ("Sign out above: it signs out every PC of yours and anyone else in "
-                            "your account. Sign in again, then put your lock back.")
+                said_sub = ("Sign out of every PC, above: it ends every session of your account, "
+                            "anyone else's too. Sign in again, then put your lock back.")
                 buttons = ([("Put my lock back", lambda: self._lock_do("lock_restore", "put back"))]
                            if ch.get("mine") else [])
             if ch.get("server"):
                 said_sub += f"  ·  on the server: lock {ch['server']}, here: lock {ch.get('mine') or '—'}"
         elif lock.get("pending") and lock["pending"][0].get("twins"):
             ask = lock["pending"][0]
-            said = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+            said = (f"Two requests say they are {ask.get('name') or 'another device'} — "
                     "neither can be approved.")
-            said_sub = (f"One of them is not your PC. On {ask.get('name') or 'that PC'}, sign out "
-                        "and sign in again to ask afresh.")
+            said_sub = (f"One of them is not yours. On {ask.get('name') or 'that device'}, sign "
+                        "out and sign in again to ask afresh.")
             colour = ui.RED
             buttons = [("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
         elif lock.get("pending"):
             ask = lock["pending"][0]
-            said = f"{ask.get('name') or 'Another PC'} signed in to your account and asks to join."
+            said = f"{ask.get('name') or 'Another device'} signed in to your account and asks to join."
             said_code = str(ask.get("code") or "")
-            said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
+            said_sub = (f"{JOIN_ONLY_IF} "
                         "It then gets your account's key: your cloud keys and what you "
                         "said open there too.")
             buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
                        ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
         elif lock.get("state") == "waiting":
-            said = "Waiting for your other PC to approve this one."
+            said = "Waiting for another device of yours to approve this PC."
             said_code = str(lock.get("code") or "")
             typing = self._lock_mode == "typing"
             if typing:
                 said_sub = "Your recovery key — 24 letters and digits in six groups:"
                 buttons = [("Open", self._lock_recover), ("Cancel", self._lock_done)]
             else:
-                said_sub = ("Open the desk on your other PC: Home there shows this code — press "
-                            "Approve. Until then this PC has your words and settings; "
-                            "what you said and your cloud keys stay locked.")
+                said_sub = ("Open the desk on your other PC, or DeskIT on your phone. If it "
+                            "shows this code, press Approve there and Same code here. Until "
+                            "then this PC has your settings; your learned words, what you said "
+                            "and your cloud keys stay locked.")
                 buttons = [("Type the recovery key", self._lock_type)]
+                if lock.get("same"):
+                    said = "You pressed Same code — waiting for your other device to approve this PC."
+                else:
+                    buttons.insert(0, ("Same code", lambda c=lock.get("code"):
+                                       self._lock_do("same_code", "noted", kind=c)))
             if lock.get("error"):
                 said_sub = f"{lock['error']}  ·  {said_sub}"
         elif lock.get("state") == "have":
@@ -7696,114 +8541,44 @@ class Dashboard:
         self._paint_lock(force=True)
 
     def _account_ask(self) -> None:
-        self._account_asking = True
+        self._account_asking = "delete"
+        self._paint_account(force=True)
+
+    def _account_ask_everywhere(self) -> None:
+        self._account_asking = "everywhere"
         self._paint_account(force=True)
 
     def _account_keep(self) -> None:
-        self._account_asking = False
+        self._account_asking = ""
         self._paint_account(force=True)
 
     def _account_do(self, do: str, said: str, **args) -> None:
-        self._account_asking = False
+        self._account_asking = ""
         if not self.running:
             self._note("start dictation first — the account lives in the running app")
             return
         self._busy_until = time.monotonic() + 1
         self._ask("account", then=lambda r: self._announce(r, said), do=do, **args)
 
-    def _key_say(self, name: str, text: str, colour: str | None = None) -> None:
-        line = self.parts.get("key_lines", {}).get(name)
-        if line is not None and line.winfo_exists():
-            line.configure(text=text, fg=colour or ui.FG)
-
     def _key_save(self, name: str) -> None:
-        """The pasted value into the store — never into a file — then
-        the test; the field is emptied either way, so the value is on
-        screen for exactly as long as it takes to press the button."""
-        import secretstore
-        field = self.parts.get("key_fields", {}).get(name)
-        value = field.get().strip() if field is not None else ""
-        if field is not None:
-            field.set("")
-        if not value:
-            self._key_test(name)
-            return
-        try:
-            secretstore.set(name, value)
-        except Exception as e:                                # noqa: BLE001
-            self._key_say(name, f"could not store the key: {e}", ui.RED)
-            return
-        del value
-        self._key_say(name, f"Stored in Windows Credential Manager as "
-                            f"{secretstore.target(name)} — testing…", ui.DIM)
-        self._key_test(name)
-        if self.running:
-            # the account's other PCs get it too, sealed (sb._sync_vault)
-            self._ask("account", do="nudge", kind="vault")
-
-    def _key_test(self, name: str) -> None:
-        """One `key-test` call through net.py, on a thread: the
-        provider's model list under the stored key. The key value never
-        touches this method — net.py attaches it by name."""
-        import secretstore
-        if name not in secretstore.present():
-            self._key_say(name, "no key", ui.FAINT)
-            return
-
-        results: dict = self.__dict__.setdefault("_key_results", {})
-        results.pop(name, None)
-
-        def work() -> None:
-            try:
-                count = self._key_probe(name)
-                results[name] = (f"Works · {count} models visible · stored as "
-                                 f"{secretstore.target(name)}", ui.GREEN)
-            except Exception as e:                            # noqa: BLE001
-                results[name] = (f"stored, but the provider said: {str(e)[:160]}", ui.AMBER)
-        threading.Thread(target=work, daemon=True, name="key-test").start()
-        # Polled from the Tk side rather than root.after from the thread:
-        # a Tk call from another thread needs the main loop, which a test
-        # driving update() does not run.
-        self.root.after(100, lambda: self._key_poll(name))
-
-    def _key_poll(self, name: str) -> None:
-        if self.closing:
-            return
-        said = self.__dict__.get("_key_results", {}).pop(name, None)
-        if said is None:
-            self.root.after(100, lambda: self._key_poll(name))
-            return
-        self._key_say(name, *said)
-
-    @staticmethod
-    def _key_probe(name: str) -> int:
-        """How many models the key can see — the one allowed call."""
-        import json as json_mod
-
-        import net
-        if name == "groq":
-            status, _h, body = net.request(
-                "GET", "https://api.groq.com/openai/v1/models", "key-test",
-                secret="groq", timeout_s=20)
-        else:
-            status, _h, body = net.request(
-                "GET", f"{net.GEMINI_BASE_URL}v1beta/models?pageSize=200", "key-test",
-                secret="gemini", timeout_s=20)
-        if status != 200:
-            detail = body.decode("utf-8", "replace")[:200]
-            raise RuntimeError(f"HTTP {status}: {detail}")
-        data = json_mod.loads(body.decode("utf-8"))
-        items = data.get("data") if name == "groq" else data.get("models")
-        return len(items or [])
+        """What [Save key] does — the row's own save (keyrow.KeyRow.save):
+        the pasted value into the store, the field emptied, the check."""
+        row = self.parts.get("key_rows", {}).get(name)
+        if row is not None and row.winfo_exists():
+            row.save()
 
     def _key_remove(self, name: str) -> None:
         import secretstore
+        row = self.parts.get("key_rows", {}).get(name)
         try:
             had = secretstore.delete(name)
         except Exception as e:                                # noqa: BLE001
-            self._key_say(name, f"could not remove the key: {e}", ui.RED)
+            if row is not None:
+                row.note.configure(text=f"could not remove the key: {e}", fg=ui.RED)
             return
-        self._key_say(name, "no key" if had else "no key to remove", ui.FAINT)
+        if row is not None and row.winfo_exists():
+            row._open_field()
+            row.note.configure(text="no key" if had else "no key to remove", fg=ui.FAINT)
         self._note(f"{name}: the key is gone from Windows Credential Manager"
                    if had else f"{name}: there was no key")
 
@@ -8005,7 +8780,14 @@ class Dashboard:
             state = packs_mod.state("recording")
             rp = packs_mod.pack("recording")
             size = f" ({packs_mod.human(rp.bytes)})" if rp else ""
-            if state == "ok":
+            dl = (self.status or {}).get("downloads") if self.running else None
+            if (dl and dl.get("state") in ("running", "waiting")
+                    and (dl.get("parts") or {}).get("recording") not in (None, "done")):
+                # the running app is fetching it (downloads.py, 2026-10-03):
+                # no second download, nothing to press
+                said = ("Screen recording and the webcam are downloading in "
+                        f"the background{size}.")
+            elif state == "ok":
                 said = "Screen recording and the webcam are ready."
                 buttons.append(("Remove it",
                                 lambda: self._pack_remove("recording")))
@@ -8056,6 +8838,8 @@ class Dashboard:
 
     def _pack_remove(self, name: str) -> None:
         packs_mod.remove(name)
+        # turned down by hand: the background downloads never fetch it again
+        packs_mod.decline(name)
         self._note(f"the {name} pack was removed")
         self._draw_settings()
 
@@ -8181,15 +8965,25 @@ class Dashboard:
             return lines, buttons
         e = models_mod.entry(repo)
         size = f" ({models_mod.human(e.bytes)})" if e else ""
+        # a part the running app is downloading in the background
+        # (downloads.py, 2026-10-03) says so and offers no second download
+        dl = (self.status or {}).get("downloads") if self.running else None
+        coming = ({k for k, v in (dl.get("parts") or {}).items() if v != "done"}
+                  if dl and dl.get("state") in ("running", "waiting") else set())
+        if "model" in coming:
+            model = "coming"
         model_said = {
             "ready": f"ready{size}",
             "absent": f"not downloaded yet{size}",
             "incomplete": "the download did not finish — continue it",
             "stale": "there is a newer one to download",
             "unknown": "this copy asks for a model nobody knows",
+            "coming": f"downloading in the background{size}",
         }[model]
         lines.append(("The Hebrew model", model_said))
-        if model == "ready":
+        if model == "coming":
+            pass
+        elif model == "ready":
             buttons.append(("Delete and re-download the model", self._speed_redownload))
             buttons.append(("Delete the model", self._speed_delete_model))
         elif model != "unknown":
@@ -8199,7 +8993,9 @@ class Dashboard:
         has_card = int(facts.get("cuda_devices") or 0) >= 1
         gp = packs_mod.pack("gpu")
         psize = f" ({packs_mod.human(gp.bytes)})" if gp else ""
-        if pack.startswith("failed:"):
+        if "pack" in coming:
+            pack_said = f"downloading in the background{psize}"
+        elif pack.startswith("failed:"):
             pack_said = f"it will not start on this PC ({pack[7:]}) — dictation runs on the processor"
             buttons.append(("Try it again", self._hardware_retry))
             buttons.append((f"Download it again{psize}",
@@ -8441,6 +9237,9 @@ class Dashboard:
         rel = s["available"]
         if rel is None or s["mode"] in ("store", "off", "offline"):
             return rows
+        if not getattr(rel, "checked", False) and not s["winget_command"]:
+            rows.append(("Open the website", lambda: self._open_url(updates.WEBSITE)))
+            return rows
         if self._too_old_for(rel):
             rows.append(("Release notes", lambda r=rel: self._open_url(r.notes_url)))
             return rows
@@ -8581,6 +9380,8 @@ class Dashboard:
             return
         if value == current and type(value) is type(current):
             return
+        if setting.path in FOLDER_SETTINGS and str(value).strip() == _shown_for(setting.path, current):
+            return                        # the full path it already shows, unchanged
         self._apply_setting(setting, value)
 
     def _apply_setting(self, setting, value) -> None:
@@ -8641,7 +9442,7 @@ class Dashboard:
                     # Canvas, and Canvas.delete/insert are about canvas
                     # ITEMS. `set` says it without telling anyone, the
                     # way ui.Dropdown.set does.
-                    widget.set(_shown(value))
+                    widget.set(_shown_for(path, value))
                     # A field that is showing its value cut goes back to
                     # cut, or the repaint would put 390 px of device name
                     # into a 264 px box again.
@@ -8832,6 +9633,11 @@ class Dashboard:
             self._start()
             return
         model = self.status.get("model") or "on"
+        if self.status.get("paused"):
+            self._busy_until = time.monotonic() + 1
+            self._ask("toggle", then=lambda r: self._announce(
+                r, "paused" if (r or {}).get("paused") else "listening again"))
+            return
         if model in ("loading", "unloading"):
             self._note("the model is on its way — a moment")
             return
@@ -8866,16 +9672,6 @@ class Dashboard:
         # Nothing in the log to copy: ask the app for whatever it is
         # holding, which is the only copy that exists if the write failed.
         self._ask("copy_last", then=lambda r: self._announce(r, "copied"))
-
-    def _copy_phone(self) -> None:
-        url = (self.status or {}).get("phone", "")
-        if not url:
-            self._note("no phone link — [server] enabled = false, or it is "
-                       "not running")
-            return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(url)
-        self._note("phone link copied to the clipboard")
 
     # ------------------------------------------------------ rebinding keys
 
@@ -9158,14 +9954,16 @@ class Dashboard:
             line += f" Tap {latch} while holding to lock the recording on."
         return line
 
-    def _refresh(self, reply: dict | None) -> None:
+    def _refresh(self, reply: dict | None) -> bool:
+        """A status from the app (or none): the bar, and the place that
+        is up. False when it painted nothing — closing, or held off."""
         if self.closing:
-            return
+            return False
         if time.monotonic() < self._busy_until and reply is not None:
             # A command was just sent. Its effect has not necessarily
             # reached the app yet, and repainting from a pre-command status
             # would flip the buttons back for one frame.
-            return
+            return False
         self.status = reply or {}
         stage = self.status.get("stage", "")
         self.running = bool(reply) and stage == "running"
@@ -9205,6 +10003,12 @@ class Dashboard:
         # Start's state from Pause's — so both live in one method.
         self._paint_bar_buttons()
         self._lock_tick()
+        self._paint_place()
+        return True
+
+    def _paint_place(self) -> None:
+        """The place that is up, repainted from the status: what each
+        place's poll redraws, and only when its stamp moved."""
         {"Home": self._poll_waiting,
          "Corrections": self._poll_corrections,
          "Said": lambda: None,
@@ -9227,8 +10031,8 @@ class Dashboard:
                       "Windows'. The server is DeskIT's own (Supabase, Frankfurt). "
                       "Only your voice never leaves this PC: your learned words and "
                       "settings are kept in your account, and so are what you said "
-                      "and your cloud keys, locked with a key only your own PCs hold. "
-                      "Settings > Privacy > Withdraw turns this off.")
+                      "and your cloud keys, locked with a key only your own devices hold. "
+                      "Settings > Account > Withdraw turns this off.")
 
     def _locked_now(self, reply: dict | None) -> bool:
         """Is there an account on this PC? The app's word when it
@@ -9255,6 +10059,11 @@ class Dashboard:
         they are the app's, not the desk's, and Stop still has to work."""
         self._landing_up = up
         if up:
+            # Whoever signs in next gets every place built for them: the
+            # kept ones were drawn for the account that just left, and
+            # nothing half drawn for it carries on.
+            self._sigs.clear()
+            self._stop_rows()
             self.nav.place_forget()
             self._show("Landing")
         else:
@@ -9287,12 +10096,41 @@ class Dashboard:
         p["landing_line"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
                                      font=(ui.UI, 10), wraplength=inner,
                                      justify="left", anchor="w")
-        p["landing_line"].place(x=0, y=220)
-        tk.Label(body, text=self.LANDING_STORED, bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8), wraplength=inner, justify="left",
-                 anchor="w").place(x=0, y=250)
+        p["landing_line"].place(x=0, y=self.LANDING_LINE_Y)
+        p["landing_stored"] = tk.Label(body, text=self.LANDING_STORED, bg=ui.CARD,
+                                       fg=ui.FAINT, font=(ui.UI, 8), wraplength=inner,
+                                       justify="left", anchor="w")
+        p["landing_card"] = card
         self._landing_seen = None
         self._paint_landing()
+        self._lay_landing()
+
+    #: Where the line under the button starts, and the least room it
+    #: keeps above the paragraph when it is empty.
+    LANDING_LINE_Y, LANDING_LINE_ROOM = 220, 30
+
+    def _lay_landing(self) -> None:
+        """The card as tall as what it says: the line under the button
+        takes the lines its words need, the paragraph moves down under
+        it, and the card grows to the paragraph's last line. Both used to
+        sit at fixed heights in a fixed card (2026-10-03, his screenshot):
+        a reason that wrapped went under the paragraph, and the
+        paragraph's last line under the card's edge. A label's requested
+        height is known the moment its text is set, so nothing here
+        waits for a paint."""
+        p = self.parts
+        card, line, stored = p.get("landing_card"), p.get("landing_line"), p.get("landing_stored")
+        if card is None or line is None or stored is None or not line.winfo_exists():
+            return
+        room = self.LANDING_LINE_ROOM
+        if line.cget("text"):
+            room = max(room, line.winfo_reqheight() + 10)
+        y = self.LANDING_LINE_Y + room
+        stored.place(x=0, y=y)
+        h = y + stored.winfo_reqheight() + 2 * 36 + 6
+        if h != card.h:
+            card.resize(h)
+            card.place(x=(W - card.w) // 2, y=(H - TOP - h) // 2 - 20)
 
     def _paint_landing(self) -> None:
         """Every poll: the line under the button follows the app's
@@ -9309,12 +10147,26 @@ class Dashboard:
             said, colour = ("Waiting for Google's sign-in page in your browser…",
                             ui.DIM)
         elif info.get("last_error"):
-            said, colour = f"Not signed in: {info['last_error']}"[:200], ui.AMBER
+            said = str(info["last_error"])
+            if said not in self._gone_words():
+                said = f"Not signed in: {said}"[:200]    # a sign-in that failed
+            colour = ui.AMBER
         else:
             said, colour = "", ui.DIM
         if (said, colour) != getattr(self, "_landing_seen", None):
             self._landing_seen = (said, colour)
             line.configure(text=said, fg=colour)
+            self._lay_landing()
+
+    @staticmethod
+    def _gone_words() -> tuple[str, ...]:
+        """sb's own sentences for a session that ended elsewhere — said
+        as they are, without "Not signed in:" in front."""
+        try:
+            import sb
+            return (sb.GONE_ELSEWHERE, sb.GONE_WORDS, sb.SESSION_WENT)
+        except Exception:                                    # noqa: BLE001
+            return ()
 
     def _landing_sign_in(self) -> None:
         """[Sign in with Google] on the landing. Through the running app
@@ -9335,6 +10187,7 @@ class Dashboard:
         if line is not None:
             line.configure(text="Waiting for Google's sign-in page in your browser…",
                            fg=ui.DIM)
+            self._lay_landing()
 
         def work() -> None:
             try:
@@ -9358,6 +10211,7 @@ class Dashboard:
         else:
             line.configure(text=(f"Signed in as {who.get('email')}" if who and who.get("email")
                                  else "Signed in"), fg=ui.GREEN)
+        self._lay_landing()
         # the poll takes the landing down on its next tick; no waiting
         self._refresh(None if not self.status else self.status)
 
@@ -9383,6 +10237,7 @@ class Dashboard:
         self._resume_after_capture()
         for pending in (self._pump_after, self._toast_after,
                         self._search_after, self._rows_after,
+                        self._corr_after,
                         self._slide_after, self._breath_after):
             try:
                 if pending is not None:
@@ -9493,7 +10348,23 @@ def main() -> int:
     started while this process still held the mutex would be that
     second launch — it would poke a window that is on its way out and
     exit, and he would be left with no dashboard at all.
+
+    THE WEB DESK (deskweb.py, 2026-10-23). `[desk] web` in the checkout
+    opens it instead; a PC that cannot (no WebView2, pages not built)
+    gets this window, silently. `--tk` is this window whatever the switch
+    says — the web desk opens it beside itself, `--place X`, for the
+    places it does not draw yet.
     """
+    argv = sys.argv[1:]
+    place = argv[argv.index("--place") + 1] if "--place" in argv[:-1] else ""
+    if "--tk" not in argv:
+        try:
+            import deskweb
+            if deskweb.wanted() and deskweb.main([]) not in (2, 3):
+                return 0
+        except Exception as e:                           # noqa: BLE001
+            import logging
+            logging.getLogger("app").warning("web desk did not open: %r", e)
     try:
         lock = singleton.InstanceLock(singleton.DASHBOARD_MUTEX)
     except singleton.AlreadyRunning:
@@ -9501,7 +10372,10 @@ def main() -> int:
         return 0
     try:
         bring_up_the_keys()
-        again = Dashboard().run()
+        desk = Dashboard()
+        if place in {name for _key, name in NAV} and place != "Home":
+            desk.root.after(0, lambda: desk._show(place))
+        again = desk.run()
     finally:
         lock.release()
     if again:

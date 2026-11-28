@@ -31,6 +31,7 @@ import kotlin.concurrent.thread
  */
 object Notify {
     const val CHANNEL = "second_reading"
+    private const val CHANNEL_SAID = "said"
     const val ACTION_DECIDE = "io.github.deskit_app.deskit.DECIDE"
     const val EXTRA_ID = "id"
     const val EXTRA_VERDICT = "verdict"
@@ -57,9 +58,10 @@ object Notify {
      * null when it could not be asked.
      */
     fun poll(c: Context): List<Transcriber.Proposal>? {
-        val token = Prefs.token(c)
-        if (token.isEmpty()) return null
-        val items = Transcriber.reviewPending(Prefs.url(c), token) ?: return null
+        if (!Link.ready(c)) return null
+        val wipes = Traces.wipes
+        val items = Link.proposals(c) ?: return null
+        if (wipes != Traces.wipes) return null
         // Marked only once shown: with notifications not yet allowed the
         // proposal must still ring the day they are.
         if (allowed(c)) for (p in items) {
@@ -71,6 +73,36 @@ object Notify {
     }
 
     private fun notificationId(id: String): Int = id.hashCode() and 0x7fffffff
+
+    /**
+     * A dictation came back and the field it was spoken into has gone: the
+     * sentence is in Said, and this says so. [since] is [Traces.wipes] as it set
+     * out: under the wipe's own lock, so it is either wiped or never shown.
+     */
+    fun landed(c: Context, text: String, since: Int) {
+        if (!allowed(c)) return
+        val nm = c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.getNotificationChannel(CHANNEL_SAID) == null) {
+            nm.createNotificationChannel(NotificationChannel(
+                CHANNEL_SAID, c.getString(R.string.said_title), NotificationManager.IMPORTANCE_DEFAULT))
+        }
+        val open = PendingIntent.getActivity(
+            c, 0,
+            Intent(c, HomeActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = Notification.Builder(c, CHANNEL_SAID)
+            .setSmallIcon(R.drawable.ic_stat_lamp)
+            .setContentTitle(c.getString(R.string.said_title))
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        synchronized(Traces) {
+            if (since == Traces.wipes) nm.notify(notificationId("said$text"), n)
+        }
+    }
 
     fun show(c: Context, p: Transcriber.Proposal) {
         channel(c)
@@ -128,8 +160,7 @@ class ReviewReceiver : BroadcastReceiver() {
         val app = context.applicationContext
         val pending = goAsync()
         thread {
-            val r = Transcriber.reviewDecide(Prefs.url(app), Prefs.token(app),
-                                             id, verdict)
+            val r = Link.ask(app) { Transcriber.reviewDecide(it, id, verdict) }
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 when (r) {
                     is Transcriber.Result.Ok -> {

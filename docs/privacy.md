@@ -40,7 +40,9 @@ Everything personal lives on your PC, in `%LOCALAPPDATA%\DeskIT`:
 - pictures and clips go to your Pictures and Videos folders.
 
 Nothing leaves the PC until you switch a cloud feature on through its
-consent card. To delete: Settings > Your data, per store, or "Delete
+consent card. (The one thing DeskIT cannot hold back is what Microsoft
+collects about its own WebView2 component while the desk is open as a
+web page — section 8.) To delete: Settings > Your data, per store, or "Delete
 everything on this PC"; the uninstaller asks "Remove my data too?".
 
 ## 3. Cloud features with your own key
@@ -51,7 +53,7 @@ Off by default. Each kind has its own consent card and its own row in
 | Kind | What is sent | To |
 |---|---|---|
 | cloud text | the dictated text, with the learned word pairs present in it; and, when Claude Code finishes a turn, the head and the tail of the message it finished with (up to 5,000 characters), so the "Claude finished" card can say it in one sentence — Groq only, never stored | `api.groq.com` or `generativelanguage.googleapis.com` |
-| cloud audio | the recording | the same |
+| cloud audio | nothing since 2026-11-27: no feature on this PC sends a recording; a yes given before stays in `consent.json` until you withdraw it | — |
 | cloud screenshots | the region of the screen you picked | the same |
 
 Always under your own account and key: you are the provider's customer
@@ -79,15 +81,16 @@ Account block.) Collected on sign-in: a user id; with Google, the e-mail address
 Google account you chose and the name Google gives, or the name you
 typed on the account page (held by the sign-in service, never shown to
 other users); the name of this PC as Windows reports it (or the name
-you typed), the app version, the Windows build, the hardware tier;
-timestamps; and the IP address as the processor sees it, in its logs
-only (kept one day).
+you typed), the app version, the Windows build, the hardware tier; the
+id of the session this device runs on, so that another device of yours
+can end it; timestamps; and the IP address as the processor sees it, in
+its logs only (kept one day).
 
 **Two syncs, one switch.** Both come with the account: the account
 card says your learned words and settings follow you to any PC you
 sign in on, the sign-in press records the account and the two sync
 consents, the wizard's last page shows the one switch on with what it
-covers in a line, and Settings > Privacy > Withdraw turns either off at
+covers in a line, and Settings > Account > Withdraw turns either off at
 any later time, each on its own row. "Settings and
 words": your changed settings — minus every
 key, hotkey, device, folder, port and position, which never leave the
@@ -96,16 +99,29 @@ said": the text of what you dictated, translated, punctuated and looked
 up, one row per event, so the Said page is the same on every PC you
 sign into. Never audio, screenshots or clips. **Plain statement: what
 you said, and your cloud keys, leave the PC locked with a key that only
-your own PCs hold (the account lock, since 1.0.1). The rows sit in the
-developer's database sealed; its security rules separate users from
-each other, and the lock keeps the project's administrator from reading
-what you said or your keys.** The time and kind of each row stay
-readable so the syncs can order them. A new PC gets the key when a PC
-already signed in approves it (a code compared on both screens), or
-when you type the recovery key the app made for you; the server only
+your own devices hold (the account lock, since 1.0.1), and so do the
+words the app learned (since 1.0.7; a copy older than that still sends
+them unlocked until it is updated). The rows sit in the developer's
+database sealed; its security rules separate users from each other, and
+the lock keeps the project's administrator from reading what you said,
+your learned words or your keys.** The time and kind of each row stay
+readable so the syncs can order them. A new device gets the key when a
+device already signed in approves it (a code compared on both screens,
+and a press on each), or when you type the recovery key the app made for
+you; the server only
 ever carries the key wrapped. If even that is not acceptable, leave
 the "what you said" sync off — dictation and everything else work
 exactly the same.
+
+**One connection stays open while you are signed in, syncs on or off.**
+Every signed-in copy keeps one connection to the account server, so that
+your own devices can reach each other. It carries nothing personal: that
+something changed, which device changed it and, while a device asks to
+join your account, that device's name and code. Never a word you said, a
+key or a file. With the syncs off, this is all that passes: that
+connection, your account's row and each device's row, the fingerprint of
+your lock, a device's request to join, and the sealed notes your devices
+leave each other, which the server cannot open.
 
 Problem reports you chose to send: the report text you typed, only the
 attachments you ticked (a screenshot, a recording, the transcript, a
@@ -121,9 +137,21 @@ reports with AI tools under his own account**. Retention: reports and
 attachments 12 months; synced words, settings and history for as long
 as the account exists; idle anonymous accounts 12 months; the owner's
 monthly backup 3 months. "Delete my account" in the app deletes
-everything at once — rows, files and the account — and "Sign out"
-revokes the session everywhere. Rights: access, rectification and
-deletion through the app and by e-mail. The whole database schema is
+everything at once — rows, files and the account; "Sign out" ends
+the session on that PC, and "Sign out of every PC" revokes every
+session of the account. Two accounts on one PC stay apart: when a
+different account signs in, nothing the last one said, learned or set,
+none of its cloud keys and none of its unsent reports goes up to the new
+account. What it said on that PC stays in that PC's files and the Said
+page there still shows it, and its unsent reports wait there for it. Its
+words, settings and keys stay too, and dictation there goes on using
+them, until the new account's own come down over them, because a PC
+holds one copy of each and not one per person: the new account's
+settings replace the last one's, its words and keys replace those of the
+same name, and a word or key it removed goes. What was on the last
+account's server comes back when that account signs in again; what never
+reached it does not. Rights: access, rectification and deletion through
+the app and by e-mail. The whole database schema is
 published at `supabase/migrations/` in the repository; no table in it
 has a column the server could read an API key from — the one table that
 carries your cloud keys (`vault`) holds them sealed under your
@@ -131,10 +159,43 @@ account's own key.
 
 ## 5. The phone companion
 
-Audio travels between your phone and your PC over your own network —
-a pairing over a certificate the PC generates, optionally Tailscale —
-never through any server of the owner. The phone token is stored under
-DPAPI.
+At home, audio travels between your phone and your PC over your own
+network, straight from one to the other over TLS: each side checks the
+other's certificate, and only a phone your account lists gets in. It
+never goes through any server of the owner. Your PC's key for that door
+is kept on your PC, encrypted, with its passphrase in Windows Credential
+Manager.
+
+**Away from home, through your account.** When the phone cannot reach your
+PC on the network it is on, it sends the recording through your account
+instead: in pieces, on your account's own private channel, each piece locked
+with your account's own key, and your PC's text comes back the same way. The
+account's server (Supabase, Frankfurt) carries those pieces and learns that
+they passed, how large they were and when, and nothing of what is in them:
+it holds no key that opens them. Nothing is stored there; the pieces pass
+through. Your PC answers only a phone of your account that you have not
+removed, and only while **Also from outside home** is on in its Settings >
+Phone (on unless you turn it off). It is the same recording your PC would
+have heard at home, transcribed by your PC: no provider hears it.
+
+**The cloud backup, on the phone only.** When no PC of your account
+answers within about a second, at home or through your account, the DeskIT keyboard sends that recording
+to Groq (to Gemini, if that is the only key you have) with **your own
+key**, from the phone, and the text lands in the field. It is on unless
+you turn it off: the phone shows it once, with the switch already on,
+and you can turn it off there or in the phone's Settings. Every
+dictation that went this way says "from the cloud" on the keyboard. What
+this costs: the provider hears that recording (Groq says it keeps
+nothing by default and may log inputs for up to 30 days to investigate
+abuse or reliability), and its words are less accurate than your PC's,
+with none of the words DeskIT learned. Once the text is in the field the
+recording is deleted from the phone; only the text goes on to your PCs,
+locked with your account's own key, through the same history store your
+PCs already share, and only if your account keeps what you said. Your
+cloud keys reach the phone the same way they reach a PC: in your
+account, locked with your account's key. The phone opens one for a single
+request and keeps nothing readable. Your PC never sends audio to the
+cloud, with or without this.
 
 ## 6. Screenshots, clips, camera
 
@@ -155,6 +216,20 @@ outbound request is shown on the Network screen (Settings > Privacy >
 EVERY CONNECTION) and mirrored to
 `logs\network.log`. The Offline switch refuses every host but
 `127.0.0.1`.
+
+The desk's web window is the one exception to that screen. The desk
+opens as a web page (the older window takes its place on a PC without
+WebView2), and it is drawn by Microsoft Edge WebView2, a part of Windows with network
+code of its own, outside `net.py`. DeskIT loads only its own files into
+it, refuses every other address, switches off the window's own services
+(SmartScreen, Edge's experimentation and update checks, Edge's sign-in
+with your Windows account) and keeps its crash reports on your PC. In
+our measurements the window opened no connection at all (`NETWORK.md`
+has the numbers). Microsoft
+collects some required diagnostic data about WebView2 whatever your
+settings say, and the optional part follows Windows' Settings > Privacy
+& security > Diagnostics & feedback. That data is Microsoft's, under
+its own privacy statement; DeskIT neither sends it nor sees it.
 
 ## 9. Security
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+import collections
 import math
 import threading
 import time
@@ -39,6 +40,18 @@ OVERFLOWED = "overflowed"
 # times the loudest floor and a fifth of the quietest speech.
 SILENT_PEAK = 0.02
 SILENT_AFTER_S = 10.0
+# ...AND A MUTED HEADSET IS NOT QUIET, IT IS ZERO, which can be told far
+# sooner. On 2026-10-25 four dictations went into the Arctis muted on its
+# earcup — 7.7, 1.7, 3.5 and 1.5 s, each shorter than SILENT_AFTER_S, so
+# none of them alarmed and each just pasted nothing — and the owner, who
+# had seen the alarm, said ten seconds felt like half a minute. Measured
+# that evening: the muted Arctis gave 0 non-zero samples of 72,000
+# through WASAPI and one converter step through MME, while the first two
+# seconds of every live recording in recent\ (41 of them) peaked at 471
+# steps or more. So nothing above DEAD_PEAK for DEAD_AFTER_S fires the
+# same on_silent, once, the same way.
+DEAD_PEAK = 2.0 / 32768.0
+DEAD_AFTER_S = 2.0
 
 # A DEAD STREAM, which is not a dead microphone. The alarm above counts
 # SAMPLES inside the PortAudio callback, so it can only fire while
@@ -68,6 +81,22 @@ EMPTY_NO_AUDIO = "no audio"          # held, and not one buffer arrived
 EMPTY_TAP = "tap"                    # too short for a buffer to land in
 EMPTY_EXCLUDED = "excluded"          # all of it was cut out (the ask card)
 EMPTY_NOT_RECORDING = "not recording"
+
+# THE PRE-ROLL (2026-11-27, `[audio] preroll_ms`). The stream is open all
+# the time and its buffers were thrown away until the press, so a word
+# begun a moment before the key went down lost its onset: in the 50
+# recent\ sidecars of 2026-11-09 the decoder's first word started at
+# <= 0.10 s in 13 and at <= 0.00 s in 6 (reports\2026-11-09\
+# dictation-speed.md F5). Now the last `preroll_ms` of audio before the
+# press is kept in a small ring and put in FRONT of the recording; the
+# VAD trims it when it is only the room. Never stale: a ring whose newest
+# buffer is older than PREROLL_FRESH_S at the press is a stream that
+# stopped, and none of it is used (a dead stream must still come back
+# empty, `EMPTY_NO_AUDIO`). It is not counted as held time (`lead_s`,
+# main's min_seconds), nor in the peak, the alarms or the cap. It SHIPS
+# OFF: 0.3 s in front was measured to change 19 of 50 transcripts both
+# ways (defaults.toml has the numbers), so it waits for a real label.
+PREROLL_FRESH_S = 0.5
 
 
 def wasapi_auto_convert():
@@ -113,9 +142,23 @@ class Recorder:
     _last_callback = 0.0
     _closed = False
     last_empty: str | None = None
+    # The pre-roll's fields, defaulted for a hand-built Recorder: off.
+    _preroll_s = 0.0
+    _preroll = 0                 # samples, at the stream's rate
+    _ring = None
+    _ring_samples = 0
+    _lead = 0                    # chunks of the utterance that came before it
+    lead_s = 0.0                 # their seconds, for the caller's tap test
+
+    def _set_preroll(self, seconds: float) -> None:
+        self._preroll_s = max(0.0, float(seconds or 0.0))
+        self._preroll = int(self._preroll_s * self.sample_rate)
+        self._ring = collections.deque()
+        self._ring_samples = 0
 
     def __init__(self, sample_rate: int, device: int | str | None,
-                 max_seconds: float, on_overflow: Callable[[], None]):
+                 max_seconds: float, on_overflow: Callable[[], None],
+                 preroll_s: float = 0.0):
         self._on_overflow = on_overflow
         # What reopen() asks for again: the microphone and rate he chose,
         # not the fallback this start may have ended up on.
@@ -162,6 +205,7 @@ class Recorder:
                         "own %d Hz instead", sample_rate, self.sample_rate)
         self._default_max_samples = float(max_seconds * self.sample_rate)
         self._max_samples = self._default_max_samples
+        self._set_preroll(preroll_s)
 
     def _open_or_default(self, device, sample_rate: int):
         """_open on `device`, and on the system default input when that
@@ -289,6 +333,7 @@ class Recorder:
                     self._default_max_samples *= scale
                     self._max_samples *= scale    # a latch's inf stays inf
                     self.sample_rate = rate
+                    self._set_preroll(self._preroll_s)   # the old rate's audio goes
             self._stream = stream
             self._last_callback = time.monotonic()
             stream.start()
@@ -313,7 +358,11 @@ class Recorder:
 
     def begin(self) -> None:
         with self._lock:
-            self._chunks = []
+            lead = self._take_preroll()
+            self._lead = len(lead)
+            self.lead_s = (sum(len(c) for c in lead) / self.sample_rate
+                           if lead else 0.0)
+            self._chunks = lead
             self._excluded = []
             self._questions = []
             self._samples = 0
@@ -322,6 +371,21 @@ class Recorder:
             self._max_samples = self._default_max_samples  # undo any lift
             self._began_at = time.monotonic()
             self._state = ACTIVE
+
+    def _take_preroll(self) -> list:
+        """The ring's audio, newest `_preroll` samples, emptied. [] when
+        off, empty or stale. Called under the lock."""
+        ring = self._ring
+        if not self._preroll or not ring:
+            return []
+        fresh = time.monotonic() - ring[-1][0] <= PREROLL_FRESH_S
+        chunks = [c for _at, c in ring] if fresh else []
+        ring.clear()
+        self._ring_samples = 0
+        extra = sum(len(c) for c in chunks) - self._preroll
+        if chunks and extra > 0:
+            chunks[0] = chunks[0][extra:]
+        return [c for c in chunks if len(c)]
 
     def peak(self) -> float:
         """The loudest sample since begin(), 0..1. Survives end(), so the
@@ -438,6 +502,7 @@ class Recorder:
 
     def abort(self) -> None:
         with self._lock:
+            self._lead = 0
             self._chunks = []
             self._excluded = []
             self._questions = []
@@ -458,12 +523,14 @@ class Recorder:
             excluded = self._excluded
             questions = self._questions
             samples = self._samples
+            lead, self._lead = self._lead, 0
             self._state = IDLE
             self._chunks = []
             self._excluded = []
             self._questions = []
             self._samples = 0
-        if state != ACTIVE or not chunks:
+        if state != ACTIVE or len(chunks) <= lead:
+            # (Only the pre-roll is nothing held: a tap, or a dead stream.)
             # Empty, and WHY, because the three reasons want three answers:
             # the cap already cued, a tap is nobody's fault, and a key held
             # with not one buffer in it is a stream that has died — which
@@ -553,9 +620,11 @@ class Recorder:
                 # The dead-microphone alarm, once; the all-clear, once.
                 # Decided on the sample count, not the clock, so a test
                 # can drive it by feeding buffers.
-                if (not self._silent_told and self._peak < SILENT_PEAK
-                        and self._samples >= SILENT_AFTER_S
-                        * self.sample_rate):
+                if not self._silent_told and (
+                        (self._peak < SILENT_PEAK and self._samples
+                         >= SILENT_AFTER_S * self.sample_rate)
+                        or (self._peak <= DEAD_PEAK and self._samples
+                            >= DEAD_AFTER_S * self.sample_rate)):
                     self._silent_told = True
                     notify = self.on_silent
                 elif (self._silent_told and not self._sound_told
@@ -568,5 +637,13 @@ class Recorder:
                     self._state = OVERFLOWED
                     self._chunks = []
                     notify = self._on_overflow
+            elif self._preroll and self._ring is not None and len(indata):
+                # Not recording: the last moment before a press, kept.
+                ring = self._ring
+                ring.append((self._last_callback, indata.copy()))
+                self._ring_samples += len(indata)
+                while len(ring) > 1 and (self._ring_samples - len(ring[0][1])
+                                         >= self._preroll):
+                    self._ring_samples -= len(ring.popleft()[1])
         if notify is not None:
             notify()

@@ -8,9 +8,10 @@ the code or reviews a store listing.
 ## What is reserved
 
 The name **DeskIT** — in any casing, and its Hebrew transliteration
-(דסק-איט) — the dalet-as-desk mark and the application icon
-(`icon.ico`, `icon.png`, made by `make_icon.py`) are marks of Yoav
-Shimron. They are not covered by the Apache-2.0 licence.
+(דסק-איט) — the Corner mark (a rounded corner with a dot at the centre of
+its curve) and the application icon (`icon.ico`, `icon.png` and the
+Microsoft Store package's logos, all drawn by `dev/make_logo.py`) are
+marks of Yoav Shimron. They are not covered by the Apache-2.0 licence.
 
 ## What you may do
 
@@ -38,7 +39,7 @@ a fork under another name changes all of these:
 | `paths.APP_ID` | the AppUserModelID `DeskIT.App` (`DeskIT.Dev` in a checkout) |
 | `packaging/DeskIT.iss` | the Inno `AppId`, the names, the shortcut |
 | `android/` | the Android package id |
-| `icon.ico`, `icon.png`, `make_icon.py` | the icon |
+| `icon.ico`, `icon.png`, `dev/make_logo.py`, `skin/mark.py` | the icon |
 | `paths.py` | the `%LOCALAPPDATA%\DeskIT` data folder name |
 
 ## No registration claimed

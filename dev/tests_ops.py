@@ -62,7 +62,7 @@ def test_the_readme_and_agents_document_notify():
     assert i < readme.index("## Dictating from the phone")
     table = readme[readme.index("## Config reference"):]
     for key in ("enabled", "cue", "card_seconds", "stack_max",
-                "remind_every_s", "remind_times", "coalesce_s", "watch",
+                "remind_every_s", "remind_times", "coalesce_s", "watch", "early",
                 "corner", "anchor", "x", "y", "scale", "dismiss_hotkey"):
         assert f"| `[notify] {key}` |" in table, key
     assert "--install-hook" in readme
@@ -75,7 +75,7 @@ def test_the_readme_and_agents_document_notify():
     assert "notify" in what
     where = agents[agents.index("## Where things live"):]
     for name in ("notify.py", "notify_card.py", "notify_hook.py",
-                 "notify_watch.py", "server.py", "control.py"):
+                 "notify_watch.py", "notify_tail.py", "server.py", "control.py"):
         assert f"| `{name}` |" in where, name
 
 
@@ -717,7 +717,7 @@ def test_export_ignore_covers_forbidden():
     forbidden_files = {
         "tests.py", "tests_quiet.py", "nightly.py", "nightly_tests.ps1",
         "install_nightly_task.ps1", "weekly_review.ps1", "phase1_cutover.ps1",
-        "questions.py", "answer_card.py", "make_icon.py", "audio_check.py",
+        "questions.py", "answer_card.py", "audio_check.py",
         "install_fonts.py", "AGENTS.md", "DISTRIBUTION_PLAN.md",
         "PARALLEL_FEATURES_PLAN.md", "VISUAL_QA_PLAN.md", "SKIN.md",
         ".gitattributes", ".gitignore", "DeskIT.vbs", "Dashboard.vbs",
@@ -1641,7 +1641,7 @@ def test_the_windows_bridge_answers_only_the_names_the_api_lists():
     flat: no dotted path, no attribute that is not one of those calls.
     The page cannot widen the list — `api` comes from the process that
     opened the window."""
-    from dev.master import webdesk as _mwebdesk
+    import webdesk as _mwebdesk                     # the product's shell, no copy
     from dev.master.api import Api as _MApi
     with tempfile.TemporaryDirectory() as tmp:
         root = _master_root(Path(tmp) / "checkout")

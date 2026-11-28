@@ -21,7 +21,11 @@ path. Two things it does that the hint card does not:
 
 Nothing here decides anything. A button press or a key becomes
 `card.pressed(name)`; the clock running out becomes `card.timed_out()`;
-what those MEAN is overlay.ReviewCard's business and main.py's.
+what those MEAN is overlay.ReviewCard's business and main.py's. WHICH
+proposal is up is not decided here either (2026-11-10): the loop hands
+everything off the queue to `card._q_take` and asks `card._q_next` for
+the one to put up, so a second proposal waits behind the first instead
+of taking its place — the same four calls the Tk fallback makes.
 """
 from __future__ import annotations
 
@@ -30,8 +34,7 @@ import queue
 import time
 
 import review_card as rc
-from .glass import Glass, primary_screen, virtual_screen
-from .palette import BG, CARD, LINE, FG, argb
+from .glass import Glass, primary_screen, virtual_screen, work_area
 
 _log = logging.getLogger("app")
 
@@ -40,6 +43,8 @@ RADIUS = rc.RADIUS
 FACE_A = 202              # the face's alpha — skin\hint.py's glass weight
 BLUR = 11
 TICK_S = 0.03             # the loop; a click must feel immediate
+ASIDE_S = 0.25            # how often a card that is up asks whether the
+                          # notify column landed on it (pure arithmetic)
 REPAINT_S = 0.1           # the clock: ten frames a second is smooth enough
 
 
@@ -63,50 +68,24 @@ def _frost(x: int, y: int, width: int, height: int):
         return None
 
 
-def face(canvas, width: int, height: int, scale: float, backdrop=None) -> None:
-    """The glass under the words: shadow, frost, face, rim, hairline.
-    skin\\hint.py's recipe, at the same offsets, so the two cards read as
-    one family."""
-    import skia
+def face(canvas, width: int, height: int, scale: float, backdrop=None,
+         cache: dict | None = None) -> None:
+    """The glass under the words: B+'s long soft shadow, the frost, the
+    navy face lit from above, its light, the rim — look.plate, the same
+    pane the key card and the move card sit on. Kept in `cache`: the
+    clock repaints this card ten times a second and the glass under it
+    does not change."""
     s = rc.clamp_scale(scale)
-    x0 = y0 = SHADOW
-    rect = skia.Rect.MakeXYWH(x0, y0, width, height)
-    radius = RADIUS * s
-    rrect = skia.RRect.MakeRectXY(rect, radius, radius)
-    for i in range(6, 0, -1):
-        grow = i * 3.4
-        a = 17 * (0.62 ** (6 - i))
-        canvas.drawRRect(
-            skia.RRect.MakeRectXY(
-                skia.Rect.MakeXYWH(rect.left() - grow,
-                                   rect.top() - grow * 0.35 + 5,
-                                   rect.width() + grow * 2,
-                                   rect.height() + grow * 1.5),
-                radius + grow, radius + grow),
-            skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
-    if backdrop is not None:
-        canvas.save()
-        canvas.clipRRect(rrect, doAntiAlias=True)
-        canvas.drawImage(_to_skia(backdrop), 0, 0)
-        canvas.restore()
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Dither=True,
-        Shader=skia.GradientShader.MakeLinear(
-            points=[(x0, y0), (x0, y0 + height)],
-            colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
-            positions=[0.0, 1.0])))
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(180, LINE)))
-    canvas.drawLine(
-        x0 + width * 0.20, y0 + 0.5, x0 + width * 0.80, y0 + 0.5,
-        skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                   StrokeWidth=1.0,
-                   Shader=skia.GradientShader.MakeLinear(
-                       points=[(x0 + width * 0.20, y0),
-                               (x0 + width * 0.80, y0)],
-                       colors=[argb(0, FG), argb(64, FG), argb(0, FG)],
-                       positions=[0.0, 0.5, 1.0])))
+    key = ("plate", int(width), int(height), round(s, 3),
+           id(backdrop) if backdrop is not None else None)
+    img = cache.get(key) if cache is not None else None
+    if img is None:
+        import look
+        img = look.plate(int(width), int(height), RADIUS * s, SHADOW,
+                         backdrop)
+        if cache is not None:
+            cache[key] = img
+    canvas.drawImage(_to_skia(img), 0, 0)
 
 
 def run(card) -> None:
@@ -174,7 +153,7 @@ def run(card) -> None:
         canvas = glass.canvas
         canvas.clear(0x00000000)
         w, h = rc.measure(shown, card.scale)
-        face(canvas, w, h, card.scale, frost)
+        face(canvas, w, h, card.scale, frost, cache)
         content = rc.compose(shown, card.scale, progress, hover, cache)
         canvas.drawImage(_to_skia(content), SHADOW, SHADOW)
         glass.flush()
@@ -188,7 +167,7 @@ def run(card) -> None:
         width, height = rc.measure(item, s)
         win_w, win_h = width + SHADOW * 2, height + SHADOW * 2
         x, y = card.origin(win_w, win_h, primary_screen(), SHADOW,
-                           virtual_screen())
+                           virtual_screen(), work=work_area())
         frost = _frost(x, y, win_w, win_h)
         glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
                       clicked=on_click)
@@ -202,29 +181,72 @@ def run(card) -> None:
         deadline = (time.monotonic() + float(item.get("seconds") or 0)
                     if float(item.get("seconds") or 0) > 0 else None)
 
+    def step_aside():
+        """A notify column came up ON this card (a finish card a few
+        seconds after the dictation, `[review] avoid_notify`): put the
+        same card up again where ReviewCard.origin now says, clock kept.
+        Built again rather than moved, so its frost is of what is behind
+        the new spot and not of the old one."""
+        nonlocal deadline
+        if glass is None or shown is None:
+            return
+        x, y = card.origin(glass.width, glass.height, primary_screen(),
+                           SHADOW, virtual_screen(), work=work_area())
+        if (x, y) == tuple(glass.where()) or card.would_cover(
+                x, y, glass.width, glass.height, SHADOW):
+            # dragged, a corner of its own, or nowhere out of the way: it
+            # STAYS — never back to the default spot on top of the column
+            return
+        keep = deadline
+        put_up(shown)
+        deadline = keep
+
+    next_aside = 0.0
+
     try:
         while not card._closing.is_set():
+            now = time.monotonic()
             try:
                 while True:
                     item = card._q.get_nowait()
                     if item is overlay._DONE:
                         card._closing.set()
                         break
-                    if item is None:
+                    # The line is overlay.ReviewCard's (2026-11-10): an
+                    # arrival waits behind the card on screen instead of
+                    # replacing it, and only that card leaving — answered,
+                    # closed, hide() — brings the window down.
+                    if card._q_take(item, now):
                         take_down()
-                    else:
-                        put_up(item)
             except queue.Empty:
                 pass
             if card._closing.is_set():
                 break
-            now = time.monotonic()
             dt, last_tick = now - last_tick, now
+            # A screenshot selection is on screen (HintCard.hush). A card
+            # already up is underneath the selector, which mapped last, and
+            # stays where it is; a NEW window mapped now would land on top
+            # of it and eat the drag. So nothing comes up while it lasts —
+            # the line makes that a card every time one leaves, not only
+            # when a reading happens to land — and the clock waits, as it
+            # does on the Tk path, so the card is not spent unseen.
+            hushed = card._hushed.is_set()
+            if card._q_answered(now):
+                take_down()               # answered on the desk or the phone
+            if shown is None:
+                nxt = card._q_next(now, hold=hushed)
+                if nxt is not None:
+                    put_up(nxt)
+            if shown is not None and glass is not None and not hushed \
+                    and now >= next_aside and not card.hovering():
+                next_aside = now + ASIDE_S
+                if card.in_the_way():
+                    step_aside()
             if shown is not None and glass is not None:
                 seconds = float(shown.get("seconds") or 0)
                 progress = 1.0
                 if deadline is not None:
-                    if card.hovering():
+                    if card.hovering() or hushed:
                         deadline += dt          # reading: the clock waits
                     left = deadline - now
                     if left <= 0:
@@ -236,7 +258,16 @@ def run(card) -> None:
                 if dirty or now - last_paint >= REPAINT_S:
                     paint(progress)
                 glass.pump()
-            time.sleep(TICK_S)
+            # THE QUIET LOOP (2026-11-10). No card up and none waiting in
+            # the line is nothing to do: the loop RESTS on the queue
+            # (overlay._Queue.rest), and a proposal, hide(), a drop and a
+            # hush all arrive through it. A card on screen (its clock and
+            # still_open, ASK_S) and a line waiting out the GAP_S beat, a
+            # hush or the pencil's box keep TICK_S, exactly as before.
+            if shown is None and not card._waiting:
+                overlay.rest(card._q, overlay.IDLE_S, TICK_S)
+            else:
+                time.sleep(TICK_S)
     except Exception:
         _log.info("skin review card stopped early", exc_info=True)
     finally:

@@ -3,15 +3,14 @@ package io.github.deskit_app.deskit
 import android.content.Context
 
 /**
- * Where the PC is and how to prove we are allowed to talk to it.
+ * What the phone keeps in the plain: the keys' order, the switches, its own
+ * Said, and the old road, a pasted address and token, which stage 6 removes. The
+ * road that replaces it is the account's: [Link].
  *
- * Nothing is baked in: a fresh install knows no PC at all — the address
- * and the token are empty until the person pastes the line their own PC
- * shows, and Home says "Not set up yet" until then. There used to be a
- * default address here (the owner's own machine, from the days the APK
- * only ever reached his own phone); it went with the package rename of
- * 2026-09-19 (DISTRIBUTION_PLAN.md 12.6), and D22's QR pairing replaces
- * the pasted line altogether.
+ * Nothing is baked in: a fresh install knows no PC at all. There used to be a
+ * default address here (the owner's own machine, from the days the APK only ever
+ * reached his own phone); it went with the package rename of 2026-09-19
+ * (DISTRIBUTION_PLAN.md 12.6).
  */
 object Prefs {
     private const val FILE = "dictation"
@@ -21,6 +20,7 @@ object Prefs {
     private const val KEY_ORDER = "key_order"
     private const val KEY_SAID = "said"
     private const val KEY_NOTIFIED = "notified"
+    private const val KEY_CLIP_OWED = "clip_owed"
     private const val KEY_UPDATE_SEEN = "update_seen"
 
     /** How many of the phone's own dictations the home screen keeps. */
@@ -96,29 +96,52 @@ object Prefs {
      * record in transcripts.log; this is the short one you read on the
      * sofa to copy a sentence again. A JSON array of [epoch-ms, text].
      */
-    fun said(c: Context): List<Pair<Long, String>> {
+    fun said(c: Context): List<Said> {
         val raw = sp(c).getString(KEY_SAID, null) ?: return emptyList()
         return try {
             val arr = org.json.JSONArray(raw)
             (0 until arr.length()).map {
                 val row = arr.getJSONArray(it)
-                Pair(row.getLong(0), row.getString(1))
+                Said(row.getLong(0), row.getString(1), row.optInt(2, 0) == 1)
             }
         } catch (e: Exception) {
             emptyList()
         }
     }
 
-    fun addSaid(c: Context, text: String) {
-        val rows = listOf(Pair(System.currentTimeMillis(), text)) +
+    /** One sentence of the phone's Said: when, what, and whether the cloud carried it. */
+    data class Said(val at: Long, val text: String, val cloud: Boolean = false)
+
+    /**
+     * [since] is [Traces.wipes] as the dictation set out: one that comes back to
+     * a phone that has left its account since then keeps nothing here.
+     */
+    @Synchronized
+    fun addSaid(c: Context, text: String, since: Int, cloud: Boolean = false) {
+        if (since != Traces.wipes) return
+        val rows = listOf(Said(System.currentTimeMillis(), text, cloud)) +
                 said(c).take(SAID_KEEP - 1)
         val arr = org.json.JSONArray()
-        for ((t, s) in rows) arr.put(org.json.JSONArray().put(t).put(s))
+        for (r in rows) arr.put(org.json.JSONArray().put(r.at).put(r.text).apply { if (r.cloud) put(1) })
         sp(c).edit().putString(KEY_SAID, arr.toString()).apply()
     }
 
     fun clearSaid(c: Context) {
         sp(c).edit().remove(KEY_SAID).apply()
+    }
+
+    /** A wipe could not see the clipboard: [Traces.focused]. */
+    fun clipOwed(c: Context): Boolean = sp(c).getBoolean(KEY_CLIP_OWED, false)
+
+    fun clipOwed(c: Context, owed: Boolean) {
+        sp(c).edit().putBoolean(KEY_CLIP_OWED, owed).commit()
+    }
+
+    /** What [Traces.wipe] takes from this file. The keys' order and the switch are the phone's. */
+    @Synchronized
+    fun forget(c: Context) {
+        sp(c).edit().remove(KEY_SAID).remove(KEY_NOTIFIED)
+            .remove(KEY_URL).remove(KEY_TOKEN).commit()
     }
 
     /**

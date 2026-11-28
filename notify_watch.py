@@ -144,7 +144,16 @@ log = logging.getLogger("app")
 DB = (Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows"
       / "Notifications" / "wpndatabase.db")
 PARTS = ("", "-wal", "-shm")   # the database, its write-ahead log, its index
-WORK = "hd-notify-watch.db"    # the copy we read, in the temp folder
+WORK = "hd-notify-watch.db"    # the copy we read, in a private folder
+#: The copy's folder: one per Store, in the temp folder, made with a DACL
+#: of its own — protected, the owner, SYSTEM and the administrators, the
+#: descriptor CPython 3.13 gives mkdir(mode=0o700). The temp folder's
+#: inherited one is not private on every PC: on the owner's it also
+#: grants Modify to a sandbox group and to one more SID (icacls,
+#: 2026-11-10), and the copy holds every app's toast text — message
+#: previews, sign-in codes (2026-09-23 audit A59).
+FOLDER = "deskit-watch-"
+PRIVATE_SDDL = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)"
 POLL_S = 0.25                  # a quarter second, and it costs nothing —
                                # see WHERE THE REST OF THE WAIT GOES, below
 BATCH = 20                     # rows handed on per pass; a flood of toasts is
@@ -368,18 +377,60 @@ def claude_window() -> tuple[int, str]:
 # the store
 # ---------------------------------------------------------------------------
 
+def private_folder(parent=None) -> Path | None:
+    """A new folder under `parent` (the temp folder) that only this user
+    — with SYSTEM and the administrators — can open, or None. Private
+    ctypes handles: argtypes on ctypes.windll leak into every module."""
+    from ctypes import wintypes as w
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class _SA(ctypes.Structure):
+        _fields_ = [("nLength", w.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", w.BOOL)]
+
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        w.LPCWSTR, w.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    k32.CreateDirectoryW.argtypes = [w.LPCWSTR, ctypes.c_void_p]
+    k32.LocalFree.argtypes = [ctypes.c_void_p]
+    sd = ctypes.c_void_p()
+    if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PRIVATE_SDDL, 1, ctypes.byref(sd), None):
+        return None
+    try:
+        attrs = _SA(ctypes.sizeof(_SA), sd, False)
+        base = Path(parent) if parent is not None else Path(tempfile.gettempdir())
+        for _ in range(8):
+            folder = base / f"{FOLDER}{os.getpid()}-{os.urandom(4).hex()}"
+            if k32.CreateDirectoryW(str(folder), ctypes.byref(attrs)):
+                return folder
+        return None
+    finally:
+        k32.LocalFree(sd)
+
+
 class Store:
     """Windows' notification database, read through a copy.
 
     `path` and `work` are parameters so a test can hand over a database
-    it built itself; left alone they are the machine's and a file in the
-    temp folder. Nothing here writes to the real one.
+    it built itself; left alone they are the machine's and a file in a
+    private folder of this Store's own (`private_folder`). Nothing here
+    writes to the real one.
+
+    THE COPY LIVES FOR ONE READ (2026-09-23 audit A59, 2026-11-09
+    security-local 8). Until 2026-11-10 it stayed in the temp folder under
+    a fixed name, refreshed on every toast and never deleted, so a live
+    copy of every app's notifications outlived the app. Now `read` and
+    `latest` remove it (and its log and index) in their `finally`, a copy
+    that failed halfway removes what landed, `close` removes the folder,
+    and the first copy removes the fixed-name one an earlier version left.
     """
 
     def __init__(self, path=None, work=None) -> None:
         self.path = Path(path) if path is not None else DB
-        self.work = (Path(work) if work is not None
-                     else Path(tempfile.gettempdir()) / WORK)
+        self._own = work is None
+        self.work = Path(work) if work is not None else None
         self._seen: tuple | None = None
 
     def _stat(self) -> tuple:
@@ -402,25 +453,80 @@ class Store:
         self._seen = now
         return True
 
+    def _where(self) -> Path | None:
+        """The copy's path: the test's `work`, or a file in this Store's
+        private folder, made at the first copy."""
+        if self.work is None and self._own:
+            # The fixed-name copy every version before this one kept in
+            # the temp folder for good: ours, and taken away once.
+            legacy = Path(tempfile.gettempdir()) / WORK
+            for part in PARTS + ("-journal",):
+                try:
+                    os.remove(f"{legacy}{part}")
+                except OSError:
+                    pass
+            folder = private_folder()
+            if folder is None:
+                # A folder of its own still, with the temp folder's
+                # inherited access — the copy is deleted after every read
+                # either way.
+                log.info("notify watch: no private folder for the copy; "
+                         "using an ordinary one")
+                try:
+                    folder = Path(tempfile.mkdtemp(prefix=FOLDER))
+                except OSError:
+                    return None
+            self.work = folder / WORK
+        return self.work
+
+    def _drop(self) -> None:
+        """The copy, its log, its index and any journal sqlite made: gone."""
+        if self.work is None:
+            return
+        for part in PARTS + ("-journal",):
+            try:
+                os.remove(f"{self.work}{part}")
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.debug("notify watch: the copy's %r would not go", part or "db")
+
+    def close(self) -> None:
+        """The copy and, when it is this Store's own, its folder."""
+        self._drop()
+        if self._own and self.work is not None:
+            try:
+                self.work.parent.rmdir()
+            except OSError:
+                pass
+            self.work = None
+
     def _copy(self):
         """A connection to a fresh copy, or None. The log and the index
         come too — without them sqlite reads the file as it was at the
-        last checkpoint, which is to say hours ago."""
+        last checkpoint, which is to say hours ago. Whatever a failure
+        left half-copied is removed before None comes back; the caller
+        removes the rest after its read (`_drop`)."""
+        work = self._where()
+        if work is None:
+            return None
         try:
-            shutil.copyfile(self.path, self.work)
+            shutil.copyfile(self.path, work)
         except OSError:
+            self._drop()
             return None
         for part in PARTS[1:]:
             try:
-                shutil.copyfile(f"{self.path}{part}", f"{self.work}{part}")
+                shutil.copyfile(f"{self.path}{part}", f"{work}{part}")
             except OSError:
                 try:
-                    os.remove(f"{self.work}{part}")
+                    os.remove(f"{work}{part}")
                 except OSError:
                     pass
         try:
-            return sqlite3.connect(self.work)
+            return sqlite3.connect(work)
         except sqlite3.Error:
+            self._drop()
             return None
 
     def read(self, after: int, limit: int = BATCH) -> tuple[list, int]:
@@ -472,6 +578,7 @@ class Store:
                 con.close()
             except sqlite3.Error:
                 pass
+            self._drop()
         if limit > 0 and len(rows) > limit:
             rows = rows[-limit:]
         return rows, top
@@ -494,6 +601,7 @@ class Store:
                 con.close()
             except sqlite3.Error:
                 pass
+            self._drop()
 
 
 # ---------------------------------------------------------------------------
@@ -603,3 +711,9 @@ class Watcher:
         thread, self._thread = self._thread, None
         if thread is not None and thread.is_alive():
             thread.join(timeout=self.poll_s + 1)
+        close = getattr(self.store, "close", None)
+        if close is not None:
+            try:
+                close()                    # the copy's folder goes too
+            except Exception:              # noqa: BLE001
+                pass

@@ -17,9 +17,10 @@ title: 5. תכונות ענן
 | תיקון מילים שנשמעו לא נכון (מעבר התיקון) | הטקסט של מה שהרגע אמרת — בזמן שאתה מחזיק את המקש, קטעים ממנו נשלחים עוד לפני השחרור (מתגלגל); עד 60 זוגות מילים שלמד ומופיעים בטקסט | Groq, תחת מפתח ה־Groq שלך (או גוגל תחת מפתח ה־Gemini שלך) |
 | פיסוק, תרגום, חיפוש | הטקסט או הבחירה | אותו דבר |
 | מעבר הענן של הקריאה השנייה | הטקסט | אותו דבר |
-| תמלול בענן (מחשבים בלי כרטיס אנבידיה) | ההקלטה של מה שאמרת, WAV ב־16 קילוהרץ, עד 20 מגה לבקשה | Groq או גוגל, תחת המפתח שלך |
 | שאלה על המסך | JPEG של האזור שבחרת (הצלע הארוכה עד 1344 פיקסלים), השאלה שלך, שאלות ותשובות קודמות באותו כרטיס | Groq או גוגל, תחת המפתח שלך |
 | בדיקת עדכונים שבועית | שום דבר עליך: בקשה אחת ל־api.github.com | GitHub |
+
+הקול שלך לא יוצא מהמחשב: אף תכונה כאן לא שולחת הקלטה, ושום דבר במחשב לא מתמלל בענן.
 
 כל אחת מאלה היא **שער** ב־**Settings > Privacy > WHAT MAY LEAVE THIS PC**. שער נפתח רק דרך
 כרטיס ההסכמה שלו — אף פעם לא מקובץ ההגדרות — ונסגר מיד מאותה לשונית. הכרטיס נושא את המשפט
@@ -29,17 +30,22 @@ title: 5. תכונות ענן
 
 ## להשיג מפתח חינמי
 
-**Groq קודם.** מפתח Groq אחד פותח את מעבר התיקון, הפיסוק, החיפוש, ובמחשב בלי כרטיס אנבידיה
-— תמלול בענן. יוצרים אותו ב־[console.groq.com](https://console.groq.com) (מסלול חינמי, בלי
-כרטיס אשראי).
+**Groq קודם.** מפתח Groq אחד פותח את מעבר התיקון, הפיסוק, החיפוש והתרגום (בתרגום הוא
+הראשון בתור). יוצרים אותו ב־[console.groq.com](https://console.groq.com)
+(מסלול חינמי, בלי כרטיס אשראי).
 
-**Gemini** רק לתרגום ולשאלה על המסך, ב־[aistudio.google.com](https://aistudio.google.com).
+**Gemini** לתרגום (כשיש את שני המפתחות Groq הראשון בתור, ו־Gemini עונה כש־Groq לא
+עונה) ולשאלה על המסך, ב־[aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+(חינם, בלי כרטיס אשראי).
 
-ואז **Settings > Privacy > YOUR CLOUD KEYS**: מדביקים את המפתח בשדה המוסתר (הוא לא מוצג
-שוב לעולם), לוחצים **Save and test** — "Works · N models visible" או השגיאה של הספק עצמו — והמפתח נשמר. **Remove** מוחק
-אותו. המשפט מתחת לכל שדה:
+האשף מבקש את שניהם בדף **מפתחות ענן** שלו ([פרק 2](02-first-run)). אחר כך:
+**Settings > Privacy > YOUR CLOUD KEYS**. מדביקים את המפתח בשדה המוסתר ולוחצים
+**Save key**: המפתח נשמר ונבדק מול הספק מיד. מפתח שעובד מוצג כשורת נקודות — לעולם לא
+המפתח עצמו — ולידה **Change key**; ההחלפה פותחת שדה ריק עם **Save** ו־**Cancel**, הביטול
+משאיר את המפתח השמור, ומפתח חדש שהספק דוחה מחזיר את השמור. **Remove** מוחק אותו. המשפט
+מתחת לכל שדה:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own devices hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 
 [פרק 4](04-privacy) מראה איך לבדוק את המשפט הזה בעצמך בשתי דקות.
 

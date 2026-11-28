@@ -19,7 +19,7 @@ lang: he
 </section>
 
 <div class="cards" markdown="0">
-<div><h3>נשאר במחשב</h3><p>התמלול רץ על המחשב שלך עם המודל העברי של ivrit.ai. שום דבר לא נשלח לשום מקום עד שתפעיל את זה בעצמך.</p></div>
+<div><h3>נשאר במחשב</h3><p>התמלול רץ על המחשב שלך עם המודל העברי של ivrit.ai. שום דבר ממה שאתה אומר לא יוצא מהמחשב בלי שתאשר קודם.</p></div>
 <div><h3>בכל חלון</h3><p>מקש אחד, בכל תוכנה: הטקסט נכנס אצל הסמן, כאילו הקלדת אותו.</p></div>
 <div><h3>אפשר לבדוק</h3><p>כל בקשה שיוצאת נראית בחלון הרשת, והקוד פתוח. <a href="he/04-privacy">איך לבדוק בעצמך</a>.</p></div>
 </div>
@@ -57,7 +57,7 @@ lang: he
 <p class="signing">Code signing: not yet, so Windows warns once (More info → Run anyway) · <a href="https://github.com/DeskIT-app/DeskIT/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a></p>
 </div>
 <div class="cards" style="grid-template-columns: 1fr; margin: 0;">
-<div><h3>Stays on your PC</h3><p>Transcription runs on your own machine with ivrit.ai's Hebrew model; nothing is sent anywhere until you switch it on.</p></div>
+<div><h3>Stays on your PC</h3><p>Transcription runs on your own machine with ivrit.ai's Hebrew model; nothing you say leaves your PC unless you say yes first.</p></div>
 <div><h3>Any window</h3><p>One key, in any program: the text lands at the cursor as if you had typed it.</p></div>
 <div><h3>Check it yourself</h3><p>Every request that leaves is listed in the Network window, and the code is open. <a href="en/04-privacy">How to verify</a>.</p></div>
 </div>

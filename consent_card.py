@@ -29,20 +29,23 @@ from __future__ import annotations
 from PIL import Image
 
 import review_card as rc
-from review_card import (ACCENT, ACCENT_HI, ACCENT_ON, CARD, EDGE, EDGE_HI,
-                         HTCAPTION, HTCLIENT, HTTRANSPARENT, INK, INK_DIM,
-                         INK_FAINT, LINE, SHADOW, _rr, _text, clamp_scale)
+import look
+from review_card import (ACCENT_ON, HTCAPTION, HTCLIENT, HTTRANSPARENT, INK,
+                         INK_DIM, INK_MUTED, SHADOW, _text, clamp_scale)
 
-CARD_W = 460
+CARD_W = 560              # 460 until the table (2026-10-23): a column of
+                          # labels beside the words needs the room
 RADIUS = 20
-PAD = 18
-TITLE_PT = 13.0
+PAD = 22
+TITLE_PT = 14.5
 LABEL_PT = 8.5
+LABEL_W = 132             # the labels' column
 BODY_PT = 10.0
 FOOT_PT = 8.5
-BLOCK_GAP = 10
+BLOCK_GAP = 12
 BTN_H = 32
 BTN_GAP = 8
+BAND_PAD = 14             # above and below the buttons, inside their strip
 
 TURN_ON, NOT_NOW, DRAG = "turn_on", "not_now", "drag"
 BUTTONS = ((TURN_ON, 124), (NOT_NOW, 112))       # name, width at 1.0
@@ -123,17 +126,29 @@ TEXTS: dict[str, dict] = {
         # — what the syncs send, their own cards always said — so a row
         # given under the old words is carried forward
         # (privacy.CARRIED_FORWARD, migrations step 5), never asked again.
-        "version": "deskit-terms-0+en-2026-09-23",
+        # 2026-11-06: the id of a device's session, and the one connection a
+        # signed-in copy keeps whatever its syncs say. Both are new under
+        # this gate, so this time a row given under the old words is asked
+        # again.
+        "version": "deskit-terms-0+en-2026-11-06",
         "title": "Open an account?",
-        "changed": "It now says that signing in keeps what you said and your cloud "
-                   "keys in your account, locked with a key only your own PCs hold.",
+        # On Home, to someone who already has one
+        "again": "Your account",
+        # On Home: `changed` is two lines of a row, 110 characters with
+        # "Say yes again? " and a batched neighbour, and what does not fit
+        # goes in `more`, on the note. A test holds both: a row cut off
+        # mid-sentence asks for a yes to words nobody can read.
+        "changed": "DeskIT now stays connected while signed in.",
+        "more": "The id of each device's session is kept too; neither carries what you said.",
         "blocks": (
             (WHAT, "An account id — anonymous, or the e-mail of the Google account you "
-                   "chose; this PC's name; the app, Windows and hardware versions."),
+                   "chose; this device's name; the app, Windows and hardware versions; "
+                   "the id of this device's session, so another device of yours can end it."),
             (WHOM, _DESKIT),
             (ACCOUNT, "DeskIT's project. Signing in also keeps your learned words and "
                       "settings there, and what you said and your cloud keys, locked "
-                      "with a key only your own PCs hold."),
+                      "with a key only your own devices hold. While you are signed in, one "
+                      "open connection stays up, syncs on or off; it carries nothing you said."),
             (TERMS, _TERMS),
             (OFF, "Your data > Delete my account."),
         ),
@@ -164,12 +179,17 @@ TEXTS: dict[str, dict] = {
         ),
     },
     "history_sync": {
-        "version": "deskit-terms-0+en-2026-09-21",
+        # 2026-11-07: these words named PCs alone, false at the first phone
+        # join. A yes given under them named fewer holders of the key, so it
+        # is asked again and not carried forward, on one row of Home with
+        # the account's (ASK_TOGETHER).
+        "version": "deskit-terms-0+en-2026-11-07",
         "title": "Sync what you said?",
+        "changed": "A phone you approve now holds the key too.",
         "blocks": (
             (WHAT, "Everything you dictated, translated, punctuated and looked up — the "
                    "text, not the recording — so the Said page is the same on every PC."),
-            (WHOM, _DESKIT + " Locked before it leaves with a key only your own PCs hold; "
+            (WHOM, _DESKIT + " Locked before it leaves with a key only your own devices hold; "
                    "the server, and DeskIT's developer, cannot read it."),
             (ACCOUNT, _PROJECT),
             (TERMS, _TERMS),
@@ -178,6 +198,41 @@ TEXTS: dict[str, dict] = {
         ),
     },
 }
+
+#: Kinds Home asks about on one row when the words of all of them changed:
+#: one person, one account, one press, and two rows for it would be a second
+#: re-ask in one breath. The row says what changed in each.
+ASK_TOGETHER: tuple[tuple[str, ...], ...] = (("account", "history_sync"),)
+
+
+def _asked_again(kinds: tuple[str, ...]) -> dict:
+    cards = [TEXTS.get(kind) or {} for kind in kinds]
+    blocks = dict(cards[0].get("blocks") or ())
+    what = str(blocks.get(WHAT, "")).rstrip(".")
+    # The receiver alone ("Groq and/or Google"), not the list of features
+    # after the dash: a note is one line.
+    whom = str(blocks.get(WHOM, "")).split(" — ")[0].rstrip(".")
+    off = str(blocks.get(OFF, "")).rstrip(".")
+    changed = " ".join(str(card.get("changed") or "") for card in cards).strip()
+    more = " ".join(str(card.get("more") or "") for card in cards).strip()
+    # a provider's card only: nothing else here runs on a key of the person's
+    own = ", on your own key" if blocks.get(ACCOUNT) == _KEY else ""
+    return {"kinds": list(kinds), "title": str(cards[0].get("again") or cards[0].get("title", kinds[0])),
+            "text": f"Say yes again? {changed}" if changed else f"Say yes again? What leaves: {what}.",
+            "note": f"{more + ' ' if more else ''}To {whom}{own}. Off again: {off}."}
+
+
+def asked_again(stale) -> list[dict]:
+    """Home's rows for the gates whose words changed (privacy.stale), for
+    both desks: ``kinds`` a Turn on answers, ``title``, ``text``, ``note``."""
+    left = list(stale)
+    rows = []
+    for group in ASK_TOGETHER:
+        if all(kind in left for kind in group):
+            rows.append(_asked_again(group))
+            left = [kind for kind in left if kind not in group]
+    return rows + [_asked_again((kind,)) for kind in left]
+
 
 #: The words' direction, decided from the table: English lays out from
 #: the left; a Hebrew table would lay itself out from the right again.
@@ -230,24 +285,42 @@ def layout(card: dict, scale: float = 1.0, cache: dict | None = None) -> dict:
     width = int(round(CARD_W * s))
     pad = PAD * s
     inner = int(width - 2 * pad)
-    y = pad
-    title = _text(cache, card["title"], TITLE_PT * s, weight=600, rtl=RTL)
-    items = [("title", title, y)]
-    y += title.height + 8 * s
+    y = pad + 4 * s
+    title = (look.text(cache, card["title"], TITLE_PT * s, INK, look.W_STRONG)
+             if not RTL else _text(cache, card["title"], TITLE_PT * s,
+                                   weight=600, rtl=RTL))
+    items = [("title", title, y, 0)]
+    y += title.height + 14 * s
+    rule_y = y
+    y += 14 * s
+    # A CLASSIC DIALOG (2026-10-23, the owner: "more classic"): the facts
+    # are a two-column table — what is asked on the left, the answer
+    # beside it — rather than a heading over every paragraph. English
+    # reads from the left, so the labels' column is the left one.
+    col = int(LABEL_W * s)
+    body_w = inner - col
     for label, text in card["blocks"]:
-        lab = _text(cache, label, LABEL_PT * s, colour=INK_FAINT, weight=600, rtl=RTL)
-        items.append(("label", lab, y))
-        y += lab.height + 3 * s
-        body = _body(cache, text, BODY_PT * s, inner)
-        items.append(("body", body, y))
-        y += body.height + BLOCK_GAP * s
-    foot = _body(cache, card["footer"], FOOT_PT * s, inner, colour=INK_DIM)
-    items.append(("footer", foot, y))
-    y += foot.height + 12 * s
+        lab = (look.text(cache, label, LABEL_PT * s + 1.0, INK_MUTED,
+                         look.W_LABEL) if not RTL
+               else _text(cache, label, LABEL_PT * s, colour=INK_MUTED,
+                          weight=600, rtl=RTL))
+        body = _body(cache, text, BODY_PT * s, body_w)
+        lx, bx = (0, col) if not RTL else (inner - lab.width, 0)
+        items.append(("label", lab, y + 2 * s, lx))
+        items.append(("body", body, y, bx))
+        y += max(lab.height, body.height) + BLOCK_GAP * s
+    y += 2 * s
+    foot = _body(cache, card["footer"], FOOT_PT * s, inner, colour=INK_MUTED)
+    items.append(("footer", foot, y, 0))
+    y += foot.height + 20 * s
+    # the commands, on their own strip across the foot of the card
+    band_y = y
+    y += BAND_PAD * s
     buttons_y = y
-    y += BTN_H * s + pad
+    y += BTN_H * s + BAND_PAD * s
     return {"scale": s, "width": width, "height": int(round(y)),
-            "items": items, "buttons_y": buttons_y, "pad": pad}
+            "items": items, "buttons_y": buttons_y, "pad": pad,
+            "rule_y": rule_y, "band_y": band_y}
 
 
 def measure(card: dict, scale: float = 1.0,
@@ -301,23 +374,30 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     right = width - lay["pad"]
     left = lay["pad"]
-    for kind, piece, y in lay["items"]:
-        img.alpha_composite(piece, (int(right - piece.width) if RTL else int(left), int(y)))
+    # the command strip: a step darker than the sheet, edge to edge, with
+    # a hairline along its top — the classic dialog's foot
+    band = Image.new("RGBA", (width, height - int(lay["band_y"])),
+                     look.INK["well"] + (70,))
+    img.alpha_composite(band, (0, int(lay["band_y"])))
+    look.fade_rule(img, 0, width, lay["band_y"], a=40)
+    look.fade_rule(img, left, right, lay["rule_y"])
+    for kind, piece, y, x in lay["items"]:
+        if kind in ("title", "footer") and RTL:
+            x = right - left - piece.width
+        img.alpha_composite(piece, (int(left + x), int(y)))
     boxes = regions(card, s, cache)
     for name, _w in BUTTONS:
         bx0, by0, bx1, by1 = (v - SHADOW for v in boxes[name])
         hot = hover == name
+        # B+: the one lit button, and a pill of frost beside it
         if name == TURN_ON:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(ACCENT_HI if hot else ACCENT) + (255,))
+            look.primary(img, (bx0, by0, bx1, by1), hover=hot)
             colour = ACCENT_ON
         else:
-            face = _rr((bx1 - bx0, by1 - by0), 9 * s,
-                       fill=(EDGE_HI if hot else EDGE) + (255,),
-                       outline=LINE + (255,))
+            look.quiet(img, (bx0, by0, bx1, by1), hover=hot)
             colour = INK
-        img.alpha_composite(face, (int(bx0), int(by0)))
-        lab = _text(cache, LABELS[name], 9.5 * s, colour=colour, weight=600)
+        lab = look.text(cache, LABELS[name], 9.5 * s, colour,
+                        look.W_STRONG if name == TURN_ON else look.W_LABEL)
         img.alpha_composite(lab, (int((bx0 + bx1) / 2 - lab.width / 2),
                                   int((by0 + by1) / 2 - lab.height / 2)))
     return img
@@ -330,9 +410,10 @@ def flat(card: dict, scale: float = 1.0, hover: str | None = None,
     cache = cache if cache is not None else {}
     width, height = measure(card, scale, cache)
     s = clamp_scale(scale)
-    face = Image.new("RGBA", (width, height), CARD + (255,))
-    face.alpha_composite(_rr((width, height), RADIUS * s, fill=None,
-                             outline=LINE + (255,), width=1))
+    # B+'s glass with nothing behind it — the Tk window cannot see
+    # through — square to its edges: the window's corner is Windows' own
+    face = look.glass(Image.new("L", (width, height), 255),
+                      (0, 0, width, height), opaque=True)
     face.alpha_composite(compose(card, s, hover, cache))
     return face
 

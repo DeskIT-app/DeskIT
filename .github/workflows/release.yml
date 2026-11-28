@@ -10,7 +10,10 @@
 #
 # Inputs from the repo: VERSION, requirements.lock (pip-compile
 # --generate-hashes over requirements.txt), packaging/python311._pth,
-# packaging/python-embed.sha256. The runner's own Python is pinned to the
+# packaging/python-embed.sha256, packaging/wheels/ (the one wheel PyPI
+# does not have, built from its sdist by dev/proxy_tools_wheel.py and
+# hashed in the lock), and web/ with its package-lock.json (the web desk's
+# pages, built in step 6a). The runner's own Python is pinned to the
 # same patch version as the embeddable zip because step 3 copies its
 # Tcl/Tk tree and _tkinter.pyd, which are built against one python311.dll.
 name: build
@@ -28,16 +31,231 @@ on:
 env:
   PYTHON_VERSION: "3.11.9"
   EMBED_URL: "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+  # the Node the web desk's pages are built with, exact like the Python
+  # above (verified 2026-10-23: npm ci + npm run build on 22.23.4 / npm
+  # 10.9.9 gave the same bytes as 25.7.0); ci.yml builds with the same one
+  NODE_VERSION: "22.23.4"
+  # Gradle 8.9's own wrapper jar, as services.gradle.org publishes its
+  # SHA-256 (checked 2026-11-28; the committed jar is that file)
+  GRADLE_WRAPPER_SHA256: "498495120a03b9a6ab5d155f5de3c8f0d986a449153702fb80fc80e134484f17"
 
+# Read-only for every job; the one job that writes (`release`, at the end)
+# asks for its own. The jobs that install packages and run a build (pages,
+# stage) hold nothing worth taking: no write to the repository, no OIDC
+# token, no attestation right (audit 2026-11-09).
 permissions:
-  contents: write        # the draft release and its assets (step 14)
-  id-token: write        # the build attestation (step 8)
-  attestations: write
+  contents: read
 
 jobs:
+  # 6a, built APART: the web desk's pages come out of an npm toolchain —
+  # some two dozen third-party packages with native binaries, run here —
+  # so they are built in a job that holds nothing worth taking: a
+  # read-only token, no secret (SIGNPATH_API_TOKEN is the stage job's), no
+  # OIDC token, and no credentials left in .git/config by the checkout.
+  # The stage job takes web\dist as this run's artifact (step 6a there).
+  # Node exact; npm ci from the committed package-lock.json (it checks
+  # every package's integrity hash) with no install script of any package
+  # run (--ignore-scripts, and web\.npmrc says it too).
+  pages:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build the pages
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE) { throw "npm ci failed" }
+          npm run build
+          if ($LASTEXITCODE) { throw "npm run build failed" }
+          if (-not (Test-Path dist/index.html)) { throw "web/dist has no index.html" }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # 6c, the phone keyboard (DISTRIBUTION_PLAN.md 12.7-12.9, PHONE_LINK_PLAN.md
+  # "Getting the keyboard"), built APART like the pages: Gradle and the
+  # Android plugin it downloads run here, with a read-only token and NO
+  # secret. The committed wrapper, its jar checked against Gradle's own
+  # published SHA-256 and the distribution against the one in
+  # gradle-wrapper.properties; JDK 17. assembleRelease comes out UNSIGNED
+  # (android/app/build.gradle.kts reads no keystore): the `signing` job
+  # below signs it. versionName and versionCode come from VERSION inside the
+  # build (MAJOR*10000 + MINOR*100 + PATCH), and `signing` checks them.
+  keyboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: The Gradle wrapper is Gradle's own
+        run: |
+          set -euo pipefail
+          got=$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | cut -d' ' -f1)
+          if [ "$got" != "${{ env.GRADLE_WRAPPER_SHA256 }}" ]; then
+            echo "::error::gradle-wrapper.jar is $got, not Gradle 8.9's published jar"; exit 1
+          fi
+          grep -q '^distributionSha256Sum=' android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Build the keyboard (unsigned)
+        working-directory: android
+        run: |
+          set -euo pipefail
+          bash gradlew --no-daemon assembleRelease
+          ls -l app/build/outputs/apk/release/
+          test -f app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: keyboard-unsigned
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  # 6d. sign — the ONE job that holds the keyboard's release key: the two
+  #     secrets dev/keyboard_key.py set (ANDROID_KEYSTORE_B64, the keystore;
+  #     ANDROID_KEYSTORE_PASSWORD, its passphrase), on one step, for
+  #     apksigner from the runner's own Android build-tools. It runs no
+  #     Gradle and downloads no package. The key never leaves the runner's
+  #     temp folder and is deleted at the end of the step. A tag without the
+  #     secrets builds nothing; a dry run without them goes on with a
+  #     warning and no keyboard. The signed APK must carry the certificate
+  #     android/release-cert.sha256 pins (a swapped secret is refused), the
+  #     versionCode and versionName VERSION says, and no debuggable flag.
+  #     Only a tag keeps the signed APK, as this run's artifact: a dry run
+  #     signs to prove the secrets and keeps nothing but the numbers, so no
+  #     release-signed build of an unreleased commit lies in the artifacts.
+  signing:
+    needs: keyboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      apk_name: ${{ steps.sign.outputs.apk_name }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
+      apk_size: ${{ steps.sign.outputs.apk_size }}
+      version_code: ${{ steps.sign.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: keyboard-unsigned
+          path: unsigned
+
+      - name: Sign the keyboard
+        id: sign
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ]; then
+            if [ "$REF_TYPE" = "tag" ]; then
+              echo "::error::the keyboard's signing secrets are not set: no release is built without the keyboard (dev/keyboard_key.py --secrets)"; exit 1
+            fi
+            echo "::warning::a dry run without the keyboard's signing secrets: no keyboard in this stage"
+            exit 0
+          fi
+          # build-tools 34.0.0, the version AGP 8.5 builds with and the one
+          # the owner's PC signs and checks with (dev/keyboard_key.py); the
+          # newest only when the image has dropped it. 37.0.0 prints its
+          # signer lines in another form (dry run 46127152267).
+          bt="$ANDROID_HOME/build-tools/34.0.0"
+          if [ ! -x "$bt/apksigner" ]; then
+            bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+            echo "::notice::build-tools 34.0.0 is not on the image; signing with $bt"
+          fi
+          ks="$RUNNER_TEMP/keyboard.p12"
+          trap 'rm -f "$ks"' EXIT
+          printf '%s' "$KS_B64" | base64 -d > "$ks"
+          name="DeskIT-keyboard-$version.apk"
+          mkdir -p out
+          "$bt/zipalign" -f 4 unsigned/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+          "$bt/apksigner" sign --ks "$ks" --ks-type PKCS12 --ks-key-alias deskit \
+            --ks-pass env:KS_PASS --key-pass env:KS_PASS --v4-signing-enabled false \
+            --out "out/$name" "$RUNNER_TEMP/aligned.apk"
+          rm -f "$ks"
+          certs=$("$bt/apksigner" verify --verbose --print-certs "out/$name" 2>&1)
+          printf '%s\n' "$certs" | grep -E "^Verif|certificate (DN|SHA-256)" || true
+          # every signer line, whatever its form ("Signer #1 …", "Signer
+          # (minSdkVersion=…) …"): exactly one certificate, the pinned one
+          digests=$(printf '%s\n' "$certs" | sed -n 's/^Signer.* certificate SHA-256 digest: \([0-9a-f]\{64\}\)$/\1/p' | sort -u)
+          pinned=$(tr -d '\r\n' < android/release-cert.sha256)
+          if [ -z "$digests" ] || [ "$digests" != "$pinned" ]; then
+            echo "::error::the keyboard is signed by [$digests], not the certificate android/release-cert.sha256 pins"; exit 1
+          fi
+          digest="$digests"
+          badging=$("$bt/aapt" dump badging "out/$name")
+          code=$(printf '%s\n' "$badging" | sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
+          vname=$(printf '%s\n' "$badging" | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
+          want=$(python3 -c "import re; m=re.match(r'(\d+)\.(\d+)\.(\d+)', '$version'); print(int(m[1])*10000+int(m[2])*100+int(m[3]))")
+          if [ "$code" != "$want" ] || [ "$vname" != "$version" ]; then
+            echo "::error::the keyboard says versionCode $code, versionName $vname; VERSION $version means $want"; exit 1
+          fi
+          if printf '%s\n' "$badging" | grep -q "application-debuggable"; then
+            echo "::error::the release keyboard is debuggable"; exit 1
+          fi
+          sha=$(sha256sum "out/$name" | cut -d' ' -f1)
+          printf '%s  %s\n' "$sha" "$name" > "out/$name.sha256"
+          echo "$name: versionCode $code, certificate $digest, SHA-256 $sha, $(stat -c %s "out/$name") bytes"
+          {
+            echo "apk_name=$name"
+            echo "apk_sha256=$sha"
+            echo "apk_size=$(stat -c %s "out/$name")"
+            echo "version_code=$code"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ github.ref_type == 'tag' }}
+        with:
+          name: keyboard
+          path: |
+            out/DeskIT-keyboard-*.apk
+            out/DeskIT-keyboard-*.apk.sha256
+          if-no-files-found: error
+          retention-days: 3
+
   stage:
+    needs: [pages, signing]
     runs-on: windows-latest
     timeout-minutes: 180        # step 10b may wait up to two hours for the owner's approval
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      vt_permalink: ${{ steps.virustotal.outputs.permalink }}
+      vt_verdict: ${{ steps.virustotal.outputs.verdict }}
     defaults:
       run:
         shell: pwsh
@@ -45,7 +263,9 @@ jobs:
       SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}   # read by step 10b's `if`
     steps:
       # 0. checkout — the tag and VERSION must agree
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: VERSION matches the tag
         run: |
@@ -58,9 +278,27 @@ jobs:
           Write-Host "building DeskIT $version"
         id: version
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      # 0b. the update key (update_key.py, update_sig.py): every copy built
+      #     here checks each later latest.json against the key it pins, and
+      #     the placeholder verifies nothing, so a copy built with it would
+      #     refuse every update for good. A tag builds nothing until it is
+      #     real; a dry run goes on with a warning (its stage is never a
+      #     release). The draft's latest.json is signed on the owner's PC
+      #     afterwards, by dev/sign_release.py, never here: the key is not
+      #     on GitHub.
+      - name: The update key is pinned
+        run: |
+          python dev/sign_release.py --check-pinned
+          $pinned = $LASTEXITCODE
+          if ($pinned -ne 0) {
+            if ("${{ github.ref_type }}" -eq "tag") { throw "update_key.py pins no update key: no release is built with it" }
+            Write-Host "::warning::a dry run with the placeholder update key: this stage could never install an update"
+          }
+          exit 0
 
       - name: The runner's Python is the embeddable's patch version
         run: |
@@ -70,7 +308,8 @@ jobs:
       # 1. wheelhouse — every wheel by hash, binary only, nothing compiled
       - name: Wheelhouse
         run: |
-          python -m pip install --upgrade pip
+          # the pip the lock pins (requirements.lock), not whatever is newest
+          python -m pip install pip==26.2.1
           python -m pip download -r requirements.lock --require-hashes --no-deps --only-binary=:all: `
             --platform win_amd64 --python-version 3.11 --implementation cp --abi cp311 `
             --dest wheels
@@ -83,11 +322,10 @@ jobs:
       #     downloaded, hashed, no second download, no dependency
       #     resolution, the same install ci.yml runs. (Dry run #1 ran the
       #     check on a bare Python and stopped at `import PIL`.)
-      - name: The guide and the installer's download list are fresh
+      - name: The guide is fresh
         run: |
           python -m pip install --no-index --find-links wheels --require-hashes --no-deps -r requirements.lock
           python dev/gen_settings_doc.py --check
-          python dev/make_downloads_iss.py --check
 
       # 2. embed — the python.org zip, checked against the committed SHA-256
       - name: Embeddable Python
@@ -138,8 +376,50 @@ jobs:
           foreach ($f in "LICENSE", "NOTICE", "OFL.txt", "NETWORK.md", "SECURITY.md") {
             if (Test-Path "stage/app/$f") { Copy-Item "stage/app/$f" "stage/$f" }
           }
-          $forbidden = @("tests.py", "tests_quiet.py", "nightly.py", "questions.py", "AGENTS.md", "dev", "docs", "packaging", "android", ".github", ".gitattributes", ".gitignore")
+          $forbidden = @("tests.py", "tests_quiet.py", "nightly.py", "questions.py", "AGENTS.md", "dev", "docs", "packaging", "android", "web", ".github", ".gitattributes", ".gitignore")
           foreach ($f in $forbidden) { if (Test-Path "stage/app/$f") { throw "$f is in the archive" } }
+
+      # 6c'. the keyboard this build carries the address of (server.py's
+      #      api_version, which the phone asks): keyboard.json in app\,
+      #      before step 7 lists every file — the APK's name, versionCode
+      #      and SHA-256 from the signing job. The APK itself is a release
+      #      asset, never in the installer. A tag cannot get here without
+      #      it; a dry run without the secrets writes none.
+      - name: The keyboard this build names
+        run: |
+          $sha = "${{ needs.signing.outputs.apk_sha256 }}"
+          if (-not $sha) {
+            if ("${{ github.ref_type }}" -eq "tag") { throw "no signed keyboard: no release without it" }
+            Write-Host "::warning::no signed keyboard in this dry run: keyboard.json not written"
+            exit 0
+          }
+          $keyboard = [ordered]@{
+            apk = "${{ needs.signing.outputs.apk_name }}"
+            version_code = [int]"${{ needs.signing.outputs.version_code }}"
+            sha256 = $sha
+          }
+          [IO.File]::WriteAllText("stage/app/keyboard.json", ($keyboard | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+          Get-Content stage/app/keyboard.json
+
+      # 6a. the web desk's pages (deskweb.py, webdesk.py) — web\ is
+      #     export-ignored, sources and npm lock alike, so the archive has
+      #     none of it: the pages job's BUILT pages go in at
+      #     paths.WEB_DIST, app\web\dist, before step 7 lists every file,
+      #     and nothing but index.html and assets\ — no source map.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-dist
+          path: stage/app/web/dist
+
+      - name: The web desk's pages
+        run: |
+          $dist = "stage/app/web/dist"
+          if (-not (Test-Path "$dist/index.html")) { throw "the pages job's artifact has no index.html" }
+          $odd = Get-ChildItem -Recurse -Force $dist -File | Where-Object {
+            $rel = $_.FullName.Substring((Resolve-Path $dist).Path.Length + 1)
+            ($rel -ne "index.html" -and -not $rel.StartsWith("assets\")) -or $_.Name -like "*.map" }
+          if ($odd) { $odd | ForEach-Object { $_.FullName }; throw "web/dist holds more than index.html and assets\" }
+          Get-ChildItem -Recurse stage/app/web -File | ForEach-Object { "{0,10}  {1}" -f $_.Length, $_.FullName.Substring((Resolve-Path stage/app).Path.Length + 1) }
 
       # 6b. notices — the generated half (pip-licenses over the staged
       #     site-packages) + the hand-written half (dev/notices-extra.txt,
@@ -147,7 +427,9 @@ jobs:
       #     LICENSE.txt and Tcl's license.terms (13.3, D24)
       - name: THIRD-PARTY-NOTICES.txt
         run: |
-          python -m pip install pip-licenses
+          # exact versions, the whole closure (pip-licenses 5.5.5 needs prettytable,
+          # which needs wcwidth; resolved 2026-11-10)
+          python -m pip install pip-licenses==5.5.5 prettytable==3.18.0 wcwidth==0.9.4
           pip-licenses --python stage/python/python.exe --with-license-file --with-urls `
             --with-authors --format=plain-vertical --output-file generated-notices.txt
           $header = "THIRD-PARTY NOTICES for DeskIT $env:DESKIT_VERSION, built $(Get-Date -Format yyyy-MM-dd)`n" +
@@ -176,19 +458,30 @@ jobs:
           Get-ChildItem -Recurse stage -Include __pycache__ -Directory | Remove-Item -Recurse -Force
           python stage/app/manifest.py write stage
           python stage/app/manifest.py verify stage
+          if (-not (Select-String -Path stage/MANIFEST.sha256 -Pattern "  app/web/dist/index.html$" -Quiet)) { throw "the manifest does not cover the web desk's pages" }
 
-      # 8a. attest — the manifest's provenance, what the FAQ's "read the
-      #     build attestation" line points to (D12 lock 5). GitHub signs
-      #     attestations for public repositories; a private one skips.
-      - name: Attest MANIFEST.sha256
-        if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: stage/MANIFEST.sha256
+      # 8a/8b, the attestations, are in the `release` job below: they need
+      # id-token and attestations write, and this job installs packages.
 
+      # 7b. sbom — what ships, as CycloneDX, from the staged tree's own
+      #     installed distributions (stdlib only: packaging/make_sbom.py).
+      #     Attested beside the installer in the release job.
+      - name: SBOM
+        run: |
+          python packaging/make_sbom.py --site stage/python/Lib/site-packages `
+            --python "${{ env.PYTHON_VERSION }}" --version "${{ steps.version.outputs.version }}" `
+            --out "sbom.cdx.json"
+          if ($LASTEXITCODE) { throw "make_sbom.py failed" }
+
+      # `import webview, clr` because release.yml never runs pip check: the
+      # web desk's five wheels go in without dependency resolution, and this
+      # is where a missing one (proxy_tools is a hard import of webview's) or
+      # a pythonnet that cannot load .NET Framework would show — before an
+      # installer exists.
       - name: The staged tree starts
         run: |
-          $out = & stage/python/python.exe -B -c "import sys, tkinter, numpy, PIL, sounddevice; print(sys.version.split()[0], tkinter.TkVersion, numpy.__version__)"
+          $out = & stage/python/python.exe -B -c "import sys, tkinter, numpy, PIL, sounddevice, webview, clr; import System; print(sys.version.split()[0], tkinter.TkVersion, numpy.__version__, 'NET', System.Environment.Version)"
+          if ($LASTEXITCODE) { throw "the staged tree does not import its base set" }
           Write-Host $out
           Get-ChildItem -Recurse stage -File | Measure-Object -Property Length -Sum | ForEach-Object { "stage: $($_.Count) files, $([math]::Round($_.Sum / 1MB)) MB" }
 
@@ -226,7 +519,7 @@ jobs:
       - name: Unsigned installer as a run artifact
         if: ${{ github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != '' }}
         id: unsigned
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unsigned-installer
           path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
@@ -234,7 +527,7 @@ jobs:
 
       - name: SignPath signing request
         if: ${{ github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -272,6 +565,18 @@ jobs:
             notes_url = "https://github.com/${{ github.repository }}/releases/tag/v$version"
             published = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
           }
+          # the keyboard (12.8, 12.9): where the newest one is, its digest
+          # and its versionCode, for every PC's api_version to hand its
+          # phones. In the file before the owner signs it (sign_release.py
+          # signs these exact bytes), so a PC believes them only from a
+          # feed that verified.
+          $apkSha = "${{ needs.signing.outputs.apk_sha256 }}"
+          if ($apkSha) {
+            $apk = "${{ needs.signing.outputs.apk_name }}"
+            $latest.apk_url = "https://github.com/${{ github.repository }}/releases/download/v$version/$apk"
+            $latest.apk_sha256 = $apkSha
+            $latest.ime_version_code = [int]"${{ needs.signing.outputs.version_code }}"
+          } elseif ("${{ github.ref_type }}" -eq "tag") { throw "no signed keyboard: latest.json would name none" }
           $latest | ConvertTo-Json | Set-Content -Path dist/latest.json -Encoding utf8
           Copy-Item stage/MANIFEST.sha256 dist/MANIFEST.sha256
           # The same bytes under a name without the version, so the site's
@@ -292,6 +597,7 @@ jobs:
           if ($p.ExitCode) { Get-Content $log; throw "the installer exited $($p.ExitCode)" }
           $app = "$env:LOCALAPPDATA\Programs\DeskIT"
           if ((Get-Content "$app\CHANNEL" -Raw) -ne 'github') { throw "CHANNEL is not github" }
+          if (-not (Test-Path "$app\app\web\dist\index.html")) { throw "the installed tree has no web desk pages" }
           $env:DESKIT_HOME = "$env:RUNNER_TEMP\deskit-smoke-home"
           $verdict = & "$app\python\python.exe" "$app\app\main.py" --verify
           Remove-Item Env:DESKIT_HOME
@@ -304,13 +610,6 @@ jobs:
           if ($u.ExitCode) { throw "the uninstaller exited $($u.ExitCode)" }
           Start-Sleep -Seconds 3
           if (Test-Path $app) { Get-ChildItem -Recurse $app | Select-Object -First 20; throw "APP_DIR survived the uninstall" }
-
-      # 8b. attest — the installer itself, after the smoke test passed
-      - name: Attest the installer
-        if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
 
       # 13. virustotal — the installer to VirusTotal's free API; more than
       #     VT_MAX_DETECTIONS engines (a repository variable, default 2)
@@ -358,15 +657,100 @@ jobs:
           Write-Host $verdict
           if ($hits -gt [int]$env:VT_MAX_DETECTIONS) { throw "VirusTotal: $hits detections, more than VT_MAX_DETECTIONS=$env:VT_MAX_DETECTIONS — not released. $permalink" }
 
-      - uses: actions/upload-artifact@v4
+      # everything the `release` job attests and attaches goes to it as this
+      # run's artifact, all under dist\ (so the download lands as dist\)
+      - name: Gather the release files
+        run: |
+          Copy-Item stage/THIRD-PARTY-NOTICES.txt dist/THIRD-PARTY-NOTICES.txt
+          Copy-Item sbom.cdx.json "dist/DeskIT-${{ steps.version.outputs.version }}.cdx.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: DeskIT-${{ steps.version.outputs.version }}
           path: |
             dist/DeskIT-Setup-*.exe
+            dist/DeskIT-Setup.exe
             dist/DeskIT-Setup-*.exe.sha256
             dist/latest.json
             dist/MANIFEST.sha256
             dist/virustotal.txt
+            dist/THIRD-PARTY-NOTICES.txt
+            dist/DeskIT-*.cdx.json
+          if-no-files-found: error
+
+  # 8, 13-14. The one job that may write: it attests (id-token,
+  # attestations) and creates the DRAFT release (contents). It installs
+  # nothing and builds nothing — it takes the stage job's finished files,
+  # byte for byte, and the attestation subjects are those bytes.
+  release:
+    needs: [stage, signing]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write        # the draft release and its assets (step 14)
+      id-token: write        # the build attestations (step 8)
+      attestations: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: DeskIT-${{ needs.stage.outputs.version }}
+          path: dist
+
+      # the signed keyboard, kept by the signing job on a tag only
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ github.ref_type == 'tag' }}
+        with:
+          name: keyboard
+          path: dist
+
+      - name: The keyboard is the one latest.json names
+        if: ${{ github.ref_type == 'tag' }}
+        run: |
+          $name = "${{ needs.signing.outputs.apk_name }}"
+          if ($name -ne "DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk") { throw "the keyboard is $name" }
+          $sha = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
+          $feed = Get-Content dist/latest.json -Raw | ConvertFrom-Json
+          if ($sha -ne $feed.apk_sha256 -or $sha -ne "${{ needs.signing.outputs.apk_sha256 }}") { throw "dist/$name is $sha; latest.json says $($feed.apk_sha256)" }
+          if (-not $feed.apk_url.EndsWith("/v${{ needs.stage.outputs.version }}/$name")) { throw "latest.json's apk_url is $($feed.apk_url)" }
+          "$name $sha versionCode $($feed.ime_version_code)"
+
+      # 8a. attest — the manifest's provenance, what the FAQ's "read the
+      #     build attestation" line points to (D12 lock 5). GitHub signs
+      #     attestations for public repositories; a private one skips.
+      - name: Attest MANIFEST.sha256
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/MANIFEST.sha256
+
+      # 8b. attest — the installer itself (it passed the smoke test in the
+      #     stage job), then the SBOM of what is inside it
+      - name: Attest the installer
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe
+
+      - name: Attest the SBOM
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        with:
+          subject-path: dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe
+          sbom-path: dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json
+
+      # 8c. attest — the keyboard, as the signing job made it
+      - name: Attest the keyboard
+        if: ${{ github.ref_type == 'tag' && !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk
 
       # 14. release — a DRAFT with the notes from CHANGELOG.md under the
       #     version's heading, then the fixed block: SHA-256, VirusTotal,
@@ -378,8 +762,10 @@ jobs:
         id: notes
         env:
           GH_TOKEN: ${{ github.token }}
+          # paths.PAGES_URL + the guide's install section (a test holds both)
+          GUIDE_PHONE: https://deskit-app.github.io/DeskIT/en/06-phone#installing-the-keyboard
         run: |
-          $version = "${{ steps.version.outputs.version }}"
+          $version = "${{ needs.stage.outputs.version }}"
           $repo = "${{ github.repository }}"
           $log = Get-Content CHANGELOG.md -Raw -Encoding utf8
           $section = ""
@@ -394,35 +780,44 @@ jobs:
           if ($LASTEXITCODE -eq 0 -and $found.tag_name) { $previous = $found.tag_name }
           $global:LASTEXITCODE = 0
           $sha = (Get-Content "dist/DeskIT-Setup-$version.exe.sha256" -Raw).Split(" ")[0]
-          $vt = "${{ steps.virustotal.outputs.permalink }}"
-          $vtLine = if ($vt) { "VirusTotal: $vt (${{ steps.virustotal.outputs.verdict }})" } else { "VirusTotal: not scanned" }
+          $vt = "${{ needs.stage.outputs.vt_permalink }}"
+          $vtLine = if ($vt) { "VirusTotal: $vt (${{ needs.stage.outputs.vt_verdict }})" } else { "VirusTotal: not scanned" }
           $prevLine = if ($previous) { "Previous version, for rollback: https://github.com/$repo/releases/tag/$previous" } else { "Previous version: none — this is the first release" }
+          $apk = "DeskIT-keyboard-$version.apk"
+          $apkSha = (Get-Content "dist/$apk.sha256" -Raw).Split(" ")[0]
           $body = @(
             $section, "",
             "---", "",
+            "**On an Android phone:** download ``$apk`` from the files below and open it. The guide's phone chapter says what to allow: $env:GUIDE_PHONE",
+            "",
             "``DeskIT-Setup-$version.exe`` SHA-256: ``$sha``",
+            "``$apk`` SHA-256: ``$apkSha``, signing certificate SHA-256: ``$((Get-Content android/release-cert.sha256 -Raw).Trim())``",
             $vtLine,
             "Build attestation: https://github.com/$repo/attestations",
             "Code signing policy: https://github.com/$repo/blob/main/CODE_SIGNING_POLICY.md",
             $prevLine,
-            "Install: download the installer, or ``winget install YoavShimron.DeskIT`` once the manifest is merged."
+            "Install: download ``DeskIT-Setup-$version.exe`` from this page and run it.",
+            "", "**Verify this download.** In PowerShell, run ``Get-FileHash .\DeskIT-Setup.exe -Algorithm SHA256`` and compare the result with the SHA-256 above. Then run ``gh attestation verify DeskIT-Setup.exe --repo $repo`` to check that GitHub's build, from this repository, made the file."
           ) -join "`n"
           [IO.File]::WriteAllText("dist/notes.md", $body, (New-Object Text.UTF8Encoding $false))
           Get-Content dist/notes.md
 
       - name: Draft release
         if: ${{ github.ref_type == 'tag' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
-          prerelease: ${{ contains(steps.version.outputs.version, '-beta') }}
-          name: DeskIT ${{ steps.version.outputs.version }}
+          prerelease: ${{ contains(needs.stage.outputs.version, '-beta') }}
+          name: DeskIT ${{ needs.stage.outputs.version }}
           body_path: dist/notes.md
           files: |
-            dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
+            dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe
             dist/DeskIT-Setup.exe
-            dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe.sha256
+            dist/DeskIT-Setup-${{ needs.stage.outputs.version }}.exe.sha256
             dist/latest.json
             dist/MANIFEST.sha256
-            stage/THIRD-PARTY-NOTICES.txt
+            dist/THIRD-PARTY-NOTICES.txt
+            dist/DeskIT-${{ needs.stage.outputs.version }}.cdx.json
+            dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk
+            dist/DeskIT-keyboard-${{ needs.stage.outputs.version }}.apk.sha256
           retention-days: 14

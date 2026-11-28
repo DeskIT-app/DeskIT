@@ -99,6 +99,14 @@ CONSENT_GATES: frozenset[str] = frozenset({
 })
 
 
+#: A retired gate's row on Settings > Privacy (privacy.RETIRED, spelled
+#: here for the same reason as CONSENT_GATES): without a yes on file, and
+#: with one, when Withdraw stands beside it. Both desks say these words.
+RETIRED_GATE_WORDS: tuple[str, str] = (
+    "Off — nothing on this PC sends it",
+    "Not used any more — Withdraw clears the yes on file")
+
+
 @dataclass(frozen=True)
 class Section:
     name: str
@@ -379,8 +387,6 @@ ACCOUNT = "Account"       # who is signed in, what follows them, the lock
 PRIVACY = "Privacy"       # keys, what may leave, what is kept
 ABOUT = "About"           # version, licence, the app's own files
 
-_ENGINES = (("local", "On this computer"),
-            ("gemini", "In Google's cloud"))
 _REPAIR = (("cloud", "Before the paste with a key, as a card without one"),
            ("always", "Always before the paste"),
            ("known", "Only taught words"),
@@ -475,9 +481,9 @@ TABS: tuple[Tab, ...] = (
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),
             Friendly("local.load_at_start", "Have it ready to dictate the moment it starts",
-                     "Off, DeskIT starts light — every key that does not "
-                     "need the speech model works at once, and Start on "
-                     "the desk gets it ready when you want to dictate."),
+                     "Every key that does not need the speech model works "
+                     "at once either way. Off, the model waits until you "
+                     "press Start on the desk."),
             Friendly("awake.hold", "Keep the computer awake while DeskIT runs",
                      "The machine will not fall asleep on its own timer "
                      "while the app is running. The screens may still go "
@@ -490,17 +496,17 @@ TABS: tuple[Tab, ...] = (
         )),
         Group("WHERE FILES ARE SAVED", (
             Friendly("capture.folder", "Where pictures are saved",
-                     "Screenshots and webcam photos both land here."),
+                     "Screenshots and webcam photos both land here — "
+                     "Windows' Pictures folder unless you pick another."),
             Friendly("capture.clip_folder", "Where recordings are saved",
-                     "Empty means the same folder as the pictures."),
+                     "Screen recordings land here — Windows' Videos folder "
+                     "unless you pick another."),
         )),
     )),
+    # No engine menu since 2026-11-27: the one other choice, "In
+    # Google's cloud", sent the recording to Google, and the PC never sends
+    # audio anywhere (house rule 2). `backend` is the developer's now.
     Tab(DICTATION, (
-        Group("WHERE YOUR SPEECH BECOMES WORDS", (
-            Friendly("backend", "Where your speech is turned into words",
-                     "On this computer is faster and better at Hebrew, and "
-                     "nothing leaves the machine.", _ENGINES),
-        )),
         Group("WHEN YOU DICTATE", (
             Friendly("auto_language", "Also understand English",
                      "The app decides for each recording; off, everything "
@@ -601,10 +607,15 @@ TABS: tuple[Tab, ...] = (
         )),
     )),
     Tab(PHONE, (
-        Group("DICTATING FROM THE PHONE", (
+        Group("THE PHONE", (
             Friendly("server.enabled", "Dictate from the phone",
-                     "The phone keyboard sends its recordings here, over "
-                     "your own private network."),
+                     "Your phone sends what you say to this PC, and the "
+                     "words come back to it."),
+            Friendly("server.away", "Also from outside home",
+                     "Away from home, your phone reaches this PC through "
+                     "your account, locked with your account's own key: "
+                     "the server carries only sealed bytes. Off, your "
+                     "phone uses its cloud key or waits."),
         )),
     )),
     Tab(ACCOUNT, (
@@ -623,7 +634,7 @@ TABS: tuple[Tab, ...] = (
             Friendly("privacy.history_sync", "Syncing what you said",
                      "The Said page is the same on every PC you sign "
                      "into. Locked before it leaves with a key only your "
-                     "own PCs hold: the server cannot read it (The lock, "
+                     "own devices hold: the server cannot read it (The lock, "
                      "below). Comes with the sign-in and the wizard's one "
                      "sync switch, like the settings; Withdraw turns it "
                      "off on its own, Turn on here asks again."),
@@ -642,8 +653,10 @@ TABS: tuple[Tab, ...] = (
                      "reading. Opens only through its card, the first time "
                      "a feature needs it."),
             Friendly("privacy.cloud_audio", "Recordings to the cloud",
-                     "What you said, as audio, may go to Google or Groq "
-                     "for transcription. Opens only through its card."),
+                     "Your speech becomes words on this computer; a "
+                     "recording leaves only in a problem report whose "
+                     "Recording switch you turned on. The line stays so a "
+                     "yes given to an earlier version can be withdrawn."),
             Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
                      "The part of the screen you asked about may go to "
                      "Groq or Google. Opens only through its card."),

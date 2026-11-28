@@ -4,7 +4,7 @@ from __future__ import annotations
 from .base import ModelMissing, RateLimitError, Transcriber, TranscriptionError
 
 __all__ = ["Transcriber", "TranscriptionError", "RateLimitError",
-           "ModelMissing", "get_transcriber", "local_kwargs"]
+           "ModelMissing", "get_transcriber", "local_kwargs", "configure"]
 
 
 def local_kwargs(cfg, hotwords=None) -> dict:
@@ -37,7 +37,21 @@ def local_kwargs(cfg, hotwords=None) -> dict:
                 beam_size=cfg.local.beam_size,
                 compute_type=cfg.local.compute_type,
                 cpu_threads=cfg.local.cpu_threads,
+                real_length=cfg.local.real_length,
                 boilerplate=boilerplate)
+
+
+def configure(backend, cfg):
+    """The [local] settings a local backend takes as attributes rather
+    than constructor arguments (so no signature changed for them), set
+    from `cfg` -> the backend. Every place that builds one from a config
+    calls this — the app's builder, the fallback, review.py, study.py,
+    dev\\measure.py — so `stop_empty_passes = false` reaches an A/B run
+    exactly as it reaches the app."""
+    if hasattr(backend, "stop_empty_passes"):
+        backend.stop_empty_passes = bool(
+            getattr(getattr(cfg, "local", None), "stop_empty_passes", True))
+    return backend
 
 
 def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
@@ -48,8 +62,8 @@ def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
     from .local_whisper import LocalWhisperTranscriber
 
     def build():
-        return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords),
-                                       english_later=english_later)
+        return configure(LocalWhisperTranscriber(
+            **local_kwargs(cfg, hotwords), english_later=english_later), cfg)
     try:
         return build()
     except ModelMissing as e:
@@ -63,30 +77,18 @@ def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
 def get_transcriber(cfg, hotwords=None, *,
                     english_later: bool = False) -> Transcriber:
     """Build the backend selected in config. Imports lazily so the fake
-    backend works without google-genai and the local stub without
-    faster-whisper.
+    backend works without faster-whisper.
+
+    Every backend here runs on this PC. The one that did not — "gemini",
+    which sent the recording to Google — was taken out on 2026-11-27
+    (house rule 2: the PC never sends audio anywhere); config.build reads
+    a file that still names it as "local" (config.RETIRED_BACKENDS).
 
     `english_later` (the live app): the local backend returns as soon
     as the Hebrew model is ready and loads the English detector on a
     thread of its own — see LocalWhisperTranscriber. The default loads
     both before returning, which is what the wizard's timed sentence,
     --benchmark and --drain want."""
-    if cfg.backend == "gemini":
-        from .gemini import ConsentRequired, GeminiTranscriber
-        try:
-            return GeminiTranscriber(list(cfg.gemini.models),
-                                     cfg.gemini.timeout_s)
-        except ConsentRequired as e:
-            # The cloud_audio gate is shut (privacy.py): a shut gate must
-            # never keep the app from starting — the person dictates on
-            # this PC until the card is answered (plan 5.2). A MISSING key
-            # still raises, as it always did: that is a setup error the
-            # log should shout about.
-            import logging
-            logging.getLogger("app").warning(
-                "backend = \"gemini\" but %s — transcribing on this PC "
-                "instead until it is granted", e)
-            return _local(cfg, hotwords, english_later)
     if cfg.backend == "fake":
         from .fake import FakeTranscriber
         return FakeTranscriber()

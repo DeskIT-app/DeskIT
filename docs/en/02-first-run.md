@@ -13,19 +13,19 @@ done. **הבא** (next) moves on, **דלג** (skip) closes it — and a skipped 
 back by itself. To see it again: Settings > About > **Show the tour**. This page is the
 long version of those four cards.
 
-**The two-sentence version.** The first start opens a seven-page wizard; only three pages ask
-you anything (which microphone, whether to download now, and the optional extras) and every
-other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.
-Since the installer downloads the model and the packs itself ([chapter 1](01-install)), the
-"This computer" page is usually skipped — it appears only for what you unticked there or
-what did not finish.
+**The two-sentence version.** The first start opens a short wizard; only a few pages ask
+you anything (which microphone, where screenshots and recordings go, the cloud keys and the
+optional extras) and every other page is **Next**. It runs once; `main.py --setup` from the install folder runs
+it again. Everything DeskIT needs downloads by itself, in the background, from the first
+second — see [The downloads](#the-downloads).
 
 ![Welcome](../img/02-welcome.png)
 
 ## Welcome
 
-Three sentences about where your voice goes — it stays on this computer, the words are kept in
-one folder you can delete, nothing is sent anywhere until you switch it on — and a link,
+Three sentences about where your voice goes — it stays on this computer, what you said is kept
+on this PC and a copy in your account is locked, nothing you say leaves this PC unless you say
+yes first — and a link,
 **How to check this yourself**, to [chapter 4](04-privacy). **Next**.
 
 ![Your account](../img/02-account.png)
@@ -39,7 +39,7 @@ the account needs one, so **Continue with Google** wakes once you have typed it)
 account is for (your learned words and settings follow you to any PC you sign in on), what is
 stored (the id and e-mail of the Google account you pick, the name you type), and that only
 your voice never leaves this PC: your learned words and settings are kept in your account, and
-so are what you said and your cloud keys, locked with a key only your own PCs hold (the last
+so are what you said and your cloud keys, locked with a key only your own devices hold (the last
 page turns this off). **Continue with Google** opens the browser once; this
 PC remembers you until you sign out, and the rest of the setup follows.
 
@@ -48,9 +48,10 @@ used on the other PC, and that is all: your learned words, settings and what you
 down and DeskIT opens by itself — no microphone, sentence, keys or extras pages, only the downloads page if
 this PC still lacks something. The microphone and the keys are the usual ones until you
 change them in Settings. What you said and your cloud keys are locked with a key only your
-own PCs hold, so one more step: the page shows a ten-character code and waits; open the desk
-on your other PC — Home there shows the same code — and press **Approve**. Everything
-locked then arrives here too. No other PC at hand? Type the recovery key DeskIT made for you
+own devices hold, so one more step: the page shows a ten-character code and waits; open the
+desk on your other PC, or DeskIT on your phone, where the same code shows. Press **Approve**
+there and **Same code** here, in either order. Everything locked then arrives here too. No
+other device at hand? Type the recovery key DeskIT made for you
 (Settings > Account > The lock, on any PC that is in). Or **Later**: DeskIT works meanwhile
 with your words and settings, and the desk's Account card keeps the code.
 
@@ -77,33 +78,18 @@ Microphone > *Let desktop apps access your microphone*). Turn it on, come back, 
 
 Pick another row if you have more than one microphone. **Next** saves the choice.
 
-## This computer
+## The downloads
 
-![This computer](../img/02-computer.png)
+There is no page for them. The moment the wizard opens, DeskIT starts downloading every part
+this computer can use — the Hebrew model (1.6 GB), the Recording pack for the record and
+camera keys (28 MB), and on an NVIDIA card its libraries (1.4 GB) and, on a larger card, the
+English detector (1.6 GB) — in the background, once. The only sign is a slim bar at the top of
+every page, **Downloading app parts**; it goes when everything has landed, and a click on the
+words opens [the table of what each part is](01-install#downloads). Without a connection the
+bar says so and DeskIT keeps trying by itself.
 
-This page exists only while something is left to download — after an install whose
-Downloads page you left as it was, it is not shown at all, and the counter says "of 6".
-
-The top line is what DeskIT found: an NVIDIA card and its memory ("fast transcription"), a
-small NVIDIA card ("fast, smaller mode"), or no NVIDIA card ("transcription will take about
-as long as you spoke"). Under it, what this PC still needs, each asked before a byte moves:
-
-- **The Hebrew model** — 1.62 GB from huggingface.co into `%LOCALAPPDATA%\DeskIT\models`.
-  Press **Download**; the bar shows bytes, percent and speed, **Pause** keeps what came so far
-  and the next start continues from there. You can press **Next** while it downloads, or skip
-  it and download from **Home** another day — DeskIT starts without it, and a dictation then
-  says the model is missing and keeps the recording.
-- **Use the NVIDIA card** (only on a PC with one): 1.37 GB of NVIDIA's CUDA libraries from
-  PyPI, under NVIDIA's licence (linked). Without them an NVIDIA card runs like a CPU.
-- **Detect English automatically** (only on a larger NVIDIA card): a second, general model
-  that notices when you spoke English and transcribes it as English. 1.60 GB more on disk and
-  in video memory.
-- **Screen recording and the camera**: 28 MB from PyPI — PyAV with FFmpeg, for the record
-  key, the photo key and the phone's audio. On by default, so nothing has to be installed
-  later; the two licences are linked on the card.
-
-The switches queue behind the model: one **Download**, one bar, "1 of 3 · Hebrew model".
-This happens only once.
+Whatever is still coming when you press **Start** goes on downloading in the app, and **Home**
+says how far it is. A copy whose installer already downloaded everything shows no bar at all.
 
 ## Say one sentence
 
@@ -112,30 +98,68 @@ This happens only once.
 **Record 3 seconds**, speak, and read what came back — through the real backend, the same one
 every later dictation uses. The line under it says how long the transcription took; on a PC
 without an NVIDIA card that number is the speed to expect. The button waits while the model is
-still downloading; **Skip** goes on without it.
+still downloading; **Next** goes on without it. Pressed before you tried anything, **Next** asks
+once, on the page itself — *Are you sure you want to continue without trying the model?* —
+with **Try it** (back to the page) and **Continue without trying** (straight on).
 
 ## Keys
 
 ![Keys](../img/02-keys.png)
 
-The keyboard keys DeskIT listens to — hold, latch, punctuate, ask the screen — as they are
-now. These are hotkeys, not API keys; the cloud keys come in [chapter 5](05-cloud). Change
-them later on the dashboard's **Keys** place.
+The keyboard keys DeskIT listens to — hold, latch, punctuate, ask the screen, translate — as
+they are now. These are hotkeys, not API keys; the cloud keys have a page of their own, two on. Change them
+later on the dashboard's **Keys** place.
+
+## Screenshots and recordings
+
+![Screenshots and recordings](../img/02-screen.png)
+
+The two screen keys, each with the folder its files go to ([chapter 7](07-screen)):
+
+- **Take a screenshot** — Win+Shift+S, with **Use Win+Shift+S** under it: on, Windows' own
+  Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11.
+  **Save every screenshot** — off: a screenshot goes to the clipboard, and to the folder only
+  when you press Save on its card; on: every one is saved as well.
+- **Record the screen** — Ctrl+F12, tap again to stop. A recording is always saved.
+
+Under each, **Saved in** and the full path — Windows' own **Pictures\DeskIT** and
+**Videos\DeskIT** unless you pick another with **Browse…**. They are ordinary folders: easy to
+find, and they stay when DeskIT is uninstalled. Camera photos go with the screenshots. Every
+change here is written the moment you make it; **Settings > General** changes the folders later.
+
+## Cloud keys
+
+![Cloud keys](../img/02-cloud.png)
+
+Two cards, **Groq** and **Gemini**, one free key each (no credit card). Each card says what
+its key unlocks and what you do without it:
+
+- **Groq** fixes the words it misheard, puts in punctuation (Ctrl+F2) and translates what you
+  select (F8). Without it, what you say is pasted exactly as heard and those two keys do
+  nothing.
+- **Gemini** translates what you select (F8) and goes first for it. Without it, Groq
+  translates; with neither key, F8 does nothing.
+
+A card's switch is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens
+the key's field under it, with the way to a free key. **Save key** checks the key with the
+provider at once; a key that works is drawn as a row of dots with **Change key** beside it.
+**Change key** opens an empty field with **Save** and **Cancel** — Cancel keeps the saved key,
+and a new key the provider refuses gives the saved one back. **Next** waits while a card is on
+without a working key. Skip both and the keys can be added later in **Settings > Privacy**;
+the first time you press F8 or Ctrl+F2 without one, Home says which key to add and where.
 
 ## Optional extras
 
 ![Optional extras](../img/02-extras.png)
 
-Five switches, each one thing that leaves this PC or changes Windows. They are drawn as they
+Three switches, each one thing that leaves this PC or changes Windows. They are drawn as they
 stand and written only if you move them:
 
 | switch | what it does |
 |---|---|
-| Fix misheard words with a free cloud model (text only) | Off. Turning it on is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens a field under the row for your own free Groq key, checked with Groq the moment you save it. Next waits until a key works — or the switch is off again. |
 | Keep this PC awake while DeskIT runs | On. Windows does not sleep while DeskIT runs; Settings > General turns it off. |
 | Check for updates weekly | On. One request to github.com, no identifier. |
 | Connect Claude Code | Off. Two hook lines in `~/.claude/settings.json`: when Claude Code finishes or asks, DeskIT shows a card and plays a cue. One copy of DeskIT at a time: if another copy on this PC is connected, the row says so and turning it on asks first — answer *Yes, connect this one* and the other is disconnected. |
-| Take over Win+Shift+S for DeskIT's screenshot key | On. Windows' own Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11. |
 
 ## Ready
 
@@ -147,7 +171,7 @@ The hotkey to hold, and three switches asked once:
   learned from you, the settings you changed, the text of what you said and your cloud keys
   follow you to any PC you sign in on, so it hears you your way from the first sentence and
   the Said page is the same page there. What you said and the keys leave locked with a key
-  only your own PCs hold; the server cannot read them. Never your voice. To turn it off later:
+  only your own devices hold; the server cannot read them. Never your voice. To turn it off later:
   Settings > Account > **Withdraw** on *Syncing settings and words* and on *Syncing what
   you said* — each has its own row, so the history can go off alone; **Turn on** on the
   same row asks again. The row appears only when you signed in on the account page.

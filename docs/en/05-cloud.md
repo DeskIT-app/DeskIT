@@ -18,9 +18,11 @@ card.
 | Fix misheard words (the repair pass) | the text of what you just said — while you hold the key, stretches of it are sent before you release (rolling); up to 60 learned word pairs that appear in the text | Groq, under your Groq key (or Google under your Gemini key) |
 | Punctuation, translation, lookup | the text or the selection | the same |
 | The second reading's cloud pass | the text | the same |
-| Cloud transcription (PCs without an NVIDIA card) | the recording of what you said, 16 kHz WAV, up to 20 MB per request | Groq or Google, under your key |
 | Ask the screen | a JPEG of the region you selected (long side at most 1344 px), your question, earlier questions and answers in the same card | Groq or Google, under your key |
 | Weekly update check | nothing about you: one request to api.github.com | GitHub |
+
+Your voice never leaves this PC: no feature here sends a recording, and nothing on the PC
+transcribes in the cloud.
 
 Each of these is a **gate** on **Settings > Privacy > WHAT MAY LEAVE THIS PC**. A gate opens
 only through its consent card — never from the settings file — and closes at once from the
@@ -31,18 +33,23 @@ those terms; when the provider changes its terms, the card comes back.
 
 ## Getting a free key
 
-**Groq first.** One Groq key unlocks the repair pass, punctuation, lookup and, on a PC without
-an NVIDIA card, cloud transcription. Create it at
+**Groq first.** One Groq key unlocks the repair pass, punctuation, lookup and translation (it
+goes first for translation). Create it at
 [console.groq.com](https://console.groq.com) (free tier, no credit card).
 
-**Gemini** only for translation and ask-the-screen, at
-[aistudio.google.com](https://aistudio.google.com).
+**Gemini** for translation (with both keys Groq goes first, and Gemini answers when Groq
+cannot) and ask-the-screen, at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free, no credit card).
 
-Then **Settings > Privacy > YOUR CLOUD KEYS**: paste the key into the masked field (it is
-never shown again), press **Save and test** — "Works · N models visible" or the provider's own
-error — and the key is stored. **Remove** deletes it. The sentence under each field:
+The wizard asks for both on its **Cloud keys** page ([chapter 2](02-first-run)). Afterwards:
+**Settings > Privacy > YOUR CLOUD KEYS**. Paste the key into the masked field and press
+**Save key**: the key is stored and checked with the provider at once. A key that works is
+shown as a row of dots — never the key itself — with **Change key** beside it; Change opens an
+empty field with **Save** and **Cancel**, Cancel keeps the saved key, and a new key the
+provider refuses gives the saved one back. **Remove** deletes it. The sentence under each
+field:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own devices hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 
 [Chapter 4](04-privacy) shows how to check that sentence yourself in two minutes.
 

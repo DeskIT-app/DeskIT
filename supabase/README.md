@@ -2,10 +2,13 @@
 
 DeskIT runs exactly one server of its own: a Supabase project in
 Frankfurt, on the Free plan, and the app talks to it only when you have
-an account — anonymous, or your Google sign-in — and only for what you
-turned on: sending a problem report, syncing your learned words and
-changed settings, syncing what you said. A copy of DeskIT with no account
-never contacts it (the weekly update check goes to GitHub).
+an account — anonymous, or your Google sign-in. What a signed-in copy
+always does there is small: it keeps its own row and the account's lock
+(a fingerprint, and any device asking to join), and it holds one socket
+on the account's channel, which carries nothing personal. The rest is
+only what you turned on: sending a problem report, syncing your learned
+words and changed settings, syncing what you said. A copy of DeskIT with
+no account never contacts it (the weekly update check goes to GitHub).
 
 This folder is the whole of that server's shape. There is nothing else:
 no edge function, no dashboard setting the files do not mention, and
@@ -30,7 +33,7 @@ one Realtime topic per account that carries nothing but "go and pull".
   down through the tables above. No table is published to Realtime.
 - `migrations/0004_account_lock.sql` — the account lock. `history`
   loses its `text` and `raw` columns and gains `cipher`: what you said
-  arrives sealed under a key only your own PCs hold (AES-256-GCM through
+  arrives sealed under a key only your own devices hold (AES-256-GCM through
   Windows' own CNG in the app, `vault.py`). `vault` holds your cloud keys
   the same way, one sealed row per key name. `profiles.lock_id` is the
   key's fingerprint (sixteen hex characters of a hash — tells a PC
@@ -50,6 +53,49 @@ one Realtime topic per account that carries nothing but "go and pull".
   regex bound: Postgres caps a bound at 255, and 0004's `{16,7600}`
   made the function refuse every call (measured live an hour after it
   ran, before any row was written).
+- `migrations/0006_signed_out_means_out.sql` — a signed-out session is
+  out at its next request, not at the end of its token's hour. An
+  access token is checked by its signature alone, so "Sign out of every
+  PC" used to leave every other copy working for up to an hour (measured
+  live: 58 minutes, two requests to join approved in them). Now one
+  function, `private.session_ok()`, looks the token's `session_id` up in
+  `auth.sessions`; the Data API runs it before every request
+  (`pgrst.db_pre_request`, HTTP 401 when the session is gone) and the
+  policies Realtime and Storage read carry it too. It reads nothing of
+  your data; a lookup costs about 19 microseconds.
+- `migrations/0007_the_phone_is_a_device.sql` — a phone joins the account
+  the way a second PC does. `devices.link` is what the devices need of
+  each other, sealed under the account key: a device's certificate, its
+  private addresses, its port. A row that does not open is ignored, so
+  this server cannot add a device. `devices.session_id` is the session a
+  device runs on, in the clear, so that `forget_device()` can end it: the
+  one new RPC, which deletes a device's row and its session, ends only a
+  session that belongs to the caller, and answers whether any session of
+  that row is left: true when it ended or was over already, as on a PC
+  that signed out, and false for a copy older than this file, which never
+  wrote its session, so it loses its row and stays signed in, and the app
+  says so. Who was forgotten is one more sealed `vault` row, named
+  `forgotten`, so there is no new table.
+- `migrations/0009_every_account_has_a_ceiling.sql` — no one account can
+  fill the shared free database. Seven tables are counted per account, in
+  rows and in bytes, by triggers that look once at each statement's own
+  rows (about half a millisecond a statement, measured, however much the
+  account holds); a write that would take an account past its ceiling is
+  refused whole with `account full: <table>` and the app keeps what it
+  could not send. A signed-in account at every ceiling holds at most about
+  31 MB of the plan's 500, an anonymous one about 1.5 MB; the table of
+  ceilings is at the top of the file. The counts live in
+  `private.account_usage`, which no client can read or write.
+- `migrations/0010_words_travel_sealed.sql` — the learned words travel
+  sealed, like what was said. `vocab_sealed` holds one row per word: an
+  `id` that is an HMAC of the heard form under a key derived from the
+  account key, and a `cipher` sealed under the account key with the row's
+  own id as the associated data, so a row this server makes up, moves or
+  edits does not open. `vocab_sync`, where the words were in the clear,
+  stays for the copies that are older than this file; the newer ones never
+  write it, read it once (from where their own cursor stood) and delete
+  its rows a day after they were written. `delete_me()` sweeps the new
+  table.
 
 ## How to read it in ten minutes
 
@@ -64,8 +110,8 @@ one Realtime topic per account that carries nothing but "go and pull".
    Since 0004 your cloud keys DO travel — to the `vault` table, sealed
    under your account's key, which the server never sees; that column
    and the other opaque ones (`history.cipher`, `recovery.wrapped`,
-   `pairings.applicant` and `handed`) carry `is_sealed()` instead,
-   which admits only a version tag and standard base64.
+   `pairings.applicant` and `handed`, `devices.link`) carry `is_sealed()`
+   instead, which admits only a version tag and standard base64.
 2. **Every table has row-level security on, and every policy is
    `to authenticated` with `(select auth.uid()) = user_id`.** You can
    see only your own rows. The `anon` role — what a client holding the
@@ -80,7 +126,12 @@ one Realtime topic per account that carries nothing but "go and pull".
    of your changed settings minus everything machine-bound (`sync.py`
    drops the keys page's fields, hotkeys, devices, folders, ports,
    positions and the privacy gates before it leaves your PC — a test
-   holds the list). `vocab_sync` is one row per learned word.
+   holds the list). `vocab_sealed` is one row per learned word, sealed
+   since 0010: the row's name is a keyed hash of the word and its value
+   opens only under the account key, so the admin can neither read a
+   word nor write one a PC would take. `vocab_sync`, its plaintext
+   predecessor, is read and written only by copies older than 0010 and
+   swept by the newer ones.
    `history` holds what you dictated only if you turned the history
    sync on — sealed, since 0004: RLS separates users from each other,
    and the lock keeps the project admin from reading a row (only `ts`,
@@ -88,7 +139,8 @@ one Realtime topic per account that carries nothing but "go and pull".
    screenshots and clips have no table.
 5. **Delete means delete.** The app removes your files from the bucket
    (it holds the delete policy), then `delete_me()` removes your rows
-   and your `auth.users` row — which invalidates every refresh token —
+   and your `auth.users` row — which invalidates every refresh token,
+   and since 0006 every access token at its next request —
    and leaves one line in `deletion_requests` with your id and the
    time. The Free plan has no backups; the owner's monthly dump and
    its retention are stated in the privacy policy.

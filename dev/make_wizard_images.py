@@ -1,57 +1,73 @@
-"""The installer's two pictures, drawn from icon.png and the app's Rubik.
+"""The installer's pictures, in B+: the sky behind every page, the mark and
+the name on it, and the mark again in the header.
 
-Inno Setup shows `WizardImageFile` down the side of the Welcome and
-Finished pages and `WizardSmallImageFile` in the header of every other
-page, and picks, from a comma-separated list, the file whose size best
-fits the screen's DPI. The sizes below are the ones its documentation
-lists. BMPs are generated at build time (release.yml, before ISCC) and
-by packaging/build_local.ps1 — never committed: 1.7 MB of bitmaps for a
-picture that is three lines of drawing.
+Inno Setup 6.7 draws `WizardBackImageFile` behind every wizard page, shows
+`WizardImageFile` down the side of the Welcome and Finished pages and
+`WizardSmallImageFile` in the header of every other page, and picks, from
+a comma-separated list, the file whose size best fits the screen's DPI.
+The sizes below are the ones its documentation lists.
+
+The sky is the desk's own (look.sky, bplus.css `.sky`): the night with its
+fields of light. The side picture is drawn on NOTHING — a PNG with its own
+alpha — so the sky runs on behind it without a seam: measured on the
+hidden desktop 2026-10-24, a side picture with a sky of its own met the
+page's sky at a visible edge, a transparent one did not. The mark is
+icon.png, the locked logo (dev\\make_logo.py), as it is.
+
+Generated at build time (release.yml, before ISCC) and by
+packaging/build_local.ps1 — never committed: megabytes of pictures for a
+drawing of a few lines.
 
     python dev/make_wizard_images.py --out packaging/wizard --version 1.1.0
 """
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-FONTS = ROOT / "fonts"
+sys.path.insert(0, str(ROOT))
 
-BG = (0x14, 0x11, 0x0C)          # the wizard's warm graphite (firstrun.py)
-FG = (0xEC, 0xE5, 0xD8)
-DIM = (0xA8, 0x9E, 0x8C)
-FAINT = (0x6F, 0x66, 0x57)
-GOLD = (0xE3, 0xA6, 0x3C)
+import look  # noqa: E402  (B+'s pieces; Pillow and numpy, no Tk)
 
-#: (width, height) per Inno's list: 100 %, 125 %, 150 %, 175 %, 200 %
+#: the page's background, per Inno's list: 100 % ... 250 % (497:360)
+BACK_SIZES = [(596, 432), (796, 576), (994, 720), (1193, 864), (1272, 922),
+              (1471, 1066), (1630, 1148)]
+#: (width, height) of the side picture: 100 %, 125 %, 150 %, 175 %, 200 %
 SIDE_SIZES = [(164, 314), (192, 386), (246, 459), (273, 556), (328, 604)]
 SMALL_SIZES = [55, 64, 83, 92, 110, 119, 138]
 
 
+def back(width: int, height: int) -> Image.Image:
+    """The sky behind the pages: the desk's four fields of light."""
+    return look.sky((width, height))
+
+
 def side(width: int, height: int, version: str, icon: Image.Image) -> Image.Image:
+    """The mark, the name, a fading rule, what it is, the version — on
+    nothing, so the sky behind the page shows through."""
     k = height / 314                                   # everything scales with the 100 % panel
-    im = Image.new("RGB", (width, height), BG)
-    d = ImageDraw.Draw(im)
+    im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     tile = icon.resize((round(84 * k), round(84 * k)), Image.LANCZOS)
-    im.paste(tile, ((width - tile.width) // 2, round(56 * k)), tile)
-    name = ImageFont.truetype(str(FONTS / "RubikMedium.ttf"), round(28 * k))
-    small = ImageFont.truetype(str(FONTS / "Rubik.ttf"), round(12.5 * k))
-    d.text((width / 2, round(172 * k)), "DeskIT", font=name, fill=FG, anchor="mm")
-    d.rectangle([width / 2 - 14 * k, round(194 * k), width / 2 + 14 * k, round(194 * k) + max(1, round(1.5 * k))], fill=GOLD)
-    d.text((width / 2, round(214 * k)), "Hebrew dictation", font=small, fill=DIM, anchor="mm")
-    d.text((width / 2, round(231 * k)), "for Windows", font=small, fill=DIM, anchor="mm")
-    d.text((width / 2, height - round(18 * k)), version, font=small, fill=FAINT, anchor="mm")
+    im.alpha_composite(tile, ((width - tile.width) // 2, round(56 * k)))
+    cache: dict = {}
+    name = look.text(cache, "DeskIT", 21 * k, "ink", 420)
+    im.alpha_composite(name, ((width - name.width) // 2, round(163 * k)))
+    look.fade_rule(im, width / 2 - 18 * k, width / 2 + 18 * k, round(196 * k), a=90)
+    for i, line in enumerate(("Hebrew dictation", "for Windows")):
+        words = look.text(cache, line, 9.4 * k, "muted", 400)
+        im.alpha_composite(words, ((width - words.width) // 2, round((208 + 17 * i) * k)))
+    ver = look.text(cache, version, 8.6 * k, "faint", 400)
+    im.alpha_composite(ver, ((width - ver.width) // 2, height - round(24 * k)))
     return im
 
 
 def small(size: int, icon: Image.Image) -> Image.Image:
-    im = Image.new("RGB", (size, size), (255, 255, 255))   # the header strip is white
-    tile = icon.resize((size, size), Image.LANCZOS)
-    im.paste(tile, (0, 0), tile)
-    return im
+    """The mark in the header of the inner pages, its corners clear."""
+    return icon.resize((size, size), Image.LANCZOS)
 
 
 def main() -> int:
@@ -62,15 +78,19 @@ def main() -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     icon = Image.open(ROOT / "icon.png").convert("RGBA")
     names = []
+    for w, h in BACK_SIZES:
+        p = a.out / f"back-{h}.png"
+        back(w, h).save(p, "PNG")
+        names.append(p.name)
     for w, h in SIDE_SIZES:
-        p = a.out / f"side-{h}.bmp"
-        side(w, h, a.version, icon).save(p, "BMP")
+        p = a.out / f"side-{h}.png"
+        side(w, h, a.version, icon).save(p, "PNG")
         names.append(p.name)
     for s in SMALL_SIZES:
-        p = a.out / f"small-{s}.bmp"
-        small(s, icon).save(p, "BMP")
+        p = a.out / f"small-{s}.png"
+        small(s, icon).save(p, "PNG")
         names.append(p.name)
-    print(f"{len(names)} bitmaps in {a.out}: " + ", ".join(names))
+    print(f"{len(names)} pictures in {a.out}: " + ", ".join(names))
     return 0
 
 

@@ -65,8 +65,11 @@ Nothing — not even the update check, if you turned that switch off. The **Netw
 empty during plain dictation.
 
 **Does the phone app send my voice through the internet?**
-No: phone → your PC over your own Tailscale network, TLS to your PC's certificate; there is
-no relay.
+At home, no: phone → your PC over your own Wi-Fi, TLS to your PC's certificate. Away from home
+it goes through your account, every piece locked with your account's own key, so the server
+carries bytes it cannot open and your PC writes it down. Only the phone's cloud backup, when no
+PC of yours answers, sends a recording to Groq or Gemini with your own key; you can turn it off
+in the phone's Settings.
 
 **How do I delete everything?**
 [Chapter 8](08-your-data): the reset command, or uninstall and answer Yes to "Remove my data

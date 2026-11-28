@@ -6,8 +6,9 @@ title: 4. Privacy, and how to check it yourself
 
 # 4. Privacy, and how to check it yourself
 
-Your voice stays on this computer. The words you say are kept in one folder you can delete.
-Nothing is sent anywhere until you switch it on.
+Your voice stays on this computer. What you said is kept on this PC; a copy in your account is
+locked.
+Nothing you say leaves this PC unless you say yes first.
 
 Every claim below comes with a way to check it that does not require trusting us. Four of the
 checks take ten minutes together; two more are for the sceptic with an afternoon.
@@ -24,7 +25,7 @@ checks take ten minutes together; two more are for the sceptic with an afternoon
 
 The wording next to every key field, so you have seen it before you paste a key:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own devices hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 
 ## The checks
 

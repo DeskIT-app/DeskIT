@@ -27,7 +27,7 @@ beside the app keeps the defaults and the help for every key.
 
 | key | what it does | default | choices |
 |---|---|---|---|
-| `local.load_at_start` — Have it ready to dictate the moment it starts | Off, DeskIT starts light — every key that does not need the speech model works at once, and Start on the desk gets it ready when you want to dictate. | on | on / off |
+| `local.load_at_start` — Have it ready to dictate the moment it starts | Every key that does not need the speech model works at once either way. Off, the model waits until you press Start on the desk. | on | on / off |
 | `awake.hold` — Keep the computer awake while DeskIT runs | The machine will not fall asleep on its own timer while the app is running. The screens may still go dark. | on | on / off |
 | `privacy.update_check` — Look for a newer version every week | Once a week DeskIT asks GitHub whether a newer version is out. Nothing about you is sent, and nothing is installed without your press. | on | on / off |
 
@@ -35,16 +35,10 @@ beside the app keeps the defaults and the help for every key.
 
 | key | what it does | default | choices |
 |---|---|---|---|
-| `capture.folder` — Where pictures are saved | Screenshots and webcam photos both land here. | `captures` | text |
-| `capture.clip_folder` — Where recordings are saved | Empty means the same folder as the pictures. | (empty) | text |
+| `capture.folder` — Where pictures are saved | Screenshots and webcam photos both land here — Windows' Pictures folder unless you pick another. | `{pictures}/DeskIT` | text |
+| `capture.clip_folder` — Where recordings are saved | Screen recordings land here — Windows' Videos folder unless you pick another. | `{videos}/DeskIT` | text |
 
 ## Dictation
-
-### Where Your Speech Becomes Words
-
-| key | what it does | default | choices |
-|---|---|---|---|
-| `backend` — Where your speech is turned into words | On this computer is faster and better at Hebrew, and nothing leaves the machine. | `local` | On this computer / In Google's cloud |
 
 ### When You Dictate
 
@@ -110,11 +104,12 @@ beside the app keeps the defaults and the help for every key.
 
 ## Phone
 
-### Dictating From The Phone
+### The Phone
 
 | key | what it does | default | choices |
 |---|---|---|---|
-| `server.enabled` — Dictate from the phone | The phone keyboard sends its recordings here, over your own private network. | off | on / off |
+| `server.enabled` — Dictate from the phone | Your phone sends what you say to this PC, and the words come back to it. | on | on / off |
+| `server.away` — Also from outside home | Away from home, your phone reaches this PC through your account, locked with your account's own key: the server carries only sealed bytes. Off, your phone uses its cloud key or waits. | on | on / off |
 
 ## Account
 
@@ -124,7 +119,7 @@ beside the app keeps the defaults and the help for every key.
 |---|---|---|---|
 | `privacy.account` — An account | Anonymous, or your Google sign-in: for problem reports you choose to send and for the two syncs. Opens only through its card. | off | on / off |
 | `privacy.settings_sync` — Syncing settings and words | Your changed settings, learned words and cloud keys follow you to every PC you sign into — the keys locked with your account's own key; never hotkeys, devices, folders or positions. Comes with the sign-in and the wizard's one sync switch; Withdraw turns it off, Turn on here asks again. | off | on / off |
-| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Locked before it leaves with a key only your own PCs hold: the server cannot read it (The lock, below). Comes with the sign-in and the wizard's one sync switch, like the settings; Withdraw turns it off on its own, Turn on here asks again. | off | on / off |
+| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Locked before it leaves with a key only your own devices hold: the server cannot read it (The lock, below). Comes with the sign-in and the wizard's one sync switch, like the settings; Withdraw turns it off on its own, Turn on here asks again. | off | on / off |
 
 ## Privacy
 
@@ -134,7 +129,7 @@ beside the app keeps the defaults and the help for every key.
 |---|---|---|---|
 | `privacy.offline` — Offline mode | Nothing leaves this computer. Dictation keeps working; cloud fixes, translation and updates pause. | off | on / off |
 | `privacy.cloud_text` — Text to the cloud | What you dictated or selected may go to Groq or Google under your own key, for the repair pass, punctuation, translation, lookup and the second reading. Opens only through its card, the first time a feature needs it. | off | on / off |
-| `privacy.cloud_audio` — Recordings to the cloud | What you said, as audio, may go to Google or Groq for transcription. Opens only through its card. | off | on / off |
+| `privacy.cloud_audio` — Recordings to the cloud | Your speech becomes words on this computer; a recording leaves only in a problem report whose Recording switch you turned on. The line stays so a yes given to an earlier version can be withdrawn. | off | on / off |
 | `privacy.cloud_screenshots` — Screen pictures to the cloud | The part of the screen you asked about may go to Groq or Google. Opens only through its card. | off | on / off |
 | `privacy.report_upload` — Sending problem reports | Only what the preview showed. Opens only through its card. | off | on / off |
 

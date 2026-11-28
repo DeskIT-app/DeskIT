@@ -7,58 +7,177 @@ title: 6. The phone keyboard
 # 6. The phone keyboard
 
 **The two-sentence version.** The DeskIT keyboard for Android records on the phone and sends
-the recording to *your* PC over your own private network; your PC transcribes it with the same
-Hebrew model and the same learned words, and the text lands in the field on the phone. No
-relay, no server of ours in between.
+the recording to *your* PC: at home straight over your Wi-Fi, and away from home through your
+own account, locked so that only your own devices can read it. Your PC transcribes it with the
+same Hebrew model and the same learned words, and the text lands in the field on the phone.
 
 ## What you need
 
-- DeskIT running on the PC with **Dictate from your phone** on (the wizard's last page, or
-  **Settings > Phone**).
-- **Tailscale** on the PC and on the phone, signed into the same account — this version
-  reaches the PC over your Tailscale network only. Pairing over home Wi-Fi without Tailscale
-  is planned for a later version.
-- The keyboard APK from the [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest)
-  (`DeskIT-keyboard-x.y.z.apk`); a Play listing comes later.
+- DeskIT running on the PC and signed in, with **Dictate from the phone** on. It is on unless
+  you turned it off: **Settings > Phone**.
+- An Android phone, signed in to the same account as the PC. The phone signs in with Google,
+  so an account made without Google needs a Google sign-in on the PC first; **Settings > Phone**
+  says so and has the button. Everything in the account stays.
+- The DeskIT keyboard app. **Settings > Phone** on the PC shows where to get it: point the
+  phone's camera at the code on its card.
+
+There is nothing to type: no address, no token, no port.
+
+## Installing the keyboard {#installing-the-keyboard}
+
+The keyboard is not on Google Play yet. It comes from DeskIT's own releases on GitHub, as one
+file named `DeskIT-keyboard-` and the version, for example `DeskIT-keyboard-1.0.7.apk`. Android
+calls installing a file like this "installing unknown apps", and it asks a few questions the
+first time. That is normal for any app from outside a store.
+
+1. **Get the file.** On the PC, **Settings > Phone** shows a code: point the phone's camera at
+   it, and the latest DeskIT release opens in the phone's browser. Or type
+   `github.com/DeskIT-app/DeskIT/releases/latest`. Under **Assets**, tap the file whose name
+   starts with `DeskIT-keyboard`.
+2. **The browser's warning.** Chrome may say the file can harm your device. Tap
+   **Download anyway**, then **Open** when it has downloaded.
+3. **Install unknown apps.** The first time, Android asks whether your browser may install
+   apps. Tap **Settings**, turn on **Allow from this source**, go back, and tap **Install**. You
+   can turn it off again afterwards; Android will ask again for the next update.
+4. **Samsung Galaxy phones: Auto Blocker.** Auto Blocker stops apps that do not come from Google
+   Play or the Galaxy Store, and new Galaxy phones have it on. If it stops the install, it says so
+   and names the place: on the phone, **Settings** › **Security and privacy** ›
+   **Auto Blocker**. Turn it off, then install. While it is on it also stops the keyboard's
+   updates, so either leave it off or turn it off for each update.
+5. **Google Play Protect** may scan the keyboard and warn that the app is from a developer it
+   does not know, or that it is not commonly used. A keyboard that uses the microphone and does
+   not come from Play is exactly what it looks at. Tap **More details**, then
+   **Install anyway** (the words differ a little between phones). DeskIT has no ads and no
+   analytics, and the keyboard talks only to your own PCs and your own account.
+6. Open **DeskIT** from the phone's app list and go on with *Setting it up*, below.
+
+**Is it really DeskIT's?** The release page lists the file's SHA-256 and the SHA-256 of the
+certificate it is signed with. The certificate is always the same one:
+
+`82b9dac0f0e0095b690adc8de81a70823df15e9369d000fc79536d2888d79c55`
+
+Android installs an update only over a keyboard signed with the same certificate, so a copy
+made by anyone else cannot replace yours. If Android says the app *conflicts with an existing
+package* or *was not installed*, a DeskIT keyboard from somewhere else is on the phone: uninstall
+it first (**Settings** › **Apps** › **DeskIT** › **Uninstall**), then install this one.
+
+**Updates.** When a newer keyboard is out, the keyboard's home screen says so. Tap it: the new
+file downloads from the same place, and Android installs it over the old one. Your sign-in and
+your settings stay.
+
+**Google's new rule for apps from outside Play.** Google is starting to check that every app a
+certified Android phone installs comes from a developer registered with Google ("developer
+verification"). Checked on 28 November 2026: since 30 September 2026 it applies in Brazil,
+Indonesia, Singapore and Thailand, and there only to apps installed from the app stores Google
+lists; a file you download yourself, as above, is not stopped yet. Google says every other
+country follows in 2027 and has not named a month; Israel is not named. The DeskIT keyboard is
+not registered yet, so where the rule applies Android would ask for its longer way for unknown
+developers (developer options, a restart and a day's wait) or a computer with ADB. Everywhere
+else, today, it installs as described above. This page will say when that changes.
 
 ## Setting it up
 
-1. Install Tailscale on both devices; confirm the PC has an address with `tailscale ip -4`.
-2. Turn **Dictate from your phone** on. **Settings > Phone** shows the address the PC listens
-   on and a **Copy link** button.
+1. Install the keyboard app (above) and open it.
+2. Sign in with Google, with the account your PC uses.
+3. The phone asks to join your account, the way a second PC does, and both screens show the
+   same code. On the PC the request is on **Home**: press **Approve** only if you are adding
+   this phone yourself right now and the code matches. On the phone, press **Same code**.
+   Neither side opens anything until both have pressed. The PC you pressed Approve on now takes
+   the phone's dictations.
+4. Every other PC of yours asks once, on its own **Home**: *Your phone can use this PC too*.
+   Press **Allow** there for each PC you want the phone to reach, or **Not now**.
+5. Allow the microphone, and turn the DeskIT keyboard on in Android's keyboard settings.
+6. In any app: switch to the DeskIT keyboard, hold the microphone key, speak, release.
 
-   ![Settings > Phone](../img/06-settings-phone.png)
-3. Give the address HTTPS, once, in a terminal on the PC:
+## At home
 
-   ```
-   tailscale serve --bg 8756
-   ```
+On Wi-Fi, the keyboard finds the PCs of your account that said yes to it by itself, from what
+each PC leaves sealed in your account, and tries all of their addresses at once; the first to
+answer takes the dictation. Only a PC your account lists can answer, and only a phone your account lists gets
+in: each side checks the other's certificate before a word is sent, over TLS. Once the phone
+has read your devices, it needs no internet for this.
 
-   Android refuses the microphone on a page that is not a secure context; this fronts the
-   listener with a real certificate at `https://<pc>.<tailnet>.ts.net/`.
-4. Install the APK on the phone, open the DeskIT keyboard app, paste the whole link from
-   **Settings > Phone** into its first field (it splits the address and the token for you),
-   grant the microphone, and enable the keyboard under Android's keyboard settings.
-   **Save and test** sends one second of silence to prove the whole path.
-5. In any app: switch to the DeskIT keyboard, hold the microphone key, speak, release.
+## Away from home
+
+When the phone cannot reach your PC on the network it is on (you are out, on mobile data, or on
+someone else's Wi-Fi), the keyboard reaches it **through your account** instead: the recording
+goes up in pieces on your account's own private channel, each piece locked with your account's
+key, and the PC's text comes back the same way. It is your PC's model and your learned words,
+as at home. Nothing to set up and nothing to press.
+
+- **You always know.** The keyboard's line says *via your account* when the text came this way:
+  *3.7 s · local via your account*.
+- **Who can read it.** Only devices of your account: the account's server sees that pieces of
+  some size passed, never what is in them. A phone you removed with **Forget** is refused by your
+  PCs.
+- **The PC must be on**, with DeskIT running and **Dictate from the phone** on. **Settings >
+  Phone** on the PC has **Also from outside home**, on by default; off, that PC does not answer
+  away from home.
+- **When no PC answers** this way either, the keyboard goes on to your cloud key, below, or the
+  recording waits on the phone for **Send again**.
+
+## When your PC can't be reached
+
+The keyboard has a backup: when no PC of your account answers within about a second, at home or
+through your account, it sends
+that recording to **Groq** (or **Gemini**, if that is the only key you have) with **your own
+key**, and the text lands in the field as usual. It is on unless you turn it off. The phone
+shows it once, with the switch already on; you can turn it off there, or later in the phone's
+Settings, under **When your PC can't be reached**.
+
+- **The key.** The same key your PC uses, while your account keeps your settings and words
+  (**Settings > Account**): it lives there too, locked with your account's key. Add, change or remove it in the phone's Settings, under **Your cloud keys**, or on the PC
+  — a change on one reaches the other by itself. The phone opens it for one request and keeps
+  nothing readable.
+- **You always know.** The keyboard's line says *Transcribing in the cloud…* while it works and
+  *from the cloud (Groq)* when the text is in. **What you said** on the phone marks it too.
+- **The price.** The provider hears that recording, and its words are less accurate than your
+  PC's, with none of the words DeskIT learned. That is why it is a backup and never the first
+  road.
+- **Afterwards.** The recording is deleted from the phone. Only the text goes on to your PCs,
+  locked, and appears on their **Said** page marked *From the cloud* — only if your account
+  keeps what you said.
+- **No key yet?** Away from home, a recording that could not be sent waits, and the button
+  beside it reads **Add a key** instead of **Send again** until there is a way to send it.
+
+## When nothing gets through
+
+- **It waits.** A dictation that reached no PC and no cloud waits on the keyboard, for an hour
+  at most. Its line says why in a few words — that your phone isn't on Wi-Fi, when that is the
+  reason. **Send again** sends what waits, oldest first; the **X** deletes it. Nothing is sent
+  behind your back.
+- **A recording is never lost when the keyboard closes.** If it closes in the middle of one —
+  the screen goes dark, another app takes over — the microphone stops and the recording is kept.
+  The next time the keyboard opens, the microphone key says **Continue** with how long you had
+  talked: go on where you stopped, send it, or delete it with the **X**. The screen stays on
+  while you record.
 
 ## What leaves the phone, and where
 
-- The recording goes to your PC only, over TLS, to the address you pasted. Nothing goes to
-  the developer, and there is no relay.
+- The recording goes to your PC. At home it goes straight to it, over TLS. Away from home it
+  goes through your account, locked with your account's own key: the account's server carries
+  sealed bytes it cannot open. Only the cloud backup above, when no PC answers, sends a recording
+  to a provider, with your own key. Nothing goes to the developer.
 - The PC does the transcription; the phone shows the result. What you taught DeskIT at the
   desk (learned words, the repair pass if you turned it on) applies to the phone's text too —
   under the same consent switches as at the desk. If the cloud repair is on at the desk, the
   phone's text goes through it as well.
-- The keyboard refuses to work in password fields.
-- **Forget** on the phone removes the address and the token; turning the switch off on the PC
-  stops it listening.
+- The keyboard refuses password fields and other private fields.
+- **Settings > Phone** on the PC lists your phones beside your PCs. **Forget** takes one off
+  the list and ends its session at once, and your PCs refuse it from then on. Signing out on
+  the phone takes everything of yours off it: the key, the words and the recordings.
 
 ## Trouble
 
-- "Cannot connect": is Tailscale up on both, and is the PC's DeskIT running with the switch
-  on? The dashboard's foot says `phone live` when the listener is up.
-- Another program holds port 8756: DeskIT falls through to the next free port and
-  **Settings > Phone** shows the one in use; paste the link again on the phone.
-- Windows Firewall asks once whether DeskIT may accept connections: allow it on **Private**
-  networks.
+- **The phone can't connect at home.** Windows may be blocking it. **Settings > Phone** has
+  *The phone can't connect?* with **Let it through**: DeskIT asks Windows to let your phone in,
+  and Windows asks you for a yes. Its details show this PC's addresses and port.
+- **Is the PC listening?** DeskIT must be running on the PC with **Dictate from the phone** on,
+  and your account turned on there. With the account off on that PC, the phone cannot come in;
+  turn it on from **Home** or **Settings > Account**.
+- **This PC never asked?** A PC that did not press Approve for the phone asks on its **Home**:
+  *Your phone can use this PC too*. Until you press **Allow** there, the phone does not try it.
+- **Another program holds the port.** DeskIT takes the next free one and tells your phone
+  through your account. There is nothing to change on the phone.
+- **The phone was removed.** A phone taken off with **Forget** says so, and approving it again
+  on the PC brings it back.

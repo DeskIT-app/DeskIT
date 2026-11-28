@@ -99,6 +99,22 @@ missing key, a shut cloud-text gate, a late answer and an error all
 mean the old card, and `text` itself is never stored. Claude's own
 turn is not slowed by a millisecond — the hook runs after it.
 
+THE SAME FINISH TOLD TWICE (2026-10-24). A Claude Code finish now
+reaches this door by two roads: notify_tail.py reads it off the
+session's transcript the moment it is written, and the Stop hook still
+knocks with it — on most turns about three seconds later (the
+measurements are in notify_tail.py). The first to arrive is the card;
+the second is recognised as the same finish and folded in, never shown
+twice and never summarised twice. "The same" is exact: same source,
+`done`, same session, and the hook's 300-character body equal to the
+one that session's NEWEST finish arrived with (`raw` once the sentence
+has replaced it) inside TWIN_S. The transcript's copy says so with
+`via = "transcript"` (kept on the item); the hook's half that it
+lacks — the window the hook walked up to and the session link — is
+written onto the card when the hook comes, and notify.log says by how
+much the transcript was ahead. A hook whose finish was never read off
+a transcript lands exactly as it always did.
+
 Two records are kept beside the app: notify.log (one line per arrival,
 reminder and dismissal, awake.log's shape) and notify.json (the last
 100 items, review.json's shape, read-only for the dashboard).
@@ -118,11 +134,20 @@ from pathlib import Path
 log = logging.getLogger("app")
 
 LOG_NAME = "notify.log"        # beside the app, awake.log's shape
+# notify.log is cut back to its newest LOG_KEEP bytes, at a line, once it
+# passes LOG_MAX — launch.py's rule for spawn.log, at this file's size.
+# Nothing trimmed it before 2026-11-10: 906 KB, 8,774 lines since
+# 2026-09-17 on the owner's PC (about 17 KB a day, 48 KB on the busiest),
+# so the bound is reached about two months from now and keeps the last
+# two months or so — the window the audits count from.
+LOG_MAX = 2_000_000
+LOG_KEEP = 1_000_000
 STORE_NAME = "notify.json"     # beside the app, review.json's shape
 KINDS = ("done", "input", "error", "info")
 TITLE_MAX, BODY_MAX, SOURCE_MAX, PROJECT_MAX, SESSION_MAX = 80, 400, 40, 60, 64
 APP_MAX = 80                   # the sender's window title, as a label only
 KEEP = 100
+REPLACE_TRIES = 12       # x 20 ms: how long a save waits out a reader
 STACK_MAX = 5                  # cards on screen at once when the config
                                # says nothing; [notify] stack_max is the
                                # real number and config.py bounds it
@@ -158,11 +183,16 @@ _CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # THE ONE THING IN A NOTIFICATION THAT IS NOT DRAWN. `link` is handed to
 # the SHELL when the card is clicked, so it is not cleaned, it is
-# ADMITTED: one scheme, one alphabet, one length. `claude://…` opens
-# whatever Windows has registered for it — the desktop app — and
-# everything else is not a link here and reads as none: no file:, no
-# http:, no path, no space, no quote, no backslash, no percent escape.
-_LINK = re.compile(r"^(?:claude://[A-Za-z0-9_\-./?=&:]{1,180}|deskit://home)$")
+# ADMITTED: exactly the shapes a sender in this tree makes, and nothing
+# else. `claude://resume?session=<uuid>` is the one link of the desktop
+# app's that notify_hook.session_link and notify_watch.link_of produce
+# (the app's other doors are gated off — notify_hook.py has the
+# measurements), and `deskit://home` is ours; everything else reads as
+# none. Until 2026-11-10 any `claude://` route in a wide alphabet passed,
+# so whoever held the loopback token could have a click open whatever
+# route the Claude app implements now or later (security-local 9).
+_LINK = re.compile(r"^(?:claude://resume\?session=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}"
+                   r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|deskit://home)$")
 #: The one link of the app's own: a click opens the desk on Home (the
 #: account lock's "another PC asks to join", 2026-09-21 — the owner
 #: wanted a notification on the right that takes him to Approve / Not
@@ -184,6 +214,23 @@ EXCERPT_GAP = "\n[...]\n"
 SUMMARY_MAX = 200              # the sentence, as drawn: one body line or two
 _FENCE = re.compile(r"^`{3,}\w*$")   # a code fence a model wraps its answer in
 SUMMARY_WAIT_S = 1.0           # the ceiling when the config says nothing
+# WHEN GROQ CANNOT BE REACHED, STOP WAITING FOR IT (2026-11-10). A finish
+# whose sentence never comes waits out the whole ceiling before its card:
+# all 19 "cannot reach Groq" lines in notify.log took 1.05-1.14 s. Every
+# one of those was ONE slow answer ("The read operation timed out") and
+# the next finish had its sentence in 17 of 18 cases, so a door that shut
+# on the first failure would have taken the sentence off five cards that
+# came 4-88 s later and saved nothing. So the door shuts on the SECOND
+# failure to reach Groq in a row — a connection that did not happen, a
+# timeout — and stays shut for BREAK_S; then one finish asks again, and a
+# failure there shuts it at once. Any answer from Groq (a sentence, a
+# 401, a 429) opens it: the road is there. A refused gate costs nothing
+# to skip (0.00 s in the log), so it is not counted.
+BREAK_AFTER = 2
+BREAK_S = 120.0
+VIA = "transcript"             # notify_tail.VIA: a finish read off its file
+TWIN_S = 120                   # how far back the same finish told twice is
+                               # looked for; the hook trails by seconds
 SUMMARY_MODEL = "qwen/qwen3.8-27b"
 SUMMARY_LANGUAGES = {"he": "Hebrew", "en": "English"}
 SUMMARY_PROMPT = (
@@ -313,6 +360,14 @@ def text_of(payload) -> str:
     return _CONTROLS.sub("", text).strip()[:TEXT_MAX]
 
 
+def via_of(payload) -> str:
+    """VIA for a finish notify_tail.py read off a transcript, "" for
+    everything else — the one value this field may hold."""
+    if isinstance(payload, dict) and payload.get("via") == VIA:
+        return VIA
+    return ""
+
+
 def excerpt(text: str, head: int = EXCERPT_HEAD,
             tail: int = EXCERPT_TAIL) -> str:
     """What is sent: the head and the tail of a long message, the whole
@@ -355,10 +410,16 @@ class Summary:
     """
 
     def __init__(self, model: str = SUMMARY_MODEL,
-                 language: str = "he") -> None:
+                 language: str = "he", *, clock=time.monotonic) -> None:
         self.model = str(model or SUMMARY_MODEL)
         lang = str(language or "he").strip()
         self.language = SUMMARY_LANGUAGES.get(lang.lower(), lang)
+        # The door that stops waiting for a Groq it cannot reach — see
+        # BREAK_AFTER. Two plain numbers: a race between two finishes'
+        # threads costs at most one wait more or less.
+        self._clock = clock
+        self._misses = 0
+        self._shut_until = 0.0
 
     def prompt(self) -> str:
         return SUMMARY_PROMPT.format(language=self.language)
@@ -377,13 +438,56 @@ class Summary:
         except Exception as e:            # noqa: BLE001 — no key, mostly
             return "", str(e).splitlines()[0][:80] if str(e) else \
                 type(e).__name__
+        left = self._shut_until - self._clock()
+        if left > 0:
+            return "", (f"Groq unreachable {BREAK_AFTER} times running — "
+                        f"not asked for {left:.0f} s more")
         try:
             reply = groq.translate(f"<message>\n{text}\n</message>")
         except Exception as e:            # noqa: BLE001 — late, refused, 429
+            self._count(e)
             why = str(e).splitlines()[0] if str(e) else type(e).__name__
             return "", why[:80]
+        self._misses, self._shut_until = 0, 0.0
         line = one_line(reply)
         return (line, "") if line else ("", "empty reply")
+
+    def _count(self, error) -> None:
+        """One failed ask, counted toward the door or opening it."""
+        if not unreachable(error):
+            self._misses, self._shut_until = 0, 0.0
+            return
+        self._misses += 1
+        if self._misses >= BREAK_AFTER:
+            self._shut_until = self._clock() + BREAK_S
+            # After the pause one finish asks again, and a failure there
+            # shuts the door at once rather than after two more waits.
+            self._misses = BREAK_AFTER - 1
+            log.info("notify: Groq unreachable %d times running — the one "
+                     "sentence is not asked for %g s", BREAK_AFTER, BREAK_S)
+
+
+def unreachable(error) -> bool:
+    """Did this failure never reach Groq? A net.NetError anywhere in its
+    chain (no route, refused, TLS, a timeout — translate.py wraps it) or
+    a bare timeout or dropped connection from the read; not a missing key
+    (net.SecretMissing is a NetError too, and costs nothing to repeat),
+    not an HTTP answer, not a refused host."""
+    try:
+        import net
+        reach, key = (net.NetError,), (net.SecretMissing,)
+    except Exception:                     # noqa: BLE001 — a cut-down copy
+        reach, key = (), ()
+    reach = reach + (TimeoutError, ConnectionError)
+    for _ in range(8):
+        if error is None:
+            return False
+        if key and isinstance(error, key):
+            return False
+        if isinstance(error, reach):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +529,19 @@ class Store:
         tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                        "utf-8")
-        os.replace(tmp, self.path)
+        # Windows refuses to rename onto a file another process has open
+        # without delete sharing — the desk reading this one for its pile
+        # — with WinError 5, and one refusal LOST a notification
+        # (app.log, 2026-10-23 14:59:46, #1476). A read is a millisecond,
+        # so a few short tries wait it out; past them the error stands.
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                if attempt == REPLACE_TRIES - 1:
+                    raise
+                time.sleep(0.02)
 
     # ---- writes ----
 
@@ -450,6 +566,8 @@ class Store:
             item["hwnd"] = _window(fields.get("hwnd"))
             item["link"] = _link(fields.get("link"))
             item["seen"] = False
+            if fields.get("via") == VIA:
+                item["via"] = VIA
             items.append(item)
             if len(items) > self.keep:
                 del items[:len(items) - self.keep]
@@ -473,6 +591,28 @@ class Store:
             if changed:
                 self._save(data)
             return changed
+
+    def fold(self, ident: int, fields: dict) -> dict | None:
+        """The hook's half of a finish the transcript told first: its
+        window (and that window's title) and its session link, each only
+        where the hook has one, and the item marked `folded` so a second
+        hook is not folded into it again. None when the item is gone."""
+        with self._lock:
+            data = self._load()
+            for item in data["items"]:
+                if int(item.get("id", 0)) != int(ident):
+                    continue
+                hwnd = _window(fields.get("hwnd"))
+                if hwnd:
+                    item["hwnd"] = hwnd
+                    item["app"] = str(fields.get("app") or item.get("app", ""))
+                link = _link(fields.get("link"))
+                if link:
+                    item["link"] = link
+                item["folded"] = True
+                self._save(data)
+                return dict(item)
+            return None
 
     def summarize(self, ident: int, sentence: str) -> dict | None:
         """The one sentence becomes the body, the body it replaces is
@@ -563,6 +703,13 @@ class Store:
 # are candidates, whichever exist are read, and a watcher that finds
 # neither says so in notify.log rather than nothing for ever.
 #
+# AND THEN IT MOVED AGAIN (2026-10-21), to a real folder both sides see:
+# %LOCALAPPDATA%\Claude-Data\claude_<hash>\claude-code-sessions. That
+# log line said "found NO session store" 154 times before anybody read
+# it. The list of places now lives in ONE function,
+# notify_hook.session_roots(), which the hook's link and this watcher
+# both read — notify_hook.py, "THE STORE MOVED", has the measurements.
+#
 # TWO WAYS HE CAN BE "IN" THE SESSION, and the card comes down on either:
 #   A · ENTERED — the session's focus stamp is LATER than the card's own
 #       `at`. He clicked into it after it spoke. A tap inside the session
@@ -590,8 +737,6 @@ class Store:
 # which live in the cloud and have no local file — Cowork cards can never
 # dismiss themselves this way, the same limit that stops them being opened.
 
-SESSIONS_UNDER = Path("Claude") / "claude-code-sessions"
-PACKAGES = Path(os.environ.get("LOCALAPPDATA", "")) / "Packages"
 CLAUDE_EXE = "claude.exe"      # the desktop app's process, for a card that
                                # names no window; matched on the basename
 ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
@@ -599,35 +744,26 @@ ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
 ARRIVAL_SCAN_MAX = 60          # session files read per root per pass; the
                                # store grows for ever and the newest are the
                                # ones a live card can belong to
+# What each of those files said, kept against its (mtime, size): a file
+# that has not changed since the last pass is not parsed again. Measured
+# 2026-10-24 on the moved store: the 60 newest are 30 MB — one is up to
+# 1 MB, nearly all of it `remoteMcpServersConfig` — and parsing them
+# every ARRIVAL_POLL_S was 0.29 s warm and 1.5 s cold, a pass that
+# would have cost 15% of a core for as long as a card was up. Between
+# two passes only the sessions at work write their files.
+_FOCUS_SEEN: dict[str, tuple] = {}
 
 
 def session_roots() -> list[Path]:
-    """Every folder the app's session store might be in, that exists.
-
-    `%APPDATA%\\Claude\\…` for a process inside the app's container (a
-    hook, a Claude Code session), and every
-    `%LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude\\…`
-    for one outside it — this app. The package folder is globbed because
-    its suffix is the publisher hash, and a reinstall under another
-    identity would move it. Never raises; [] when nothing is there.
-    """
-    found: list[Path] = []
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        found.append(Path(appdata) / SESSIONS_UNDER)
+    """Every folder the app's session store might be in, that exists —
+    notify_hook.session_roots(), the one list (see the block above).
+    Never raises; [] when nothing is there."""
     try:
-        for pkg in sorted(PACKAGES.glob("Claude_*")):
-            found.append(pkg / "LocalCache" / "Roaming" / SESSIONS_UNDER)
-    except OSError:
-        pass
-    out: list[Path] = []
-    for root in found:
-        try:
-            if root.is_dir():
-                out.append(root)
-        except OSError:
-            continue
-    return out
+        import notify_hook
+
+        return notify_hook.session_roots()
+    except Exception:                     # noqa: BLE001 — a cut-down copy
+        return []
 
 
 def focus_times(roots=None) -> dict[str, float]:
@@ -653,34 +789,53 @@ def focus_times(roots=None) -> dict[str, float]:
     elif isinstance(roots, (str, Path)):
         roots = [Path(roots)]
     out: dict[str, float] = {}
+    seen: dict[str, tuple] = {}
     for base in roots:
         try:
-            files = sorted(Path(base).glob("*/*/local_*.json"),
-                           key=lambda p: p.stat().st_mtime, reverse=True)
+            stats = [(p, p.stat()) for p in Path(base).glob("*/*/local_*.json")]
         except OSError:
             continue
-        for path in files[:ARRIVAL_SCAN_MAX]:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue                  # mid-write, or not ours to read
-            if not isinstance(data, dict):
-                continue
-            try:
-                when = float(data.get("lastFocusedAt") or 0)
-            except (TypeError, ValueError):
-                continue
-            if when <= 0:
-                continue
-            names = [data.get("cliSessionId"), data.get("sessionId")]
-            prior = data.get("priorCliSessionIds")
-            if isinstance(prior, list):
-                names.extend(prior)
+        stats.sort(key=lambda ps: ps[1].st_mtime, reverse=True)
+        for path, st in stats[:ARRIVAL_SCAN_MAX]:
+            mark = (st.st_mtime_ns, st.st_size)
+            hit = _FOCUS_SEEN.get(str(path))
+            if hit is not None and hit[0] == mark:
+                when, names = hit[1], hit[2]
+            else:
+                when, names = _focus_of(path)
+                if when is None:
+                    continue              # mid-write: asked again next pass
+            seen[str(path)] = (mark, when, names)
             for name in names:
                 key = str(name or "")
                 if key and when > out.get(key, 0.0):
                     out[key] = when
+    _FOCUS_SEEN.clear()
+    _FOCUS_SEEN.update(seen)
     return out
+
+
+def _focus_of(path: Path) -> tuple:
+    """(lastFocusedAt, the session's names) out of one store file —
+    (0.0, []) for a file that answers nothing, (None, []) for one that
+    could not be read whole, which is not remembered."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, []                   # mid-write, or not ours to read
+    if not isinstance(data, dict):
+        return 0.0, []
+    try:
+        when = float(data.get("lastFocusedAt") or 0)
+    except (TypeError, ValueError):
+        return 0.0, []
+    if when <= 0:
+        return 0.0, []
+    names = [data.get("cliSessionId"), data.get("sessionId")]
+    prior = data.get("priorCliSessionIds")
+    if isinstance(prior, list):
+        names.extend(prior)
+    return when, names
 
 
 _RESUME = re.compile(r"^claude://resume\?session=([0-9a-fA-F-]{36})$")
@@ -1046,6 +1201,9 @@ class Engine:
         self.arrive_on = bool(getattr(cfg, "dismiss_on_arrival", True))
         self._watch_stop: threading.Event | None = None
         self._watch_thread: threading.Thread | None = None
+        # id -> clock() of a finish read off its transcript, until the
+        # hook folds into it: how far ahead the transcript was, for the log.
+        self._early_at: dict[int, float] = {}
 
     # -- in --
 
@@ -1059,20 +1217,38 @@ class Engine:
         quiet_s say about a finish that arrives on its own."""
         fields = clean(payload)
         text = text_of(payload)
+        via = via_of(payload)
         source, kind = fields["source"], fields["kind"]
         if not self.enabled:
             self._log(f"RECEIVED from {source} ({kind}) | title "
                       f"{fields['title']!r} | refused: off")
             return {"ok": False, "error": "notifications are off "
                                           "([notify] enabled = false)"}
+        # Is he already looking at the session this finish came from? A
+        # finish that waits for its sentence is asked that on the
+        # sentence's own thread, before the sentence (`_summarized`); any
+        # other finish is asked here, before the lock, because the store
+        # read under it is file IO (`_looking_at`).
+        looking = (not urgent and not (self.summary_on and text)
+                   and self._looking_at(fields))
         with self._lock:
-            item = self.store.add(fields)
+            if not urgent:
+                twin = self._same_finish(fields)
+                if twin is not None and (via or (
+                        twin.get("via") == VIA and not twin.get("folded"))):
+                    return self._told_twice(twin, fields, via)
+            item = self.store.add(dict(fields, via=via))
+            if via:
+                self._early_at[int(item["id"])] = self._clock()
+                while len(self._early_at) > KEEP:
+                    self._early_at.pop(next(iter(self._early_at)))
             unread = self.store.unread()
             self._log(f"RECEIVED #{item['id']} from {source} ({kind}) | "
                       f"project {item['project']} | title {item['title']!r}"
                       f" | {len(item['body'])} chars"
                       + (f" | text {len(text)} chars" if text else "")
-                      + f" | unread {unread}")
+                      + f" | unread {unread}"
+                      + (f" | via {via}" if via else ""))
             log.info("notify: received #%d from %s (%s): %r [%s] | unread %d",
                      item["id"], source, kind, item["title"],
                      item["project"], unread)
@@ -1080,6 +1256,11 @@ class Engine:
             # again, so its older finish is describing a moment that has
             # passed and is retired here rather than shown.
             self._supersede(item)
+            if looking:
+                self._seen_at_arrival(item)
+                return {"ok": True, "id": item["id"],
+                        "unread": self.store.unread(), "coalesced": False,
+                        "held": False, "seen": True}
             # A card that names a session can now be taken down by him
             # walking into that session, so the watcher runs from here
             # until nothing unread names one. Armed before the hold, not
@@ -1144,6 +1325,53 @@ class Engine:
         cards. A sender that names no session falls back to its source,
         marked so it can never collide with a real session id."""
         return str(item.get("session", "")) or f"~{item.get('source', '')}"
+
+    def _same_finish(self, fields) -> dict | None:
+        """The stored finish this arrival repeats, or None — see "THE
+        SAME FINISH TOLD TWICE" above. Only the session's NEWEST finish
+        is compared: an older one is a turn that has passed, and a body
+        that differs from the newest is a new turn. The lock is held by
+        the caller."""
+        if fields.get("source") != "claude-code" \
+                or fields.get("kind") != "done" or not fields.get("session"):
+            return None
+        for item in reversed(self.store.items()):
+            if item.get("source") != "claude-code" \
+                    or item.get("kind") != "done" \
+                    or item.get("session") != fields["session"]:
+                continue
+            said = item["raw"] if "raw" in item else item.get("body", "")
+            if said != fields.get("body"):
+                return None
+            try:
+                age = (datetime.now() - datetime.fromisoformat(
+                    str(item.get("at")))).total_seconds()
+            except ValueError:
+                return None
+            return item if -5 <= age <= TWIN_S else None
+        return None
+
+    def _told_twice(self, twin: dict, fields: dict, via: str) -> dict:
+        """The answer for an arrival that repeats `twin`: nothing shown,
+        nothing summarised, nothing superseded. The transcript's copy of
+        a finish the hook already brought is simply dropped; the hook's
+        copy of one the transcript brought first gives the card its
+        window and link. The lock is held by the caller."""
+        ident = int(twin["id"])
+        if via:
+            self._log(f"TOLD TWICE #{ident} | the hook was first, the "
+                      f"transcript's copy is dropped")
+        else:
+            self.store.fold(ident, fields)
+            early = self._early_at.pop(ident, None)
+            ahead = (f"{self._clock() - early:.2f} s"
+                     if early is not None else "an unknown time")
+            self._log(f"FOLDED the hook into #{ident} | the transcript "
+                      f"was {ahead} ahead")
+            log.info("notify: the hook's finish folded into #%d — the "
+                     "transcript was %s ahead", ident, ahead)
+        return {"ok": True, "id": ident, "unread": self.store.unread(),
+                "coalesced": False, "held": False, "folded": True}
 
     def _supersede(self, item) -> None:
         """This session's older finish is no longer news.
@@ -1261,7 +1489,22 @@ class Engine:
         """The sentence is in, or it is not: either way the finish it
         was holding becomes a card now. Runs on the timer's thread; the
         asking happens BEFORE the lock is taken, the rest under it, and
-        the same four endings as `_quiet` end here the same way."""
+        the same four endings as `_quiet` end here the same way.
+
+        He may already be looking at the session it came from, and then
+        there is no sentence and no card at all (`_looking_at`) — asked
+        first, because the answer to that costs nothing from Groq."""
+        with self._lock:
+            item = self._item(ident)
+        if item is not None and not item.get("seen") \
+                and self._looking_at(item):
+            with self._lock:
+                held = self._held.get(session)
+                if held is None or held["id"] != ident:
+                    return
+                del self._held[session]
+                self._seen_at_arrival(item)
+            return
         t0 = self._clock()
         sentence, why = "", "no summariser"
         try:
@@ -1293,6 +1536,45 @@ class Engine:
             if self._hold(item):
                 return
             self._raise(item)
+
+    def _looking_at(self, item) -> bool:
+        """Rule B at the door: is he looking, right now, at the session
+        this finish came from? Exactly the arrival watcher's test —
+        `viewing(item, focus_times(roots), in_front(hwnd))` — with the
+        cheap half first: no Claude window in front, no store read.
+
+        WHY AT THE DOOR (2026-11-10). The watcher's first look is
+        ARRIVAL_POLL_S after a card goes up, so a finish for the session
+        he was watching was written up by Groq, shown, and taken down
+        about two seconds later: 628 of the 2,035 cards in notify.log
+        (31%), 437 of them after a sentence nobody read. Only a `done`,
+        only while [notify] dismiss_on_arrival is on, and every doubt is
+        no — the watcher's own rules (see "WHY IT CANNOT EAT A CARD HE
+        NEVER SAW"). Never raises."""
+        if not self.arrive_on or str(item.get("kind", "")) != "done" \
+                or not session_keys(item):
+            return False
+        try:
+            if not in_front(item.get("hwnd")):
+                return False
+            return viewing(item, focus_times(session_roots()), True)
+        except Exception:                 # noqa: BLE001 — a doubt is no
+            log.info("notify: could not tell whether he is looking",
+                     exc_info=True)
+            return False
+
+    def _seen_at_arrival(self, item) -> None:
+        """A finish he is already looking at: seen as it lands, with the
+        watcher's own line under it (`by viewing`) so notify.log counts
+        both the same way, and one line before it saying it was at the
+        door. Nothing is cued, drawn or summarised. The lock is held by
+        the caller."""
+        ident = int(item["id"])
+        self._log(f"VIEWING #{ident} | he is looking at its session — no "
+                  f"sentence, no card")
+        log.info("notify: #%d not shown — he is looking at its session",
+                 ident)
+        self.dismiss(ident, by="viewing")
 
     def _raise(self, item, *, urgent: bool = False) -> bool:
         """Put one arrival on the screen: the cue, the column, the
@@ -1622,7 +1904,9 @@ class Engine:
                               + " ; ".join(str(r) for r in roots))
                 else:
                     self._log("WATCHING for his arrival but found NO "
-                              "session store — looked under %APPDATA% and "
+                              "session store — looked under "
+                              "%LOCALAPPDATA%\\Claude-Data\\claude_*, "
+                              "%APPDATA%\\Claude and "
                               "%LOCALAPPDATA%\\Packages\\Claude_*")
                     log.warning("notify: no Claude session store found — "
                                 "cards will not dismiss on arrival")
@@ -1694,7 +1978,29 @@ class Engine:
 
     def _log(self, line: str) -> None:
         try:
+            trim_log(self.log_path)
             with self.log_path.open("a", encoding="utf-8") as fh:
                 fh.write(f"{_stamp()} | {line}\n")
         except OSError:
             pass
+
+
+def trim_log(path, most: int | None = None, keep: int | None = None) -> bool:
+    """Cut `path` back to its newest `keep` bytes, starting at a whole
+    line, once it is larger than `most` (LOG_MAX / LOG_KEEP when not
+    given). True when it was cut. Never raises: a log that cannot be
+    trimmed is still a log that can be written."""
+    most = LOG_MAX if most is None else int(most)
+    keep = LOG_KEEP if keep is None else int(keep)
+    path = Path(path)
+    try:
+        if path.stat().st_size <= most:
+            return False
+        tail = path.read_bytes()[-keep:]
+        cut = tail.find(b"\n")
+        if 0 <= cut < len(tail) - 1:
+            tail = tail[cut + 1:]     # the first line whole, or not at all
+        path.write_bytes(tail)
+        return True
+    except OSError:
+        return False
