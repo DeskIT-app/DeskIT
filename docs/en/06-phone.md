@@ -30,15 +30,18 @@ There is nothing to type: no address, no token, no port.
 3. The phone asks to join your account, the way a second PC does, and both screens show the
    same code. On the PC the request is on **Home**: press **Approve** only if you are adding
    this phone yourself right now and the code matches. On the phone, press **Same code**.
-   Neither side opens anything until both have pressed.
-4. Allow the microphone, and turn the DeskIT keyboard on in Android's keyboard settings.
-5. In any app: switch to the DeskIT keyboard, hold the microphone key, speak, release.
+   Neither side opens anything until both have pressed. The PC you pressed Approve on now takes
+   the phone's dictations.
+4. Every other PC of yours asks once, on its own **Home**: *Your phone can use this PC too*.
+   Press **Allow** there for each PC you want the phone to reach, or **Not now**.
+5. Allow the microphone, and turn the DeskIT keyboard on in Android's keyboard settings.
+6. In any app: switch to the DeskIT keyboard, hold the microphone key, speak, release.
 
 ## At home
 
-On Wi-Fi, the keyboard finds every PC of your account by itself, from what each PC leaves
-sealed in your account, and tries all of their addresses at once; the first to answer takes the
-dictation. Only a PC your account lists can answer, and only a phone your account lists gets
+On Wi-Fi, the keyboard finds the PCs of your account that said yes to it by itself, from what
+each PC leaves sealed in your account, and tries all of their addresses at once; the first to
+answer takes the dictation. Only a PC your account lists can answer, and only a phone your account lists gets
 in: each side checks the other's certificate before a word is sent, over TLS. Once the phone
 has read your devices, it needs no internet for this.
 
@@ -70,8 +73,8 @@ key**, and the text lands in the field as usual. It is on unless you turn it off
 shows it once, with the switch already on; you can turn it off there, or later in the phone's
 Settings, under **When your PC can't be reached**.
 
-- **The key.** The same key your PC uses: it lives in your account, locked with your account's
-  key. Add, change or remove it in the phone's Settings, under **Your cloud keys**, or on the PC
+- **The key.** The same key your PC uses, while your account keeps your settings and words
+  (**Settings > Account**): it lives there too, locked with your account's key. Add, change or remove it in the phone's Settings, under **Your cloud keys**, or on the PC
   — a change on one reaches the other by itself. The phone opens it for one request and keeps
   nothing readable.
 - **You always know.** The keyboard's line says *Transcribing in the cloud…* while it works and
@@ -108,7 +111,7 @@ Settings, under **When your PC can't be reached**.
   under the same consent switches as at the desk. If the cloud repair is on at the desk, the
   phone's text goes through it as well.
 - The keyboard refuses password fields and other private fields.
-- **Settings > Account** on the PC lists your phones beside your PCs. **Forget** takes one off
+- **Settings > Phone** on the PC lists your phones beside your PCs. **Forget** takes one off
   the list and ends its session at once, and your PCs refuse it from then on. Signing out on
   the phone takes everything of yours off it: the key, the words and the recordings.
 
@@ -119,7 +122,9 @@ Settings, under **When your PC can't be reached**.
   and Windows asks you for a yes. Its details show this PC's addresses and port.
 - **Is the PC listening?** DeskIT must be running on the PC with **Dictate from the phone** on,
   and your account turned on there. With the account off on that PC, the phone cannot come in;
-  turn it on from **Home** or **Settings > Privacy**.
+  turn it on from **Home** or **Settings > Account**.
+- **This PC never asked?** A PC that did not press Approve for the phone asks on its **Home**:
+  *Your phone can use this PC too*. Until you press **Allow** there, the phone does not try it.
 - **Another program holds the port.** DeskIT takes the next free one and tells your phone
   through your account. There is nothing to change on the phone.
 - **The phone was removed.** A phone taken off with **Forget** says so, and approving it again

@@ -68,7 +68,7 @@ Signing out means what it says. Sign out on Settings > Account is this PC only. 
 
 Requests to join my account are clearer. A request shows once on Home, says which DeskIT is asking, and says to approve it only if I am adding that device myself right now. A PC left waiting no longer rings my other devices every fifteen minutes, and its code stays the same while I walk to the other screen.
 
-My phone is a device of my account. The keyboard app signs in with Google and joins the way a second PC does: both screens show one code, and I press Approve on one and Same code on the other. Settings > Account lists every device I have, and Forget takes one off the list and ends its session at once. Signing out of a phone leaves nothing of mine on it.
+My phone is a device of my account. The keyboard app signs in with Google and joins the way a second PC does: both screens show one code, and I press Approve on one and Same code on the other. Settings > Phone lists every device I have, and Forget takes one off the list and ends its session at once. Any other PC of mine asks once on its Home whether the phone may use it too. Signing out of a phone leaves nothing of mine on it.
 
 My phone's keyboard reaches my PC by itself. At home it goes straight over the Wi-Fi, with no Tailscale and nothing typed. Away from home it goes through my account, locked, so the server carries only bytes it cannot open. Either way my PC writes it down with its own model. If no PC answers, the keyboard can send that one recording to Groq with my own key, and the line says so. A recording the keyboard closes in the middle of is kept, and the mic then says Continue.
 
