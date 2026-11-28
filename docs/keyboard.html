@@ -1,0 +1,172 @@
+---
+layout: null
+---
+{%- comment -%}
+The phone keyboard's download page (2026-11-28). It is drawn in the APP's
+look, not the site's: Yoav asked for "the app's current design, with its
+roundness, the logo with the yellow dot kept, and that space background".
+The tokens are web/src/bplus.css's:
+- the ground, and the sky's four fields with a ribbon;
+- glass with its rim;
+- iris for the one primary action;
+- ink in three voices.
+Opened from a QR on a phone, so it is laid out for a phone first. Linked from
+nowhere until he has judged it on his own phone.
+{%- endcomment -%}
+{%- assign apk = "https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-keyboard-1.0.7.apk" -%}
+{%- assign pc = "https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe" -%}
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#080a14">
+<title>המקלדת של DeskIT</title>
+<meta name="description" content="The DeskIT keyboard for Android: dictate Hebrew in any app on your phone; your own PC turns it into text.">
+<link rel="icon" href="{{ '/assets/icon.png' | relative_url }}">
+<style>
+@font-face { font-family: "Rubik"; font-weight: 400; font-display: swap; src: url("{{ '/assets/fonts/Rubik.woff2' | relative_url }}") format("woff2"); }
+@font-face { font-family: "Rubik"; font-weight: 500; font-display: swap; src: url("{{ '/assets/fonts/RubikMedium.woff2' | relative_url }}") format("woff2"); }
+@font-face { font-family: "Rubik"; font-weight: 700; font-display: swap; src: url("{{ '/assets/fonts/RubikBold.woff2' | relative_url }}") format("woff2"); }
+
+/* web/src/bplus.css, the app's own tokens */
+:root {
+  --ground: #080a14;
+  --ink: #efedf7; --ink-2: #c0c3d8; --ink-3: #a4a9c2;
+  --iris: #a597ff; --iris-hi: #b9aeff; --iris-lo: #9486ee; --iris-ink: #140f33; --iris-text: #c2b9ff;
+  --f-indigo: rgba(118,98,246,.30); --f-blue: rgba(44,146,232,.22);
+  --f-plum: rgba(196,92,178,.13); --f-teal: rgba(40,178,168,.10);
+  --ribbon: rgba(170,160,255,.05);
+  --glass-card: rgba(24,29,52,.56);
+  --inner-hi: rgba(255,255,255,.07);
+  --rim-hi: rgba(255,255,255,.26); --rim-mid: rgba(255,255,255,.08);
+  --rim-lo: rgba(255,255,255,.025); --rim-foot: rgba(160,150,255,.10);
+  --quiet-top: rgba(255,255,255,.10); --quiet-bot: rgba(255,255,255,.055);
+  --btn-hi: rgba(255,255,255,.16); --btn-rim: rgba(255,255,255,.10);
+  --spec: rgba(255,255,255,.24); --iris-foot: rgba(40,20,120,.28);
+  --iris-glow: rgba(135,115,255,.50); --iris-halo: rgba(165,151,255,.30);
+  --iris-tint: rgba(165,151,255,.22); --iris-wash: rgba(165,151,255,.05); --iris-ring: rgba(165,151,255,.30);
+  --line: rgba(170,175,220,.12);
+  --shade-2: rgba(2,3,12,.70); --shade-3: rgba(2,3,12,.45);
+}
+* { box-sizing: border-box; }
+html { background: var(--ground); -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; min-height: 100vh; background: var(--ground); color: var(--ink);
+  font: 400 16px/1.55 "Rubik", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; position: relative; overflow-x: hidden;
+}
+a { color: var(--iris-text); text-decoration: none; }
+
+/* the sky behind the glass: four soft fields and a ribbon, fixed behind the page */
+.sky { position: fixed; inset: 0; overflow: hidden; z-index: 0; pointer-events: none; }
+.sky i { position: absolute; display: block; border-radius: 50%; filter: blur(30px); }
+.sky .indigo { width: 130vw; height: 70vh; left: -45vw; top: -18vh; background: radial-gradient(closest-side, var(--f-indigo), transparent); }
+.sky .blue { width: 110vw; height: 60vh; right: -50vw; top: 22vh; background: radial-gradient(closest-side, var(--f-blue), transparent); }
+.sky .plum { width: 120vw; height: 60vh; left: -30vw; bottom: -22vh; background: radial-gradient(closest-side, var(--f-plum), transparent); }
+.sky .teal { width: 90vw; height: 50vh; right: -30vw; bottom: 8vh; background: radial-gradient(closest-side, var(--f-teal), transparent); }
+.sky .rib { width: 160vw; height: 14vh; left: -30vw; top: 34vh; transform: rotate(-12deg); border-radius: 50%; filter: blur(14px);
+  background: linear-gradient(90deg, transparent, var(--ribbon) 30%, var(--ribbon) 70%, transparent); }
+.grain { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: .07; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+
+.page { position: relative; z-index: 1; max-width: 440px; margin: 0 auto; padding: 20px 20px 40px; }
+.top { display: flex; align-items: center; justify-content: space-between; height: 40px; margin-bottom: 26px; }
+.brand { display: inline-flex; align-items: center; gap: 9px; color: var(--ink); font-weight: 500; font-size: 17px; letter-spacing: .01em; }
+.brand img { width: 26px; height: 26px; border-radius: 7px; }
+
+/* a quiet pill: the app's .btn */
+.pill { height: 34px; display: inline-flex; align-items: center; padding: 0 16px; border-radius: 17px;
+  font-size: 14px; font-weight: 500; color: var(--ink); white-space: nowrap;
+  background: linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));
+  box-shadow: inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim), 0 4px 10px -6px var(--shade-2); }
+
+.hero { text-align: center; }
+.logo { width: 84px; height: 84px; border-radius: 22px; display: block; margin: 6px auto 22px;
+  box-shadow: 0 18px 40px -16px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.06); }
+h1 { font-size: 30px; line-height: 1.2; font-weight: 500; letter-spacing: -.018em; margin: 0 0 10px; }
+.lead { color: var(--ink-2); font-size: 17px; margin: 0 auto 28px; max-width: 24em; }
+
+/* the one primary action: the app's lit button, iris */
+.get { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 58px; border-radius: 29px;
+  font-size: 19px; font-weight: 500; color: var(--iris-ink);
+  background: linear-gradient(180deg, var(--iris-hi), var(--iris) 55%, var(--iris-lo));
+  box-shadow: inset 0 1px 0 var(--spec), inset 0 -1px 0 var(--iris-foot), 0 16px 30px -14px var(--iris-glow), 0 0 0 1px var(--iris-halo); }
+.get:active { transform: translateY(1px); filter: brightness(.97); }
+.get svg { width: 20px; height: 20px; }
+.meta { color: var(--ink-3); font-size: 13.5px; margin: 12px 0 26px; }
+.meta bdi { white-space: nowrap; }
+
+/* glass: the app's pane, with its rim */
+.glass { position: relative; border-radius: 22px; background: var(--glass-card);
+  backdrop-filter: blur(26px) saturate(150%); -webkit-backdrop-filter: blur(26px) saturate(150%);
+  box-shadow: inset 0 1px 0 var(--inner-hi), 0 26px 48px -30px var(--shade-2), 0 2px 8px -3px var(--shade-3); }
+.glass::before { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+  background: linear-gradient(155deg, var(--rim-hi), var(--rim-mid) 22%, var(--rim-lo) 55%, var(--rim-foot));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude; }
+.steps { list-style: none; margin: 0; padding: 10px 18px; counter-reset: s; }
+.steps li { counter-increment: s; display: flex; gap: 14px; align-items: flex-start; padding: 14px 0; font-size: 15.5px; line-height: 1.5; }
+.steps li + li { border-top: 1px solid var(--line); }
+.steps li::before { content: counter(s); flex: none; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 500; color: var(--iris-text);
+  background: radial-gradient(circle at 50% 30%, var(--iris-tint), var(--iris-wash) 75%); box-shadow: inset 0 0 0 1px var(--iris-ring); }
+.steps bdi { white-space: nowrap; }
+.foot { text-align: center; color: var(--ink-3); font-size: 14px; margin: 24px 0 0; }
+.foot a { white-space: nowrap; }
+
+.english { margin-top: 64px; padding-top: 44px; position: relative; }
+.english::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line) 12%, var(--line) 88%, transparent); }
+</style>
+</head>
+<body>
+<div class="sky" aria-hidden="true"><i class="indigo"></i><i class="blue"></i><i class="plum"></i><i class="teal"></i><i class="rib"></i></div>
+<div class="grain" aria-hidden="true"></div>
+
+<main class="page">
+  <header class="top">
+    <span class="brand">DeskIT</span>
+    <a class="pill" lang="en" dir="ltr" href="#english">English</a>
+  </header>
+
+  <section class="hero">
+    <img class="logo" src="{{ '/assets/icon.png' | relative_url }}" alt="DeskIT" width="84" height="84">
+    <h1>המקלדת של DeskIT</h1>
+    <p class="lead">מכתיבים בעברית בכל אפליקציה בטלפון. המחשב שלך מתמלל, והטקסט חוזר למקלדת.</p>
+    <a class="get" href="{{ apk }}" download>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>
+      להוריד לאנדרואיד
+    </a>
+    <p class="meta"><bdi>1 MB</bdi> · <bdi>Android 8</bdi> ומעלה · חינם</p>
+  </section>
+
+  <ol class="steps glass">
+    <li><span>פותחים את הקובץ שירד ומאשרים התקנה. בגלקסי, אם ההתקנה נחסמת, מכבים לרגע את <bdi>Auto Blocker</bdi> בהגדרות האבטחה.</span></li>
+    <li><span>פותחים את DeskIT ונכנסים עם Google, באותו חשבון כמו במחשב.</span></li>
+    <li><span>במחשב לוחצים <bdi>Approve</bdi>, בטלפון <bdi>Same code</bdi>, ומפעילים את המקלדת.</span></li>
+  </ol>
+
+  <p class="foot">צריך קודם את DeskIT במחשב? <a href="{{ pc }}" download>להוריד ל־Windows</a> · <a href="{{ '/he/06-phone' | relative_url }}">המדריך המלא</a></p>
+
+  <section class="english" id="english" lang="en" dir="ltr">
+    <div class="hero">
+      <h1>The DeskIT keyboard</h1>
+      <p class="lead">Dictate Hebrew in any app on your phone. Your own PC turns it into text and sends it back to the keyboard.</p>
+      <a class="get" href="{{ apk }}" download>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>
+        Download for Android
+      </a>
+      <p class="meta">1 MB · Android 8 or later · Free</p>
+    </div>
+    <ol class="steps glass">
+      <li><span>Open the downloaded file and allow the install. On a Galaxy, if it is blocked, turn Auto Blocker off for a moment in the security settings.</span></li>
+      <li><span>Open DeskIT and sign in with Google, with the same account as on your PC.</span></li>
+      <li><span>Press Approve on the PC, then Same code on the phone, and turn the keyboard on.</span></li>
+    </ol>
+    <p class="foot">Need DeskIT on your PC first? <a href="{{ pc }}" download>Download for Windows</a> · <a href="{{ '/en/06-phone' | relative_url }}">The full guide</a></p>
+  </section>
+</main>
+</body>
+</html>
