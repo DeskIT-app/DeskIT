@@ -23,9 +23,61 @@ same Hebrew model and the same learned words, and the text lands in the field on
 
 There is nothing to type: no address, no token, no port.
 
+## Installing the keyboard {#installing-the-keyboard}
+
+The keyboard is not on Google Play yet. It comes from DeskIT's own releases on GitHub, as one
+file named `DeskIT-keyboard-` and the version, for example `DeskIT-keyboard-1.0.7.apk`. Android
+calls installing a file like this "installing unknown apps", and it asks a few questions the
+first time. That is normal for any app from outside a store.
+
+1. **Get the file.** On the PC, **Settings > Phone** shows a code: point the phone's camera at
+   it, and the latest DeskIT release opens in the phone's browser. Or type
+   `github.com/DeskIT-app/DeskIT/releases/latest`. Under **Assets**, tap the file whose name
+   starts with `DeskIT-keyboard`.
+2. **The browser's warning.** Chrome may say the file can harm your device. Tap
+   **Download anyway**, then **Open** when it has downloaded.
+3. **Install unknown apps.** The first time, Android asks whether your browser may install
+   apps. Tap **Settings**, turn on **Allow from this source**, go back, and tap **Install**. You
+   can turn it off again afterwards; Android will ask again for the next update.
+4. **Samsung Galaxy phones: Auto Blocker.** Auto Blocker stops apps that do not come from Google
+   Play or the Galaxy Store, and new Galaxy phones have it on. If it stops the install, it says so
+   and names the place: on the phone, **Settings** › **Security and privacy** ›
+   **Auto Blocker**. Turn it off, then install. While it is on it also stops the keyboard's
+   updates, so either leave it off or turn it off for each update.
+5. **Google Play Protect** may scan the keyboard and warn that the app is from a developer it
+   does not know, or that it is not commonly used. A keyboard that uses the microphone and does
+   not come from Play is exactly what it looks at. Tap **More details**, then
+   **Install anyway** (the words differ a little between phones). DeskIT has no ads and no
+   analytics, and the keyboard talks only to your own PCs and your own account.
+6. Open **DeskIT** from the phone's app list and go on with *Setting it up*, below.
+
+**Is it really DeskIT's?** The release page lists the file's SHA-256 and the SHA-256 of the
+certificate it is signed with. The certificate is always the same one:
+
+`82b9dac0f0e0095b690adc8de81a70823df15e9369d000fc79536d2888d79c55`
+
+Android installs an update only over a keyboard signed with the same certificate, so a copy
+made by anyone else cannot replace yours. If Android says the app *conflicts with an existing
+package* or *was not installed*, a DeskIT keyboard from somewhere else is on the phone: uninstall
+it first (**Settings** › **Apps** › **DeskIT** › **Uninstall**), then install this one.
+
+**Updates.** When a newer keyboard is out, the keyboard's home screen says so. Tap it: the new
+file downloads from the same place, and Android installs it over the old one. Your sign-in and
+your settings stay.
+
+**Google's new rule for apps from outside Play.** Google is starting to check that every app a
+certified Android phone installs comes from a developer registered with Google ("developer
+verification"). Checked on 28 November 2026: since 30 September 2026 it applies in Brazil,
+Indonesia, Singapore and Thailand, and there only to apps installed from the app stores Google
+lists; a file you download yourself, as above, is not stopped yet. Google says every other
+country follows in 2027 and has not named a month; Israel is not named. The DeskIT keyboard is
+not registered yet, so where the rule applies Android would ask for its longer way for unknown
+developers (developer options, a restart and a day's wait) or a computer with ADB. Everywhere
+else, today, it installs as described above. This page will say when that changes.
+
 ## Setting it up
 
-1. Install the keyboard app and open it.
+1. Install the keyboard app (above) and open it.
 2. Sign in with Google, with the account your PC uses.
 3. The phone asks to join your account, the way a second PC does, and both screens show the
    same code. On the PC the request is on **Home**: press **Approve** only if you are adding

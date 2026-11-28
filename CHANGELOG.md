@@ -72,6 +72,8 @@ My phone is a device of my account. The keyboard app signs in with Google and jo
 
 My phone's keyboard reaches my PC by itself. At home it goes straight over the Wi-Fi, with no Tailscale and nothing typed. Away from home it goes through my account, locked, so the server carries only bytes it cannot open. Either way my PC writes it down with its own model. A long dictation lands about a second after I let go, as it does at the desk: the keyboard sends the recording while I speak, and my PC writes it down as it arrives. If no PC answers, the keyboard can send that one recording to Groq with my own key, and the line says so. A recording the keyboard closes in the middle of is kept, and the mic then says Continue.
 
+The phone keyboard comes with the release now. DeskIT-keyboard-1.0.7.apk sits beside the installer, and the code on Settings > Phone opens that page on the phone. Every keyboard from this one on is signed with the same key, so each update installs over the one before and keeps my sign-in. The guide's phone chapter says what Android, Play Protect and a Galaxy's Auto Blocker ask the first time.
+
 DeskIT asks me once more about my account, because a signed-in copy now stays connected and a phone I approve holds the key too. Until I press Turn on, the account is off on that PC, and dictation does not change at all.
 
 Two accounts on one PC stay apart. When a different account signs in on this PC, nothing the last one said, learned or set, and none of its keys or unsent reports, goes up to the new account.
