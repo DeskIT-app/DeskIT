@@ -4092,14 +4092,32 @@ class App:
         """Forget, on a thread: three calls to the account. The list goes
         first in sb.forget_device and its hooks bring the door along, but a
         call that fails after the list has moved runs no hook, and the door
-        must not go on admitting a phone this PC already forgot."""
+        must not go on admitting a phone this PC already forgot.
+
+        A failure names its reason, on the card and in app.log. Until
+        2026-11-28 both said only the exception's type, "(AccountError)",
+        and that one type is every refusal sb.py has: not signed in, no key,
+        the lock changed, the server's answer. Two failed presses that day
+        could be told apart from nothing but the absence of rows in
+        network.log. An AccountError's text is sb.py's own sentence, written
+        for the person (``str(e)`` is the sentence), so the card shows it,
+        and without "try again": most of them say what to do instead.
+        Anything else stays a type on the card, and its text goes to the log
+        through the redactor, cut short. No device's name, id or certificate
+        is in either."""
+        import redact
         import sb
         try:
             if sb.forget_device(ident, cert) is False:
                 self._phone_error = sb.OLDER_COPY_WORDS
         except Exception as e:                               # noqa: BLE001
-            self._phone_error = f"that did not go through ({type(e).__name__}) — try again"
-            log.info("phone: Forget failed (%s)", type(e).__name__)
+            kind = type(e).__name__
+            why = " ".join(str(e).split())[:200]
+            if isinstance(e, sb.AccountError) and why:
+                self._phone_error = f"that did not go through: {why}"
+            else:
+                self._phone_error = f"that did not go through ({kind}) — try again"
+            log.info("phone: Forget failed (%s: %s)", kind, redact.redact(why) or "no words")
         finally:
             self._doors()
 
