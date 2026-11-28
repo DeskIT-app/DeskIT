@@ -86,6 +86,11 @@ object Lock {
     private const val PREF_REMOVED = "removed"
     private const val PREF_FORGOTTEN = "forgotten"
     private const val PREF_LEAVING = "leaving"
+    private const val PREF_RETIRED = "earlier_gone"
+    private const val PREF_RETIRE_TRIED = "earlier_tried"
+
+    /** How often [retireEarlier] asks again after an account that would not answer. */
+    private const val RETIRE_EVERY_S = 10 * 60L
 
     private const val HAVE = "have"
     private const val CHANGED = "changed"
@@ -325,6 +330,17 @@ object Lock {
     private fun ownCert(c: Context, uid: String): String =
         ClientKey.certificate(c, deviceId(c, uid))?.let { certFingerprint(it) }.orEmpty()
 
+    /**
+     * Which phone this is, for [uid]'s account ([SamePhone]): the same after the app
+     * is removed and installed again, another on another phone. "" where Android
+     * names no id, and then nothing is ever taken for an earlier install of this one.
+     */
+    private fun sameMark(c: Context, uid: String): String = SamePhone.mark(uid, try {
+        Settings.Secure.getString(c.contentResolver, Settings.Secure.ANDROID_ID)
+    } catch (e: RuntimeException) {
+        null
+    })
+
     // ---- the request ----
 
     private class Request(val uid: String, val id: String, val code: String, val lockId: String,
@@ -524,7 +540,10 @@ object Lock {
             return try {
                 deleteRow(c, req.id)
                 dropRequest(c)
-                Account.session(c)?.let { ensureRow(c, it, key) }
+                Account.session(c)?.let {
+                    ensureRow(c, it, key)
+                    retireEarlier(c, it, key)
+                }
                 State.Ready(email, true, "")
             } catch (e: Account.Failed) {
                 State.Ready(email, true, e.message.orEmpty())
@@ -568,6 +587,7 @@ object Lock {
                 return join(c, s, remote, progress)
             }
             ensureRow(c, s, held.key)
+            retireEarlier(c, s, held.key)
             return State.Ready(s.email, false, "")
         } finally {
             held.key.fill(0)
@@ -740,8 +760,11 @@ object Lock {
         val lock = Crypt.fingerprint(key)
         // the cloud backup's switch, which the desk shows read from here (stage 2b)
         val cloud = Backup.active(c)
-        val sig = certFingerprint("$lock\u0000$sid\u0000$name\u0000$version\u0000$platform\u0000$cloud\u0000"
-            .toByteArray() + der)
+        // which phone this is, so the next install of it can take this row away
+        val same = sameMark(c, s.uid)
+        val sig = certFingerprint(
+            "$lock\u0000$sid\u0000$name\u0000$version\u0000$platform\u0000$cloud\u0000$same\u0000"
+                .toByteArray() + der)
         val p = sp(c)
         if (p.getString(PREF_ROW_SIG, "") == sig && nowS() - p.getLong(PREF_ROW_AT, 0) < ROW_EVERY_S) {
             ClientKey.published(c, device, der)     // a kill between the row and the word of it
@@ -749,6 +772,7 @@ object Lock {
         }
         val link = JSONObject().put("v", 1).put("kind", "phone").put("cert", Crypt.b64(der))
             .put("proto", PROTO).put("cloud_backup", cloud)
+        if (same.isNotEmpty()) link.put(SamePhone.FIELD, same)
         val row = JSONObject().put("id", device).put("user_id", s.uid).put("name", name)
             .put("platform", platform).put("app_version", version).put("tier", "")
             .put("last_seen", Instant.now().toString())
@@ -768,6 +792,88 @@ object Lock {
     private fun changedDevices(c: Context, device: String) {
         Account.broadcast(c, "changed", JSONObject().put("device", device)
             .put("stores", JSONArray().put("devices")))
+    }
+
+    /**
+     * An install of this very phone that went without a Sign out left its row on
+     * the account, and after the next install joined, every PC listed the phone
+     * twice (the owner's report of 2026-11-28). Here it goes: once this install
+     * holds the key and its own row is written, every other phone row that carries
+     * this phone's mark ([SamePhone]) is forgotten, the ordinary way, list first.
+     *
+     * Once per install: nothing earlier than this install can appear later. Until
+     * it has been through it is tried again at a look, at most every
+     * [RETIRE_EVERY_S], and a failure of its own never changes what a look
+     * answers: the row of an install that is gone is housekeeping, and this phone
+     * is ready without it. Only a session that ended under it goes on up, because
+     * that is the look's answer whoever met it first.
+     *
+     * The rows are read as the server has them, and not through [parseDevices],
+     * which leaves out what the list already names: a try that got as far as the
+     * list and no further has to finish at the row. The certificate never goes on
+     * the list when it is this install's own, or it would be this phone that left.
+     * A row from before the mark carries none, and stays to be forgotten by hand.
+     */
+    private fun retireEarlier(c: Context, s: Account.Session, key: ByteArray) {
+        val device = deviceId(c, s.uid)
+        val p = sp(c)
+        if (p.getString(PREF_RETIRED, "") == device) return
+        // `in`, not `<`: a clock set back must not hold the next try off for days
+        if (nowS() - p.getLong(PREF_RETIRE_TRIED, 0) in 0 until RETIRE_EVERY_S) return
+        try {
+            val mine = sameMark(c, s.uid)
+            if (mine.isNotEmpty()) {
+                p.edit().putLong(PREF_RETIRE_TRIED, nowS()).commit()
+                val r = Account.rest(c, "GET", "devices?select=id,link")
+                if (!r.ok) refused(r)
+                val rows = r.rows()
+                val seen = ArrayList<SamePhone.Row>()
+                val certs = HashMap<String, String>()
+                for (i in 0 until rows.length()) {
+                    val o = rows.optJSONObject(i) ?: continue
+                    val id = o.text("id")
+                    val sealed = o.text("link")
+                    if (id.isEmpty() || sealed.isEmpty()) continue
+                    val link = try {
+                        JSONObject(Crypt.openText(key, sealed, Crypt.aadDevice(s.uid, id)))
+                    } catch (e: Crypt.Refused) {
+                        continue                // the server cannot name an earlier install
+                    } catch (e: JSONException) {
+                        continue
+                    }
+                    seen.add(SamePhone.Row(id, link.text("kind") == "phone", link.text(SamePhone.FIELD)))
+                    certs[id] = link.text("cert").let { field ->
+                        if (field.isEmpty()) "" else try {
+                            certFingerprint(Base64.getDecoder().decode(field))
+                        } catch (e: IllegalArgumentException) {
+                            ""
+                        }
+                    }
+                }
+                val own = ownCert(c, s.uid)
+                val gone = SamePhone.earlier(device, mine, seen)
+                for (id in gone) {
+                    forgetWith(c, s.uid, key, id, certs[id].orEmpty().takeIf { it != own }.orEmpty())
+                    Log.i("DeskIT", "lock: an earlier install of this phone left the account")
+                }
+                if (gone.isNotEmpty()) changedDevices(c, device)
+            }
+            p.edit().putString(PREF_RETIRED, device).remove(PREF_RETIRE_TRIED).commit()
+        } catch (e: Account.Failed) {
+            // Signed out under the call: that is the look's own answer, as it
+            // was before this ran, and not housekeeping to put off.
+            val gone = try {
+                Account.session(c) == null
+            } catch (n: Sealed.NotNow) {
+                false
+            }
+            if (gone) throw e
+            Log.i("DeskIT", "lock: an earlier install's row waits for a later look")
+        } catch (e: JSONException) {
+            Log.i("DeskIT", "lock: an earlier install's row waits for a later look")
+        } catch (e: Sealed.NotNow) {
+            Log.i("DeskIT", "lock: an earlier install's row waits for a later look")
+        }
     }
 
     // ---- the forgotten ----
@@ -1063,15 +1169,22 @@ object Lock {
     @Synchronized
     fun forget(c: Context, d: Device): Boolean {
         val s = Account.fresh(c)
-        val ended = keyed(c, s.uid) { key ->
-            addForgotten(c, s.uid, key, d.id, d.cert)
-            val r = Account.rest(c, "POST", "rpc/forget_device", JSONObject().put("target", d.id))
-            if (!r.ok) refused(r)
-            r.body.trim() == "true"
-        }
-        sp(c).edit().putStringSet(PREF_FORGOTTEN, forgotten(c) + setOf(d.id, d.cert) - "").commit()
+        val ended = keyed(c, s.uid) { key -> forgetWith(c, s.uid, key, d.id, d.cert) }
         changedDevices(c, deviceId(c, s.uid))
         return ended
+    }
+
+    /**
+     * [forget]'s work with the key in hand: the list, then the row and its
+     * session, then this phone's own memory of who stays out. The others are told
+     * by the caller, once for however many went.
+     */
+    private fun forgetWith(c: Context, uid: String, key: ByteArray, id: String, cert: String): Boolean {
+        addForgotten(c, uid, key, id, cert)
+        val r = Account.rest(c, "POST", "rpc/forget_device", JSONObject().put("target", id))
+        if (!r.ok) refused(r)
+        sp(c).edit().putStringSet(PREF_FORGOTTEN, forgotten(c) + setOf(id, cert) - "").commit()
+        return r.body.trim() == "true"
     }
 
     /** The cached rows go: they name the PCs' addresses. A wipe's, and [Traces] calls it. */

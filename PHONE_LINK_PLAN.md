@@ -1424,7 +1424,16 @@ Stages 2 and 2b follow as lanes of their own once stage 1 stands.
 - **A `link` row.** `vault.seal_json(key, obj, "device/{uid}/{device_id}")`, the template named `vault.AAD_DEVICE`. A PC:
   `{"v": 1, "kind": "pc", "cert": "<SHA-256 of the DER, hex>", "addrs": ["192.0.2.10"], "port": 8766, "proto": 1,
   "words_sync": true}`. A phone: `{"v": 1, "kind": "phone", "cert": "<the DER, base64>", "proto": 1, "backup": true}`. An
-  unknown field is ignored. A phone's `cert` can change under one `id`, and that is no forgetting: a key made once a screen
+  unknown field is ignored. Since 2026-11-28 a phone's link also says which phone wrote it, `"same": "<32 hex>"`: the
+  first 32 hex of SHA-256 over `deskit/same-phone/v1`, a zero byte, the account's id, a zero byte and the id Android gives
+  the app on that phone (`Settings.Secure.ANDROID_ID`, lower case; the same after the app is removed and installed again,
+  another on another phone, in another profile and after a factory reset). A device's id lives in the app's storage, so an
+  install that went without a Sign out left its row behind and the next install was a second row: he removed the old
+  keyboard, installed 1.0.7, paired, and his PC listed his phone twice. Android tells an app nothing as it is removed, so
+  the new install does it: once it holds the key and has written its row, it forgets every other phone row with its own
+  mark, the list first (`Lock.retireEarlier`, `SamePhone.kt`, `flow_account.py reinstall`), once per install. A stable
+  device id is not the answer: Sign out on a phone is Forget on itself and the list never lets an id back. A PC reads the
+  field no more than any other it does not know. A phone's `cert` can change under one `id`, and that is no forgetting: a key made once a screen
   lock has appeared, or a software key on a phone whose Keystore will not do TLS. Its row says which one is in use, and
   the old one stops at the moment the row lands, so a PC that has not read it refuses that phone until it does. A PC's
   `addrs` can be empty, which is a fact of the moment, and a phone reads the row again before it believes it.
