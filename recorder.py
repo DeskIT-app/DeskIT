@@ -86,7 +86,8 @@ EMPTY_NOT_RECORDING = "not recording"
 # the time and its buffers were thrown away until the press, so a word
 # begun a moment before the key went down lost its onset: in the 50
 # recent\ sidecars of 2026-11-09 the decoder's first word started at
-# <= 0.10 s in 13 and at <= 0.00 s in 6 (reports6-11-09# dictation-speed.md F5). Now the last `preroll_ms` of audio before the
+# <= 0.10 s in 13 and at <= 0.00 s in 6 (reports\2026-11-09\
+# dictation-speed.md F5). Now the last `preroll_ms` of audio before the
 # press is kept in a small ring and put in FRONT of the recording; the
 # VAD trims it when it is only the room. Never stale: a ring whose newest
 # buffer is older than PREROLL_FRESH_S at the press is a stream that
