@@ -50564,9 +50564,12 @@ def test_the_release_builds_the_web_desk_pages_into_the_product_tree():
     node = re.search(r'^  NODE_VERSION: "(\d+)\.(\d+)\.(\d+)"$', rel, re.M)
     assert node and tuple(map(int, node.groups())) >= (22, 12, 0), "Node is not pinned exactly"
     stage = rel[rel.index("\n  stage:"):]
-    assert stage.index("needs: pages") < stage.index("steps:")
+    needs = re.search(r"needs: \[?[a-z, ]*\bpages\b", stage)       # [pages, signing] since 2026-11-28
+    assert needs and needs.start() < stage.index("steps:")
     archive = rel.index("- name: git archive")
-    take = rel.index("- uses: actions/download-artifact@")
+    # the stage's own download, after the archive (the signing job above
+    # downloads the unsigned keyboard with the same action)
+    take = rel.index("- uses: actions/download-artifact@", archive)
     pages = rel.index("- name: The web desk's pages")
     listed = rel.index("- name: MANIFEST.sha256")
     assert archive < take < pages < listed, "the pages are placed after the manifest is written"
