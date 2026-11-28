@@ -1,5 +1,3 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,17 +11,17 @@ plugins {
 val deskitVersion = rootProject.file("../VERSION").readText().trim()
 val deskitNumbers = deskitVersion.substringBefore("-").split(".").map { it.toInt() }
 
-// The release keystore (DISTRIBUTION_PLAN.md 12.7): generated once by the
-// owner, backed up twice, never in the repo. keystore.properties beside
-// this project (gitignored) names it — storeFile, storePassword,
-// keyAlias, keyPassword — and CI writes the same file from its secrets.
-// Without the file a release build is still a build, only unsigned: the
-// emulator installs the debug build, and nobody is handed an unsigned
-// release.
-val keystoreProps = Properties().also { props ->
-    val f = rootProject.file("keystore.properties")
-    if (f.exists()) f.inputStream().use { props.load(it) }
-}
+// The release keystore (DISTRIBUTION_PLAN.md 12.7) is NOT read here, on
+// purpose (2026-11-28). Gradle builds the release unsigned —
+// app-release-unsigned.apk — and apksigner signs it afterwards: in CI, a job
+// of its own in release.yml that holds the two secrets and runs no Gradle, no
+// plugin and nothing downloaded; on the owner's PC, dev/keyboard_key.py
+// --sign, which hands apksigner the passphrase in its environment. So the
+// passphrase is never in a file (no keystore.properties) and the build that
+// runs third-party plugins never holds the key. Both refuse an APK whose
+// signer is not the certificate android/release-cert.sha256 pins. The
+// keystore lives outside every checkout (dev/keyboard_key.py); the gitignore
+// still lists keystore.properties and *.jks so a stray copy never lands.
 
 android {
     // The identity a phone remembers forever: applicationId cannot change
@@ -50,17 +48,6 @@ android {
         versionName = deskitVersion
     }
 
-    signingConfigs {
-        if (keystoreProps.isNotEmpty()) {
-            create("release") {
-                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
-                storePassword = keystoreProps.getProperty("storePassword")
-                keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
-            }
-        }
-    }
-
     buildTypes {
         debug {
             // The fake account of dev/android/fake_pc.py, for the emulator:
@@ -78,15 +65,12 @@ android {
         release {
             resValue("string", "account_server", "")
             resValue("string", "cloud_server", "")
-            // The build that goes on GitHub Releases and later Play:
-            // release-signed when keystore.properties is there, never
-            // debuggable, not minified (1.2 MB; nothing to gain and a
-            // stack trace to lose).
+            // The build that goes on GitHub Releases as
+            // DeskIT-keyboard-<version>.apk, and later Play: unsigned out
+            // of Gradle (signed by apksigner, above), never debuggable, not
+            // minified (1.2 MB; nothing to gain and a stack trace to lose).
             isMinifyEnabled = false
             isDebuggable = false
-            if (keystoreProps.isNotEmpty()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
         }
     }
     compileOptions {
