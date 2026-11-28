@@ -45221,6 +45221,8 @@ def test_release_workflow_has_every_step():
     notes = by["release"].split("$body = @(")[1]
     assert notes.lstrip().startswith("$top,"), notes[:80]
     assert "[DeskIT for Windows]" in by["release"] and "[The keyboard for Android]" in by["release"]
+    # the keyboard's link is its page (one button, three lines), never the bare file
+    assert "[The keyboard for Android](https://deskit-app.github.io/DeskIT/keyboard)" in by["release"]
     import paths
     guide = f"GUIDE_PHONE: {paths.PAGES_URL}/en/06-phone#installing-the-keyboard"
     assert guide in by["release"], guide

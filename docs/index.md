@@ -11,6 +11,7 @@ lang: he
 <div class="buttons">
 <a class="btn gold" href="https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe" download>להוריד ל־Windows</a>
 <a class="btn ghost" href="he/quickstart">התחלה מהירה</a>
+<a class="btn ghost" href="keyboard">המקלדת לטלפון</a>
 <span class="note">Windows 10/11 · בלי סיסמת מנהל · <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">הגרסה, ה־SHA-256 והסריקה</a></span>
 </div>
 <p class="signing">חתימת קוד: עדיין אין, ולכן Windows מזהיר פעם אחת (More info → Run anyway) · <a href="https://github.com/DeskIT-app/DeskIT/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a></p>
@@ -52,6 +53,7 @@ lang: he
 <div class="buttons">
 <a class="btn gold" href="https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe" download>Download for Windows</a>
 <a class="btn ghost" href="en/quickstart">Quick start</a>
+<a class="btn ghost" href="keyboard#english">The phone keyboard</a>
 <span class="note">Windows 10/11 · no administrator password · <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">version, SHA-256, scan</a></span>
 </div>
 <p class="signing">Code signing: not yet, so Windows warns once (More info → Run anyway) · <a href="https://github.com/DeskIT-app/DeskIT/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a></p>

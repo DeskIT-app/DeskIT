@@ -791,7 +791,7 @@ jobs:
           $apkSha = (Get-Content "dist/$apk.sha256" -Raw).Split(" ")[0]
           # the two files first, the long notes after (2026-11-28: on a
           # phone the notes buried the downloads under 14,000 characters)
-          $top = "**Download:** [DeskIT for Windows](https://github.com/$repo/releases/download/v$version/DeskIT-Setup-$version.exe) · [The keyboard for Android](https://github.com/$repo/releases/download/v$version/$apk)"
+          $top = "**Download:** [DeskIT for Windows](https://github.com/$repo/releases/download/v$version/DeskIT-Setup-$version.exe) · [The keyboard for Android](https://deskit-app.github.io/DeskIT/keyboard)"
           $body = @(
             $top, "", "---", "",
             $section, "",
