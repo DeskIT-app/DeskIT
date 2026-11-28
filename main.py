@@ -506,7 +506,9 @@ class App:
         self.reading = reading_mod.Reading(paths.READ_DIR)
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
-                                 cfg.max_seconds, self._on_overflow)
+                                 cfg.max_seconds, self._on_overflow,
+                                 preroll_s=getattr(cfg.audio, "preroll_ms",
+                                                   0) / 1000.0)
         # A dead microphone ten seconds into a dictation, and the
         # all-clear when sound arrives — both from the PortAudio callback,
         # both handed to the dot (see _on_silent). recorder.SILENT_PEAK.
@@ -784,7 +786,12 @@ class App:
                   "later": rcfg.later_key,
                   "edit": getattr(rcfg, "edit_key", "e")},
             on_edit=self._review_edit, still_open=self._review_open,
-            held=lambda: self._word_prompt.open())
+            held=lambda: self._word_prompt.open(),
+            # the notify column's rect, read at the moment the card asks:
+            # the column is built further down and may be the NullCard
+            avoid=((lambda: getattr(getattr(self, "notify_card", None),
+                                    "rect", None))
+                   if getattr(rcfg, "avoid_notify", True) else None))
             if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
             else overlay_mod.ReviewCard.off())
         # The consent card (consent_card.py, privacy.py): asks ONCE per
@@ -840,6 +847,9 @@ class App:
                 log.info("notify card: this overlay takes no anchor — the "
                          "column will grow downward")
             self.notify_card = card_cls(ncfg.corner, **fields)
+            if hasattr(self.notify_card, "one_footer"):
+                self.notify_card.one_footer = bool(
+                    getattr(ncfg, "one_footer", True))
         else:
             self.notify_card = notify_mod.NullCard()
         self.notify = notify_mod.Engine(paths.DATA_DIR, ncfg, cue=beep,
@@ -1063,6 +1073,13 @@ class App:
                      "shelf", "tour_card"):
             card = getattr(self, name, None)
             if card is None:
+                continue
+            # [hint] hush = false: the key card is never hushed, the old
+            # way. Read at the HUSH only - an unhush always goes out (it is
+            # idempotent), so a config reload in between cannot leave the
+            # card's `_hushed` set for good.
+            if name == "hint" and on and not getattr(
+                    getattr(self.cfg, "hint", None), "hush", True):
                 continue
             try:
                 card.hush() if on else card.unhush()
@@ -4540,9 +4557,11 @@ class App:
             log.warning("the microphone stream stopped during this "
                         "recording — %.1f s arrived", seconds)
             self._mic_lost(partial=True)
-        if seconds < self.cfg.min_seconds:
+        # The pre-roll is not held time: a tap stays a tap.
+        held_s = seconds - float(getattr(self.recorder, "lead_s", 0.0) or 0.0)
+        if held_s < self.cfg.min_seconds:
             log.info("discarded: %.2f s hold is under min_seconds=%.2f "
-                     "(accidental tap?)", seconds, self.cfg.min_seconds)
+                     "(accidental tap?)", held_s, self.cfg.min_seconds)
             self._set_state("ready")
             return
         beep("stop")

@@ -2230,7 +2230,12 @@ class HintCard:
             except queue.Empty:
                 pass
             due, card = shown["due"], shown["card"]
-            if card is not None and not shown["up"] and due is not None \
+            # Off the live screen while capture.py holds it (hush: the
+            # selection, the editor, the camera, a recording); the 40 ms
+            # pump puts the LATEST card back up once it ends.
+            if self._hushed.is_set():
+                hide()
+            elif card is not None and not shown["up"] and due is not None \
                     and time.monotonic() >= due:
                 draw(card)
             root.after(40, pump)
@@ -3183,6 +3188,8 @@ def _open_origin(bounds, screen, saved, size, near, keep: int = 60):
 
 
 _REVIEW_BUTTONS = ("accept", "reject", "later")
+# Daylight between the review card and the notify column it steps around.
+AVOID_GAP = 12
 
 
 class ReviewCard(HintCard):
@@ -3253,9 +3260,15 @@ class ReviewCard(HintCard):
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_verdict=None, seconds: float = 20.0,
                  keys: dict | None = None, on_edit=None, still_open=None,
-                 held=None) -> None:
+                 held=None, avoid=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
+        # avoid() -> the notify column's card rect on screen, or None
+        # (`[review] avoid_notify`, 2026-11-27): both cards default to
+        # mid-height on the right, and a finish card landing a few seconds
+        # after a dictation covered the proposal. Called on the card's own
+        # thread; must be quick. None = never step aside (the old way).
+        self._avoid = avoid
         self._on_verdict = on_verdict
         # The pencil: on_edit(id, row, rect) — the owner wants to type the
         # word himself. The card is down by the time it is called.
@@ -3539,9 +3552,12 @@ class ReviewCard(HintCard):
     # -- placement --
 
     def origin(self, width: int, height: int, screen: tuple,
-               inset: int = 0, bounds=None) -> tuple:
+               inset: int = 0, bounds=None, work=None) -> tuple:
         """Mid-height on the right (or left) edge by default; the four
-        corners and a saved position exactly as the hint card does them."""
+        corners and a saved position exactly as the hint card does them.
+        `work` is the primary's work area (x, y, w, h), read from Windows
+        when not given: where a card stepping round the notify column may
+        go, so it never lands on the taskbar."""
         if self.moved() or self._corner not in ("right", "left"):
             return super().origin(width, height, screen, inset, bounds)
         sw, sh = screen
@@ -3549,7 +3565,75 @@ class ReviewCard(HintCard):
         x = (m - inset) if self._corner == "left" \
             else (sw - m - width + inset)
         y = (sh - height) // 2
+        if self._column() is not None:
+            work = work or _work_area() or (0, 0, sw, sh)
+            spot = self._aside(x, y, width, height, inset, work)
+            if spot is not None:
+                x, y = spot
         return int(x), int(y)
+
+    def _column(self):
+        """The notify column's rect on screen, or None."""
+        try:
+            return self._avoid() if self._avoid is not None else None
+        except Exception:                 # noqa: BLE001 — decoration
+            return None
+
+    def _aside(self, x: int, y: int, width: int, height: int, inset: int,
+               work: tuple):
+        """Where the window goes to be out of the notify column's way:
+        ABOVE it when the whole card fits inside the work area, else BELOW
+        it, else BESIDE it (on the screen's side of a column at the edge),
+        at the same height. None when it is not in the way, or when there
+        is nowhere to go — the caller then keeps what it has. Only for the
+        default spot: a card he dragged stays where he put it, and so does
+        one in a corner of its own. Pure arithmetic, so a test drives it
+        with numbers."""
+        col = self._column()
+        if not col or not self.covers(col, x, y, width, height, inset):
+            return None
+        ax0, ay0, ax1, ay1 = col
+        wx, wy, ww, wh = work
+        card_w, card_h = width - 2 * inset, height - 2 * inset
+        m = self._margin
+        above = ay0 - AVOID_GAP - card_h
+        if above >= wy + m:
+            return x, above - inset
+        below = ay1 + AVOID_GAP
+        if below + card_h <= wy + wh - m:
+            return x, below - inset
+        if self._corner == "left":
+            beside = ax1 + AVOID_GAP
+            if beside + card_w <= wx + ww - m:
+                return beside - inset, y
+        else:
+            beside = ax0 - AVOID_GAP - card_w
+            if beside >= wx + m:
+                return beside - inset, y
+        return None
+
+    @staticmethod
+    def covers(col, x: int, y: int, width: int, height: int,
+               inset: int = 0) -> bool:
+        """Would a window at (x, y) of this size put its CARD on `col`?"""
+        cx0, cy0 = x + inset, y + inset
+        cx1, cy1 = x + width - inset, y + height - inset
+        return not (cx1 <= col[0] or col[2] <= cx0
+                    or cy1 <= col[1] or col[3] <= cy0)
+
+    def in_the_way(self) -> bool:
+        """Is the notify column standing on the card that is up?"""
+        rect, col = self.rect, self._column()
+        if not rect or not col:
+            return False
+        return self.covers(col, rect[0], rect[1], rect[2] - rect[0],
+                           rect[3] - rect[1])
+
+    def would_cover(self, x: int, y: int, width: int, height: int,
+                    inset: int = 0) -> bool:
+        """Would the card, put at (x, y), stand on the notify column?"""
+        col = self._column()
+        return bool(col) and self.covers(col, x, y, width, height, inset)
 
     # -- overlay thread --
 
@@ -4461,6 +4545,10 @@ class NotifyCard(HintCard):
 
     CORNERS = ("right", "left", "top-right", "top-left",
                "bottom-right", "bottom-left")
+    # "Esc / click to dismiss" on the top card of a stack only
+    # (`[notify] one_footer`, set by main.py; design-ux.md 12: the same
+    # line on every card of a three-card column). False = every card.
+    one_footer = False
 
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
@@ -4505,6 +4593,16 @@ class NotifyCard(HintCard):
             self._q.put(drawn)
 
     # -- caller's threads --
+
+    def _footers(self, cards: list) -> list:
+        """The footer on the TOP card only (`one_footer`): every card under
+        it footless, the top one never. Applied wherever the column is
+        decided - show() and pressed()'s own redraw - so a dismissed top
+        card hands its footer to the next one at once, and the engine's
+        answer a moment later draws the same picture (no second jump)."""
+        if not self.one_footer:
+            return cards
+        return [dict(c, footless=i > 0) for i, c in enumerate(cards)]
 
     def _drawn(self) -> list:
         """What is on the window: the notifications, newest first, then
@@ -4581,6 +4679,7 @@ class NotifyCard(HintCard):
         if not cards:
             self.hide()
             return
+        cards = self._footers(cards)
         with self._state_lock:
             # The NEWEST id: `current()` is what the dashboard and the
             # dismiss key mean by "the one on screen", and the newest is
@@ -4706,7 +4805,7 @@ class NotifyCard(HintCard):
                 defer = (callback is not None
                          and int(self._cards[-1].get("more") or 0) > 0)
                 was = self._current
-                self._cards = keep
+                self._cards = self._footers(keep)
                 self._current = keep[0]["id"]
             drawn = self._drawn()
         if self._thread is not None and not defer:

@@ -840,8 +840,13 @@ class OllamaVision:
             ],
         }
         started = time.monotonic()
-        net.post_json(f"{self._url}/api/chat", "ollama", payload,
-                      timeout_s=self._timeout)
+        status, _headers, _body = net.post_json(
+            f"{self._url}/api/chat", "ollama", payload,
+            timeout_s=self._timeout)
+        if not 200 <= int(status or 0) < 300:
+            # an Ollama without the model answers 404: nothing was loaded,
+            # and the log must not say it was (2026-11-28 review)
+            raise RuntimeError(f"HTTP {status}")
         return time.monotonic() - started
 
 
@@ -4272,7 +4277,60 @@ class Controller:
         self._cancel.clear()
         threading.Thread(target=self._flow, daemon=True,
                          name="visual-qa").start()
+        # the config is read on that thread, not here: this may be the
+        # keyboard hook's
+        threading.Thread(target=self.warm_for_question, daemon=True,
+                         name="visual-qa-warm").start()
         return True
+
+    def warm_for_question(self) -> None:
+        """A question is coming: load the local vision model NOW, beside
+        the drag and the spoken question (`[visual_qa] warm_on_press`).
+
+        The start-up warm-up is skipped on a full machine and Ollama lets
+        a model go after five minutes anyway, so the first question of a
+        sitting paid the whole load: 26.5, 27.7 and 26.8 s for 3 of 3
+        (transcripts.log, reports\\2026-11-09\\screen-tools.md 1) against
+        3.9 s warm. Asked at the key press, the load runs while the
+        rectangle is drawn and the question said. Only when this PC's
+        Ollama is FIRST in the chain — never a cloud backend, and never
+        a load the question would not use — and under the start-up
+        warm-up's own rules: its `warmup` switch, its room in memory
+        (WARM_NEEDS_MB), and never while room.py holds Ollama for a game.
+        Never raises."""
+        try:
+            cfg = self._cfg_of()
+            vq = getattr(cfg, "visual_qa", None)
+            # the start-up warm-up's switch is this one's too: `warmup =
+            # false` means no implicit load of the vision model at all
+            if not (getattr(vq, "warm_on_press", False)
+                    and getattr(vq, "warmup", True)):
+                return
+            ranked = Chain(cfg)._builders()
+            if not ranked or ranked[0][0] != "ollama":
+                return
+            vision = ranked[0][1]()
+            why = net.held(getattr(vision, "_url", ""))
+            if why:
+                # room.py has the card for a game: the question itself
+                # will meet the same refusal and fall to the next backend
+                log.info("vision warm at the key press skipped — Ollama "
+                         "is held (%s)", why)
+                return
+            # THE START-UP WARM-UP'S GUARD, the same numbers: a warm
+            # gemma3:12b is ~12 GB of commit, and a press followed by Esc
+            # must not page a machine that has no room for it.
+            import hardware as hardware_mod
+            ram, commit = hardware_mod.free_mb()
+            if ram < WARM_NEEDS_MB or commit < 2 * WARM_NEEDS_MB:
+                log.info("vision warm at the key press skipped — %d MB of "
+                         "memory free, %d MB of commit", ram, commit)
+                return
+            seconds = vision.warm()
+            log.info("vision warmed at the key press in %.1fs", seconds)
+        except Exception as e:                   # noqa: BLE001
+            log.info("vision warm at the key press skipped (%s)",
+                     type(e).__name__)
 
     def _grab_selection(self):
         """Freeze the screen, let the user draw on it, hand back the crop.

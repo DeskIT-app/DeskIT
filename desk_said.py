@@ -107,6 +107,10 @@ ENGINE_WORDS = {"local": "on this PC", "groq": "Groq", "gemini": "Gemini"}
 EMPTY_OFF = "History is off (Settings > Privacy > Kept on this PC)."
 EMPTY_NONE = "Nothing here yet."
 EMPTY_MISS = "Nothing matches that."
+# A dictation that came back with no words (design-ux.md 9, 2026-11-09:
+# 77 of 1,833 OK lines, about 1 row in 25, drew as a time, a disc and a
+# blank - a row that looks broken). `[history] nothing_heard`.
+NOTHING_HEARD = "Nothing was heard"
 NOTHING_LEARNED = ("Nothing learned yet — say Yes to a second reading, or "
                    "press the teach key on a word it got wrong.")
 
@@ -182,7 +186,7 @@ class Place:
         self._by_id: dict = {}
         self._ids: list[str] = []
         self._config_at = 0.0
-        self._config: tuple = ("", None, 30)
+        self._config: tuple = ("", None, 30, True)
         self._vocab_key = None
         self._vocab_pairs: list = []
         self._vocab_count: int | None = None
@@ -222,9 +226,11 @@ class Place:
             cfg = config_mod.load_layered()
             self._config = (getattr(cfg, "correct_hotkey", "") or "",
                             getattr(getattr(cfg, "vocab", None), "max_terms", None),
-                            getattr(getattr(cfg, "history", None), "keep_days", 30))
+                            getattr(getattr(cfg, "history", None), "keep_days", 30),
+                            bool(getattr(getattr(cfg, "history", None),
+                                         "nothing_heard", True)))
         except Exception:                 # noqa: BLE001 — an unreadable config
-            self._config = ("", None, 30)
+            self._config = ("", None, 30, True)
         self._config_at = now
         return self._config
 
@@ -263,7 +269,7 @@ class Place:
         return out
 
     def _vocab(self) -> dict:
-        teach, cap, _days = self._facts()
+        teach, cap, _days, _heard = self._facts()
         try:
             st = paths.VOCAB_FILE.stat()
             vocab_stamp = (st.st_size, st.st_mtime_ns)
@@ -343,10 +349,11 @@ class Place:
                 days.append({"key": f"{day.isoformat()}#{len(days)}",
                              "date": day.isoformat(), "day": _day_label(day, today),
                              "facts": facts, "rows": []})
-            days[-1]["rows"].append(_row(event, ident.get(id(event), "")))
+            days[-1]["rows"].append(_row(event, ident.get(id(event), ""),
+                                         heard_word=self._facts()[3]))
         empty = ""
         if not found:
-            _teach, _cap, keep_days = self._facts()
+            _teach, _cap, keep_days, _heard = self._facts()
             off = isinstance(keep_days, (int, float)) and keep_days <= 0
             empty = (EMPTY_OFF if off and not events
                      else EMPTY_NONE if not events else EMPTY_MISS)
@@ -418,7 +425,7 @@ def _pair(heard: str, meant: str) -> dict:
     return {"heard": heard, "meant": meant, "rtl": deskweb.is_rtl(heard + meant)}
 
 
-def _row(event, ident: str) -> dict:
+def _row(event, ident: str, heard_word: bool = False) -> dict:
     """One event as the row draws it: its time and seconds, its kind's
     disc, its tags, the engine and latency under them, and its text —
     or, for a learned row, the pairs (the two words, not the two
@@ -460,6 +467,9 @@ def _row(event, ident: str) -> dict:
     if event.kind == "learned":
         pairs = [_pair(str(w), str(r)) for w, r in (event.pairs or [])[:ROW_PAIRS]]
     text = event.text or event.note or ""
+    nothing = heard_word and event.kind == "dictation" and not text and not pairs
+    if nothing:
+        text = NOTHING_HEARD
     return {
         "id": ident,
         "kind": _KIND_CLASS.get(event.kind, "dict"),
@@ -471,7 +481,7 @@ def _row(event, ident: str) -> dict:
         "meta": meta,
         "text": "" if pairs else text,
         "rtl": deskweb.is_rtl(text),
-        "dim": event.kind == "discarded",
+        "dim": event.kind == "discarded" or nothing,
         "pairs": pairs,
         "copy": bool(event.text or event.source),
     }

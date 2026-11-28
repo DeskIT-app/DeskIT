@@ -61,6 +61,10 @@ class ConfigError(Exception):
 class AudioConfig:
     sample_rate: int = 16000
     device: int | str | None = None  # None = system default input device
+    # The audio kept from just before the press (recorder.PREROLL_FRESH_S's
+    # comment), in ms. 0 = none, the old way — and the default, measured:
+    # see defaults.toml.
+    preroll_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,11 @@ class HintConfig:
     # The difference matters since 2026-09-08 — a follower goes where he
     # DRAGGED the dot, a card that named a corner stays in it.
     follow_dot: bool = True
+    # Obey capture.py's hush (2026-11-27): while a screenshot's selection
+    # or editor, the camera or a screen recording holds the screen, the
+    # card is off it, and back - the latest one - when it ends. False =
+    # main.py never hushes this card, which is how it behaved before.
+    hush: bool = True
 
 
 HINT_CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
@@ -607,6 +616,9 @@ class VisualQAConfig:
     # the card goes fully opaque while the pointer is over it anyway.
     window_alpha: float = 0.93
     warmup: bool = True
+    # Load the local vision model at the key press, beside the drag
+    # (2026-11-27). False = only the start-up warm-up, the old way.
+    warm_on_press: bool = True
     ollama_timeout_s: int = 120
     cloud_timeout_s: int = 30
 
@@ -979,6 +991,9 @@ class NotifyConfig:
     x: int = -100000
     y: int = -100000
     scale: float = 1.0
+    # "Esc / click to dismiss" on the top card of a stack only (2026-11-27).
+    # False = on every card, the old way.
+    one_footer: bool = True
     # The dismiss key ("dismiss_hotkey" in the file): a tap takes the
     # card down and marks everything seen, wherever the mouse is.
     hotkey: str = "ctrl+alt+m"
@@ -1258,6 +1273,9 @@ class ReviewConfig:
     # the pile on Home and Corrections (review.carded). The measurement
     # is beside the key in defaults.toml.
     card_families: tuple = ("term",)
+    # Step the card out of the notify column's way when both are in the
+    # default spot (2026-11-27). False = the old way: they may overlap.
+    avoid_notify: bool = True
 
 
 REVIEW_CORNERS = HINT_CORNERS + ("right", "left")
@@ -1362,6 +1380,9 @@ class HistoryConfig:
     0 = history off — no handler, an empty Recent view. A developer copy
     never prunes (history.apply says why)."""
     keep_days: int = 30
+    # Said's row for a dictation with no words reads "Nothing was heard"
+    # (2026-11-27). False = the blank row it was.
+    nothing_heard: bool = True
 
 
 @dataclass(frozen=True)
@@ -1944,6 +1965,8 @@ def build(data: dict) -> Config:
         audio=AudioConfig(
             sample_rate=int(audio.get("sample_rate", AudioConfig.sample_rate)),
             device=_parse_device(str(audio.get("device", ""))),
+            preroll_ms=max(0, min(1000, int(audio.get(
+                "preroll_ms", AudioConfig.preroll_ms)))),
         ),
         gemini=GeminiConfig(models=models),
         local=LocalConfig(
@@ -2006,6 +2029,7 @@ def build(data: dict) -> Config:
             y=int(hint.get("y", HintConfig.y)),
             scale=float(hint.get("scale", HintConfig.scale)),
             compact=bool(hint.get("compact", HintConfig.compact)),
+            hush=bool(hint.get("hush", HintConfig.hush)),
         ),
         setup=SetupConfig(
             done=bool(setup.get("done", SetupConfig.done)),
@@ -2127,6 +2151,8 @@ def build(data: dict) -> Config:
                                        ReviewConfig.llm_per_day)),
             card_families=_families(review.get(
                 "card_families", ReviewConfig.card_families)),
+            avoid_notify=bool(review.get("avoid_notify",
+                                         ReviewConfig.avoid_notify)),
         ),
         server=ServerConfig(
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
@@ -2200,6 +2226,8 @@ def build(data: dict) -> Config:
                 "window_alpha", VisualQAConfig.window_alpha)),
             warmup=bool(visual_qa.get("warmup",
                                       VisualQAConfig.warmup)),
+            warm_on_press=bool(visual_qa.get("warm_on_press",
+                                             VisualQAConfig.warm_on_press)),
             ollama_timeout_s=int(visual_qa.get(
                 "ollama_timeout_s", VisualQAConfig.ollama_timeout_s)),
             cloud_timeout_s=int(visual_qa.get(
@@ -2296,6 +2324,7 @@ def build(data: dict) -> Config:
             card_seconds=int(notify.get("card_seconds",
                                         NotifyConfig.card_seconds)),
             stack_max=int(notify.get("stack_max", NotifyConfig.stack_max)),
+            one_footer=bool(notify.get("one_footer", NotifyConfig.one_footer)),
             remind_every_s=int(notify.get("remind_every_s",
                                           NotifyConfig.remind_every_s)),
             remind_times=int(notify.get("remind_times",
@@ -2367,7 +2396,9 @@ def build(data: dict) -> Config:
             name: bool(privacy.get(name, getattr(PrivacyConfig, name)))
             for name in PrivacyConfig.__dataclass_fields__}),
         history=HistoryConfig(
-            keep_days=int(history.get("keep_days", HistoryConfig.keep_days))),
+            keep_days=int(history.get("keep_days", HistoryConfig.keep_days)),
+            nothing_heard=bool(history.get("nothing_heard",
+                                           HistoryConfig.nothing_heard))),
         desk=DeskConfig(web=bool(desk.get("web", DeskConfig.web))),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),

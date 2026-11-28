@@ -298,6 +298,16 @@ compact = false               # true = the small card: only the dictation's
                               # card writes it: its corner dragged smaller
                               # than the smallest size turns it on, and
                               # dragged bigger again turns it off
+hush = true                   # true = while a capture holds the screen - a
+                              # screenshot's selection and editor, the camera,
+                              # a screen recording for its whole length (a
+                              # card up then would be in the mp4) - this card
+                              # is off it: taken down if it was up, never put
+                              # up or raised over it (hold -> latch), and the
+                              # latest card back when the capture ends. Before
+                              # 2026-11-27 it ignored the hush and could map
+                              # over the selector and take the drag.
+                              # false = the old way
 
 [setup]
 # The first-run wizard: welcome, the microphone with its meter, what this
@@ -355,6 +365,24 @@ device = ""
                                # matches several devices is ambiguous and
                                # falls back to the default. "" = system
                                # default input (see --list-devices)
+preroll_ms = 0                 # the audio kept from just BEFORE the press and
+                               # put in front of the recording, so a word begun
+                               # a moment early keeps its first sound. The 50
+                               # recent\ sidecars of 2026-11-09 had the first
+                               # word at <= 0.10 s in 13 and <= 0.00 s in 6
+                               # (reports\2026-11-09\dictation-speed.md F5).
+                               # It is not held time (min_seconds still means
+                               # the hold). OFF because of what it was measured
+                               # to do, 2026-11-28, night17, the 50 recent\
+                               # wavs, Hebrew pinned, no hotwords: 0.3 s of each
+                               # clip's own quietest stretch in front changed
+                               # 19 of 50 transcripts, 61 word edits over 1,193
+                               # words, 35 of 41 changed spans mid-sentence
+                               # (the decoder's windows shift), in BOTH
+                               # directions - and there is no unbiased label
+                               # here to say which way it nets. What a real
+                               # pre-roll adds (a clipped first sound) cannot
+                               # be measured without one. 300 = try it. 0..1000
 
 [feedback]
 enabled = true                # paste a marker at the cursor while transcribing
@@ -797,6 +825,18 @@ warmup = true                  # one dummy-image, num_predict=1 call at
                                # startup, in the background, so the first
                                # real question costs ~4 s instead of the
                                # 22.6 s projector load
+warm_on_press = true           # true = the same load is ALSO asked for at the
+                               # key press, when this PC's Ollama answers
+                               # first, so it runs while you draw and speak:
+                               # the start-up one is skipped on a full machine
+                               # and Ollama lets the model go after five
+                               # minutes, and the first questions paid 26.5,
+                               # 27.7 and 26.8 s (3 of 3, 2026-11-09 audit,
+                               # screen-tools.md 1). Under the same rules as
+                               # the start-up one: `warmup = false` turns it
+                               # off too, and it waits for the same room in
+                               # memory (WARM_NEEDS_MB) and stands aside while
+                               # a game holds the card. false = start-up only
 ollama_timeout_s = 120         # generous on purpose: a COLD local model can
                                # spend minutes loading ([translate]
                                # measures 76 s for a text-only load), and
@@ -1259,6 +1299,12 @@ stack_max = 5                  # how many unread cards may be on screen at
                                # once, the newest at the top. The rest wait
                                # in the dashboard, counted on the bottom
                                # card as "+3 earlier" (1 .. 8)
+one_footer = true              # true = "Esc / click to dismiss" on the top
+                               # card of a stack only; the cards under it
+                               # have no footer row (22 px a card at scale 1:
+                               # three cards 558 -> 514 px). The 2026-11-09 audit
+                               # (design-ux.md 12) found the same line on
+                               # every card. false = on every card
 remind_every_s = 120           # while something is unread, play the cue and
                                # show the card again this many seconds
                                # after the last time. 0 = never remind
@@ -1577,6 +1623,11 @@ keep_days = 30                 # how long those lines are kept. Older lines
                                # empty and says so. (The checkout's own
                                # copy never drops anything: its history
                                # is training data.)
+nothing_heard = true           # true = a dictation that came back with no
+                               # words reads "Nothing was heard" on the Said
+                               # page, dimmed (77 of 1,833 OK lines on
+                               # 2026-11-09 were such rows, and drew as a time
+                               # and a blank). false = the blank row
 
 [desk]
 # The desk as a web page (React in WebView2, deskweb.py) instead of the Tk
@@ -2117,6 +2168,16 @@ card_families = ["term"]      # which proposals pop up as that card; the rest
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
+avoid_notify = true           # true = when the notify column (Claude's finish
+                              # cards) stands where this card is, the card
+                              # steps above it, or below it when only that
+                              # fits - at its first show and if the column
+                              # lands on it later (clock kept). Both default
+                              # to mid-height on the right, and a finish card
+                              # often lands seconds after a dictation
+                              # (reports\2026-11-09\design-ux.md, 7). Only
+                              # the default spot: a dragged card stays put.
+                              # false = the old way, they may overlap
 x = -100000               # the top-left of the CARD where you last
 y = -100000               # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a

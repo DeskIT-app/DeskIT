@@ -6087,6 +6087,145 @@ def test_idle_glass_cards_rest_and_wake_on_their_queue() -> None:
                 f"{type(card).__name__} waited out its rest before _DONE")
 
 
+def test_the_key_card_waits_out_a_screenshot_selection() -> None:
+    """AGENTS.md's "THE HUSH IS ONLY HALF WIRED": skin\\hint.py never read
+    `_hushed`, so a key card coming due, or changed (hold -> latch) and
+    raised again, mapped OVER the screenshot selector and took the drag.
+    Driven through the glass loop itself with a stand-in window: while
+    hushed nothing is built, shown, painted or raised; a card UP when the
+    hush starts is taken down (a recording would film it); the unhush puts
+    up the LATEST card, never the one that went down, and nothing at all if
+    the dictation ended meanwhile. And `[hint] hush = false` is the old
+    way: main.py does not hush the key card, while every other card still
+    is - read at the hush only, so a switch flipped before the unhush
+    cannot leave the card hushed for good."""
+    import types
+    from PIL import Image
+    try:
+        from skin import hint as s_hint
+    except Exception:
+        return
+    import main as main_mod
+    import overlay as overlay_mod
+
+    events = []
+
+    class FakeGlass:
+        gripping = False
+
+        def __init__(self, x, y, w, h, **_kw):
+            self.width, self.height = w, h
+            events.append("new")
+
+        def show(self):
+            events.append("show")
+
+        def raise_(self):
+            events.append("raise")
+
+        def present(self, _img):
+            events.append("present")
+
+        def resize(self, w, h):
+            self.width, self.height = w, h
+
+        def move(self, *_xy):
+            pass
+
+        def pump(self):
+            pass
+
+        def where(self):
+            return 0, 0
+
+        def let_go(self):
+            pass
+
+        def close(self):
+            events.append("close")
+
+    held = (s_hint.Glass, s_hint._frost, s_hint.paint)
+    s_hint.Glass = FakeGlass
+    s_hint._frost = lambda *_a: None
+    painted = []
+
+    def paint(card_dict, *_a, **_k):
+        painted.append(card_dict)
+        return Image.new("RGBA", (4, 4))
+
+    s_hint.paint = paint
+    card = overlay_mod.HintCard(after_ms=0)
+    cfg = _hint_cfg()
+    hold = hint_mod.card_for(cfg, hint_mod.HOLD, main_mod._SCREEN_ACTIONS)
+    latched = hint_mod.card_for(cfg, hint_mod.LATCHED,
+                                main_mod._SCREEN_ACTIONS)
+    worker = threading.Thread(target=s_hint.run, args=(card,), daemon=True)
+    worker.start()
+    try:
+        assert card._alive.wait(5)
+        card._hushed.set()
+        card._q.put(hold)
+        time.sleep(0.3)
+        assert events == [], f"a hushed card went up: {events}"
+        card._hushed.clear()
+        assert _until(lambda: "present" in events, 2), "the unhush did not put it up"
+        assert events[:2] == ["new", "show"], events
+        raised = events.count("raise")
+        assert raised == 1, events
+        card._hushed.set()
+        assert _until(lambda: "close" in events, 2), "the card up stayed up"
+        card._q.put(latched)               # hold -> latch under the capture
+        time.sleep(0.3)
+        assert events.count("raise") == raised, f"raised over the capture: {events}"
+        assert events.count("new") == 1, events
+        card._hushed.clear()
+        assert _until(lambda: events.count("raise") == raised + 1, 2), events
+        assert events.count("new") == 2 and painted[-1] is latched, \
+            "the latest card came back, not the one that went down"
+        # the dictation ends during a capture: nothing comes back after it
+        card._hushed.set()
+        assert _until(lambda: events.count("close") == 2, 2), events
+        card._q.put(None)
+        time.sleep(0.2)
+        card._hushed.clear()
+        time.sleep(0.4)
+        assert events.count("new") == 2, f"a finished dictation's card came back: {events}"
+    finally:
+        card._q.put(overlay_mod._DONE)
+        worker.join(3)
+        s_hint.Glass, s_hint._frost, s_hint.paint = held
+    assert not worker.is_alive()
+
+    class Cardish:
+        def __init__(self):
+            self.calls = []
+
+        def hush(self):
+            self.calls.append("hush")
+
+        def unhush(self):
+            self.calls.append("unhush")
+
+    for want, calls in ((True, ["hush", "unhush"]), (False, ["unhush"])):
+        app = types.SimpleNamespace(
+            cfg=types.SimpleNamespace(hint=types.SimpleNamespace(hush=want)),
+            hint=Cardish(), notify_card=Cardish())
+        main_mod.App._hush_overlays(app, True)
+        main_mod.App._hush_overlays(app, False)
+        assert app.hint.calls == calls, (want, app.hint.calls)
+        assert app.notify_card.calls == ["hush", "unhush"], want
+    # the switch read again between the hush and the unhush
+    app = types.SimpleNamespace(
+        cfg=types.SimpleNamespace(hint=types.SimpleNamespace(hush=True)),
+        hint=Cardish())
+    main_mod.App._hush_overlays(app, True)
+    app.cfg.hint.hush = False                  # a config reload meanwhile
+    main_mod.App._hush_overlays(app, False)
+    assert app.hint.calls == ["hush", "unhush"], "left hushed for good"
+    assert config_mod.load(Path(__file__).resolve().parent
+                           / "defaults.toml").hint.hush is True
+
+
 def test_status_dot_ignores_states_it_does_not_know() -> None:
     """set_state is called from the keyboard hook. A typo must not raise
     there — an exception inside the hook makes Windows drop it."""
@@ -7065,6 +7204,40 @@ def test_a_pc_row_says_what_a_phone_needs_and_goes_out_when_it_changed() -> None
         box["gone"] = {_THIS_PC}
         assert phone_mod.publish(**dict(args, port=9000)) is False
         assert len(box["written"]) == count
+
+
+def test_a_dictation_with_no_words_says_nothing_was_heard_on_said() -> None:
+    """design-ux.md 9: 77 of 1,833 OK lines (about 1 row in 25) have an
+    empty last field, and Said drew each as a time, a disc and a blank —
+    a row that looks broken. It reads "Nothing was heard", dimmed, with
+    nothing to copy; a dictation WITH words, a learned row and a discarded
+    one are as they were; `[history] nothing_heard = false` is the blank
+    row again. Read off a real log line, through history's own parser."""
+    import tempfile
+
+    import desk_said
+    import history as history_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "transcripts.log"
+        log.write_text(
+            "2026-11-27 22:00:01,100 | OK | 9.8s | local | 0.3s latency | \n"
+            "2026-11-27 22:01:02,200 | OK | 2.0s | local | 0.4s latency | שלום\n",
+            "utf-8")
+        events = history_mod._events_in(log)
+    assert [e.kind for e in events] == ["dictation", "dictation"], events
+    empty = next(e for e in events if not e.text)
+    said = next(e for e in events if e.text)
+    row = desk_said._row(empty, "1", heard_word=True)
+    assert row["text"] == desk_said.NOTHING_HEARD == "Nothing was heard"
+    assert row["dim"] is True and row["copy"] is False and row["rtl"] is False
+    assert row["meta"] == ["on this PC", "ready in 0.3 s"], row["meta"]
+    words = desk_said._row(said, "2", heard_word=True)
+    assert words["text"] == "שלום" and words["dim"] is False
+    off = desk_said._row(empty, "1", heard_word=False)
+    assert off["text"] == "" and off["dim"] is False, "the switch is the old row"
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.history.nothing_heard is True
 
 
 def test_a_long_phone_name_gives_way_and_cloud_stays_whole_on_said() -> None:
@@ -19402,6 +19575,7 @@ cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl.warm_for_question = lambda: None   # never load his real Ollama
 
 answering = threading.Event()
 release = threading.Event()
@@ -19696,6 +19870,7 @@ cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl.warm_for_question = lambda: None   # never load his real Ollama
 ctrl._ask = lambda *a, **k: ("ארבעים ושתיים", "test")
 
 assert ctrl.begin_selection()
@@ -19755,6 +19930,7 @@ cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg, recording_now=lambda: True)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl.warm_for_question = lambda: None   # never load his real Ollama
 ctrl._ask = lambda *a, **k: ("ארבעים ושתיים", "test")
 
 for round_no in (1, 2):
@@ -19953,6 +20129,77 @@ def test_a_question_is_a_slice_and_the_recording_never_notices() -> None:
     rec._state = recorder_mod.IDLE
     assert rec.mark() == 0
     assert rec.slice_since(0) == (None, 0.0)
+
+
+def test_the_preroll_keeps_the_moment_before_the_press_and_nothing_stale(
+        ) -> None:
+    """`[audio] preroll_ms` (2026-11-27): the stream calls back between
+    recordings too, so the last preroll_ms of it is kept in a ring and put
+    in FRONT of the next recording — the decoder sees a word begun a moment
+    before the press. It is not held time (`lead_s`), not in the peak, a
+    ring a stopped stream left behind is not used, a press with nothing
+    after the pre-roll is still empty, and 0 (what the file ships, see its
+    comment) is the old recorder exactly."""
+    import recorder as recorder_mod
+
+    def built(preroll_s):
+        rec = recorder_mod.Recorder.__new__(recorder_mod.Recorder)
+        rec._lock = threading.Lock()
+        rec._state = recorder_mod.IDLE
+        rec.sample_rate = 16000
+        rec._chunks, rec._excluded, rec._questions = [], [], []
+        rec._samples = 0
+        rec._default_max_samples = rec._max_samples = 400 * 16000
+        rec._on_overflow = lambda: None
+        rec._set_preroll(preroll_s)
+        return rec
+
+    def feed(rec, value, n=4, size=1600):           # n buffers of 0.1 s
+        for _ in range(n):
+            rec._callback(np.full((size, 1), value, dtype=np.int16), size,
+                          None, None)
+
+    rec = built(0.3)
+    feed(rec, 9000, n=2)            # old: 0.2 s that falls out of the ring
+    feed(rec, 300, n=3)             # the 0.3 s just before the press
+    assert rec._ring_samples == 4800, rec._ring_samples
+    rec.begin()
+    assert abs(rec.lead_s - 0.3) < 1e-9 and rec._lead == 3, rec.lead_s
+    assert rec.mark() == 3, "a mark is past the pre-roll"
+    assert rec.peak() == 0.0, "the room before the press is not the peak"
+    feed(rec, 1200, n=5)
+    wav, seconds = rec.end()
+    assert wav is not None and abs(seconds - 0.8) < 1e-9, seconds
+    import io
+    import wave as wave_mod
+    with wave_mod.open(io.BytesIO(wav)) as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    assert len(pcm) == 12800 and (pcm[:4800] == 300).all() \
+        and (pcm[4800:] == 1200).all(), "the moment before, then the hold"
+    assert not (pcm == 9000).any(), "only the last 0.3 s"
+    # A press with nothing after the pre-roll is a tap, not a recording.
+    feed(rec, 300, n=3)
+    rec.begin()
+    assert rec.end() == (None, 0.0) and rec.last_empty == recorder_mod.EMPTY_TAP
+    # A stream that stopped: its old ring is not the moment before.
+    feed(rec, 300, n=3)
+    rec._ring[-1] = (time.monotonic() - 5.0, rec._ring[-1][1])
+    rec.begin()
+    assert rec._lead == 0 and rec.lead_s == 0.0 and rec._chunks == []
+    rec.abort()
+    # A ring longer than a chunk's grain is cut to exactly preroll_s.
+    feed(rec, 300, n=2, size=2500)
+    rec.begin()
+    assert sum(len(c) for c in rec._chunks) == 4800, rec._chunks
+    rec.abort()
+    # 0 = the old recorder: nothing kept, nothing in front.
+    off = built(0.0)
+    feed(off, 300, n=3)
+    assert not off._ring
+    off.begin()
+    assert off._chunks == [] and off.lead_s == 0.0
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.audio.preroll_ms == 0, "off until a measurement says on"
 
 
 def test_the_switch_cuts_the_question_out_of_the_dictation_itself(
@@ -30112,6 +30359,150 @@ def test_the_review_card_sits_mid_height_on_the_right_and_stays_where_put(
         "a saved position on the left monitor is kept"
     top = overlay_mod.ReviewCard(corner="top-right", margin=14)
     assert top.origin(400, 200, (2560, 1440), 26)[1] == 14 - 26
+
+
+def test_the_review_card_steps_out_of_the_notify_columns_way() -> None:
+    """design-ux.md 7: `[notify] corner` and `[review] corner` are both
+    mid-height on the right, so a finish card landing seconds after a
+    dictation covered the proposal. The card in its default spot now goes
+    ABOVE the column when it fits in the WORK AREA, else BELOW (never onto
+    the taskbar), else BESIDE it, else nowhere: a dragged card, a corner
+    of its own and no column change nothing. Then the glass loop with a
+    stand-in window: a column landing on a card already up builds it again
+    out of the way, the clock kept; a column it cannot get away from leaves
+    it where it is (the 2026-11-28 review: it used to jump back on top)."""
+    screen, inset = (2560, 1440), 26
+    work = (0, 0, 2560, 1400)                        # a 40 px taskbar
+    w, h = 400 + 2 * inset, 200 + 2 * inset
+    col = [None]
+    card = overlay_mod.ReviewCard(corner="right", margin=14,
+                                  avoid=lambda: col[0])
+
+    def at(c=card):
+        return c.origin(w, h, screen, inset, work=work)
+
+    x0, y0 = at()
+    assert (x0, y0) == (2560 - 14 - w + inset, (1440 - h) // 2)
+    gap = overlay_mod.AVOID_GAP
+    col[0] = (2150, 600, 2546, 900)                  # on it: above fits
+    assert at() == (x0, 600 - gap - 200 - inset)
+    col[0] = (2150, 150, 2546, 640)                  # no room above: below
+    assert at() == (x0, 640 + gap - inset)
+    col[0] = (2150, 150, 2546, 1180)                 # below fits the SCREEN,
+    beside = (2150 - gap - 400 - inset, y0)          # not the work area
+    assert at() == beside, "never onto the taskbar"
+    col[0] = (2150, 100, 2546, 1300)                 # neither way: beside it
+    assert at() == beside
+    col[0] = (100, 100, 2546, 1300)                  # nowhere to go
+    assert at() == (x0, y0) and card.would_cover(x0, y0, w, h, inset)
+    col[0] = (0, 600, 400, 900)                      # the other edge
+    assert at() == (x0, y0)
+    left = overlay_mod.ReviewCard(corner="left", margin=14,
+                                  avoid=lambda: col[0])
+    col[0] = (14, 100, 414, 1300)                    # a left column: beside
+    assert at(left) == (414 + gap - inset, y0)       # it, on the right
+    col[0] = (2150, 600, 2546, 900)
+    moved = overlay_mod.ReviewCard(corner="right", x=2100, y=650,
+                                   avoid=lambda: col[0])
+    assert moved.origin(w, h, screen, inset) == (2100 - inset, 650 - inset), \
+        "a card he dragged stays where he put it"
+    corner = overlay_mod.ReviewCard(corner="top-right", avoid=lambda: col[0])
+    assert corner.origin(w, h, screen, inset)[1] == 14 - inset
+    off = overlay_mod.ReviewCard(corner="right", margin=14)      # the switch
+    assert off.origin(w, h, screen, inset) == (x0, y0)
+
+    def broken():
+        raise RuntimeError("decoration")
+    assert overlay_mod.ReviewCard(corner="right", margin=14, avoid=broken) \
+        .origin(w, h, screen, inset) == (x0, y0)
+    card.rect = (x0 + inset, y0 + inset, x0 + w - inset, y0 + h - inset)
+    assert card.in_the_way()
+    col[0] = None
+    assert not card.in_the_way() and not off.in_the_way()
+    assert config_mod.load(Path(__file__).resolve().parent
+                           / "defaults.toml").review.avoid_notify is True
+
+    # -- the glass loop, a column landing on a card already up
+    from PIL import Image
+    try:
+        from skin import review as s_review
+    except Exception:
+        return
+    built = []
+
+    class Canvas:
+        def clear(self, *_a):
+            pass
+
+        def drawImage(self, *_a):
+            pass
+
+    class FakeGlass:
+        def __init__(self, x, y, w, h, **_kw):
+            self.at, self.width, self.height = (x, y), w, h
+            self.canvas = Canvas()
+            built.append(self)
+
+        def where(self):
+            return self.at
+
+        def show(self):
+            pass
+
+        def raise_(self):
+            pass
+
+        def flush(self):
+            pass
+
+        def pump(self):
+            pass
+
+        def close(self):
+            pass
+
+    held = (s_review.Glass, s_review._frost, s_review.face,
+            s_review._to_skia, s_review.primary_screen,
+            s_review.virtual_screen)
+    s_review.Glass = FakeGlass
+    s_review._frost = lambda *_a: None
+    s_review.face = lambda *_a, **_k: None
+    s_review._to_skia = lambda img: img
+    s_review.primary_screen = lambda: screen
+    s_review.virtual_screen = lambda: (0, 0) + screen
+    held_work = s_review.work_area
+    s_review.work_area = lambda: work
+    live = overlay_mod.ReviewCard(corner="right", margin=14, seconds=20,
+                                  avoid=lambda: col[0])
+    live.hovering = lambda: False
+    worker = threading.Thread(target=s_review.run, args=(live,), daemon=True)
+    live._thread = worker
+    worker.start()
+    try:
+        assert live._alive.wait(5)
+        live.show(_review_proposal("a"))
+        assert _until(lambda: built and live.rect is not None, 3), "never up"
+        first = built[-1]
+        assert first.at[0] > 2000, first.at
+        col[0] = live.rect                       # the column lands on it
+        assert _until(lambda: len(built) >= 2, 2), "it never stepped aside"
+        again = built[-1]
+        assert again.at[1] < first.at[1], (first.at, again.at)
+        assert live.visible() and live.current() == "a", "the same card"
+        assert not live.in_the_way(), (live.rect, col[0])
+        time.sleep(0.6)
+        assert len(built) == 2, "once out of the way it stays"
+        col[0] = (0, 0, 2560, 1440)              # a column it cannot leave
+        time.sleep(0.6)
+        assert len(built) == 2 and built[-1] is again, \
+            "nowhere to go: it stays where it is, never back on top"
+    finally:
+        live._q.put(overlay_mod._DONE)
+        worker.join(3)
+        (s_review.Glass, s_review._frost, s_review.face, s_review._to_skia,
+         s_review.primary_screen, s_review.virtual_screen) = held
+        s_review.work_area = held_work
+    assert not worker.is_alive()
 
 
 # ---- the review card's line (2026-11-10): a second proposal waits behind
@@ -41154,6 +41545,82 @@ def test_the_vision_warm_up_waits_for_room_in_memory() -> None:
         assert any("11434" in url for url in tried), tried
 
 
+def test_the_vision_model_is_warmed_at_the_key_press_when_ollama_answers_first(
+        ) -> None:
+    """screen-tools.md 1 (2026-11-09 audit): the first screen question of
+    a sitting paid the whole load (26.5, 27.7, 26.8 s), because the
+    start-up warm-up is skipped on a full machine and Ollama lets the
+    model go after five minutes. `[visual_qa] warm_on_press`: the key
+    press starts the same one-token load beside the drag — on a thread of
+    its own, the config read there and not on the hook — only when this
+    PC's Ollama is first in the chain, never a cloud backend, never with
+    the switch off, and a refusal raises nothing."""
+    import dataclasses
+
+    import net as net_mod
+    import visual_qa as vq
+
+    tried: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        tried.append(url)
+        raise net_mod.NetError("refused") from ConnectionRefusedError(10061, "refused")
+
+    import hardware as hardware_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.visual_qa.warm_on_press is True and cfg.visual_qa.prefer == "ollama"
+
+    def vq_with(**over):
+        return dataclasses.replace(cfg, visual_qa=dataclasses.replace(
+            cfg.visual_qa, **over))
+
+    roomy = lambda: (20_000, 40_000)
+    with _patched(net_mod, "_connect", fake_connect), \
+            _patched(hardware_mod, "free_mb", roomy):
+        vq.Controller(lambda: cfg).warm_for_question()        # refused: no raise
+        assert any("11434" in url for url in tried), tried
+        tried.clear()
+        vq.Controller(lambda: vq_with(warm_on_press=False)).warm_for_question()
+        assert tried == [], "the switch is off"
+        vq.Controller(lambda: vq_with(warmup=False)).warm_for_question()
+        assert tried == [], "warmup = false is no implicit load at all"
+        with _patched(hardware_mod, "free_mb", lambda: (3_000, 9_000)):
+            vq.Controller(lambda: cfg).warm_for_question()
+        assert tried == [], "a full machine is not paged for a press"
+        url = cfg.translate.ollama_url
+        net_mod.hold(url, "a game holds the card")
+        try:
+            vq.Controller(lambda: cfg).warm_for_question()
+        finally:
+            net_mod.release(url)
+        assert tried == [], "room.py's hold is respected"
+        built = []
+        cloud_first = [("groq", lambda: built.append("groq")),
+                       ("ollama", lambda: built.append("ollama"))]
+        with _patched(vq.Chain, "_builders", lambda self: cloud_first):
+            vq.Controller(lambda: cfg).warm_for_question()
+        assert built == [] and tried == [], "a cloud backend is never warmed"
+
+    # an Ollama without the model answers 404: that is not a warm load
+    with _patched(net_mod, "_connect",
+                  lambda *a, **k: _FakeRaw(b'{"error":"model not found"}', status=404)):
+        vision = dict(vq.Chain(cfg)._builders())["ollama"]()
+        try:
+            vision.warm()
+        except RuntimeError as e:
+            assert "404" in str(e), e
+        else:
+            raise AssertionError("a 404 was taken for a warm model")
+
+    ctrl = vq.Controller(lambda: cfg)
+    warmed, flowed = threading.Event(), threading.Event()
+    ctrl._flow = flowed.set
+    ctrl.warm_for_question = warmed.set
+    assert ctrl.begin_selection()
+    assert warmed.wait(3) and flowed.wait(3), "the press starts both"
+
+
 def test_net_offline_refuses_all_but_loopback():
     """privacy.offline (5.9): every allowlisted host is refused with a
     row that says so, even with a key stored and the gate open, and
@@ -41345,10 +41812,15 @@ def test_the_consent_and_tour_cards_rest_while_nothing_is_up() -> None:
         def __init__(self):
             super().__init__()
             self.polls = 0
+            self.rests = 0
 
         def get_nowait(self):
             self.polls += 1
             return super().get_nowait()
+
+        def rest(self, seconds):
+            self.rests += 1
+            return super().rest(seconds)
 
     for card, ask in ((overlay_mod.ConsentCard(on_answer=lambda k, a: None),
                        lambda c: c.show("cloud_audio")),
@@ -41361,6 +41833,17 @@ def test_the_consent_and_tour_cards_rest_while_nothing_is_up() -> None:
         if card._thread is None or not card._alive.is_set():
             return
         try:
+            # The loop's FIRST update() must be over before anything is
+            # timed. On a HIDDEN desktop, once two Tk interpreters have
+            # come and gone in a process, a new one's first update() takes
+            # 2.0 s (measured 2026-11-28, raw tkinter, four interpreters on
+            # four threads in turn: 0.017 / 0.004 / 2.018 / 2.020 s; on the
+            # interactive desktop 0.049 / 0.015 / 0.028 / 0.015). Alone this
+            # test is the first; in the full suite it is not, and it failed
+            # every night from 2026-11-12 with "waited out the rest (1.1 s)"
+            # — the put landed while the loop was still in that update.
+            assert _until(lambda: card._q.rests >= 1, 5), \
+                f"the {type(card).__name__} loop never came to rest"
             time.sleep(0.3)
             n = card._q.polls
             time.sleep(0.6)
@@ -61028,6 +61511,77 @@ def _pin_card(**over):
               keep_s=10, key="Ctrl+Alt+N")
     kw.update(over)
     return nc.pinned_card(**kw)
+
+
+def test_a_stack_says_esc_or_click_once_on_its_top_card() -> None:
+    """design-ux.md 12: "Esc / click to dismiss" stood on every card of a
+    column. With `[notify] one_footer` NotifyCard.show marks every card but
+    the top (newest) one footless: no footer row, 22 px shorter at scale 1,
+    the picture exactly its measure, the "+N earlier" line still drawn,
+    the × and the drag where they were. A pinned card keeps its row (its
+    button lives there); one_footer off is every card as before."""
+    import notify_card as nc
+    import overlay as overlay_mod
+
+    items = [{"id": i, "kind": "done", "source": "claude-code",
+              "title": "Claude finished", "body": f"Done {i}.", "at": "",
+              "unread": 3} for i in (3, 2, 1)]
+    items[-1]["more"] = 2
+
+    def shown(one_footer):
+        card = overlay_mod.NotifyCard()
+        card._thread = object()                   # show() only enqueues
+        card.one_footer = one_footer
+        card.show(items)
+        return card._q.get_nowait()
+
+    on, off = shown(True), shown(False)
+    assert [bool(c.get("footless")) for c in on] == [False, True, True]
+    assert not any(c.get("footless") for c in off)
+    assert overlay_mod.NotifyCard.one_footer is False, "the class is the old way"
+    gap = nc.ROW + nc.FOOTER_H
+    for a, b in zip(on[1:], off[1:]):
+        assert nc.measure(b, 1.0)[1] - nc.measure(a, 1.0)[1] == gap
+        img = nc.compose(a, 1.0)
+        assert img.size == nc.measure(a, 1.0), (img.size, nc.measure(a, 1.0))
+        assert nc.regions(a, 1.0)[nc.DISMISS] == nc.regions(b, 1.0)[nc.DISMISS]
+    assert nc.measure(on[0], 1.0) == nc.measure(off[0], 1.0)
+    assert nc.stack_measure(off)[1] - nc.stack_measure(on)[1] == 2 * gap
+    last = nc.compose(on[-1], 1.0)
+    bare = nc.compose(dict(on[-1], more=0), 1.0)
+    assert last.height - bare.height == 2 + nc.MORE_H, "the +N line stays"
+    # The top card dismissed (or opened): pressed() redraws the column at
+    # once, without show(), and the next card must take the footer THERE —
+    # or the engine's show(live()) a moment later would grow it back, the
+    # second jump the 2026-10-18 comment in pressed() exists to prevent.
+    told = []
+    card = overlay_mod.NotifyCard(on_dismiss=told.append, on_open=told.append)
+    card._thread = object()
+    card.one_footer = True
+    plain = [dict(i) for i in items]
+    plain[-1].pop("more", None)
+    card.show(plain)
+    card._q.get_nowait()
+    for name in ("dismiss", "open"):
+        top = card.current()
+        card.pressed(name, top)
+        drawn = card._q.get_nowait()
+        assert top in told and drawn and drawn[0]["id"] != top, (told, drawn)
+        assert [bool(c.get("footless")) for c in drawn] == \
+            [False] + [True] * (len(drawn) - 1), drawn
+        rest = [i for i in plain if i["id"] not in told]
+        again = overlay_mod.NotifyCard()
+        again._thread = object()
+        again.one_footer = True
+        again.show(rest)
+        answer = again._q.get_nowait()
+        assert [nc.measure(c, 1.0) for c in drawn] == \
+            [nc.measure(c, 1.0) for c in answer], "the engine's answer moves nothing"
+    pin = dict(_pin_card(), footless=True)
+    assert not nc.footless(pin)
+    assert nc.measure(pin, 1.0) == nc.measure(_pin_card(), 1.0)
+    assert config_mod.load(Path(__file__).resolve().parent
+                           / "defaults.toml").notify.one_footer is True
 
 
 def test_a_pinned_card_has_a_pill_and_no_cross() -> None:
