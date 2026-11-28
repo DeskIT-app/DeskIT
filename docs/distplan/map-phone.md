@@ -43,7 +43,7 @@ Two clients exist:
 | `main.py:1760` | Status payload field `"phone": self.phone.url` — the dashboard shows and copies the token-bearing URL (`dashboard.py:7664-7690`, `dashboard.py:8091-8099`). |
 | `settings.py:618-626, 655, 1143-1145, 1374-1376` | Generated Settings page: tab "Phone" with `server.enabled` and `server.port` as friendly rows; `server.host` described as "Empty means your own private network" (also stale wording). |
 | `notify_hook.py:54` | Second consumer of `server_token.txt` — outside this subsystem but couples the token's location. |
-| `tests.py` | ~12 phone tests (`tests.py:2884, 2940, 3023, 3052, 3129, 3187, 3942, 3951, 3965, 4938, 9405`), using `yoav.example.ts.net` fakes (`tests.py:3931`). |
+| `tests.py` | ~12 phone tests (`tests.py:2884, 2940, 3023, 3052, 3129, 3187, 3942, 3951, 3965, 4938, 9405`), using `your-pc.your-tailnet.ts.net` fakes (`tests.py:3931`). |
 | `AGENTS.md:1043` | One-line description of `server.py`. |
 | `README.md:3371-3524` | The user-facing walkthrough (Tailscale on both ends, `tailscale serve --bg 8756`, open the logged URL, `/app.apk`, paste the `#t=` line, three traps). |
 
@@ -130,7 +130,7 @@ Note: the phone app itself keeps no audio on disk — recordings live in memory 
 - `android/app/src/main/res/xml/network_security_config.xml:8-10` — cleartext only to `10.0.2.2`; a stranger's LAN address over plain HTTP is refused by the OS.
 - `android/app/src/main/res/values/strings.xml:83, 99, 115` — user-facing text names Tailscale as the transport.
 - `README.md:3471-3490` — setup steps assume the same Tailscale account on PC and phone, and reading the token out of `app.log`.
-- `tests.py:3931, 16447` — test fixtures use `yoav.example.ts.net` (harmless, but owner-named).
+- `tests.py:3931, 16447` — test fixtures use `your-pc.your-tailnet.ts.net` (harmless, but owner-named).
 - Debug signing: the served APK is the `debug` variant (`server.py:68-69`, `build.gradle.kts:25-27`), signed by the owner machine's `~/.android/debug.keystore`. Any APK built elsewhere has a different signature and cannot upgrade an install of this one.
 
 ## External services and what leaves the machine
@@ -148,7 +148,7 @@ Note: the phone app itself keeps no audio on disk — recordings live in memory 
 - `/app.apk` self-hosting of the APK from the source tree's `build/` directory (`server.py:68-69, 217-240`): a developer convenience that assumes the user builds the APK on the same PC. End users will not have Gradle, a JDK or an SDK.
 - `apk_version()` reading `versionName` out of `build.gradle.kts` (`server.py:73-85`): reports the SOURCE version, not the built APK's, so `/health.apk` and the download filename can disagree with the file served (the memory notes record exactly this: strings renamed 09-06, served APK built 08-29).
 - The dashboard's Phone block's "Copy link" copies the token-bearing URL (`dashboard.py:8091-8099`) — fine for one owner, but for users the token should be pairable without exposing it in logs.
-- `tests.py` phone tests and the `yoav.example.ts.net` fixtures.
+- `tests.py` phone tests and the `your-pc.your-tailnet.ts.net` fixtures.
 - The Hebrew-only web page at `/` (`server.py:670-834`): the owner has since made the phone app English end to end (`strings.xml:6-8, 87-89`); the page is the older client.
 
 ## What breaks on a fresh machine

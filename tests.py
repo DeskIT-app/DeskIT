@@ -5863,9 +5863,21 @@ def test_an_overlay_queue_rests_until_something_wakes_it() -> None:
     import ctypes.wintypes as wt
     import overlay as overlay_mod
 
+    # The suite's main thread may already hold window messages from the tests
+    # before this one, and a rest wakes once for a message nobody removed. So
+    # on CI's order the first rest woke at once and this failed twice in a row
+    # (2026-11-28, run 46141983799). This test is about what wakes a rest, so
+    # it starts from an empty message queue.
+    drain = ctypes.WinDLL("user32", use_last_error=True)
+    drain.PeekMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                   ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+    left = wt.MSG()
+    while drain.PeekMessageW(ctypes.byref(left), None, 0, 0, 1):   # PM_REMOVE
+        pass
+
     q = overlay_mod._Queue()
     t0 = time.monotonic()
-    assert q.rest(0.15) is False
+    assert q.rest(0.15) is False, "a rest with nothing to wake it woke"
     assert time.monotonic() - t0 >= 0.1, "a rest with nothing to wake it ran short"
     flag = overlay_mod._Signal(q)
     for name, wake in (("put", lambda: q.put("x")), ("ring", q.ring),
@@ -24881,7 +24893,7 @@ def test_the_boot_card_never_echoes_a_line_it_does_not_understand() -> None:
     from skin.boot import Card
     card = Card()
     before = card.line
-    card.status("open this on the phone: https://yoav.example.ts.net/"
+    card.status("open this on the phone: https://pc.example/"
                 "#t=SECRETTOKENSECRETTOKEN")
     assert "SECRETTOKEN" not in card.line, card.line
     card.status("HTTP Request: GET https://huggingface.co/api/models/x")
