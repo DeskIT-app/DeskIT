@@ -385,7 +385,7 @@ class LocalConfig:
     # once 30 s of speech exist (LocalWhisperTranscriber.early_language):
     # the release then skips its 0.2-0.4 s language check. Exact, because
     # the release's own decision reads only those 30 s; it answered early
-    # on 78 of 479 recordings and agreed on all 78 (2026-11-28). False =
+    # on 75 of 479 recordings and agreed on all 75 (2026-11-28). False =
     # decided at the release, always.
     early_language: bool = True
     # Warm the models again when the person comes back after this many

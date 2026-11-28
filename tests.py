@@ -39029,7 +39029,7 @@ def test_the_language_is_decided_while_he_speaks_once_it_can_be_exact():
     the first 30 s of the SPEECH in the recording. So once 30 s of speech
     and 3 s after it exist, the rolling thread can ask the same question
     and get the release's own answer: measured on 479 recordings, it
-    answered early on 78 and agreed on all 78, while the first 5-20 s, the
+    answered early on 75 and agreed on all 75, while the first 5-20 s, the
     first rolling window and everything but the tail got English and mixed
     clips wrong. Here: the Roller asks from 33 s every 5 s until answered
     and hands the answer on in the Head; a check that raises is dropped;

@@ -2038,8 +2038,8 @@ stop_empty_passes = true         # end the decode at an empty last pass;
 # audio after that, already has its answer while the key is still held: the
 # rolling thread asks then, and the release skips the check. Measured on 479
 # recordings (the 50 kept ones, the corpus's 28 English and 301 mixed clips,
-# 100 Hebrew ones): it answered early on 78 and agreed with the release on all
-# 78 (4 English, 67 mixed), saving 0.29 s each at the median; deciding on the
+# 100 Hebrew ones): it answered early on 75 and agreed with the release on all
+# 75 (3 English, 65 mixed), saving 0.29 s each at the median; deciding on the
 # first 5-20 s, the first stretch or everything but the tail got English and
 # mixed clips wrong both ways. It helps only dictations of about 35 s or more
 # (11% of them); a shorter one is decided at the release, as before.

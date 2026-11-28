@@ -1047,8 +1047,9 @@ class LocalWhisperTranscriber:
         release need not spend 0.2-0.4 s asking. Measured 2026-11-28 on
         479 recordings (the 50 in recent\\, the corpus's 28 English and
         301 mixed clips, 100 Hebrew ones), replayed through the Roller as
-        they arrived: it answered early on 78 and agreed with the release
-        on all 78, the 4 English and 67 mixed among them, while every
+        they arrived (at most rolling.DECIDE_TRIES asks): it answered
+        early on 75 and agreed with the release on all 75, the 3 English
+        and 65 mixed among them, while every
         shorter prefix (the first 5/10/15/20 s, the first rolling window,
         everything before the tail) got English and mixed clips wrong,
         both ways. [local] early_language. `lock`, when given, is held
