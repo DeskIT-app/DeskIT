@@ -90,7 +90,7 @@ its logs only (kept one day).
 card says your learned words and settings follow you to any PC you
 sign in on, the sign-in press records the account and the two sync
 consents, the wizard's last page shows the one switch on with what it
-covers in a line, and Settings > Privacy > Withdraw turns either off at
+covers in a line, and Settings > Account > Withdraw turns either off at
 any later time, each on its own row. "Settings and
 words": your changed settings — minus every
 key, hotkey, device, folder, port and position, which never leave the

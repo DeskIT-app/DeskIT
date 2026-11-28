@@ -45492,7 +45492,7 @@ def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
             words = _wizard_words(w)
             assert firstrun.WORDS["done.sync"] in words
             assert "what I said" in firstrun.WORDS["done.sync"], "the row does not name the history"
-            assert "Settings > Privacy > Withdraw" in words, "no way off named on the row"
+            assert "Settings > Account > Withdraw" in words, "no way off named on the row"
             assert "Never your voice" in words, "the row does not say what stays"
             assert "the Said page is the same" in words, "the row does not say what the history sync does"
             w.switches["sync"].toggle()

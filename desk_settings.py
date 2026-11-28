@@ -409,7 +409,7 @@ def trouble_card(status) -> dict | None:
         # with it: its button would ask for a yes that changes nothing
         return {"kind": "trouble", "line": "The phone can't connect",
                 "said": ("Your phone comes in through your account, and the account is off on "
-                         "this PC. Turn it on from Home or Settings > Privacy."),
+                         "this PC. Turn it on from Home or Settings > Account."),
                 "button": "", "details": details}
     return {"kind": "trouble", "line": "The phone can't connect?",
             "said": ("Windows may be blocking it. DeskIT asks Windows to let your phone "
